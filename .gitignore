@@ -1,0 +1,6 @@
+_workspace/
+profile/
+*.jsonl
+.env
+__pycache__/
+.DS_Store
