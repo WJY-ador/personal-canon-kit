@@ -4,3 +4,9 @@ profile/
 .env
 __pycache__/
 .DS_Store
+# 기본 데이터 루트(CANON_ROOT 없을 때)와 실행 중 로그·캐시
+data/
+.runtime/
+# 샘플 데이터는 올린다 (빈 파일·가짜 예시뿐)
+!kit/sample-data/_workspace/
+!kit/sample-data/**/*.jsonl
