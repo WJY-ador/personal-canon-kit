@@ -10,3 +10,7 @@ data/
 # 샘플 데이터는 올린다 (빈 파일·가짜 예시뿐)
 !kit/sample-data/_workspace/
 !kit/sample-data/**/*.jsonl
+
+# 원작자 로컬 전용 지시문·설정 — 키트 사용자 세션에 로드되면 안 된다 (2026-10-14)
+CLAUDE.local.md
+.claude/settings.local.json
