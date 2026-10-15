@@ -1,0 +1,235 @@
+{
+  "name": "personal-canon-kit",
+  "version": "0.1.0",
+  "schemaVersion": 1,
+  "released": "2026-10-15",
+  "support": {
+    "macos": {
+      "core": "시험함 (Apple Silicon, Python 3.9·3.14)",
+      "optional": "예약·알림·수집 없음"
+    },
+    "windows-native": {
+      "core": "미검증 — 코드 대응만",
+      "optional": "예약·알림·수집 없음"
+    },
+    "windows-wsl": {
+      "core": "미검증·미결정",
+      "optional": "없음"
+    }
+  },
+  "requires": {
+    "python": ">=3.9",
+    "claude-code": "정리(digest) 모델 모드에만 필요 — 별도 구독"
+  },
+  "policies": "미정 — DECISIONS-PENDING.md",
+  "files": [
+    {
+      "path": ".claude/skills/canon-digest/SKILL.md",
+      "required": true
+    },
+    {
+      "path": ".claude/skills/canon-doctor/SKILL.md",
+      "required": true
+    },
+    {
+      "path": ".claude/skills/canon-record/SKILL.md",
+      "required": true
+    },
+    {
+      "path": ".claude/skills/canon-setup/SKILL.md",
+      "required": true
+    },
+    {
+      "path": ".gitignore",
+      "required": true
+    },
+    {
+      "path": "CHANGELOG.md",
+      "required": true
+    },
+    {
+      "path": "DECISIONS-PENDING.md",
+      "required": true
+    },
+    {
+      "path": "README.md",
+      "required": true
+    },
+    {
+      "path": "START.md",
+      "required": true
+    },
+    {
+      "path": "canon.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/__init__.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/checks.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/data.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/doctor.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/model.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/paths.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/schema.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/server.py",
+      "required": true
+    },
+    {
+      "path": "canonkit/store.py",
+      "required": true
+    },
+    {
+      "path": "guides/01-before-you-buy.md",
+      "required": true
+    },
+    {
+      "path": "guides/02-install-macos.md",
+      "required": true
+    },
+    {
+      "path": "guides/03-install-windows.md",
+      "required": true
+    },
+    {
+      "path": "guides/04-setup-conversation.md",
+      "required": true
+    },
+    {
+      "path": "guides/05-daily-use.md",
+      "required": true
+    },
+    {
+      "path": "guides/06-connect-sources.md",
+      "required": true
+    },
+    {
+      "path": "guides/07-check-and-recover.md",
+      "required": true
+    },
+    {
+      "path": "guides/08-update-move-remove.md",
+      "required": true
+    },
+    {
+      "path": "sample-data/candidates.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/issue-log.md",
+      "required": true
+    },
+    {
+      "path": "sample-data/journal/j-20261015-01.md",
+      "required": true
+    },
+    {
+      "path": "sample-data/journal/j-20261015-02.md",
+      "required": true
+    },
+    {
+      "path": "sample-data/meta.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/profile.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/questions.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/setup-state.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/sheets/q-001.md",
+      "required": true
+    },
+    {
+      "path": "sample-data/sources.json",
+      "required": true
+    },
+    {
+      "path": "sample-data/tabs.json",
+      "required": true
+    },
+    {
+      "path": "templates/README.md",
+      "required": true
+    },
+    {
+      "path": "templates/candidates.json",
+      "required": true
+    },
+    {
+      "path": "templates/issue-log.md",
+      "required": true
+    },
+    {
+      "path": "templates/journal-tail.md",
+      "required": true
+    },
+    {
+      "path": "templates/journal.md",
+      "required": true
+    },
+    {
+      "path": "templates/meta.json",
+      "required": true
+    },
+    {
+      "path": "templates/profile.json",
+      "required": true
+    },
+    {
+      "path": "templates/questions.json",
+      "required": true
+    },
+    {
+      "path": "templates/setup-state.json",
+      "required": true
+    },
+    {
+      "path": "templates/sources.json",
+      "required": true
+    },
+    {
+      "path": "templates/tabs.json",
+      "required": true
+    },
+    {
+      "path": "tests/fake_claude.py",
+      "required": true
+    },
+    {
+      "path": "tests/test_flow.py",
+      "required": true
+    },
+    {
+      "path": "web/index.html",
+      "required": true
+    }
+  ]
+}

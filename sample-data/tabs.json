@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "tabs": [
+    {
+      "id": "t-001",
+      "label": "주간 회고",
+      "blocks": [
+        "sheet",
+        "candidates",
+        "next"
+      ]
+    },
+    {
+      "id": "t-002",
+      "label": "글감",
+      "blocks": [
+        "journal",
+        "status"
+      ]
+    }
+  ],
+  "requests": []
+}

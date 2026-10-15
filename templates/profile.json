@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "fields": {
+    "purpose": {"label": "이 키트로 하려는 일", "value": "", "status": "empty", "source": ""},
+    "refind": {"label": "최근 다시 찾았던 자료와 그 이유", "value": "", "status": "empty", "source": ""},
+    "daily_views": {"label": "매일·매주 열어 보고 싶은 것 (최대 3개)", "value": [], "status": "empty", "source": ""},
+    "first_material": {"label": "처음 연결할 자기 기록 1종", "value": "", "status": "empty", "source": ""},
+    "separate": {"label": "따로 빼 둘 민감·회사·타인 자료", "value": "", "status": "empty", "source": ""},
+    "help_level": {"label": "직접 할 범위와 도움받고 싶은 범위", "value": "", "status": "empty", "source": ""}
+  },
+  "consent": {"read_paths": [], "model_send": false, "updated": ""}
+}
