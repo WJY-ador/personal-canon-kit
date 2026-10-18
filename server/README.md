@@ -10,6 +10,7 @@ uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 # .env 에 DATABASE_URL (Supabase Session pooler, 5432) — gitignored
 CANON_DEV=1 CANON_DEV_USER=you@example.com .venv/bin/python main.py   # http://127.0.0.1:8800
 .venv/bin/python test_tools.py   # Supabase 에 붙어 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제
+CANON_TEST_SCHEMA=canon_test .venv/bin/python test_tools.py   # 운영 DB 가 아직 옛 스키마일 때: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
 ```
 
 원작자 템플릿(기준·결정·숙제·발행·축·접근 방식 정의, 라벨은 파일 맨 위 `LABELS`) 넣기 — 대상 사용자가 먼저 로그인해 계정이 있어야 한다:
@@ -27,6 +28,7 @@ Claude Code 에서 붙이기: `claude mcp add --transport http canon http://127.
 ## 배포 (Render Free, singapore)
 
 배포 경로(2026-10-18): `main` 은 보호 브랜치 — 직접 push 불가. 브랜치 → PR → GitHub Actions `test`(`.github/workflows/ci.yml`: py_compile·node --check·운영 DB 가드·init_schema·test_tools, postgres:17 컨테이너) 초록 → merge → Render Auto-Deploy(After CI Checks Pass). 롤백은 Render Dashboard 직전 배포 복귀 → 문제 커밋 revert PR. 시작 시 ALTER 는 이전 코드와 호환돼야 한다.
+예외: PR①(출처·revision·이력 격리) 마이그레이션은 `candidate_history.prev_decision`·`prev_text` 를 지운다 — 옛 인스턴스가 같이 돌면 결정 저장이 깨지고, 직전 배포 복귀만으로는 되돌아가지 않는다(raw §4 「구버전 writer와 혼용하지 않는다」).
 
 Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). rootDir 없음 — 레포 루트에서 빌드 `pip install -r server/requirements.txt`, 시작 `uvicorn --app-dir server main:app --host 0.0.0.0 --port $PORT`(도움말 정본 `guides/` 가 같이 올라가야 한다. rootDir=`server` 면 안 올라간다). 파이썬은 루트 `.python-version`(3.13), 헬스체크 `/health`(DB 핑 포함). MCP 는 stateless(json_response) — 무료 인스턴스가 잠들어도 다음 호출이 산다.
 
@@ -50,8 +52,8 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
   **MCP 와 같은 `AuthKitVerifier`·`user_id_for`** 로 검증·연결한다 → 웹 사용자 = MCP 사용자(같은 sub).
-- 서버 메모리에 상태 없음. PKCE verifier·state 는 10분 서명 쿠키, 세션은 30일 서명 쿠키(HMAC-SHA256, HttpOnly, SameSite=Lax, https 면 Secure).
-- 쓰기 API 는 `POST /api/candidate/decide`(confirm·exclude·pending·edit)와 `POST /api/item/decide`(항목: apply·discard·confirm·exclude·pending·archive·restore, `expected_revision` 필수, 제안 제외는 discard+proposal_id). 둘 다 세션 + `Origin` 이 공개 주소와 같을 때만. 「고쳐서 남기기」는 edit→confirm 두 번(이력 두 줄). 읽기 `GET /api/item?id=` 는 항목·관계 대상·들어오는 관계·이력·승격 상태(서랍).
+- 서버 메모리에 상태 없음. PKCE verifier·state 는 10분 서명 쿠키, 세션은 7일 서명 쿠키(HMAC-SHA256, HttpOnly, SameSite=Lax, https 면 Secure).
+- 쓰기 API 는 `POST /api/candidate/decide`(confirm·exclude·pending·edit·edit_confirm, `expected_revision` 선택 — 틀리면 CONFLICT, 웹 편집 문장은 wording_by=self)와 `POST /api/item/decide`(항목: apply·discard·confirm·exclude·pending·archive·restore, `expected_revision` 필수, 제안 제외는 discard+proposal_id). 둘 다 세션 + `Origin` 이 공개 주소와 같을 때만. 「고쳐서 남기기」는 edit→confirm 두 번(이력 두 줄). 읽기 `GET /api/item?id=` 는 항목·관계 대상·들어오는 관계·이력·승격 상태(서랍).
   기록·질문·후보 추가는 웹에 없다 — 연결한 AI 대화에서 한다.
 - `app.html` 은 로컬 보드(`~/Personal/scripts/checkpoint_board.html`·360·지도) 구조를 옮긴 보드형 화면(2026-10-18): 마스트(날짜·상태 스펙트럼·질문 레전드) + 기본 탭 오늘/질문/기록/구조/지도(사용자 정의 tabs 있으면 그 탭 + 구조·지도 고정) + 대조 2열(≥1000px). 토큰은 보드 값. 가안·스펙은 레포 `notes/`(gitignore).
 - 2단계: 구조 탭 = 360(서브 필: 기준 오브젝트 · 후보 · 그 밖의 오브젝트, 카드 그리드 + 오른쪽 서랍 `#panel`). 서랍은 본문·필드·관계 대상·들어오는 관계·이력·승격 사실, 제안이 있으면 diff + [적용][제외(discard)], 기준이면 [내 판단으로 남기기][남기지 않기][되돌리기]. 라우트 `#structure/<오브젝트ID>[/<항목ID>]` · `#structure/cand/<필터>`. 오늘 탭은 질문 없는 미결정 후보를 기록별로 묶고, 지도 「쌓이는 재료」에 확정 기준을 함께 둔다.
@@ -69,4 +71,4 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
   이미 붙여 둔 Claude 커넥터는 새 도구(help_get 등)를 보려면 커넥터를 다시 연결하거나 새 대화를 연다.
   웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
   `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
-- 근거 인용은 원문에 글자 그대로 **한 곳**만 있어야 저장(0곳·2곳 이상 거절). 기록 1편당 후보 3개. 결정 이력(candidate_history)으로 되돌릴 수 있고, 확정 문장을 고치면 pending 으로 돌아간다.
+- 근거 인용은 **인용 적격 기록**(author_kind=self·text_process=verbatim·삭제 안 됨)의 원문에 글자 그대로 **한 곳**만 있어야 저장(0곳·2곳 이상·비적격 기록 거절). 기존 기록은 출처 unknown. 기록 1편당 후보 3개. 후보는 변경마다 revision+1, 이력에 변경 전 스냅샷(`prev_state`·`prev_revision`). 결정 이력(candidate_history)으로 되돌릴 수 있고, 확정 문장을 고치면 pending 으로 돌아간다.
