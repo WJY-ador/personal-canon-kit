@@ -4,8 +4,11 @@
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
 환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
           · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
+          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 에서만 예외)
 """
 import functools
+import inspect
+import json
 import os
 from urllib.parse import urlparse
 from collections.abc import AsyncIterator
@@ -14,6 +17,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -50,6 +54,8 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
 if not DEV and os.environ.get("CANON_DEV_USER"):
     raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
+# 시작 때 한 번 읽는다. 비어 있으면 예외 없음.
+db.ADMIN_USER_IDS = frozenset(x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip())
 
 _auth_kwargs = {}
 if ISSUER:
@@ -73,10 +79,17 @@ def uid_of(ctx: Context) -> str:
 
 
 def guard(fn):
-    """CanonError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다."""
+    """CanonError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
+    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·전역 DB 크기(QUOTA-GLOBAL)."""
+    sig = inspect.signature(fn)
+    write = fn.__name__ in db.WRITE_LIMITS
+
     @functools.wraps(fn)
     def run(*a, **k):
         try:
+            if write:
+                args = sig.bind(*a, **k).arguments
+                db.write_gate(fn.__name__, {n: v for n, v in args.items() if n != "ctx"}, lambda: uid_of(args["ctx"]))
             return fn(*a, **k)
         except db.CanonError as e:
             raise ToolError(f"[{e.code}] {e.message}" + (f" 다음 조치: {e.action}" if e.action else ""))
@@ -335,6 +348,62 @@ def _transport_security() -> TransportSecuritySettings:
     )
 
 
+class BodyLimit:
+    """① 요청 본문 상한 — 순수 ASGI(receive 만 다룬다, send 는 손대지 않는다 → /mcp SSE 스트리밍과 무관).
+    /mcp·/api/* 에만. Content-Length 가 있으면 그 값으로 판정하고 그대로 통과(선언 길이는 HTTP 서버가 강제한다).
+    없으면(chunked) 상한+1 바이트까지 읽어 판정하고, 통과하면 읽은 본문을 한 메시지로 다시 넘긴다. 넘으면 413 + PAYLOAD-LIMIT."""
+
+    def __init__(self, app, limit: int = db.MAX_BODY_BYTES):
+        self.app, self.limit = app, limit
+
+    @staticmethod
+    def covered(path: str) -> bool:
+        return path == "/mcp" or path.startswith("/mcp/") or path.startswith("/api/")
+
+    async def reject(self, scope, send):
+        msg = f"요청 본문이 너무 커요 (상한 {self.limit} 바이트)."
+        if scope["path"].startswith("/api/"):
+            body = {"code": "PAYLOAD-LIMIT", "msg": msg}
+        else:   # MCP transport 의 오류 응답과 같은 꼴(JSON-RPC error, id null)
+            body = {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": f"[PAYLOAD-LIMIT] {msg}"}}
+        raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(raw)).encode()),
+                                (b"connection", b"close")]})
+        await send({"type": "http.response.body", "body": raw})
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not self.covered(scope["path"]):
+            return await self.app(scope, receive, send)
+        cl = next((v for k, v in scope.get("headers", []) if k == b"content-length"), None)
+        if cl is not None:
+            try:
+                n = int(cl)
+            except ValueError:
+                n = None
+            if n is not None:
+                if n > self.limit:
+                    return await self.reject(scope, send)
+                return await self.app(scope, receive, send)
+        chunks, size = [], 0
+        while True:
+            m = await receive()
+            if m["type"] != "http.request":   # 끊김 — 받은 그대로 앱에 넘긴다
+                break
+            chunks.append(m.get("body", b""))
+            size += len(chunks[-1])
+            if size > self.limit:
+                return await self.reject(scope, send)
+            if not m.get("more_body", False):
+                break
+        first = [{"type": "http.request", "body": b"".join(chunks), "more_body": False}] if m["type"] == "http.request" else [m]
+
+        async def replay():
+            return first.pop() if first else await receive()
+
+        return await self.app(scope, replay, send)
+
+
 # Render Free 는 유휴 때 프로세스가 죽는다 → 세션을 메모리에 들지 않는 stateless + JSON 응답.
 mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security())
 
@@ -362,6 +431,7 @@ app = Starlette(
         Mount("/", app=mcp_app),
     ],
     lifespan=lifespan,
+    middleware=[Middleware(BodyLimit)],
 )
 
 if __name__ == "__main__":
