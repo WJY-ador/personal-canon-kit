@@ -5,12 +5,12 @@ from pathlib import Path
 
 from . import SCHEMA_VERSION, VERSION, paths
 
-SKIP_DIRS = {"__pycache__", ".git", ".DS_Store", ".pytest_cache", "node_modules"}   # node_modules: tools/start-visuals 렌더 도구(제작자 Mac 전용)
+SKIP_DIRS = {"__pycache__", ".git", ".DS_Store", ".pytest_cache", "node_modules", ".venv"}   # node_modules: tools/start-visuals 렌더 도구(제작자 Mac 전용) · .venv: server 로컬 가상환경(gitignored)
 SKIP_FILES = {"local.json", ".DS_Store", "CLAUDE.local.md", "settings.local.json"}   # 배포 안 하는 로컬 파일
 TEXT_EXT = {".md", ".py", ".json", ".html", ".txt", ".cmd", ".sh", ".ps1", ""}
 
 GENERIC = [
-    (re.compile(r"[\w.+-]+@[\w-]+\.(?:com|io|net|kr|co\.kr|org)\b"), "메일 주소"),
+    (re.compile(r"[\w.+-]+@(?!example\.(?:com|org|net)\b)[\w-]+\.(?:com|io|net|kr|co\.kr|org)\b"), "메일 주소"),
     (re.compile(r"/Users/(?!<|you\b|me\b|name\b)[A-Za-z0-9._-]+"), "macOS 홈 경로"),
     (re.compile(r"[A-Z]:\\\\?Users\\\\?(?!<|you\b|name\b)[A-Za-z0-9._-]+"), "Windows 홈 경로"),
     (re.compile(r"sk-ant-[\w-]{6,}|xox[abpr]-[\w-]{6,}|ghp_\w{10,}"), "토큰"),
