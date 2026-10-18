@@ -3,7 +3,7 @@
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
 2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CANON_DEV 사용자)
 3) HTTP 시험: Starlette 앱을 ASGI 로 불러 토큰 → 사용자 결정, /health, PRM, 401 을 본다
-4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login)
+4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login) · /help·/privacy
 5) 정의 층 시험(2단계): 정의 제안→적용·충돌·깨지는 변경 거절 · 항목 제안→적용→확정→되돌리기·이력 · 관계 검증 · 승격 · record_attach
    · question_id "" → NULL · 원작자 템플릿 시드(시험 사용자에게만) · /api/item·/api/item/decide
 6) 전역 상한(α1): 요청 본문 256KB(413, Content-Length·chunked) · MCP SSE 응답이 미들웨어 뒤에서 그대로 · 인자 길이 PAYLOAD-LIMIT
@@ -384,12 +384,38 @@ async def test_web():
                 assert "다시 로그인하면 계정을 고를 수 있어요" in r.text, r.text[:400]
                 assert 'href="/login?fresh=1"' in r.text and 'href="/login"' not in r.text, "로그아웃 직후 [로그인]은 fresh=1"
                 assert 'href="/help"' in r.text, "시작 화면 하단에 도움말"
+                assert 'href="/privacy"' in r.text, "시작 화면 하단에 처리방침"
                 # 도움말: 로그인 없이 200, 표는 <table>, 10 으로의 링크는 #words, 세션 없으면 [로그인]
                 r = await h.get("/help")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("말 뜻", "기록", "도움말", "<table>", 'href="#words"', 'id="start"', 'id="words"', "--accent: #186A4B"):
                     assert word in r.text, word
                 assert 'href="/login"' in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
+                assert 'href="/privacy"' in r.text, "도움말 하단에 처리방침"
+                # 처리방침: 로그인 없이 200, 같은 렌더러(escape), 09·10 링크는 /help#…, {{CONTACT_LINE}} 은 env CANON_CONTACT(선택 — 없으면 메일 줄 없음)
+                r = await h.get("/privacy")
+                assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+                for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
+                             "제28조의8", "v1 · 2026-10-18", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
+                    assert word in r.text, word
+                assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
+                real_contact, real_privacy = os.environ.get("CANON_CONTACT"), site.privacy_html
+                try:
+                    os.environ["CANON_CONTACT"] = '<b>x</b> [y](javascript:alert(1))'
+                    site.load_help(web.GUIDES_DIR)
+                    r = await h.get("/privacy")
+                    assert r.status_code == 200 and "&lt;b&gt;x&lt;/b&gt;" in r.text and "<b>x" not in r.text, r.text[-800:]
+                    assert 'href="javascript' not in r.text.lower() and "{{CONTACT" not in r.text and "메일: " in r.text, "연락처 env 도 렌더러 escape·링크 검사를 탄다"
+                    os.environ.pop("CANON_CONTACT")
+                    site.load_help(web.GUIDES_DIR)
+                    r = await h.get("/privacy")
+                    assert r.status_code == 200 and "메일: " not in r.text and "{{CONTACT" not in r.text, "연락처 env 없으면 메일 줄 없음(500 아님)"
+                finally:
+                    if real_contact is None:
+                        os.environ.pop("CANON_CONTACT", None)
+                    else:
+                        os.environ["CANON_CONTACT"] = real_contact
+                    site.privacy_html = real_privacy
                 # 렌더러 안전: raw HTML 은 글자로, javascript:·data:·// 링크는 글만, http(s)·#·상대경로는 링크
                 bad_md = ('# 제목 <script>alert(1)</script>\n\n<img src=x onerror=alert(1)> [x](javascript:alert(1)) [y](data:text/html,1) '
                           '[z](//evil.example) [w](JaVaScRiPt:alert(1))\n\n| a | <b>b</b> |\n|---|---|\n| [t](javascript:x) | `<i>` |\n\n'
@@ -401,16 +427,18 @@ async def test_web():
                 for ok in ('href="https://example.com/a"', 'href="#words"', 'href="notes/a.md"', "[버튼]"):
                     assert ok in hb, (ok, hb)
                 assert hb.count('href="#words"') == 2 and "<table>" in hb, hb
-                real_guides, real_help = site.guides, site.help_html
+                real_guides, real_help, real_privacy = site.guides, site.help_html, site.privacy_html
                 site.load_help(Path("/nonexistent-guides"))
                 try:
                     r = await h.get("/help")
                     assert r.status_code == 503 and "도움말" in r.text, r.status_code
+                    r = await h.get("/privacy")
+                    assert r.status_code == 503 and "처리방침" in r.text, r.status_code
                     async with Client(main.mcp) as mc:
                         miss = await mc.call_tool("help_get", {"topic": "all"})
                     assert miss.is_error and "HELP-MISSING" in miss.content[0].text, miss
                 finally:
-                    site.guides, site.help_html = real_guides, real_help
+                    site.guides, site.help_html, site.privacy_html = real_guides, real_help, real_privacy
                 r = await h.get("/login", params={"fresh": "1"})
                 assert r.status_code == 302 and parse_qs(urlparse(r.headers["location"]).query)["prompt"] == ["login"], r.headers
                 assert (await h.get("/api/state")).status_code == 401
@@ -434,9 +462,11 @@ async def test_web():
                 assert chal == q["code_challenge"][0], "PKCE verifier 가 쿠키의 challenge 와 맞아야"
                 assert d["grant_type"] == "authorization_code" and d["code"] == "c1" and d["resource"] == RESOURCE
                 r = await h.get("/app")
-                assert r.status_code == 200 and 'href="/help"' in r.text, "앱 푸터에 도움말"
+                assert r.status_code == 200 and 'href="/help"' in r.text and 'href="/privacy"' in r.text, "앱 푸터에 도움말·처리방침"
                 r = await h.get("/help")
                 assert r.status_code == 200 and 'href="/app"' in r.text and 'href="/login"' not in r.text, "세션 있으면 [노트로]"
+                r = await h.get("/privacy")
+                assert r.status_code == 200 and 'href="/app"' in r.text and 'href="/login"' not in r.text, "처리방침도 세션 있으면 [대시보드로]"
                 r = await h.get("/")
                 assert r.status_code == 302 and r.headers["location"] == "/app", "세션 있으면 시작 화면 대신 /app"
                 st = (await h.get("/api/state")).json()
@@ -544,7 +574,7 @@ async def test_web():
                        "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
                        "referrer-policy": "same-origin"}
                 h.cookies.clear()   # 위에서 넣은 위조 세션 쿠키를 지우고 새로 로그인
-                pages = [await h.get("/"), await h.get("/help"), await h.get("/auth/callback", params={"error": "x"})]
+                pages = [await h.get("/"), await h.get("/help"), await h.get("/privacy"), await h.get("/auth/callback", params={"error": "x"})]
                 await login_once(h)
                 pages.append(await h.get("/app"))
                 for r in pages:
