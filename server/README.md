@@ -42,8 +42,8 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
   `token_endpoint_auth_method=none`). 환경 client ID 는 `/oauth2/authorize` 에서 `application_not_found` — Connect 흐름은 DCR·CIMD 클라이언트만 받는다(실측).
 - `CANON_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
   둘 중 하나라도 없으면 웹 로그인만 503 이고 MCP 는 정상 — 자동 배포로 서버가 죽지 않게.
-- `CANON_CONTACT` — (필수) 로그인 못 하는 사람의 문의·개인정보 요청 메일 주소. 비DEV 에서 비어 있으면 시작을 거부한다.
-- `CANON_ADMIN_USER_IDS` — (선택) 쉼표 구분 내부 user id(`u_…`). DB 가 400MB 를 넘어 비관리자 쓰기를 `QUOTA-GLOBAL` 로 막을 때 이 계정만 쓴다. 시작 때 한 번 읽는다(바꾸면 재시작). 상한 값은 `db.py` 「전역 상한」 상수.
+- `CANON_CONTACT` — (선택) 처리방침 보조 메일. 있으면 처리방침에 메일 한 줄로 보이고, 없으면 보이지 않는다. 없어도 서버는 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나다.
+- `CANON_ADMIN_USER_IDS` — (선택) 쉼표 구분 내부 user id(`u_…`). DB 가 400MB 를 넘어 비관리자 쓰기를 `QUOTA-GLOBAL` 로 막을 때 이 계정만 쓴다. 웹 대시보드에서 이 계정만 「새 문의 N건 · 개인정보 요청 M건」 띠와 「문의함」(전체 문의·상태·메모)을 본다. 시작 때 한 번 읽는다(바꾸면 재시작). 상한 값은 `db.py` 「전역 상한」 상수.
 
 운영엔 `CANON_DEV`·`CANON_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
 확인: `curl https://<주소>/health` → `{"ok":true,"db":true}` · 토큰 없이 `POST /mcp` → 401 + `WWW-Authenticate` · `GET /.well-known/oauth-protected-resource/mcp` → 200.
@@ -70,7 +70,7 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 도구: state_get · question_add · question_list · record_add · record_get · candidates_propose · candidate_decide · candidate_list · profile_set.
   2단계(정의 층) 5+1: definitions_get · definition_propose · definition_apply · item_propose · item_decide + record_attach(「어디에 붙나」: 기준·결정·후보 연결, 관심 축, 쓸 자리·아직 안 붙는 것). 동적 내용은 JSON 문자열(`definition_json`·`data_json`).
   도움말 help_get(`topic`: start·words·all, 기본 words) — `/help` 와 같은 guides 원문을 `{topic, text}` 로. INSTRUCTIONS 끝 줄: 해당 topic 하나만 읽고, 같은 대화에서 다시 부르지 않고, 문서에 없으면 "문서에서 확인되지 않아요" + 가장 가까운 절, 제품 밖 질문엔 적용 안 함. 
-  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」). 도구는 모두 17개.
+  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」). 관리자(`CANON_ADMIN_USER_IDS`)면 `GET /api/feedback` 이 전체 문의 최근 100건(이메일·메모 포함)과 `admin_tickets`(open·privacy_open)를, `GET /api/state` 도 `admin_tickets` 를 준다(비관리자 응답엔 키 없음, MCP state_get 에도 없음). `POST /api/feedback/status {id, status}` · `POST /api/feedback/note {id, admin_note ≤2KB}` 는 관리자만(세션·Origin, 아니면 403) — 종결이면 `closed_at`, 다시 열면 NULL, `updated` 갱신(감사 테이블은 β). 도구는 모두 17개.
   이미 붙여 둔 Claude 커넥터는 새 도구(help_get 등)를 보려면 커넥터를 다시 연결하거나 새 대화를 연다.
   웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
   `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
