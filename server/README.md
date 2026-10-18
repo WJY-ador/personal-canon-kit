@@ -51,6 +51,15 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
 로그아웃: `POST /logout` 이 쿠키를 지우고 `redirect: /?out=1` 을 준다. AuthKit 세션은 끝낼 엔드포인트가 없다(end_session 없음, `user_management/sessions/logout` 은 Connect 토큰의 `sid=app_consent_…` 에 안 맞아 멈춤 — 2026-10-18 실측). 대신 `/?out=1` 의 [로그인] 은 `/login?fresh=1` → authorize 에 `prompt=login` 을 붙여 로그인 폼을 강제한다(실측: 세션 있어도 폼 뜸).
 WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없다. Connect > Configuration 의 MCP resource indicator = `<주소>/mcp` 는 그대로.
 
+## 운영 — 동의·일일 한도·사용 집계 (α2, 초안)
+
+- **동의 버전** = `guides/11-privacy.md` 머리글 `` `vN · 날짜` ``(첫 20줄). 서버 시작 때 읽는다. **머리글의 N 을 올리면 전원 재동의** — 다음 쓰기에서 `CONSENT-REQUIRED`, 브라우저 `/consent` 에서 다시 동의. 이용약관을 두려면 `guides/12-terms.md` 를 같은 머리글 형식으로 두면 동의 항목에 자동으로 들어간다. 운영(비DEV)은 동의 문서가 있는데 버전 머리글이 없으면 뜨지 않는다.
+- **게이트**: 동의 전 사용자는 MCP 쓰기 도구·웹 쓰기 API 가 거절된다(MCP `[CONSENT-REQUIRED]` + `/consent` 주소, 웹 403). 읽기·도움말·문의(`feedback_send`·「문의」)는 동의 전에도 된다. 관리자 면제 없음. `GET /app` 은 미동의면 `/consent` 로 보낸다.
+- **일일 한도**(KST 0시 기준, 관리자도 같음): 기록 50 · 후보 150 · 결정 300 · 제안(새 정의·새 항목) 100 · 질문 50. 넘으면 `RATE-LIMIT`. 값은 `db.py` 「일일 한도」 `DAILY_LIMITS`.
+- **usage_daily**: 도구·`/api/*` 호출 수를 (KST 날짜, 사용자, 이름, 코드)별로 메모리에 세고 5분마다 DB 에 합산한다. 요청 경로에 DB 비용이 없다. 대신 **수면·재배포 때 마지막 ≤5분치는 유실**된다(정상 종료면 종료 직전 1회 flush). 동의하지 않은 사용자·익명은 `user_id=''` 로 합쳐진다.
+- `CANON_SESSION_SECRET` 교체 = 전원 로그아웃.
+- **배포 직후**: 원작자가 `/consent` 를 한 번 지난다 · 지인에게 「다음 쓰기부터 동의 화면 1회」 공지 · 운영 실측 = 동의 전 MCP 쓰기 1건 거절 → `/consent` 동의 → 같은 쓰기 1건 통과.
+
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
   **MCP 와 같은 `AuthKitVerifier`·`user_id_for`** 로 검증·연결한다 → 웹 사용자 = MCP 사용자(같은 sub).
