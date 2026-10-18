@@ -12,6 +12,12 @@ CANON_DEV=1 CANON_DEV_USER=you@example.com .venv/bin/python main.py   # http://1
 .venv/bin/python test_tools.py   # Supabase 에 붙어 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제
 ```
 
+원작자 템플릿(기준·결정·숙제·발행·축·접근 방식 정의, 라벨은 파일 맨 위 `LABELS`) 넣기 — 대상 사용자가 먼저 로그인해 계정이 있어야 한다:
+```bash
+.venv/bin/python template_author.py <email> --dry-run   # DB 안 붙고 정의 JSON 만
+.venv/bin/python template_author.py <email>             # definition_propose→apply 와 같은 경로, 같은 key 있으면 건너뜀
+```
+
 Claude Code 에서 붙이기: `claude mcp add --transport http canon http://127.0.0.1:8800/mcp`
 또는 `--mcp-config` JSON `{"mcpServers":{"canon":{"type":"http","url":"http://127.0.0.1:8800/mcp"}}}`.
 
@@ -43,9 +49,10 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
   **MCP 와 같은 `AuthKitVerifier`·`user_id_for`** 로 검증·연결한다 → 웹 사용자 = MCP 사용자(같은 sub).
 - 서버 메모리에 상태 없음. PKCE verifier·state 는 10분 서명 쿠키, 세션은 30일 서명 쿠키(HMAC-SHA256, HttpOnly, SameSite=Lax, https 면 Secure).
-- 쓰기 API 는 `POST /api/candidate/decide` 하나(confirm·exclude·pending·edit). 세션 + `Origin` 이 공개 주소와 같을 때만. 「고쳐서 남기기」는 edit→confirm 두 번(이력 두 줄).
+- 쓰기 API 는 `POST /api/candidate/decide`(confirm·exclude·pending·edit)와 `POST /api/item/decide`(항목: apply·discard·confirm·exclude·pending·archive·restore, `expected_revision` 필수, 제안 제외는 discard+proposal_id). 둘 다 세션 + `Origin` 이 공개 주소와 같을 때만. 「고쳐서 남기기」는 edit→confirm 두 번(이력 두 줄). 읽기 `GET /api/item?id=` 는 항목·관계 대상·들어오는 관계·이력·승격 상태(서랍).
   기록·질문·후보 추가는 웹에 없다 — 연결한 AI 대화에서 한다.
 - `app.html` 은 로컬 보드(`~/Personal/scripts/checkpoint_board.html`·360·지도) 구조를 옮긴 보드형 화면(2026-10-18): 마스트(날짜·상태 스펙트럼·질문 레전드) + 기본 탭 오늘/질문/기록/구조/지도(사용자 정의 tabs 있으면 그 탭 + 구조·지도 고정) + 대조 2열(≥1000px). 토큰은 보드 값. 가안·스펙은 레포 `notes/`(gitignore).
+- 2단계: 구조 탭 = 360(서브 필: 기준 오브젝트 · 후보 · 그 밖의 오브젝트, 카드 그리드 + 오른쪽 서랍 `#panel`). 서랍은 본문·필드·관계 대상·들어오는 관계·이력·승격 사실, 제안이 있으면 diff + [적용][제외(discard)], 기준이면 [내 판단으로 남기기][남기지 않기][되돌리기]. 라우트 `#structure/<오브젝트ID>[/<항목ID>]` · `#structure/cand/<필터>`. 오늘 탭은 질문 없는 미결정 후보를 기록별로 묶고, 지도 「쌓이는 재료」에 확정 기준을 함께 둔다.
 - 옛 설명: `app.html` 은 `web/index.html` 의 이식본. 필드명(`record_id`·`quote`·`question_id`), 문구(Claude Code·파일 전제 제거), 기본 탭 「시작」+「기록」, 시각은 브라우저 시간대.
   `web/index.html` 은 로컬 키트가 아직 쓰므로 그대로 둔다.
 
@@ -53,5 +60,7 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 사용자 결정: AuthKit JWT(RS256, iss·exp·aud 검증) 의 `sub` 우선. 처음 연결 땐 userinfo 의 검증된 이메일로 같은 이메일 = 한 사용자. `email` 클레임은 토큰에 없다.
 - 저장은 Postgres (`schema.sql`, 설계 `data-model.md`). 행 격리는 user_id + 복합 FK.
 - 도구: state_get · question_add · question_list · record_add · record_get · candidates_propose · candidate_decide · candidate_list · profile_set.
-  웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다. 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
+  2단계(정의 층) 5+1: definitions_get · definition_propose · definition_apply · item_propose · item_decide + record_attach(「어디에 붙나」: 기준·결정·후보 연결, 관심 축, 쓸 자리·아직 안 붙는 것). 동적 내용은 JSON 문자열(`definition_json`·`data_json`).
+  웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
+  `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
 - 근거 인용은 원문에 글자 그대로 **한 곳**만 있어야 저장(0곳·2곳 이상 거절). 기록 1편당 후보 3개. 결정 이력(candidate_history)으로 되돌릴 수 있고, 확정 문장을 고치면 pending 으로 돌아간다.
