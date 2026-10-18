@@ -21,7 +21,7 @@
 | questions | 계속 돌아오는 질문. 삭제 없음, `archived` 만 | users M-D |
 | records | 기록 원문. soft delete | users M-D · questions Lookup |
 | candidates | 판단 후보. 두 축 `origin`(ai/self) × `decision`(pending/confirmed/excluded) | users M-D(반정규화) · records M-D · questions RESTRICT |
-| candidate_history | 결정 이력, 되돌리기 근거 | candidates M-D |
+| candidate_history | 결정 이력, 되돌리기 근거. `user_id`·`prev_revision`·`prev_state`(변경 전 스냅샷) | candidates M-D(`(user_id,candidate_id)` 복합 FK) |
 | profile | 프로필 항목 key-value, 상태 4값 | users M-D |
 | tabs | 화면 탭. `doc`=적용본, `draft_doc`=제안 | users M-D |
 | (2단계) object_defs·field_defs·items·item_links·item_history | 사용자 정의 층 — 아래 절 | users M-D |
@@ -36,7 +36,26 @@
 - 탭 제안→적용은 같은 행 `draft_doc`+`draft_id` 로. 적용은 제안 ID 와 기반 revision 이 맞을 때만. 동시에 제안 하나만 — 사용자 1명이 미리보기 하나 보는 흐름이라 충분. 별도 테이블은 안 만든다.
 - `agreements` 지금부터. 지인 시험 사용자도 데이터 저장 동의를 받아야 하고, 나중에 붙이면 소급이 생긴다. 로컬 판의 읽기 경로 동의(`read_paths`)는 호스팅에서 뜻이 없어 버린다.
 - `profile` 은 key-value 유지. 항목 추가에 마이그레이션 없음.
-- `candidate_history` 에 `user_id` 없음, 부모 상속. RLS 쓰면 join 한 번.
+- `candidate_history` 에 `user_id` 있음(PR①, 2026-10-18 정정 — 전엔 부모 상속이었다). `(user_id, candidate_id) → candidates(user_id, id)` 복합 FK(ON UPDATE RESTRICT, ON DELETE CASCADE)로 다른 사용자 후보에 이력을 못 단다. 조회도 `user_id` 로 거른다. 근거: raw R5.
+
+## 출처·revision (PR① 코어 보수, 2026-10-18)
+imports(3단계)가 기대는 저장 계약을 코어에 먼저 넣었다. 기능은 같고 저장 계약만 바뀐다. 근거: 레포 `notes/raw/2026-10-18_schema-round2-astra.md` §4·R3~R5, 구현계획 `notes/2026-10-18_PR1-코어보수-구현계획.md`.
+
+| 대상 | 컬럼 | 뜻 |
+|---|---|---|
+| records | `author_kind` self/external/unknown · `text_process` verbatim/structured/rewritten/generated/unknown · `provenance_history` jsonb 배열 | 누가 쓴 글이고 얼마나 손댔나. 생성·정정마다 한 줄 |
+| candidates | `revision`(1부터, 변경마다 +1) · `wording_by` self/ai/NULL · `wording_approved` | 행 버전 · 현재 문장 작성 주체(미상 NULL) · 현재 문장 승인 |
+| candidate_history | `user_id` · `prev_revision` · `prev_state` jsonb | 변경 전 스냅샷. v1 = PR① 전 이력(text·decision 만, prev_revision NULL) · v2 = text·decision·wording_by·wording_approved·edited_by_user·question_id |
+
+### 판단 로그
+- **인용 적격** = `author_kind='self' AND text_process='verbatim' AND deleted_at IS NULL`. 후보(판단 근거)는 적격 기록에서만 만든다 — 비적격이면 dropped 「이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요」. 승격 근거 수도 적격 기록의 확정 후보만 센다. 목록에서는 빼지 않는다.
+- 기존 기록은 `unknown` 그대로 둔다. 과거 기록 전부를 self/verbatim 으로 백필할 근거가 없다. MCP `record_add` 는 사용자가 대화에서 직접 준 말이라 self/verbatim.
+- 본문·인용 구간은 생성 뒤 불변. **출처 판정은 정정 가능**(`record_provenance_set`, 사유 필수). 후보가 있는 기록의 적격 → 비적격 정정은 거절(`PROVENANCE-LOCKED`) — 과거 오판정은 별도 복구 작업. 후보 생성과 출처 정정은 같은 기록 행을 `FOR UPDATE` 로 잠가 경합을 막는다. 직접 SQL 은 이 계약을 우회할 수 있다(트리거는 지인 시험 뒤, raw R3).
+- 후보 변경 = 변경 전 스냅샷 이력 한 줄 + revision+1(`UNIQUE(user_id,candidate_id,prev_revision)`). 같은 결정 반복은 no-op(revision 그대로). 웹 결정은 `expected_revision`(선택)이 틀리면 CONFLICT. MCP 도구는 revision 인자를 받지 않는다(서명 불변).
+- 문장 수정(edit·edit_confirm)은 `wording_approved=false`·pending. `wording_by` 는 웹 편집 self, MCP edit 은 모름(NULL). 새 후보는 origin=ai 면 ai, self 면 NULL(AI 가 다듬었는지 모름). 승인(`wording_approved=true`) 경로는 아직 없다 — 다음 PR.
+- 복원(`candidate_restore`)도 새 변경: 지금 상태를 이력(action=restore)으로 남기고 revision+1. v1 이력은 text·decision 만, wording_by NULL. 승인은 넘기지 않는다(승인은 그 revision 에 대한 것). 웹·MCP 노출은 다음 PR.
+- 이력 응답의 옛 키 `prev_text`·`prev_status` 는 `prev_state` 에서 꺼내 호환한다.
+- 마이그레이션은 `db.init_schema` 가 서버 시작 때 상태를 보고 한 번만(한 트랜잭션·LOCK·실패 시 전체 롤백). `prev_decision`·`prev_text` 를 지우므로 **옛 코드와 같이 돌 수 없다**.
 
 ## 사용자 정의 층 (2단계, 2026-10-18)
 공통 코어(원문·인용·확정·이력·격리) + 제한된 정의 층. 사용자는 오브젝트·필드·Lookup 까지만 정의한다. 수식·롤업·자동화·사용자 M-D 없음.
@@ -73,4 +92,4 @@ principle 정의의 `policy.promotion`. 기본 `{"confirmed_claims_min":2,"claim
 Governor limit 없음. M-D 깊이 최대 2(users→candidates→candidate_history). cascade 끝은 users 삭제 = 그 사용자 데이터 전체 삭제 — 계정 삭제 요청 처리와 같다. 인덱스: `(user_id, question_id, decision)`, `(user_id, created)`.
 
 ## `db.py`(SQLite 임시판)와 차이 — Postgres 전환 때 할 일
-끝남(2026-10-18, `db.py` psycopg 판). 남은 것(지인 검증 전): `confirm` 에 `expected_text`·revision 검사, 같은 본문 10분 중복 억제, `state_get` 요약+커서, 입력 상한 거절. 토론 raw 는 세션 스크래치패드 `arch/`.
+끝남(2026-10-18, `db.py` psycopg 판). 후보 revision 검사는 PR① 에서 웹 결정에 넣었다(`expected_revision`). 남은 것(지인 검증 전): 같은 본문 10분 중복 억제, `state_get` 요약+커서, 입력 상한 거절. 토론 raw 는 세션 스크래치패드 `arch/`.

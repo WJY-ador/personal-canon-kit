@@ -6,13 +6,19 @@
 4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login) · /help·/privacy
 5) 정의 층 시험(2단계): 정의 제안→적용·충돌·깨지는 변경 거절 · 항목 제안→적용→확정→되돌리기·이력 · 관계 검증 · 승격 · record_attach
    · question_id "" → NULL · 원작자 템플릿 시드(시험 사용자에게만) · /api/item·/api/item/decide
+6) 전역 상한(α1): 요청 본문 256KB(413, Content-Length·chunked) · MCP SSE 응답이 미들웨어 뒤에서 그대로 · 인자 길이 PAYLOAD-LIMIT
+   (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
+운영 DB(옛 스키마)에 붙어 새 코드를 시험할 땐 CANON_TEST_SCHEMA=<이름> — 그 이름의 임시 스키마를 만들어
+최종형을 init_schema 로 깔고 그 안에서만 돈 뒤 끝에 지운다(운영 테이블은 안 건드린다). CI 는 빈 Postgres 라 안 쓴다.
 """
 import asyncio
 import json
 import os
+import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -44,6 +50,9 @@ os.environ["AUTHKIT_ISSUER"] = FAKE_ISSUER          # 토큰 경로를 HTTP 시�
 os.environ["CANON_PUBLIC_URL"] = PUBLIC
 
 import httpx  # noqa: E402
+import psycopg  # noqa: E402
+from psycopg.rows import dict_row  # noqa: E402
+from psycopg_pool import ConnectionPool  # noqa: E402
 import jwt  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from mcp.client import Client  # noqa: E402
@@ -53,7 +62,8 @@ import db  # noqa: E402
 import main  # noqa: E402
 import web  # noqa: E402
 
-TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com")
+TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com",
+               "core1@example.com", "core2@example.com")
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WRONG_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -315,6 +325,7 @@ async def test_http():
                 # 웹 상태: DEV 라 응답
                 r = await h.get("/api/state")
                 assert r.status_code == 200, r.status_code
+                await limits_http(h, {**hdr, "authorization": f"Bearer {tok}"})   # 6) 절 — 세션 매니저 run() 은 한 번만 돈다
     finally:
         auth.httpx.post = real_post
         os.environ["CANON_DEV_USER"] = "tester@example.com"
@@ -434,6 +445,7 @@ async def test_web():
                 r = await h.get("/auth/callback", params={"code": "c1", "state": state})
                 assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
                 assert "canon_session" in r.headers.get("set-cookie", "")
+                assert "max-age=604800" in r.headers.get("set-cookie", "").lower(), "세션 쿠키 7일(PR①)"
                 d = exchanged[0]
                 chal = base64.urlsafe_b64encode(hashlib.sha256(d["code_verifier"].encode()).digest()).rstrip(b"=").decode()
                 assert chal == q["code_challenge"][0], "PKCE verifier 가 쿠키의 challenge 와 맞아야"
@@ -485,6 +497,22 @@ async def test_web():
                 assert bad.is_error and "validation error" in bad.content[0].text and len(db.candidate_history(uid, cid)) == len(hist), bad
                 r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
                 assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+                # PR①: expected_revision(선택) — 틀리면 CONFLICT, 정수 아니면 ARG-INVALID, 웹 편집은 wording_by=self
+                cur = db.candidate_get(uid, cid)
+                assert [x["revision"] for x in st["candidates"] if x["id"] == cid] == [cur["revision"]], st["candidates"]
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "exclude",
+                                                               "expected_revision": cur["revision"] - 1}, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "CONFLICT", r.text
+                assert db.candidate_get(uid, cid) == cur, "CONFLICT 는 아무것도 안 바꾼다"
+                for bad_rev in ("1", True, 1.5):
+                    r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "exclude",
+                                                                   "expected_revision": bad_rev}, headers=origin)
+                    assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (bad_rev, r.text)
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "웹에서 고친 문장",
+                                                               "expected_revision": cur["revision"]}, headers=origin)
+                j = r.json()
+                assert r.status_code == 200 and j["revision"] == cur["revision"] + 1 and j["wording_by"] == "self", r.text
+                assert j["wording_approved"] is False and j["status"] == "pending", j
                 assert (await h.post("/logout")).status_code == 403
                 r = await h.post("/logout", headers=origin)
                 assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
@@ -862,9 +890,489 @@ async def test_web_items(A):
 
 
 
+# ── 6) PR① 코어 보수: 출처·revision·이력 격리 ──────────────
+
+# PR① 전 운영 스키마(2단계 끝 모양) — 마이그레이션 시험용으로 박아 둔다. 런타임에 git 에서 읽지 않는다(CI 의 HEAD 는 새 schema.sql).
+OLD_DDL = """
+CREATE TABLE users (
+  id text PRIMARY KEY, email text NOT NULL UNIQUE, auth_subject text UNIQUE, created timestamptz NOT NULL DEFAULT now());
+CREATE TABLE questions (
+  id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE, text text NOT NULL,
+  status text NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+  created timestamptz NOT NULL DEFAULT now(), updated timestamptz, UNIQUE (user_id, id));
+CREATE TABLE records (
+  id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE, question_id text,
+  title text NOT NULL, body text NOT NULL, source text NOT NULL DEFAULT '대화에서 입력',
+  created timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz, notes jsonb NOT NULL DEFAULT '{}',
+  UNIQUE (user_id, id),
+  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id));
+CREATE INDEX ix_records_user ON records (user_id, created DESC) WHERE deleted_at IS NULL;
+CREATE TABLE candidates (
+  id text PRIMARY KEY, user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE, record_id text NOT NULL,
+  question_id text, text text NOT NULL, quote text NOT NULL, quote_start integer NOT NULL, quote_end integer NOT NULL,
+  origin text NOT NULL CHECK (origin IN ('ai','self')),
+  decision text NOT NULL DEFAULT 'pending' CHECK (decision IN ('pending','confirmed','excluded')),
+  edited_by_user boolean NOT NULL DEFAULT false,
+  created timestamptz NOT NULL DEFAULT now(), updated timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (user_id, id), UNIQUE (user_id, record_id, quote_start, quote_end),
+  FOREIGN KEY (user_id, record_id) REFERENCES records(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE RESTRICT);
+CREATE INDEX ix_candidates_user_q ON candidates (user_id, question_id, decision);
+CREATE TABLE candidate_history (
+  id bigserial PRIMARY KEY, candidate_id text NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  action text NOT NULL CHECK (action IN ('confirm','exclude','pending','edit')),
+  prev_decision text NOT NULL, prev_text text NOT NULL, at timestamptz NOT NULL DEFAULT now());
+CREATE INDEX ix_hist_cand ON candidate_history (candidate_id, id);
+"""
+CORE_TABLES = ("records", "candidates", "candidate_history")
+
+
+def _seed_old(c, bad_quote=False):
+    """옛 모양에 운영과 같은 꼴의 행: 사용자 2·기록 2·후보 2·이력(u1 3줄, u2 1줄)."""
+    body1 = "회의에서 입력 담당을 먼저 정했다. 비교는 나중이었다."
+    c.execute("INSERT INTO users (id,email) VALUES ('u_m1','m1@example.com'), ('u_m2','m2@example.com')")
+    c.execute("INSERT INTO records (id,user_id,title,body) VALUES ('r_m1','u_m1','옛 기록',%s), ('r_m2','u_m2','남의 기록','다른 사람 기록.')",
+              (body1,))
+    q = "입력 담당을 먼저 정했다"
+    s = body1.find(q)
+    c.execute("INSERT INTO candidates (id,user_id,record_id,text,quote,quote_start,quote_end,origin,decision,edited_by_user) "
+              "VALUES ('c_m1','u_m1','r_m1','새 문장',%s,%s,%s,'ai','pending',true), "
+              "('c_m2','u_m2','r_m2','남의 문장','다른 사람',0,5,'ai','confirmed',false)",
+              (q, s, s + len(q) + (1 if bad_quote else 0)))
+    c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES "
+              "('c_m1','edit','pending','옛 문장'), ('c_m1','confirm','pending','새 문장'), ('c_m1','pending','confirmed','새 문장'), "
+              "('c_m2','confirm','pending','남의 문장')")
+    c.commit()
+
+
+def _shape(c):
+    """세 테이블의 컬럼·제약·인덱스(스키마 이름 뺀 정의). 순서는 안 본다."""
+    cols = {(r["table_name"], r["column_name"], r["data_type"], r["is_nullable"], r["column_default"]) for r in c.execute(
+        "SELECT table_name,column_name,data_type,is_nullable,column_default FROM information_schema.columns "
+        "WHERE table_schema=current_schema() AND table_name = ANY(%s)", (list(CORE_TABLES),)).fetchall()}
+    cons = {(r["t"], r["conname"], r["d"]) for r in c.execute(
+        "SELECT conrelid::regclass::text AS t, conname, pg_get_constraintdef(oid) AS d FROM pg_constraint "
+        "WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text = ANY(%s)", (list(CORE_TABLES),)).fetchall()}
+    idx = {(r["tablename"], r["indexname"], r["indexdef"].replace(f"{r['schemaname']}.", "")) for r in c.execute(
+        "SELECT schemaname,tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename = ANY(%s)",
+        (list(CORE_TABLES),)).fetchall()}
+    return cols, cons, idx
+
+
+def _data(c):
+    return {t: c.execute(f"SELECT * FROM {t} ORDER BY id").fetchall() for t in CORE_TABLES}
+
+
+class pool_on:
+    """db 함수를 잠깐 다른 임시 스키마에 붙인다(운영 마이그레이션 뒤 첫 결정이 사는지 실제 코드로 본다)."""
+    def __init__(self, name):
+        self.name = name
+
+    def __enter__(self):
+        name = self.name
+
+        def cfg(conn):
+            conn.execute(f"SET search_path TO {name}")
+            conn.commit()
+        self.saved = db._pool
+        db._pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=2, kwargs={"row_factory": dict_row},
+                                  configure=cfg, open=True)
+
+    def __exit__(self, *exc):
+        db._pool.close()
+        db._pool = self.saved
+
+
+def test_migration():
+    """옛 모양(prev_decision/prev_text 이력, records 에 출처 없음) → init_schema → 최종형·백필·멱등.
+    운영 테이블은 안 건드린다 — 시험 전용 임시 스키마 3개(옛·새·실패)를 만들고 끝에 지운다."""
+    tag = secrets.token_hex(3)
+    old, fresh, bad = f"canon_mig_old_{tag}", f"canon_mig_new_{tag}", f"canon_mig_bad_{tag}"
+    try:
+        for n in (old, fresh, bad):
+            create_schema(n)
+        # (1) 새 설치: schema.sql 만으로 최종형
+        with schema_conn(fresh) as c:
+            db.init_schema(c)
+            new_shape = _shape(c)
+        # (2) 옛 모양 → 마이그레이션
+        with schema_conn(old) as c:
+            c.execute(OLD_DDL)
+            c.commit()
+            _seed_old(c)
+            before = _data(c)
+            c.commit()   # 운영처럼 유휴 연결에서 시작(init_schema 트랜잭션이 최상위가 되게)
+            db.init_schema(c)
+            c.commit()
+            got = _shape(c)
+            assert got == new_shape, ("마이그레이션 결과 ≠ 새 설치", got[0] ^ new_shape[0], got[1] ^ new_shape[1], got[2] ^ new_shape[2])
+            cols = {t: [r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns "
+                                                            "WHERE table_schema=current_schema() AND table_name=%s", (t,)).fetchall()]
+                    for t in CORE_TABLES}
+            assert "prev_text" not in cols["candidate_history"] and "prev_decision" not in cols["candidate_history"], cols
+            after = _data(c)
+            # 기존 행 수 그대로, 출처는 unknown(추측 백필 없음), 후보는 revision 1·문장 주체 미상
+            assert {t: len(v) for t, v in after.items()} == {t: len(v) for t, v in before.items()} == \
+                {"records": 2, "candidates": 2, "candidate_history": 4}
+            for a, b in zip(after["records"], before["records"]):
+                assert a["body"] == b["body"] and a["author_kind"] == "unknown" and a["text_process"] == "unknown", a
+                assert a["provenance_history"] == [], a
+            for a, b in zip(after["candidates"], before["candidates"]):
+                assert (a["text"], a["decision"], a["quote_start"], a["quote_end"]) == (b["text"], b["decision"], b["quote_start"], b["quote_end"])
+                assert a["revision"] == 1 and a["wording_by"] is None and a["wording_approved"] is False, a
+            owner = {"c_m1": "u_m1", "c_m2": "u_m2"}
+            for a, b in zip(after["candidate_history"], before["candidate_history"]):
+                assert a["id"] == b["id"] and a["user_id"] == owner[a["candidate_id"]] and a["prev_revision"] is None, a
+                assert a["prev_state"] == {"schema_version": 1, "text": b["prev_text"], "decision": b["prev_decision"]}, a
+            # (3) 멱등: 두 번째는 아무것도 안 바꾼다
+            c.commit()
+            db.init_schema(c)
+            c.commit()
+            assert _shape(c) == got and _data(c) == after, "두 번째 init_schema 가 뭔가 바꿨다"
+            c.commit()
+            # (4) 새 쓰기 제약: 다른 사용자 소유로 이력을 못 단다(복합 FK), action 은 restore 까지
+            try:
+                c.execute("INSERT INTO candidate_history (user_id,candidate_id,action,prev_revision,prev_state) "
+                          "VALUES ('u_m2','c_m1','confirm',1,'{\"schema_version\":2,\"text\":\"x\",\"decision\":\"pending\"}')")
+                raise AssertionError("다른 사용자 소유 이력이 들어갔다")
+            except psycopg.errors.ForeignKeyViolation:
+                c.rollback()
+            try:
+                c.execute("INSERT INTO candidate_history (user_id,candidate_id,action,prev_revision,prev_state) "
+                          "VALUES ('u_m1','c_m1','bogus',1,'{\"schema_version\":2,\"text\":\"x\",\"decision\":\"pending\"}')")
+                raise AssertionError("모르는 action 이 들어갔다")
+            except psycopg.errors.CheckViolation:
+                c.rollback()
+        # (5) 운영 꼴 행이 머지 뒤 첫 결정·이력·복원·근거 검사에서 사는지 — 실제 db 함수로
+        with pool_on(old):
+            d = db.candidate_decide("u_m1", "c_m1", "confirm")
+            assert d["status"] == "confirmed" and d["revision"] == 2 and d["wording_by"] is None, d
+            hist = db.candidate_history("u_m1", "c_m1")
+            assert [h["prev_revision"] for h in hist] == [None, None, None, 1], hist
+            assert hist[0]["prev_text"] == "옛 문장" and hist[0]["prev_status"] == "pending", hist[0]
+            assert hist[-1]["prev_state"]["schema_version"] == 2 and hist[-1]["prev_status"] == "pending", hist[-1]
+            expect("CONFLICT", db.candidate_decide, "u_m1", "c_m1", "exclude", None, 1)
+            r = db.candidate_restore("u_m1", "c_m1", hist[0]["id"])   # v1 부분 이력 → 문장·결정만, 문장 주체 NULL
+            assert (r["text"], r["status"], r["revision"], r["wording_by"], r["wording_approved"]) == ("옛 문장", "pending", 3, None, False), r
+            assert db.candidate_history("u_m1", "c_m1")[-1]["action"] == "restore"
+            expect("ARG-INVALID", db.candidate_history, "u_m2", "c_m1")
+            expect("ARG-INVALID", db.candidate_restore, "u_m2", "c_m1", hist[0]["id"])
+            added, dropped = db.candidates_propose("u_m1", "r_m1", "", [{"text": "비교는 나중", "quote": "비교는 나중이었다"}], "ai")
+            assert not added and dropped[0]["why"] == db.INELIGIBLE_WHY, dropped   # 옛 기록 = unknown → 근거 불가
+        with schema_conn(old) as c:
+            db.init_schema(c)   # 새 쓰기 뒤에도 멱등
+            c.commit()
+            assert _shape(c) == got
+        # (6) 실패는 전체 롤백: 인용 범위가 깨진 후보가 있으면 중단, 어느 테이블도 안 바뀐다
+        with schema_conn(bad) as c:
+            c.execute(OLD_DDL)
+            c.commit()
+            _seed_old(c, bad_quote=True)
+            before_bad = (_shape(c), _data(c))
+            c.commit()
+            e = expect("DB-MIGRATE", db.init_schema, c)
+            assert "인용 범위" in e.message, e.message
+            c.rollback()
+            assert (_shape(c), _data(c)) == before_bad, "실패한 마이그레이션이 일부를 남겼다"
+    finally:
+        for n in (old, fresh, bad):
+            drop_schema(n)
+    print("OK — PR① 마이그레이션(옛 모양→최종형·백필·멱등·실패 롤백) 통과")
+
+
+def test_core_pr1():
+    """인용 적격·출처 정정·revision·이력 호환·복원·승격 근거 집계."""
+    A = db.user_by_email("core1@example.com")["id"]
+    B = db.user_by_email("core2@example.com")["id"]
+
+    def prov(rid):
+        with db.tx() as c:
+            return db._record_in(c, A, rid)
+
+    # 출처 기본값 = self·verbatim(MCP record_add), 생성 1줄
+    ok = db.record_add(A, "본인 원문", "입력 담당을 먼저 정했다. 비교표는 나중에 만들었다.")
+    assert (ok["author_kind"], ok["text_process"]) == ("self", "verbatim"), ok
+    ph = prov(ok["id"])["provenance_history"]
+    assert len(ph) == 1 and ph[0]["by"] == "tool" and ph[0]["author_kind"] == "self" and ph[0]["at"], ph
+    expect("ARG-INVALID", db.record_add, A, "", "본문", None, "x", "nobody", "verbatim")
+    # 비적격 기록(unknown·external·rewritten)엔 후보가 하나도 안 붙는다
+    un = db.record_add(A, "출처 미상", "남이 정리한 문장이다. 둘째 문장이다.", None, "가져옴", "unknown", "unknown")
+    ext = db.record_add(A, "외부", "남이 정리한 문장이다.", None, "가져옴", "external", "verbatim")
+    rw = db.record_add(A, "다듬은 글", "남이 정리한 문장이다.", None, "가져옴", "self", "rewritten")
+    for rec in (un, ext, rw):
+        added, dropped = db.candidates_propose(A, rec["id"], "", [{"text": "가", "quote": "남이 정리한 문장이다"},
+                                                                  {"text": "나", "quote": "원문에 없는 말"}], "ai")
+        assert not added and [d["why"] for d in dropped] == [db.INELIGIBLE_WHY] * 2, (rec["title"], dropped)
+    # 후보 없는 기록: unknown → self·verbatim 정정 OK, 이력 2줄(전후·사유)
+    expect("ARG-INVALID", db.record_provenance_set, A, un["id"], "self", "verbatim", "  ")
+    expect("ARG-INVALID", db.record_provenance_set, A, un["id"], "self", "bogus", "사유")
+    expect("PAYLOAD-LIMIT", db.record_provenance_set, A, un["id"], "self", "verbatim", "가" * (db.LIMIT_TEXT // 3 + 1))   # 사유 1KB(UTF-8)
+    expect("RECORD-MISSING", db.record_provenance_set, B, un["id"], "self", "verbatim", "남의 기록")
+    fixed = db.record_provenance_set(A, un["id"], "self", "verbatim", "원문을 다시 확인함")
+    assert (fixed["author_kind"], fixed["text_process"]) == ("self", "verbatim") and fixed["body"] == un["body"], fixed
+    ph = fixed["provenance_history"]
+    assert len(ph) == 2 and ph[1]["from"] == {"author_kind": "unknown", "text_process": "unknown"}, ph
+    assert ph[1]["reason"] == "원문을 다시 확인함" and ph[1]["by"] == "user" and ph[1]["at"], ph
+    assert len(db.record_provenance_set(A, un["id"], "self", "verbatim", "같은 값")["provenance_history"]) == 2, "같은 값은 no-op"
+    added, _ = db.candidates_propose(A, un["id"], "", [{"text": "정리한 문장", "quote": "남이 정리한 문장이다"}], "self")
+    assert len(added) == 1 and db.candidate_get(A, added[0])["wording_by"] is None, "origin=self 는 문장 주체 미상"
+    # 후보 있는 기록의 적격 → 비적격 정정은 거절, 아무것도 안 바뀐다
+    for ak, tp in (("self", "structured"), ("external", "verbatim"), ("unknown", "unknown")):
+        expect("PROVENANCE-LOCKED", db.record_provenance_set, A, un["id"], ak, tp, "잘못 붙였나")
+    assert len(prov(un["id"])["provenance_history"]) == 2 and prov(un["id"])["author_kind"] == "self"
+    # 후보 없는 적격 기록은 비적격으로 바꿀 수 있다
+    assert db.record_provenance_set(A, rw["id"], "self", "verbatim", "원문이었음")["text_process"] == "verbatim"
+    assert db.record_provenance_set(A, rw["id"], "external", "verbatim", "남의 글이었음")["author_kind"] == "external"
+
+    # revision: 결정마다 +1, 이력에 변경 전 스냅샷(v2)·prev_revision, 같은 결정 반복은 no-op
+    (cid,), _ = db.candidates_propose(A, ok["id"], "", [{"text": "담당부터 정한다", "quote": "입력 담당을 먼저 정했다"}], "ai")
+    c0 = db.candidate_get(A, cid)
+    assert (c0["revision"], c0["wording_by"], c0["wording_approved"]) == (1, "ai", False), c0
+    c1 = db.candidate_decide(A, cid, "confirm")
+    assert c1["revision"] == 2 and c1["status"] == "confirmed"
+    h = db.candidate_history(A, cid)
+    assert len(h) == 1 and h[0]["prev_revision"] == 1 and h[0]["action"] == "confirm", h
+    assert h[0]["prev_state"] == {"schema_version": 2, "text": "담당부터 정한다", "decision": "pending", "wording_by": "ai",
+                                  "wording_approved": False, "edited_by_user": False, "question_id": None}, h[0]
+    assert h[0]["prev_text"] == "담당부터 정한다" and h[0]["prev_status"] == "pending", "옛 키 호환"
+    assert db.candidate_decide(A, cid, "confirm")["revision"] == 2 and len(db.candidate_history(A, cid)) == 1, "no-op"
+    assert db.candidate_decide(A, cid, "confirm", None, 2)["revision"] == 2, "맞는 expected_revision + 같은 결정 = no-op"
+    expect("CONFLICT", db.candidate_decide, A, cid, "exclude", None, 1)
+    expect("CONFLICT", db.candidate_decide, A, cid, "edit", "다른 문장", 3)
+    assert db.candidate_get(A, cid) == db.candidate_decide(A, cid, "confirm"), "CONFLICT 는 아무것도 안 바꿨다"
+    assert db.candidate_decide(A, cid, "exclude", None, 2)["revision"] == 3
+    # 문장 수정: 승인 해제·pending·문장 주체(인자, MCP 는 NULL)
+    with db.tx() as c:
+        c.execute("UPDATE candidates SET wording_approved=true WHERE user_id=%s AND id=%s", (A, cid))   # 승인 경로는 다음 PR — 직접 세팅
+    e1 = db.candidate_decide(A, cid, "edit", "담당을 맨 먼저 정한다")
+    assert (e1["revision"], e1["status"], e1["wording_by"], e1["wording_approved"], e1["edited_by_user"]) == \
+        (4, "pending", None, False, True), e1
+    assert db.candidate_history(A, cid)[-1]["prev_state"]["wording_approved"] is True, "승인 상태도 스냅샷에"
+    e2 = db.candidate_decide(A, cid, "edit_confirm", "담당을 가장 먼저 정한다", 4, "self")
+    assert (e2["revision"], e2["status"], e2["wording_by"], e2["wording_approved"]) == (6, "confirmed", "self", False), e2
+    h = db.candidate_history(A, cid)
+    assert [x["action"] for x in h][-2:] == ["edit", "confirm"] and [x["prev_revision"] for x in h] == [1, 2, 3, 4, 5], h
+    expect("ARG-INVALID", db.candidate_decide, A, cid, "edit", "x", None, "robot")
+    # 복원(v2): 지금 상태를 새 이력으로 남기고 revision+1, 승인은 넘기지 않는다
+    target = next(x for x in h if x["prev_revision"] == 3)   # 첫 문장 고치기 전: 「담당부터 정한다」·excluded·ai·승인됨
+    r = db.candidate_restore(A, cid, target["id"], 6)
+    assert (r["text"], r["status"], r["revision"], r["wording_by"], r["wording_approved"]) == \
+        ("담당부터 정한다", "excluded", 7, "ai", False), r
+    last = db.candidate_history(A, cid)[-1]
+    assert last["action"] == "restore" and last["prev_revision"] == 6 and last["prev_state"]["text"] == "담당을 가장 먼저 정한다", last
+    expect("CONFLICT", db.candidate_restore, A, cid, target["id"], 6)
+    expect("ARG-INVALID", db.candidate_restore, A, cid, 999999999)
+    expect("ARG-INVALID", db.candidate_restore, A, added[0], target["id"])   # 다른 후보의 이력
+    expect("ARG-INVALID", db.candidate_restore, B, cid, target["id"])       # 다른 사용자
+    expect("ARG-INVALID", db.candidate_decide, B, cid, "confirm")
+    expect("ARG-INVALID", db.candidate_history, B, cid)
+    # 상태·목록 응답에 revision·문장 주체·승인
+    st = db.state(A)
+    row = next(x for x in st["candidates"] if x["id"] == cid)
+    assert (row["revision"], row["wording_by"], row["wording_approved"]) == (7, "ai", False), row
+    assert all({"author_kind", "text_process"} <= set(j) for j in st["journal"]), st["journal"][0]
+    # 승격 근거 집계: 출처 미확인 기록의 확정 후보는 세지 않는다(옛 데이터 꼴 — 서버 경로로는 못 만들어 SQL 로 넣는다)
+    legacy = db.record_add(A, "옛 기록", "예전에 남긴 판단 문장이다.", None, "옛 데이터", "unknown", "unknown")
+    with db.tx() as c:
+        c.execute("INSERT INTO candidates (id,user_id,record_id,text,quote,quote_start,quote_end,origin,decision) "
+                  "VALUES ('c_legacy_pr1',%s,%s,'옛 판단',%s,0,%s,'ai','confirmed')",
+                  (A, legacy["id"], "예전에 남긴 판단 문장이다", len("예전에 남긴 판단 문장이다")))
+    db.candidate_decide(A, cid, "confirm")
+    links = [{"field_key": "evidence_claims", "target_kind": "candidate", "target_id": x} for x in (cid, "c_legacy_pr1")]
+    with db.tx() as c:
+        p = db._promotion(c, A, {}, links)
+    assert p["linked_claims"] == 2 and p["confirmed_claims"] == 1, p
+    assert any(x["id"] == "c_legacy_pr1" for x in db.candidates(A)), "목록에서는 안 빠진다"
+    print("OK — PR① 인용 적격·출처 정정·revision·이력·복원 통과")
+
+
+# ── 7) 전역 상한 (α1) ──────────────────────────────────
+
+LIM = db.MAX_BODY_BYTES
+
+
+def _mcp_body(total: int, name="state_get", arguments=None) -> bytes:
+    """정확히 total 바이트인 tools/call 본문 — JSON 끝 공백으로 맞춘다."""
+    base = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments or {}}}).encode()
+    assert len(base) <= total, (len(base), total)
+    return base + b" " * (total - len(base))
+
+
+async def _chunked(b: bytes, n: int = 5):
+    """Content-Length 없이(chunked) 보낸다."""
+    step = len(b) // n + 1
+    for i in range(0, len(b), step):
+        yield b[i:i + step]
+
+
+async def limits_http(h, hdr):
+    """① 요청 본문 상한 — 실제 /mcp 왕복(토큰 인증) · /api/*. test_http 의 lifespan 안에서 부른다."""
+    for chunked in (False, True):
+        b = _mcp_body(LIM)
+        r = await h.post("/mcp", headers=hdr, content=_chunked(b) if chunked else b)
+        assert r.status_code == 200 and r.headers["content-type"].startswith("application/json"), (chunked, r.status_code, r.text[:200])
+        assert not r.json()["result"].get("isError"), r.text[:300]
+        b = _mcp_body(LIM + 1)
+        r = await h.post("/mcp", headers=hdr, content=_chunked(b) if chunked else b)
+        assert r.status_code == 413, (chunked, r.status_code)
+        e = r.json()
+        assert e["jsonrpc"] == "2.0" and e["id"] is None and e["error"]["code"] == -32600 and "[PAYLOAD-LIMIT]" in e["error"]["message"], e
+    # 인증 전에 막힌다(큰 본문은 토큰 검사까지 가지 않는다)
+    r = await h.post("/mcp", headers={k: v for k, v in hdr.items() if k != "authorization"}, content=_mcp_body(LIM + 1))
+    assert r.status_code == 413, r.status_code
+    for body in (b"x" * (LIM + 1), _chunked(b"x" * (LIM + 1))):
+        r = await h.post("/api/candidate/decide", content=body, headers={"content-type": "application/json", "origin": PUBLIC})
+        assert r.status_code == 413 and r.json()["code"] == "PAYLOAD-LIMIT", (r.status_code, r.text[:200])
+    # 상한 밖 경로는 판정하지 않는다
+    assert (await h.post("/logout", content=b"x" * (LIM + 1), headers={"origin": PUBLIC})).status_code != 413
+    print("OK — 요청 본문 상한(256KB) 통과")
+
+
+async def test_limits_sse():
+    """① 미들웨어 뒤에서 MCP SSE 응답(json_response=False)이 깨지지 않는지 — 운영 앱은 json_response=True 라 따로 띄운다."""
+    from mcp.server import MCPServer
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.routing import Mount
+    probe = MCPServer("sse-probe")
+
+    @probe.tool()
+    def echo(text: str) -> str:
+        return text[:10]
+
+    sse_app = Starlette(routes=[Mount("/", app=probe.streamable_http_app(stateless_http=True, json_response=False))],
+                        middleware=[Middleware(main.BodyLimit)])
+    hdr = {"content-type": "application/json", "accept": "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18"}
+    async with probe.session_manager.run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=sse_app), base_url="http://127.0.0.1:8800") as h:
+            for chunked in (False, True):
+                b = _mcp_body(LIM, "echo", {"text": "hello-sse"})
+                async with h.stream("POST", "/mcp", headers=hdr, content=_chunked(b) if chunked else b) as r:
+                    raw = b"".join([c async for c in r.aiter_raw()]).decode()
+                assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream"), (r.status_code, r.headers)
+                ev = [ln for ln in raw.splitlines() if ln.startswith("data: ")]
+                assert "event: message" in raw and len(ev) == 1, raw
+                assert json.loads(ev[0][6:])["result"]["structuredContent"] == {"result": "hello-sse"}, raw
+            r = await h.post("/mcp", headers=hdr, content=_mcp_body(LIM + 1, "echo", {"text": "x"}))
+            assert r.status_code == 413, r.status_code
+    print("OK — 미들웨어 뒤 MCP SSE 응답 통과")
+
+
+async def test_limits():
+    """② 인자 길이 · ③ 전역 DB 크기 — MCP guard 와 웹 쓰기 API 가 같은 db.write_gate 를 지나는지."""
+    site = main.site
+    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    site.dev, site.dev_user = True, "tester@example.com"
+    uid = db.user_by_email("tester@example.com")["id"]
+    origin = {"origin": PUBLIC}
+    real_measure, real_admins = db._measure_db_size, db.ADMIN_USER_IDS
+    # 도구 분류: 쓰기 표에 없는 도구는 읽기 — 새 쓰기 도구가 게이트를 비켜 가지 않게 고정
+    async with Client(main.mcp) as c:
+        names = {t.name for t in (await c.list_tools()).tools}
+    assert set(db.WRITE_LIMITS) <= names, set(db.WRITE_LIMITS) - names
+    assert names - set(db.WRITE_LIMITS) == {"state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get"}, names
+
+    def nrec():
+        return len(db.records(uid, limit=1000))
+
+    try:
+        db.quota_cache_reset()
+        n = db.db_size_cached()
+        assert isinstance(n, int) and 0 < n < db.DB_QUOTA_BYTES, n   # 실제 pg_database_size 가 돈다
+        async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # ② 기록 본문: 정확히 64KB(다바이트 포함) 통과 · +1 거절, 행 안 생김
+            body = "가" * (db.LIMIT_BODY // 3) + "a" * (db.LIMIT_BODY % 3)
+            assert len(body.encode()) == db.LIMIT_BODY
+            r = await c.call_tool("record_add", {"text": body, "title": "64KB 경계"})
+            assert not r.is_error, r.content[0].text[:200]
+            rid = val(r)["id"]
+            before = nrec()
+            r = await c.call_tool("record_add", {"text": body + "a", "title": "64KB+1"})
+            msg = r.content[0].text
+            assert r.is_error and "[PAYLOAD-LIMIT]" in msg and "text" in msg and str(db.LIMIT_BODY) in msg, msg[:300]
+            assert nrec() == before, "거절된 기록은 저장되지 않는다"
+            for tool, args, field in (
+                ("record_add", {"text": "본문", "title": "t" * (db.LIMIT_TEXT + 1)}, "title"),
+                ("question_add", {"text": "질" * 342}, "text"),   # 3바이트 × 342 = 1026
+                ("profile_set", {"key": "purpose", "value": "v" * (db.LIMIT_PROFILE_VALUE + 1), "status": "guessed"}, "value"),
+                ("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": " " * (db.LIMIT_JSON + 1)}, "definition_json"),
+                ("candidates_propose", {"record_id": rid, "question_id": "", "candidates": [{"text": "c" * (db.LIMIT_TEXT + 1), "quote": "가가"}]},
+                 "candidates[].text"),
+                ("record_add", {"text": "본문", "source": "s" * (db.LIMIT_TEXT + 1)}, "source"),
+            ):
+                r = await c.call_tool(tool, args)
+                assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text and field in r.content[0].text, (tool, r.content[0].text[:200])
+            # ② 웹 쓰기 API: 후보 문장 1KB 경계
+            qq = db.question_add(uid, "α1 시험 질문")
+            rec = db.record_add(uid, "α1", "회의 전에 안건을 먼저 돌렸다.", qq["id"])
+            cid = db.candidates_propose(uid, rec["id"], qq["id"], [{"text": "안건 먼저", "quote": "안건을 먼저 돌렸다"}], "ai")[0][0]
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "x" * (db.LIMIT_TEXT + 1)}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT" and "text" in r.json()["msg"], r.text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "x" * db.LIMIT_TEXT}, headers=origin)
+            assert r.status_code == 200, r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i" * (db.LIMIT_TEXT + 1), "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT", r.text
+            r = await c.call_tool("candidate_decide", {"candidate_id": cid, "action": "edit", "text": "y" * (db.LIMIT_TEXT + 1)})
+            assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text, r.content[0].text
+
+            # ③ 전역 DB 크기: 401MB 주입 → 비관리자 쓰기 거절, 읽기 정상
+            db._measure_db_size = lambda: 401 * db.MB
+            db.quota_cache_reset()
+            before = nrec()
+            r = await c.call_tool("record_add", {"text": "꽉 찬 때 기록"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            r = await c.call_tool("question_add", {"text": "꽉 찬 때 질문"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "QUOTA-GLOBAL", r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "QUOTA-GLOBAL", r.text
+            assert nrec() == before and db.candidate_get(uid, cid)["status"] == "pending"
+            for tool, args in (("state_get", {}), ("record_get", {"record_id": rid}), ("question_list", {}), ("candidate_list", {}),
+                               ("definitions_get", {"object_ids": None, "include_archived": False}), ("help_get", {"topic": "words"})):
+                r = await c.call_tool(tool, args)
+                assert not r.is_error, (tool, r.content[0].text[:200])
+            assert (await h.get("/api/state")).status_code == 200
+            assert (await h.get("/api/journal", params={"id": rid})).status_code == 200
+            # 관리자는 쓴다
+            db.ADMIN_USER_IDS = frozenset({uid})
+            r = await c.call_tool("record_add", {"text": "관리자 기록"})
+            assert not r.is_error, r.content[0].text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
+            assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
+            db.ADMIN_USER_IDS = frozenset({"u_someone_else"})
+            r = await c.call_tool("record_add", {"text": "다른 사람만 관리자"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            # 경계: 정확히 400MB 는 허용
+            db._measure_db_size = lambda: db.DB_QUOTA_BYTES
+            db.quota_cache_reset()
+            assert not (await c.call_tool("record_add", {"text": "400MB 정확히"})).is_error
+
+            # 측정 실패 → 허용(가용성 우선)
+            def boom():
+                raise RuntimeError("측정 실패 주입")
+            db._measure_db_size = boom
+            db.quota_cache_reset()
+            assert not (await c.call_tool("record_add", {"text": "측정 실패 때 기록"})).is_error
+            # 캐시: 만료(60초) 전엔 다시 재지 않는다
+            calls = []
+            db._measure_db_size = lambda: calls.append(1) or 1
+            db.quota_cache_reset()
+            for i in range(3):
+                assert not (await c.call_tool("question_add", {"text": f"캐시 {i}"})).is_error
+            assert calls == [1], calls
+    finally:
+        db._measure_db_size, db.ADMIN_USER_IDS = real_measure, real_admins
+        db.quota_cache_reset()
+    print("OK — 인자 길이·전역 DB 크기 상한 통과")
+
+
 async def run():
     cleanup()
     try:
+        test_migration()
+        test_core_pr1()
         await test_verifier()
         await test_tools()
         await test_http()
@@ -872,6 +1380,8 @@ async def run():
         A = test_definitions()
         await test_definition_tools()
         await test_web_items(A)
+        await test_limits_sse()
+        await test_limits()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -886,5 +1396,71 @@ async def run():
     print("OK — 시험 사용자 삭제(cascade)")
 
 
+# ── 임시 스키마 격리 (CANON_TEST_SCHEMA) ─────────────────
+
+_SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,40}$")
+
+
+def schema_conn(name):
+    """임시 스키마 하나만 보는 별도 연결(search_path 에 public 없음). 운영 테이블을 이름으로 못 찾는다."""
+    assert _SCHEMA_RE.match(name) and name != "public", name
+    c = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row)
+    c.execute(f"SET search_path TO {name}")
+    c.commit()
+    return c
+
+
+def create_schema(name):
+    assert _SCHEMA_RE.match(name) and name != "public", name
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {name}")   # 이미 있으면 실패 — 남의 스키마를 덮지 않는다
+
+
+def drop_schema(name):
+    assert _SCHEMA_RE.match(name) and name != "public", name
+    with psycopg.connect(os.environ["DATABASE_URL"], autocommit=True) as c:
+        c.execute(f"DROP SCHEMA IF EXISTS {name} CASCADE")
+
+
+def isolate(name):
+    """db.pool 을 임시 스키마 전용으로 바꾸고 최종형 스키마를 깐다.
+    풀 객체가 아니라 db.pool 함수를 바꾼다 — main.lifespan 이 끝에 db.close() 해도 다시 열리는 풀이 public 이 아니게."""
+    create_schema(name)
+
+    def cfg(conn):
+        conn.execute(f"SET search_path TO {name}")
+        conn.commit()
+
+    def isolated_pool():
+        if db._pool is None:
+            db._pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=4,
+                                      kwargs={"row_factory": dict_row}, configure=cfg, open=True)
+        return db._pool
+
+    db.close()
+    db.pool = isolated_pool
+    db.init_schema()
+    with db.tx() as c:
+        assert c.execute("SELECT current_schema() AS s").fetchone()["s"] == name
+
+
+def main_():
+    name = os.environ.get("CANON_TEST_SCHEMA", "").strip()
+    if not name:
+        asyncio.run(run())
+        return
+    name = f"{name}_{secrets.token_hex(3)}"
+    print(f"임시 스키마 {name} 에서 시험")
+    try:
+        isolate(name)
+        asyncio.run(run())
+        with db.tx() as c:   # 끝까지 임시 스키마였는지(lifespan 의 db.close 뒤 다시 연 풀 포함)
+            assert c.execute("SELECT current_schema() AS s").fetchone()["s"] == name
+    finally:
+        db.close()
+        drop_schema(name)
+        print(f"OK — 임시 스키마 {name} 삭제")
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    main_()
