@@ -229,3 +229,38 @@ CREATE TABLE IF NOT EXISTS item_history (
   UNIQUE (user_id, item_id, prev_revision),         -- 이력 한 줄 = revision +1
   FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE
 );
+
+-- desk-0 문의 데스크(2026-10-19). 「본문 0」 원칙의 예외: 문의 글은 운영자가 직접 읽는다(폼·MCP 응답에 고지).
+-- 종결(done·wontfix) 180일 뒤 파기(db.tickets_purge, 서버 시작 때 1회). 계정 삭제 = users cascade.
+CREATE TABLE IF NOT EXISTS tickets (
+  id          text PRIMARY KEY,                           -- tk_...
+  user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        text NOT NULL CHECK (kind IN ('bug','request','question','privacy')),
+  text        text NOT NULL CHECK (char_length(text) BETWEEN 1 AND 4096),
+  via         text NOT NULL CHECK (via IN ('web','mcp')),
+  page        text NOT NULL DEFAULT 'other',               -- 열거: today/question/record/structure/map/review/start/help/privacy/other
+  tool        text NOT NULL DEFAULT '',                    -- MCP 도구 이름 또는 ''
+  ua_family   text NOT NULL DEFAULT '',                    -- 'chrome'/'safari'/'firefox'/'edge'/'other'/'' (버전·OS 없음)
+  hint        text NOT NULL DEFAULT '' CHECK (hint IN ('','privacy?')),
+  status      text NOT NULL DEFAULT 'open' CHECK (status IN ('open','ack','doing','done','wontfix')),
+  admin_note  text NOT NULL DEFAULT '',
+  created     timestamptz NOT NULL DEFAULT now(),
+  updated     timestamptz NOT NULL DEFAULT now(),
+  closed_at   timestamptz,
+  CHECK ((status IN ('done','wontfix')) = (closed_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_tickets_user ON tickets(user_id, created DESC);
+CREATE INDEX IF NOT EXISTS ix_tickets_open ON tickets(status, created) WHERE status NOT IN ('done','wontfix');
+
+-- 개인정보 요청 처리 사실. CASCADE 밖 — 계정·문의가 지워져도 남는다. 사람 식별 정보 없음. 상태 전이·파기는 desk-1(/admin).
+CREATE TABLE IF NOT EXISTS privacy_log (
+  id               text PRIMARY KEY,                       -- pl_...
+  kind             text NOT NULL CHECK (kind IN ('access','correct_delete','stop','withdraw','other')),
+  via              text NOT NULL CHECK (via IN ('form','mail')),
+  ticket_id        text,                                   -- FK 없음(티켓 삭제 뒤에도 남는다)
+  received         date NOT NULL,                          -- KST 날짜. 기본값 없음 — 넣는 쪽이 정한다
+  notified         date,
+  result           text CHECK (result IN ('done','partial','refused')),
+  identity_checked boolean NOT NULL DEFAULT false,
+  created          timestamptz NOT NULL DEFAULT now()
+);

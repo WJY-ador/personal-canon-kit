@@ -25,8 +25,11 @@
 | profile | 프로필 항목 key-value, 상태 4값 | users M-D |
 | tabs | 화면 탭. `doc`=적용본, `draft_doc`=제안 | users M-D |
 | (2단계) object_defs·field_defs·items·item_links·item_history | 사용자 정의 층 — 아래 절 | users M-D |
+| tickets | 문의(desk-0). 종류 bug/request/question/privacy · via web/mcp · page·tool·브라우저 계열 · `hint`(오분류 개인정보 요청 표식) · 상태 open/ack/doing/done/wontfix(종결 ⇔ `closed_at`) · `admin_note`(사용자 응답에 없음). 사용자 하루 10건·전역 100건(KST), 종결 180일 뒤 파기 | users M-D |
+| privacy_log | 개인정보 요청 처리 사실(받은 날·종류·통지한 날·결과·본인 확인). 사람 식별 정보 없음. kind=privacy 문의와 같은 트랜잭션에서 1행 | 없음 — CASCADE 밖, `ticket_id` FK 없음(문의가 지워져도 남는다) |
 
 ## 판단 로그
+- **「본문 0」 원칙의 예외: 문의 글.** 운영자가 사용자 글을 읽는 곳은 `tickets.text` 하나다. 폼·MCP 응답에 「운영자가 직접 읽어요」 고지, 「내 문의」는 본인 글·상태만(운영자 메모·hint 없음), 관리자(`CANON_ADMIN_USER_IDS`)만 웹 「문의함」에서 전체 글·이메일·메모를 보고 상태·메모를 바꾼다(감사 테이블은 β — 지금은 `updated` 만), 전역 DB 크기 거절(QUOTA-GLOBAL)은 면제하고 하루 한도로 막는다.
 - 질문은 삭제 금지. 확정 판단 밑 질문이 사라지면 판단 근거가 끊긴다 — `candidates.question_id` RESTRICT + `archived`.
 - 기록→질문은 Lookup. 질문을 archive 해도 기록은 남는다.
 - 기록 삭제는 soft delete(`deleted_at`). 후보는 기록 M-D — 기록 하드 삭제(계정 삭제) 때만 같이 사라진다. 근거 없는 판단을 남기는 안(Lookup SET NULL)은 제품 원칙 위반이라 버렸다.
