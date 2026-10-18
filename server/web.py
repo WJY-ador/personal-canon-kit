@@ -29,7 +29,7 @@ import db
 
 SESSION_COOKIE = "canon_session"
 FLOW_COOKIE = "canon_login"
-SESSION_TTL = 30 * 24 * 3600
+SESSION_TTL = 7 * 24 * 3600   # 세션 쿠키 7일(PR①, 30일에서 줄임)
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
@@ -447,16 +447,19 @@ class Web:
         try:
             body = await request.json()
             assert isinstance(body, dict)
+            rev = body.get("expected_revision")   # 선택. 주면 지금 revision 과 다를 때 CONFLICT
+            assert rev is None or (isinstance(rev, int) and not isinstance(rev, bool))
         except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요."}, status_code=400)
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요(expected_revision 은 정수)."}, status_code=400)
         cid, action, text = str(body.get("candidate_id") or ""), str(body.get("action") or ""), body.get("text")
         if action not in ACTIONS:
             return JSONResponse({"code": "ARG-INVALID", "msg": "action 은 confirm·exclude·pending·edit 중 하나예요."}, status_code=400)
         text = str(text) if text is not None else None
+        wording_by = "self" if action in ("edit", "edit_confirm") else None   # 웹 편집 = 사용자가 직접 쓴 문장
 
-        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기) → revision 검사는 db 의 행 잠금 안에서
             db.write_gate("candidate_decide", {"candidate_id": cid, "action": action, "text": text}, uid)
-            return db.candidate_decide(uid, cid, action, text)
+            return db.candidate_decide(uid, cid, action, text, rev, wording_by)
         try:
             out = await run_in_threadpool(write)
         except db.CanonError as e:
