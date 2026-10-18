@@ -1,42 +1,69 @@
 """personal-canon-kit 서버 — 원격 MCP(Streamable HTTP) + 웹 화면.
 
-지금 판(2단계): 인증 없음. 사용자는 CANON_DEV_USER 환경변수 이메일 하나로 고정한다.
-다음 판: AuthKit 토큰 검증 → get_access_token() 의 이메일로 사용자 결정.
+사용자 결정: AuthKit JWT 검증(sub 우선, 처음 연결 땐 userinfo 의 검증된 이메일). 개발·시험은 CANON_DEV=1 + CANON_DEV_USER.
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
+환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app) · CANON_DEV/CANON_DEV_USER(개발만)
 """
 import functools
 import os
+from urllib.parse import urlparse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from mcp.server import MCPServer
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.transport_security import TransportSecuritySettings
 
+import auth
 import db
 
 INSTRUCTIONS = """이 서버는 사용자의 「내 판단 노트」다. 사용자의 기록에서 판단 후보를 찾고, 사용자가 원문과 대조해 남길지 정한다.
 
 규칙:
 - 기록(record_add)은 사용자의 말을 그대로 저장한다. 다듬거나 요약하지 않는다.
-- 후보(candidates_propose)는 네가 뽑되, 각 후보의 quote 는 그 기록 원문에서 글자 그대로 복사한 연속 구간(한 문장 이내)이어야 한다. 원문에 없는 사실·수치를 만들지 않는다. 타인의 말로 보이는 문장은 후보로 내지 않는다. 기록 1편당 최대 3개.
-- 후보는 사용자의 판단이 아니다. 사용자가 원문과 대조해 "남길게/빼줘/고쳐서 남길게"라고 말할 때만 candidate_decide 를 부른다. 네가 대신 confirm 하지 않는다.
+- 후보(candidates_propose)는 네가 뽑되, 각 후보의 quote 는 그 기록 원문에서 글자 그대로 복사한 연속 구간이어야 한다. 원문에 같은 구간이 두 번 이상 나오면 앞뒤를 포함해 한 곳만 가리키게 더 길게 인용한다. 원문에 없는 사실·수치를 만들지 않는다. 타인의 말로 보이는 문장은 후보로 내지 않는다. 기록 1편당 최대 3개 — 넘기면 거절된다.
+- 후보는 사용자의 판단이 아니다. 사용자가 원문과 대조해 "남길게/빼줘/고쳐서 남길게"라고 말할 때만 candidate_decide 를 부른다. 네가 대신 confirm 하지 않는다. 확정 전에 후보 문장을 사용자에게 그대로 보여 준다.
 - 사용자가 묻지 않은 설정(프로필·질문)을 추정으로 확정하지 않는다. 추정은 status=guessed 로만 저장한다.
 """
 
-mcp = MCPServer("personal-canon-kit", instructions=INSTRUCTIONS)
+DEV = os.environ.get("CANON_DEV") == "1"
+PUBLIC_URL = os.environ.get("CANON_PUBLIC_URL", "http://127.0.0.1:8800").rstrip("/")
+ISSUER = os.environ.get("AUTHKIT_ISSUER", "").rstrip("/")
+
+if not DEV and not ISSUER:
+    raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
+if not DEV and os.environ.get("CANON_DEV_USER"):
+    raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
+
+_auth_kwargs = {}
+if ISSUER:
+    _auth_kwargs = dict(
+        token_verifier=auth.AuthKitVerifier(ISSUER, f"{PUBLIC_URL}/mcp"),
+        # 문자열로 넘긴다. AnyHttpUrl(...) 을 밖에서 만들면 issuer 끝에 / 가 붙어 PRM authorization_servers 가 AS 메타데이터 issuer 와 어긋난다.
+        auth=AuthSettings(issuer_url=ISSUER, resource_server_url=f"{PUBLIC_URL}/mcp",
+                          required_scopes=[], validate_token_resource=True),
+    )
+
+mcp = MCPServer("personal-canon-kit", instructions=INSTRUCTIONS, **_auth_kwargs)
 
 
 def uid_of(ctx: Context) -> str:
-    # 2단계: 고정 개발 사용자. 3단계에서 get_access_token() 의 이메일로 바꾼다.
-    email = os.environ.get("CANON_DEV_USER", "dev@local")
-    return db.user_by_email(email)["id"]
+    tok = get_access_token()
+    if tok is not None:
+        return auth.user_id_for(tok)
+    if DEV:
+        return db.user_by_email(os.environ.get("CANON_DEV_USER", "dev@local"))["id"]
+    raise ToolError("[AUTH] 로그인 정보가 없어요. 커넥터를 다시 연결하세요.")
 
 
 def guard(fn):
@@ -103,9 +130,12 @@ def candidates_propose(
 ) -> dict:
     """기록에서 뽑은 판단 후보를 제출한다. 서버가 근거 인용이 원문에 있는지 검사하고, 통과한 것만 '아직 안 정함' 상태로 저장한다.
     돌려주는 dropped 에 버린 이유가 있다. 저장된 후보는 사용자의 판단이 아니다."""
-    items = [c.model_dump() for c in candidates][:3]
-    added, dropped = db.candidates_propose(uid_of(ctx), record_id, question_id, items, origin)
-    return {"added": [db.candidate_get(uid_of(ctx), cid) for cid in added], "dropped": dropped,
+    if len(candidates) > db.MAX_CANDIDATES_PER_RECORD:
+        raise ToolError("기록 1편당 후보는 3개까지예요. 3개만 골라 다시 보내세요.")
+    items = [c.model_dump() for c in candidates]
+    uid = uid_of(ctx)
+    added, dropped = db.candidates_propose(uid, record_id, question_id, items, origin)
+    return {"added": [db.candidate_get(uid, cid) for cid in added], "dropped": dropped,
             "note": "후보는 아직 내 판단이 아니에요. 사용자가 원문과 대조해 정하게 하세요."}
 
 
@@ -156,29 +186,55 @@ def profile_set(
 # ── 웹 ─────────────────────────────────────────────────
 
 async def api_state(request):
-    uid = db.user_by_email(os.environ.get("CANON_DEV_USER", "dev@local"))["id"]
-    return JSONResponse(db.state(uid))
+    if not DEV:
+        return JSONResponse({"error": "unauthorized", "message": "웹 로그인은 아직 없어요."}, status_code=401)
+    uid = (await run_in_threadpool(db.user_by_email, os.environ.get("CANON_DEV_USER", "dev@local")))["id"]
+    return JSONResponse(await run_in_threadpool(db.state, uid))
 
 
 async def health(request):
-    return JSONResponse({"ok": True, "name": "personal-canon-kit"})
+    try:
+        ok = await run_in_threadpool(db.ping)
+    except Exception:
+        ok = False
+    return JSONResponse({"ok": ok, "db": ok}, status_code=200 if ok else 503)
+
+
+def _transport_security() -> TransportSecuritySettings:
+    """DNS rebinding 보호. 공개 호스트와 로컬만 받는다."""
+    public = urlparse(PUBLIC_URL)
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[public.netloc, "127.0.0.1:*", "localhost:*"],
+        allowed_origins=[f"{public.scheme}://{public.netloc}", "http://127.0.0.1:*", "http://localhost:*"],
+    )
+
+
+# Render Free 는 유휴 때 프로세스가 죽는다 → 세션을 메모리에 들지 않는 stateless + JSON 응답.
+mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, transport_security=_transport_security())
 
 
 @asynccontextmanager
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
-    async with mcp.session_manager.run():
-        yield
+    # Mount 된 앱의 lifespan 은 돌지 않으므로 session_manager 를 여기서 돌린다.
+    await run_in_threadpool(db.init_schema)
+    try:
+        async with mcp.session_manager.run():
+            yield
+    finally:
+        db.close()
 
 
 app = Starlette(
     routes=[
         Route("/health", health),
         Route("/api/state", api_state),
-        Mount("/", app=mcp.streamable_http_app()),
+        Mount("/", app=mcp_app),
     ],
     lifespan=lifespan,
 )
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("CANON_PORT", "8800")))
+    port = int(os.environ.get("PORT") or os.environ.get("CANON_PORT") or "8800")
+    uvicorn.run(app, host="0.0.0.0", port=port)

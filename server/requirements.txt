@@ -2,3 +2,4 @@ mcp[cli]==2.3.0
 uvicorn
 pyjwt[crypto]
 httpx
+psycopg[binary,pool]==3.3.6

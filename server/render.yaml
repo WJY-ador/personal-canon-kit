@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: personal-canon-kit
+    runtime: python
+    region: singapore
+    plan: free
+    rootDir: server
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: AUTHKIT_ISSUER
+        value: https://wealthy-technology-63-staging.authkit.app
+      - key: CANON_PUBLIC_URL
+        sync: false
