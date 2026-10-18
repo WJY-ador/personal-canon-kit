@@ -132,6 +132,14 @@
       "required": true
     },
     {
+      "path": "guides/09-hosted-start.md",
+      "required": false
+    },
+    {
+      "path": "guides/10-words.md",
+      "required": false
+    },
+    {
       "path": "sample-data/candidates.json",
       "required": true
     },
