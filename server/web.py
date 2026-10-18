@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from pathlib import Path
@@ -30,6 +31,8 @@ FLOW_COOKIE = "canon_login"
 SESSION_TTL = 30 * 24 * 3600
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
+START_HTML = Path(__file__).parent / "start.html"
+WORKOS_LOGOUT = "https://api.workos.com/user_management/sessions/logout"
 ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
 
 
@@ -109,11 +112,17 @@ class Web:
     # ── 화면 ───────────────────────────────────────────
     async def app(self, request):
         if await self.uid_of(request) is None:
-            return RedirectResponse("/login", status_code=302)
+            return RedirectResponse("/", status_code=302)
         return HTMLResponse(APP_HTML.read_text(encoding="utf-8"), headers={"cache-control": "no-store"})
 
     async def root(self, request):
-        return RedirectResponse("/app", status_code=302)
+        """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남긴다."""
+        if await self.uid_of(request) is not None:
+            return RedirectResponse("/app", status_code=302)
+        html = START_HTML.read_text(encoding="utf-8")
+        if request.query_params.get("out") != "1":
+            html = re.sub(r"<!--out-->.*?<!--/out-->", "", html, flags=re.S)
+        return HTMLResponse(html, headers={"cache-control": "no-store"})
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -162,15 +171,24 @@ class Web:
         except Exception as e:   # ToolError·CanonError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
             return _page("사용자를 연결하지 못했어요", f"<p>{msg}</p>{again}", 502)
+        sess = {"uid": uid}
+        sid = (verified.claims or {}).get("sid")
+        if sid:   # AuthKit 세션 ID — 로그아웃 때 AuthKit 세션까지 끝내려고 담는다
+            sess["sid"] = str(sid)
         resp = RedirectResponse("/app", status_code=302)
-        self.set_cookie(resp, SESSION_COOKIE, self.sign({"uid": uid}, SESSION_TTL), SESSION_TTL)
+        self.set_cookie(resp, SESSION_COOKIE, self.sign(sess, SESSION_TTL), SESSION_TTL)
         self.clear_cookie(resp, FLOW_COOKIE)
         return resp
 
     async def logout(self, request):
         if not self.same_origin(request):
             return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
-        resp = JSONResponse({"ok": True})
+        sid = (self.unsign(request.cookies.get(SESSION_COOKIE)) or {}).get("sid")
+        if sid:   # AuthKit 세션도 끝내야 다음 /login 에서 자동 재로그인되지 않는다
+            redirect = f"{WORKOS_LOGOUT}?{urlencode({'session_id': sid, 'return_to': f'{self.public_url}/?out=1'})}"
+        else:
+            redirect = "/?out=1"
+        resp = JSONResponse({"ok": True, "redirect": redirect})
         self.clear_cookie(resp, SESSION_COOKIE)
         return resp
 

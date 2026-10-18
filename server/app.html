@@ -326,10 +326,10 @@ function sayLine(phrase) {
 }
 
 // ── 불러오기 ─────────────────────────────────────────
-// 상태 한 벌을 받아 온다. 로그인이 풀렸으면 null(이미 /login 으로 보냄). 연결 실패는 throw.
+// 상태 한 벌을 받아 온다. 로그인이 풀렸으면 null(이미 시작 화면 / 으로 보냄). 연결 실패는 throw.
 async function fetchState() {
   const r = await fetch("/api/state", {cache: "no-store"});
-  if (r.status === 401) { location.href = "/login"; return null; }
+  if (r.status === 401) { location.href = "/"; return null; }
   return r.json();
 }
 function applyState(next) {
@@ -757,7 +757,7 @@ async function decide(cur, action, text) {
     lockReview(false);
     return;
   }
-  if (r.status === 401) { location.href = "/login"; return; }
+  if (r.status === 401) { location.href = "/"; return; }
   const j = await r.json().catch(() => ({}));
   if (!r.ok) {
     st.textContent = "";
@@ -784,7 +784,11 @@ document.addEventListener("keydown", e => {
 $("dlg-close").onclick = () => $("dlg").close();
 window.addEventListener("hashchange", () => { if (S) { render(); window.scrollTo(0, 0); } });
 $("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); };
-$("logout").onclick = async () => { try { await fetch("/logout", {method: "POST"}); } catch (e) {} location.href = "/login"; };
+$("logout").onclick = async () => {
+  let to = "/?out=1";
+  try { const j = await (await fetch("/logout", {method: "POST"})).json(); if (j && j.ok && j.redirect) to = j.redirect; } catch (e) {}
+  location.href = to;
+};
 load();
 </script>
 </body>

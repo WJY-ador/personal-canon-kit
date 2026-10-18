@@ -3,7 +3,7 @@
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
 2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CANON_DEV 사용자)
 3) HTTP 시험: Starlette 앱을 ASGI 로 불러 토큰 → 사용자 결정, /health, PRM, 401 을 본다
-4) 웹 시험: /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃
+4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(AuthKit 세션 sid)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -65,7 +65,7 @@ _DEFAULT = object()
 
 
 def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_test_sub", alg="RS256", kid="k1",
-               scope=_DEFAULT, scp=None):
+               scope=_DEFAULT, scp=None, sid=None):
     now = int(time.time())
     claims = {"iss": iss, "aud": aud, "sub": sub, "client_id": "client_test",
               "iat": now, "exp": now + exp_in, "jti": f"t{now}"}
@@ -75,6 +75,8 @@ def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_tes
         claims["scope"] = scope
     if scp is not None:
         claims["scp"] = scp
+    if sid is not None:
+        claims["sid"] = sid
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": kid})
 
 
@@ -311,10 +313,17 @@ async def test_web():
     fake_jwks(verifier)
     site.client_id, site.dev, site.dev_user = "client_test", False, ""   # 운영처럼: DEV 폴백 없이 세션만
     exchanged = []
+    tok_sid = {"sid": None}   # 가짜 토큰에 넣을 AuthKit 세션 ID — 시험 중에 바꾼다
 
     async def fake_token_post(data):
         exchanged.append(data)
-        return 200, {"access_token": make_token(), "token_type": "Bearer"}
+        return 200, {"access_token": make_token(sid=tok_sid["sid"]), "token_type": "Bearer"}
+
+    async def login_once(h):
+        r = await h.get("/login")
+        st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+        r = await h.get("/auth/callback", params={"code": "c2", "state": st})
+        assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
 
     def fake_userinfo(url, headers=None, timeout=None):
         return _Resp({"sub": "user_test_sub", "email": "tester@example.com", "email_verified": True})
@@ -325,7 +334,13 @@ async def test_web():
     try:
         if True:   # lifespan(MCP 세션 매니저)은 한 번만 돈다 — 웹 경로는 그것 없이 라우팅된다
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-                assert (await h.get("/app")).status_code == 302, "세션 없으면 /login 으로"
+                r = await h.get("/app")
+                assert r.status_code == 302 and r.headers["location"] == "/", "세션 없으면 시작 화면 / 으로"
+                r = await h.get("/")
+                assert r.status_code == 200 and "로그인" in r.text and 'href="/login"' in r.text, (r.status_code, r.text[:200])
+                assert r.headers.get("cache-control") == "no-store" and "로그아웃했어요" not in r.text
+                r = await h.get("/", params={"out": "1"})
+                assert r.status_code == 200 and "로그아웃했어요" in r.text and 'role="status"' in r.text, r.text[:200]
                 assert (await h.get("/api/state")).status_code == 401
                 assert (await h.post("/api/candidate/decide", json={}, headers=origin)).status_code == 401
                 r = await h.get("/login")
@@ -345,6 +360,8 @@ async def test_web():
                 assert chal == q["code_challenge"][0], "PKCE verifier 가 쿠키의 challenge 와 맞아야"
                 assert d["grant_type"] == "authorization_code" and d["code"] == "c1" and d["resource"] == RESOURCE
                 assert (await h.get("/app")).status_code == 200
+                r = await h.get("/")
+                assert r.status_code == 302 and r.headers["location"] == "/app", "세션 있으면 시작 화면 대신 /app"
                 st = (await h.get("/api/state")).json()
                 assert st["user"]["email"] == "tester@example.com", st.get("user")
                 uid = db.user_by_email("tester@example.com")["id"]
@@ -387,7 +404,22 @@ async def test_web():
                 assert (await h.post("/logout")).status_code == 403
                 r = await h.post("/logout", headers=origin)
                 assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
+                assert r.json() == {"ok": True, "redirect": "/?out=1"}, "sid 없는 세션은 AuthKit 로그아웃 없이 시작 화면으로"
                 assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
+                # sid 있는 토큰 → 세션에 sid → 로그아웃이 AuthKit 세션까지 끝내는 주소를 준다
+                tok_sid["sid"] = "sess_test"
+                await login_once(h)
+                assert (await h.get("/api/state")).status_code == 200
+                assert site.unsign(h.cookies.get("canon_session"))["sid"] == "sess_test"
+                r = await h.post("/logout", headers=origin)
+                assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
+                red = r.json()["redirect"]
+                assert red.startswith("https://api.workos.com/user_management/sessions/logout?"), red
+                rq = parse_qs(urlparse(red).query)
+                assert "session_id=sess_test" in red and "return_to=" in red and rq["return_to"] == [f"{PUBLIC}/?out=1"], red
+                assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
+                r = await h.get("/")
+                assert r.status_code == 200 and "로그인" in r.text, "로그아웃 뒤 시작 화면"
                 # 서명 위조 쿠키
                 h.cookies.set("canon_session", site.sign({"uid": uid}, 60)[:-3] + "xxx")
                 assert (await h.get("/api/state")).status_code == 401, "서명 깨진 쿠키"
