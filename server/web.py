@@ -10,6 +10,7 @@
 import base64
 import hashlib
 import hmac
+import html as _html
 import json
 import os
 import re
@@ -33,6 +34,11 @@ FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
 ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
+# 도움말 정본은 레포의 guides/. 웹 /help 와 MCP help_get 이 같은 것을 읽는다. CANON_GUIDES_DIR 가 있으면 그 폴더.
+# Render 는 레포 루트에서 빌드·실행한다(render.yaml 에 rootDir 없음) — rootDir=server 면 guides/ 가 안 올라간다.
+GUIDES_DIR = Path(os.environ.get("CANON_GUIDES_DIR") or Path(__file__).parent.parent / "guides")
+HELP_FILES = {"start": "09-hosted-start.md", "words": "10-words.md"}
+_HELP_ANCHORS = {f: f"#{k}" for k, f in HELP_FILES.items()}
 
 
 def _b64(b: bytes) -> str:
@@ -47,6 +53,185 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     return HTMLResponse(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title><style>body{{font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;color:#2B2824;background:#FBF8F4;line-height:1.6}}
 a{{color:#E4705A}}</style></head><body><h2>{title}</h2>{body}</body></html>""", status_code=status)
+
+
+# ── 도움말: guides 마크다운 → HTML ─────────────────────
+# 입력은 우리 문서(09·10)뿐이다. 제목·문단·표·굵게·목록·인라인 코드·링크만. 줄마다 먼저 escape 하고 변환한다.
+
+def read_guides(d: Path) -> dict | None:
+    """{"start": 09 원문, "words": 10 원문}. 하나라도 없으면 None."""
+    try:
+        return {k: (d / f).read_text(encoding="utf-8") for k, f in HELP_FILES.items()}
+    except OSError:
+        return None
+
+
+def _safe_href(href: str) -> bool:
+    """http(s)·#앵커·상대경로만. 상대경로는 스킴(:)·// 로 시작하지 않는 것."""
+    if href.startswith(("http://", "https://", "#")):
+        return True
+    return not href.startswith("//") and ":" not in href.split("/", 1)[0] and ":" not in href
+
+
+def _inline(s: str) -> str:
+    codes: list[str] = []
+
+    def keep(m):
+        codes.append(f"<code>{m.group(1)}</code>")
+        return f"\x00{len(codes) - 1}\x00"
+
+    s = re.sub(r"`([^`]+)`", keep, _html.escape(s.replace("\x00", "")))   # 모든 글자를 먼저 escape — raw HTML 은 글자로만 보인다
+    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
+
+    def link(m):
+        href = _HELP_ANCHORS.get(m.group(2), m.group(2))
+        if not _safe_href(href):
+            return m.group(1)   # javascript:·data: 등은 링크로 만들지 않고 글만 남긴다
+        return f'<a href="{href}">{m.group(1)}</a>'
+
+    s = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link, s)   # ]( 가 있어야 링크 — [로그인] 같은 버튼 이름은 그대로
+    return re.sub(r"\x00(\d+)\x00", lambda m: codes[int(m.group(1))], s)
+
+
+def _cells(line: str) -> list[str]:
+    return [c.strip() for c in line.strip().strip("|").split("|")]
+
+
+def md_to_html(md: str, key: str) -> tuple[str, list[tuple[str, str]], str]:
+    """(본문 HTML, [(h2 id, h2 글)], h1 글). h2 id 는 순번(key-1, key-2 …)."""
+    out: list[str] = []
+    toc: list[tuple[str, str]] = []
+    h1 = ""
+    para: list[str] = []
+    lst: tuple[str, list[str]] | None = None
+    table: list[list[str]] = []
+
+    def flush():
+        nonlocal lst
+        if para:
+            out.append("<p>" + " ".join(_inline(x) for x in para) + "</p>")
+            para.clear()
+        if lst:
+            tag, items = lst
+            out.append(f"<{tag}>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + f"</{tag}>")
+            lst = None
+        if table:
+            head, *rows = table
+            out.append('<div class="tbl"><table><thead><tr>' + "".join(f"<th>{_inline(c)}</th>" for c in head) + "</tr></thead><tbody>"
+                       + "".join("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in r) + "</tr>" for r in rows) + "</tbody></table></div>")
+            table.clear()
+
+    for raw in md.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            flush()
+            continue
+        if line.startswith("|"):
+            if para or lst:
+                flush()
+            if not re.fullmatch(r"\|[\s:|-]+\|", line.strip()):   # |---|---| 구분 줄은 버린다
+                table.append(_cells(line))
+            continue
+        if table:
+            flush()
+        m = re.match(r"(#{1,3}) (.+)", line)
+        if m:
+            flush()
+            level, text = len(m.group(1)), m.group(2).strip()
+            if level == 1:
+                h1 = text
+                out.append(f"<h1>{_inline(text)}</h1>")
+            elif level == 2:
+                hid = f"{key}-{len(toc) + 1}"
+                toc.append((hid, text))
+                out.append(f'<h2 id="{hid}">{_inline(text)}</h2>')
+            else:
+                out.append(f"<h3>{_inline(text)}</h3>")
+            continue
+        m = re.match(r"(\d+)\. (.+)", line) or re.match(r"([-*]) (.+)", line)
+        if m:
+            tag = "ol" if m.group(1)[0].isdigit() else "ul"
+            if para or (lst and lst[0] != tag):
+                flush()
+            if not lst:
+                lst = (tag, [])
+            lst[1].append(m.group(2))
+            continue
+        if lst:
+            flush()
+        para.append(line.strip())
+    flush()
+    return "\n".join(out), toc, h1
+
+
+_HELP_CSS = """
+.top { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.6rem 0 .8rem; }
+.top .name { font-family: var(--serif); font-size: 1.15rem; font-weight: 500; }
+.top .name a { color: inherit; text-decoration: none; }
+.top .name span { color: var(--muted); }
+.btn { font: inherit; font-weight: 600; font-size: .84rem; min-height: 36px; padding: .3rem 1rem; border-radius: 6px; background: var(--card);
+  color: var(--ink); border: 1px solid var(--line); display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap; }
+.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.toc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.3rem; margin: 0 0 1rem;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem 1.6rem; font-size: .84rem; }
+.toc b { display: block; margin-bottom: .2rem; font-size: .8rem; color: var(--muted); font-weight: 600; }
+.toc ol { margin: 0; padding-left: 1.1rem; }
+.toc li { margin: .1rem 0; }
+.toc a { text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.doc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1.6rem 2rem; margin: 0 0 1rem; }
+.doc h1 { font-family: var(--serif); font-size: 1.45rem; line-height: 1.3; margin: 0 0 .7rem; font-weight: 500; letter-spacing: -.01em; }
+.doc h2 { font-size: 1.02rem; margin: 1.7rem 0 .5rem; padding-top: .9rem; border-top: 1px solid var(--line); scroll-margin-top: 1rem; }
+.doc h3 { font-size: .92rem; margin: 1.2rem 0 .4rem; }
+.doc p, .doc li { margin: .45rem 0; }
+.doc ol, .doc ul { padding-left: 1.3rem; }
+.doc code { font-family: var(--mono); font-size: .82em; background: var(--paper); border: 1px solid var(--line); border-radius: 4px; padding: 0 .3em; }
+.doc strong { font-weight: 650; }
+.tbl { overflow-x: auto; margin: .6rem 0; -webkit-overflow-scrolling: touch; }
+.doc table { border-collapse: collapse; width: 100%; font-size: .84rem; }
+.doc th, .doc td { border-bottom: 1px solid var(--line); padding: .45rem .6rem; text-align: left; vertical-align: top; }
+.doc td:first-child { min-width: 5.5em; }   /* 「오늘」 같은 짧은 첫 칸이 한 글자씩 꺾이지 않게 */
+.doc th { color: var(--muted); font-weight: 600; font-size: .78rem; border-bottom-color: var(--soft); white-space: nowrap; }
+.foot { color: var(--soft); font-size: .72rem; padding: .4rem 0 2.4rem; }
+@media (max-width: 640px) {
+  .wrap { padding: 0 1rem; }
+  .toc { grid-template-columns: 1fr; }
+  .doc { padding: 1.1rem 1.1rem; }
+  .doc h1 { font-size: 1.25rem; }
+  .doc table { min-width: 34rem; }   /* 좁은 화면에선 표를 짜부리지 않고 .tbl 안에서 가로 스크롤 */
+}
+"""
+
+
+def render_help(docs: dict) -> str:
+    """도움말 페이지 전체. 맨 위 링크 자리는 <!--nav--> — 요청마다 세션 보고 바꾼다. 토큰·글꼴은 start.html 의 :root 블록을 그대로 쓴다."""
+    style = START_HTML.read_text(encoding="utf-8").split("<style>", 1)[1]
+    css = style.split(".bands {", 1)[0]   # 주석·:root 토큰(라이트·다크)·기본(body·a·focus·.wrap)까지
+    toc_html, body_html = [], []
+    for key in HELP_FILES:
+        body, toc, h1 = md_to_html(docs[key], key)
+        body_html.append(f'<section class="doc" id="{key}">{body}</section>')
+        items = "".join(f'<li><a href="#{hid}">{_inline(re.sub(r"^[0-9]+[.] ", "", t))}</a></li>' for hid, t in toc)
+        toc_html.append(f'<div><b><a href="#{key}">{_html.escape(h1)}</a></b><ol>{items}</ol></div>')
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>내 노트 — 도움말</title>
+<style>{css}{_HELP_CSS}</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top"><div class="name"><a href="/">내 노트</a> <span>— 도움말</span></div><!--nav--></header>
+  <nav class="toc" aria-label="목차">{"".join(toc_html)}</nav>
+  <main>
+{chr(10).join(body_html)}
+  </main>
+  <p class="foot">대화에서 물어도 AI 가 이 문서를 읽고 답해요.</p>
+</div>
+</body>
+</html>"""
 
 
 class Web:
@@ -65,6 +250,14 @@ class Web:
         self.origins = {f"{p.scheme}://{p.netloc}"}
         if self.dev:
             self.origins |= {"http://127.0.0.1:8800", "http://localhost:8800", f"http://127.0.0.1:{p.port or 8800}", f"http://localhost:{p.port or 8800}"}
+        self.load_help(GUIDES_DIR)
+        if not self.guides:
+            print(f"[web] 도움말 문서가 없어요({GUIDES_DIR} 에 {' · '.join(HELP_FILES.values())}) — /help 503, help_get 오류", flush=True)
+
+    def load_help(self, d: Path):
+        """도움말 원문(help_get)과 페이지(/help)를 시작 때 한 번 읽는다. 파일이 없으면 둘 다 None — /help 503, help_get 오류."""
+        self.guides = read_guides(d)
+        self.help_html = render_help(self.guides) if self.guides else None
 
     @property
     def login_ready(self) -> bool:
@@ -124,6 +317,15 @@ class Web:
         else:
             html = re.sub(r"<!--out-->.*?<!--/out-->", "", html, flags=re.S)
         return HTMLResponse(html, headers={"cache-control": "no-store"})
+
+    async def help(self, request):
+        """도움말. 로그인 불필요. DB 를 건드리지 않는다 — 세션은 쿠키 서명만 본다(DEV 는 dev_user 가 있으면 세션으로 친다)."""
+        if not self.help_html:
+            return _page("도움말을 찾지 못했어요", "<p>서버에 도움말 문서(guides/09-hosted-start.md · 10-words.md)가 없어요. 운영자에게 알려 주세요.</p>", 503)
+        s = self.unsign(request.cookies.get(SESSION_COOKIE))
+        signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
+        nav = '<a class="btn" href="/app">노트로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
+        return HTMLResponse(self.help_html.replace("<!--nav-->", nav, 1), headers={"cache-control": "no-store"})
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -276,6 +478,7 @@ class Web:
         return [
             Route("/", self.root),
             Route("/app", self.app),
+            Route("/help", self.help),
             Route("/login", self.login),
             Route("/auth/callback", self.callback),
             Route("/logout", self.logout, methods=["POST"]),

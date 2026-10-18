@@ -51,6 +51,7 @@ from mcp.client import Client  # noqa: E402
 import auth  # noqa: E402
 import db  # noqa: E402
 import main  # noqa: E402
+import web  # noqa: E402
 
 TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com")
 RESOURCE = f"{PUBLIC}/mcp"
@@ -136,6 +137,21 @@ async def test_tools():
 
         st = val(await c.call_tool("state_get", {}))
         assert st["next"]["kind"] == "record"
+
+        # 도움말: 웹 /help 와 같은 guides 원문
+        hw = val(await c.call_tool("help_get", {"topic": "words"}))
+        assert hw["topic"] == "words" and "후보" in hw["text"] and hw["text"].startswith("# 10. 말 뜻"), hw["text"][:80]
+        hs = val(await c.call_tool("help_get", {"topic": "start"}))
+        assert hs["text"].startswith("# 09.") and "후보" in hs["text"], hs["text"][:80]
+        hd = val(await c.call_tool("help_get", {}))
+        assert hd == hw, "기본 topic 은 words"
+        ha = val(await c.call_tool("help_get", {"topic": "all"}))
+        assert ha["topic"] == "all" and ha["text"] == hs["text"] + "\n\n" + hw["text"], "all = start + words"
+        hdesc = {t.name: t for t in (await c.list_tools()).tools}["help_get"].description
+        assert "하나만 읽는다" in hdesc and "문서에서 확인되지 않아요" in hdesc and "제품 밖" in hdesc, hdesc
+        assert "help_get 으로 해당 topic(start 또는 words) 하나만" in main.INSTRUCTIONS
+        bad_t = await c.call_tool("help_get", {"topic": "faq"})
+        assert bad_t.is_error and "validation error" in bad_t.content[0].text, bad_t
 
         q = val(await c.call_tool("question_add", {"text": "새 도구를 팀에 들일 때 무엇부터 확인해야 하나"}))
         r = val(await c.call_tool("record_add", {"text": "도입 회의에서 입력 담당을 먼저 정했다. 도구 비교는 그다음이었다.",
@@ -345,6 +361,34 @@ async def test_web():
                 assert r.status_code == 200 and "로그아웃했어요" in r.text and 'role="status"' in r.text, r.text[:200]
                 assert "다시 로그인하면 계정을 고를 수 있어요" in r.text, r.text[:400]
                 assert 'href="/login?fresh=1"' in r.text and 'href="/login"' not in r.text, "로그아웃 직후 [로그인]은 fresh=1"
+                assert 'href="/help"' in r.text, "시작 화면 하단에 도움말"
+                # 도움말: 로그인 없이 200, 표는 <table>, 10 으로의 링크는 #words, 세션 없으면 [로그인]
+                r = await h.get("/help")
+                assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+                for word in ("말 뜻", "기록", "도움말", "<table>", 'href="#words"', 'id="start"', 'id="words"', "--accent: #186A4B"):
+                    assert word in r.text, word
+                assert 'href="/login"' in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
+                # 렌더러 안전: raw HTML 은 글자로, javascript:·data:·// 링크는 글만, http(s)·#·상대경로는 링크
+                bad_md = ('# 제목 <script>alert(1)</script>\n\n<img src=x onerror=alert(1)> [x](javascript:alert(1)) [y](data:text/html,1) '
+                          '[z](//evil.example) [w](JaVaScRiPt:alert(1))\n\n| a | <b>b</b> |\n|---|---|\n| [t](javascript:x) | `<i>` |\n\n'
+                          '[ok1](https://example.com/a) [ok2](#words) [ok3](10-words.md) [ok4](notes/a.md) [버튼]')
+                hb, _, _ = web.md_to_html(bad_md, "t")
+                assert "<script" not in hb and "<img" not in hb and "<b>" not in hb and "<i>" not in hb, hb
+                assert "&lt;script&gt;" in hb and "&lt;img" in hb and "<code>&lt;i&gt;</code>" in hb, hb
+                assert 'href="javascript' not in hb.lower() and 'href="data' not in hb and 'href="//' not in hb, hb
+                for ok in ('href="https://example.com/a"', 'href="#words"', 'href="notes/a.md"', "[버튼]"):
+                    assert ok in hb, (ok, hb)
+                assert hb.count('href="#words"') == 2 and "<table>" in hb, hb
+                real_guides, real_help = site.guides, site.help_html
+                site.load_help(Path("/nonexistent-guides"))
+                try:
+                    r = await h.get("/help")
+                    assert r.status_code == 503 and "도움말" in r.text, r.status_code
+                    async with Client(main.mcp) as mc:
+                        miss = await mc.call_tool("help_get", {"topic": "all"})
+                    assert miss.is_error and "HELP-MISSING" in miss.content[0].text, miss
+                finally:
+                    site.guides, site.help_html = real_guides, real_help
                 r = await h.get("/login", params={"fresh": "1"})
                 assert r.status_code == 302 and parse_qs(urlparse(r.headers["location"]).query)["prompt"] == ["login"], r.headers
                 assert (await h.get("/api/state")).status_code == 401
@@ -366,7 +410,10 @@ async def test_web():
                 chal = base64.urlsafe_b64encode(hashlib.sha256(d["code_verifier"].encode()).digest()).rstrip(b"=").decode()
                 assert chal == q["code_challenge"][0], "PKCE verifier 가 쿠키의 challenge 와 맞아야"
                 assert d["grant_type"] == "authorization_code" and d["code"] == "c1" and d["resource"] == RESOURCE
-                assert (await h.get("/app")).status_code == 200
+                r = await h.get("/app")
+                assert r.status_code == 200 and 'href="/help"' in r.text, "앱 푸터에 도움말"
+                r = await h.get("/help")
+                assert r.status_code == 200 and 'href="/app"' in r.text and 'href="/login"' not in r.text, "세션 있으면 [노트로]"
                 r = await h.get("/")
                 assert r.status_code == 302 and r.headers["location"] == "/app", "세션 있으면 시작 화면 대신 /app"
                 st = (await h.get("/api/state")).json()
@@ -658,7 +705,9 @@ async def test_definition_tools():
     async with Client(main.mcp) as c:
         tools = {t.name for t in (await c.list_tools()).tools}
         new = {"definitions_get", "definition_propose", "definition_apply", "item_propose", "item_decide", "record_attach"}
-        assert new <= tools and len(tools) == 15, tools
+        base = {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose", "candidate_decide",
+                "candidate_list", "profile_set"}
+        assert base | new | {"help_get"} == tools and len(tools) == 16, tools   # 기존 15개 그대로 + help_get
         assert val(await c.call_tool("definitions_get", {"object_ids": None, "include_archived": False})) == []
         p = val(await c.call_tool("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": json.dumps(
             {"key": "notes", "label": "메모", "semantic_kind": "principle", "fields": []})}))

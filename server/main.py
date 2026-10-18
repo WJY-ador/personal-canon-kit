@@ -39,6 +39,7 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 노트」다. 사용�
 - 기준(principle 항목)은 후보가 아니다. 여러 확정 판단을 종합해 사용자가 정한 한 문장이다. 후보 문장을 기준으로 옮겨 적거나, 사용자가 말하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
 - 승격 조건(promotion)은 사실일 뿐이다. 충족 여부와 상관없이 기준으로 남길지는 사용자가 정한다.
 - 질문에 답하지 않는 후보는 candidates_propose 의 question_id 를 빈 문자열("")로 보낸다. 화면은 기록별로 묶는다.
+- 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
 """
 
 DEV = os.environ.get("CANON_DEV") == "1"
@@ -294,6 +295,24 @@ def record_attach(
     """기록이 어디에 붙는지 남긴다(기준·결정·후보 연결, 관심 축, 쓸 자리, 아직 안 붙는 것). 원문은 바뀌지 않는다. 값을 준 칸만 바뀐다."""
     return db.record_attach(uid_of(ctx), record_id, [ln.model_dump() for ln in attach_to] if attach_to is not None else None,
                             axes, use_at, unattached)
+
+
+# ── 도움말 ─────────────────────────────────────────────
+# 웹 /help 와 같은 원문(guides/09·10, web.Web.load_help 가 시작 때 읽음)을 돌려준다.
+
+@mcp.tool()
+def help_get(
+    ctx: Context,
+    topic: Annotated[Literal["start", "words", "all"],
+                     Field(description="start=연결·첫 하루·화면 탭·막힐 때, words=말 뜻·자주 묻는 것, all=둘 다(꼭 필요할 때만)")] = "words",
+) -> dict:
+    """사용자가 이 노트의 쓰는 법·말 뜻을 물으면 먼저 이걸 읽고 그 문서 안에서 답한다.
+    쓰는 법·용어 질문은 해당 topic(start 또는 words) 하나만 읽는다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다."""
+    docs = site.guides
+    if not docs:
+        raise ToolError("[HELP-MISSING] 서버에 도움말 문서가 없어요. 운영자에게 알려 주세요.")
+    text = "\n\n".join(docs[k] for k in web.HELP_FILES) if topic == "all" else docs[topic]
+    return {"topic": topic, "text": text}
 
 
 # ── 웹 ─────────────────────────────────────────────────
