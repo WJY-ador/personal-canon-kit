@@ -29,7 +29,7 @@ import db
 
 SESSION_COOKIE = "canon_session"
 FLOW_COOKIE = "canon_login"
-SESSION_TTL = 30 * 24 * 3600
+SESSION_TTL = 7 * 24 * 3600   # 세션 쿠키 7일(PR①, 30일에서 줄임)
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
@@ -38,7 +38,11 @@ ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
 # Render 는 레포 루트에서 빌드·실행한다(render.yaml 에 rootDir 없음) — rootDir=server 면 guides/ 가 안 올라간다.
 GUIDES_DIR = Path(os.environ.get("CANON_GUIDES_DIR") or Path(__file__).parent.parent / "guides")
 HELP_FILES = {"start": "09-hosted-start.md", "words": "10-words.md"}
-_HELP_ANCHORS = {f: f"#{k}" for k, f in HELP_FILES.items()}
+_HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md": "/privacy"}
+# 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
+# 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CANON_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
+PRIVACY_FILE = "11-privacy.md"
+_PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
 # ── 화면 자산(배경 루프·데모·테마 토글) ─────────────────
 # 허용 목록만 서빙한다. 요청 name 은 이 dict 키 조회만 — 경로를 잇지 않는다. 그림 만드는 법: tools/start-visuals/README.md
@@ -90,7 +94,7 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# 웹 HTML 응답(/, /app, /help, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
+# 웹 HTML 응답(/, /app, /help, /privacy, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
 # script-src 는 아직 없다 — app.html·start.html 인라인 스크립트에 nonce 를 붙여야 넣을 수 있다.
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
@@ -109,6 +113,18 @@ def _esc(v) -> str:
     return _html.escape(str(v))
 
 
+def ua_family(ua: str | None) -> str:
+    """User-Agent 에서 브라우저 계열만(버전·OS 없음). 순서가 중요하다 — Edge·Chrome 의 UA 에도 Safari/ 가 들어 있다."""
+    ua = ua or ""
+    if not ua.strip():
+        return ""
+    for mark, fam in (("Edg/", "edge"), ("Firefox/", "firefox"), ("FxiOS/", "firefox"), ("Chrome/", "chrome"), ("CriOS/", "chrome"),
+                      ("Safari/", "safari")):
+        if mark in ua:
+            return fam
+    return "other"
+
+
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     """title 은 escape 한다. body 는 HTML 조각 — 동적 값은 호출하는 쪽이 _esc 로 감싸서 넘긴다."""
     t = _esc(title)
@@ -118,7 +134,7 @@ a{{color:#E4705A}}</style></head><body><h2>{t}</h2>{body}</body></html>""", stat
 
 
 # ── 도움말: guides 마크다운 → HTML ─────────────────────
-# 입력은 우리 문서(09·10)뿐이다. 제목·문단·표·굵게·목록·인라인 코드·링크만. 줄마다 먼저 escape 하고 변환한다.
+# 입력은 우리 문서(09·10·11)뿐이다. 제목·문단·표·굵게·목록·인라인 코드·링크만. 줄마다 먼저 escape 하고 변환한다.
 
 def read_guides(d: Path) -> dict | None:
     """{"start": 09 원문, "words": 10 원문}. 하나라도 없으면 None."""
@@ -135,7 +151,9 @@ def _safe_href(href: str) -> bool:
     return not href.startswith("//") and ":" not in href.split("/", 1)[0] and ":" not in href
 
 
-def _inline(s: str) -> str:
+def _inline(s: str, anchors: dict | None = None) -> str:
+    """anchors: 다른 가이드 파일 링크를 이 페이지 안 주소로 바꾸는 표(기본 /help 용)."""
+    anchors = _HELP_ANCHORS if anchors is None else anchors
     codes: list[str] = []
 
     def keep(m):
@@ -146,7 +164,7 @@ def _inline(s: str) -> str:
     s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s)
 
     def link(m):
-        href = _HELP_ANCHORS.get(m.group(2), m.group(2))
+        href = anchors.get(m.group(2), m.group(2))
         if not _safe_href(href):
             return m.group(1)   # javascript:·data: 등은 링크로 만들지 않고 글만 남긴다
         return f'<a href="{href}">{m.group(1)}</a>'
@@ -159,8 +177,11 @@ def _cells(line: str) -> list[str]:
     return [c.strip() for c in line.strip().strip("|").split("|")]
 
 
-def md_to_html(md: str, key: str) -> tuple[str, list[tuple[str, str]], str]:
-    """(본문 HTML, [(h2 id, h2 글)], h1 글). h2 id 는 순번(key-1, key-2 …)."""
+def md_to_html(md: str, key: str, anchors: dict | None = None) -> tuple[str, list[tuple[str, str]], str]:
+    """(본문 HTML, [(h2 id, h2 글)], h1 글). h2 id 는 순번(key-1, key-2 …). anchors 는 _inline 에 그대로."""
+    def _il(x: str) -> str:
+        return _inline(x, anchors)
+
     out: list[str] = []
     toc: list[tuple[str, str]] = []
     h1 = ""
@@ -171,16 +192,16 @@ def md_to_html(md: str, key: str) -> tuple[str, list[tuple[str, str]], str]:
     def flush():
         nonlocal lst
         if para:
-            out.append("<p>" + " ".join(_inline(x) for x in para) + "</p>")
+            out.append("<p>" + " ".join(_il(x) for x in para) + "</p>")
             para.clear()
         if lst:
             tag, items = lst
-            out.append(f"<{tag}>" + "".join(f"<li>{_inline(x)}</li>" for x in items) + f"</{tag}>")
+            out.append(f"<{tag}>" + "".join(f"<li>{_il(x)}</li>" for x in items) + f"</{tag}>")
             lst = None
         if table:
             head, *rows = table
-            out.append('<div class="tbl"><table><thead><tr>' + "".join(f"<th>{_inline(c)}</th>" for c in head) + "</tr></thead><tbody>"
-                       + "".join("<tr>" + "".join(f"<td>{_inline(c)}</td>" for c in r) + "</tr>" for r in rows) + "</tbody></table></div>")
+            out.append('<div class="tbl"><table><thead><tr>' + "".join(f"<th>{_il(c)}</th>" for c in head) + "</tr></thead><tbody>"
+                       + "".join("<tr>" + "".join(f"<td>{_il(c)}</td>" for c in r) + "</tr>" for r in rows) + "</tbody></table></div>")
             table.clear()
 
     for raw in md.splitlines():
@@ -202,13 +223,13 @@ def md_to_html(md: str, key: str) -> tuple[str, list[tuple[str, str]], str]:
             level, text = len(m.group(1)), m.group(2).strip()
             if level == 1:
                 h1 = text
-                out.append(f"<h1>{_inline(text)}</h1>")
+                out.append(f"<h1>{_il(text)}</h1>")
             elif level == 2:
                 hid = f"{key}-{len(toc) + 1}"
                 toc.append((hid, text))
-                out.append(f'<h2 id="{hid}">{_inline(text)}</h2>')
+                out.append(f'<h2 id="{hid}">{_il(text)}</h2>')
             else:
-                out.append(f"<h3>{_inline(text)}</h3>")
+                out.append(f"<h3>{_il(text)}</h3>")
             continue
         m = re.match(r"(\d+)\. (.+)", line) or re.match(r"([-*]) (.+)", line)
         if m:
@@ -270,36 +291,60 @@ _HELP_CSS = """
 THEME_TOGGLE = '<button type="button" class="theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">\u263E</button>'
 
 
-def render_help(docs: dict) -> str:
-    """도움말 페이지 전체. 맨 위 링크 자리는 <!--nav--> — 요청마다 세션 보고 바꾼다. 토큰·글꼴은 start.html 의 :root 블록을 그대로 쓴다."""
+def _doc_page(title: str, toc_html: str, body_html: str, foot: str) -> str:
+    """/help·/privacy 공통 껍데기. 맨 위 링크 자리는 <!--nav--> — 요청마다 세션 보고 바꾼다. 토큰·글꼴은 start.html 의 :root 블록을 그대로 쓴다.
+    title·foot 은 우리 상수(HTML 조각), toc_html·body_html 은 md_to_html 결과(escape 끝난 것)."""
     style = START_HTML.read_text(encoding="utf-8").split("<style>", 1)[1]
-    css = style.split(".bands {", 1)[0]   # 주석·:root 토큰(라이트 고정)·기본(body·a·focus·.wrap)까지 — 배경·데모(start 전용)는 안 온다
-    toc_html, body_html = [], []
-    for key in HELP_FILES:
-        body, toc, h1 = md_to_html(docs[key], key)
-        body_html.append(f'<section class="doc" id="{key}">{body}</section>')
-        items = "".join(f'<li><a href="#{hid}">{_inline(re.sub(r"^[0-9]+[.] ", "", t))}</a></li>' for hid, t in toc)
-        toc_html.append(f'<div><b><a href="#{key}">{_html.escape(h1)}</a></b><ol>{items}</ol></div>')
+    css = style.split(".bands {", 1)[0]   # 주석·:root 토큰(라이트·다크 토글)·기본(body·a·focus·.wrap·☀/☾)까지 — 배경·데모(start 전용)는 안 온다
     return f"""<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>대시보드 — 도움말</title>
+<title>대시보드 — {title}</title>
 <script src="{asset_url("theme.js")}"></script>
 <style>{css}{_HELP_CSS}</style>
 </head>
 <body>
 <div class="wrap">
-  <header class="top"><div class="name"><a href="/">대시보드</a> <span>— 도움말</span></div><div class="top-r">{THEME_TOGGLE}<!--nav--></div></header>
-  <nav class="toc" aria-label="목차">{"".join(toc_html)}</nav>
+  <header class="top"><div class="name"><a href="/">대시보드</a> <span>— {title}</span></div><div class="top-r">{THEME_TOGGLE}<!--nav--></div></header>
+  <nav class="toc" aria-label="목차">{toc_html}</nav>
   <main>
-{chr(10).join(body_html)}
+{body_html}
   </main>
-  <p class="foot">대화에서 물어도 AI 가 이 문서를 읽고 답해요.</p>
+  <p class="foot">{foot}</p>
 </div>
 </body>
 </html>"""
+
+
+def _toc_block(key: str, toc: list[tuple[str, str]], h1: str, anchors: dict | None = None) -> str:
+    items = "".join(f'<li><a href="#{hid}">{_inline(re.sub(r"^[0-9]+[.] ", "", t), anchors)}</a></li>' for hid, t in toc)
+    return f'<div><b><a href="#{key}">{_html.escape(h1)}</a></b><ol>{items}</ol></div>'
+
+
+def render_help(docs: dict) -> str:
+    """도움말 페이지 전체(09·10)."""
+    toc_html, body_html = [], []
+    for key in HELP_FILES:
+        body, toc, h1 = md_to_html(docs[key], key)
+        body_html.append(f'<section class="doc" id="{key}">{body}</section>')
+        toc_html.append(_toc_block(key, toc, h1))
+    return _doc_page("도움말", "".join(toc_html), chr(10).join(body_html),
+                     '대화에서 물어도 AI 가 이 문서를 읽고 답해요. · <a href="/privacy">개인정보 처리방침</a>')
+
+
+def render_privacy(md: str) -> str:
+    """처리방침 페이지 전체(11). md 는 {{CONTACT_LINE}} 을 이미 바꾼 원문 — 렌더러가 모든 글자를 escape 한다."""
+    body, toc, h1 = md_to_html(md, "privacy", _PRIVACY_ANCHORS)
+    return _doc_page("개인정보 처리방침", _toc_block("privacy", toc, h1, _PRIVACY_ANCHORS),
+                     f'<section class="doc" id="privacy">{body}</section>', '<a href="/help">도움말</a>')
+
+
+def privacy_contact_line() -> str:
+    """env CANON_CONTACT(선택, 한 줄로 접음)가 있으면 보조 메일 한 줄. 없으면 빈 문자열 — 처리방침에 메일 줄이 없다."""
+    contact = " ".join(os.environ.get("CANON_CONTACT", "").split())
+    return f"로그인할 수 없으면 메일로도 요청할 수 있습니다(보조 경로). 가입한 이메일 주소에서 보낸 메일만 처리합니다. 메일: {contact}" if contact else ""
 
 
 class Web:
@@ -321,11 +366,19 @@ class Web:
         self.load_help(GUIDES_DIR)
         if not self.guides:
             print(f"[web] 도움말 문서가 없어요({GUIDES_DIR} 에 {' · '.join(HELP_FILES.values())}) — /help 503, help_get 오류", flush=True)
+        if not self.privacy_html:
+            print(f"[web] 처리방침 문서가 없어요({GUIDES_DIR} 에 {PRIVACY_FILE}) — /privacy 503", flush=True)
 
     def load_help(self, d: Path):
-        """도움말 원문(help_get)과 페이지(/help)를 시작 때 한 번 읽는다. 파일이 없으면 둘 다 None — /help 503, help_get 오류."""
+        """도움말 원문(help_get)과 페이지(/help), 처리방침 페이지(/privacy)를 시작 때 한 번 읽는다.
+        도움말 파일이 없으면 guides·help_html 이 None — /help 503, help_get 오류. 처리방침 파일이 없으면 privacy_html 이 None — /privacy 503."""
         self.guides = read_guides(d)
         self.help_html = render_help(self.guides) if self.guides else None
+        try:
+            md = (d / PRIVACY_FILE).read_text(encoding="utf-8")
+        except OSError:
+            md = None
+        self.privacy_html = render_privacy(md.replace("{{CONTACT_LINE}}", privacy_contact_line())) if md else None
 
     @property
     def login_ready(self) -> bool:
@@ -399,10 +452,19 @@ class Web:
         """도움말. 로그인 불필요. DB 를 건드리지 않는다 — 세션은 쿠키 서명만 본다(DEV 는 dev_user 가 있으면 세션으로 친다)."""
         if not self.help_html:
             return _page("도움말을 찾지 못했어요", "<p>서버에 도움말 문서(guides/09-hosted-start.md · 10-words.md)가 없어요. 운영자에게 알려 주세요.</p>", 503)
+        return _html_resp(self.help_html.replace("<!--nav-->", self._nav(request), 1), headers={"cache-control": "no-store"})
+
+    async def privacy(self, request):
+        """개인정보 처리방침. /help 와 같다 — 로그인 불필요, DB 를 건드리지 않는다."""
+        if not self.privacy_html:
+            return _page("처리방침을 찾지 못했어요", "<p>서버에 처리방침 문서(guides/11-privacy.md)가 없어요. 운영자에게 알려 주세요.</p>", 503)
+        return _html_resp(self.privacy_html.replace("<!--nav-->", self._nav(request), 1), headers={"cache-control": "no-store"})
+
+    def _nav(self, request) -> str:
+        """/help·/privacy 맨 위 버튼. 세션은 쿠키 서명만 본다(DEV 는 dev_user 가 있으면 세션으로 친다)."""
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
-        nav = '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
-        return _html_resp(self.help_html.replace("<!--nav-->", nav, 1), headers={"cache-control": "no-store"})
+        return '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -479,6 +541,8 @@ class Web:
             return err
         st, me = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid)))
         st["user"] = {"email": me["email"]}
+        if db.is_admin(uid):   # 관리자만 키가 있다 — 비관리자 응답엔 admin_tickets 자체가 없다. MCP state_get 에는 넣지 않는다
+            st["admin_tickets"] = await run_in_threadpool(db.tickets_admin_counts)
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
     async def api_journal(self, request):
@@ -503,16 +567,19 @@ class Web:
         try:
             body = await request.json()
             assert isinstance(body, dict)
+            rev = body.get("expected_revision")   # 선택. 주면 지금 revision 과 다를 때 CONFLICT
+            assert rev is None or (isinstance(rev, int) and not isinstance(rev, bool))
         except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요."}, status_code=400)
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요(expected_revision 은 정수)."}, status_code=400)
         cid, action, text = str(body.get("candidate_id") or ""), str(body.get("action") or ""), body.get("text")
         if action not in ACTIONS:
             return JSONResponse({"code": "ARG-INVALID", "msg": "action 은 confirm·exclude·pending·edit 중 하나예요."}, status_code=400)
         text = str(text) if text is not None else None
+        wording_by = "self" if action in ("edit", "edit_confirm") else None   # 웹 편집 = 사용자가 직접 쓴 문장
 
-        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기) → revision 검사는 db 의 행 잠금 안에서
             db.write_gate("candidate_decide", {"candidate_id": cid, "action": action, "text": text}, uid)
-            return db.candidate_decide(uid, cid, action, text)
+            return db.candidate_decide(uid, cid, action, text, rev, wording_by)
         try:
             out = await run_in_threadpool(write)
         except db.CanonError as e:
@@ -560,11 +627,75 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
+    async def api_feedback(self, request):
+        """문의(desk-0). GET = 「내 문의」(본인 글·상태, 운영자 메모 없음) — 관리자면 「문의함」(전체 최근 100건·이메일·메모 + admin_tickets)
+        · POST {kind, text, page} = 접수. POST 는 세션 + Origin. 길이는 write_gate(전역 DB 크기는 면제 — QUOTA_EXEMPT), 하루 한도는 db.ticket_add."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if request.method == "GET":
+            if db.is_admin(uid):
+                out, counts = await run_in_threadpool(lambda: (db.tickets_all(), db.tickets_admin_counts()))
+                return JSONResponse({"tickets": out, "admin": True, "admin_tickets": counts}, headers={"cache-control": "no-store"})
+            out = await run_in_threadpool(db.tickets_mine, uid)
+            return JSONResponse({"tickets": out}, headers={"cache-control": "no-store"})
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            kind, text, page = body.get("kind"), body.get("text"), body.get("page", "other")
+            assert isinstance(kind, str) and isinstance(text, str) and isinstance(page, str)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(kind·text·page 문자열)이 필요해요."}, status_code=400)
+        fam = ua_family(request.headers.get("user-agent"))
+
+        def write():
+            db.write_gate("feedback_send", {"kind": kind, "text": text, "page": page}, uid, quota="feedback_send" not in db.QUOTA_EXEMPT)
+            return db.ticket_add(uid, kind, text, "web", page=page, ua_family=fam)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse({**out, "notice": db.NOTICE})
+
+    async def _admin_write(self, request, fields, fn):
+        """관리자 문의 쓰기 공통 — 세션(401) → Origin(403) → 관리자(403) → JSON 본문 문자열 필드 → fn(...).
+        감사 테이블은 β. 지금은 tickets.updated 만 바뀐다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        if not db.is_admin(uid):
+            return JSONResponse({"code": "FORBIDDEN", "msg": "운영자만 할 수 있어요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            args = [body.get(f) for f in fields]
+            assert all(isinstance(a, str) for a in args)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
+        try:
+            out = await run_in_threadpool(fn, *args)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
+        return JSONResponse(out)
+
+    async def api_feedback_status(self, request):
+        """관리자 — 문의 상태 바꾸기 {id, status}. 종결이면 closed_at, 다시 열면 NULL(db.ticket_set_status)."""
+        return await self._admin_write(request, ("id", "status"), db.ticket_set_status)
+
+    async def api_feedback_note(self, request):
+        """관리자 — 운영자 메모 {id, admin_note}(2KB 바이트). 사용자에게 안 보인다."""
+        return await self._admin_write(request, ("id", "admin_note"), db.ticket_set_note)
+
     def routes(self) -> list[Route]:
         return [
             Route("/", self.root),
             Route("/app", self.app),
             Route("/help", self.help),
+            Route("/privacy", self.privacy),
             Route("/assets/{name}", self.asset),
             Route("/login", self.login),
             Route("/auth/callback", self.callback),
@@ -574,4 +705,7 @@ class Web:
             Route("/api/candidate/decide", self.api_decide, methods=["POST"]),
             Route("/api/item", self.api_item),
             Route("/api/item/decide", self.api_item_decide, methods=["POST"]),
+            Route("/api/feedback", self.api_feedback, methods=["GET", "POST"]),
+            Route("/api/feedback/status", self.api_feedback_status, methods=["POST"]),
+            Route("/api/feedback/note", self.api_feedback_note, methods=["POST"]),
         ]
