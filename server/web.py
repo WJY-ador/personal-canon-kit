@@ -29,7 +29,7 @@ import db
 
 SESSION_COOKIE = "canon_session"
 FLOW_COOKIE = "canon_login"
-SESSION_TTL = 30 * 24 * 3600
+SESSION_TTL = 7 * 24 * 3600   # 세션 쿠키 7일(PR①, 30일에서 줄임)
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
@@ -426,13 +426,17 @@ class Web:
         try:
             body = await request.json()
             assert isinstance(body, dict)
+            rev = body.get("expected_revision")   # 선택. 주면 지금 revision 과 다를 때 CONFLICT
+            assert rev is None or (isinstance(rev, int) and not isinstance(rev, bool))
         except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요."}, status_code=400)
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문이 필요해요(expected_revision 은 정수)."}, status_code=400)
         cid, action, text = str(body.get("candidate_id") or ""), str(body.get("action") or ""), body.get("text")
         if action not in ACTIONS:
             return JSONResponse({"code": "ARG-INVALID", "msg": "action 은 confirm·exclude·pending·edit 중 하나예요."}, status_code=400)
+        wording_by = "self" if action in ("edit", "edit_confirm") else None   # 웹 편집 = 사용자가 직접 쓴 문장
         try:
-            out = await run_in_threadpool(db.candidate_decide, uid, cid, action, str(text) if text is not None else None)
+            out = await run_in_threadpool(db.candidate_decide, uid, cid, action, str(text) if text is not None else None,
+                                          rev, wording_by)
         except db.CanonError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)

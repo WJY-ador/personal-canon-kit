@@ -37,8 +37,15 @@ CREATE TABLE IF NOT EXISTS records (
   created     timestamptz NOT NULL DEFAULT now(),
   deleted_at  timestamptz,                        -- soft delete. 하드 삭제는 계정 삭제(users cascade) 때만
   notes       jsonb NOT NULL DEFAULT '{}',        -- 2단계: 「어디에 붙나」 중 관계가 아닌 메모 {use_at, unattached}
+  -- PR①: 출처. 인용 적격 = self·verbatim·삭제 안 됨. 확인 못 한 출처는 unknown(추측 백필 금지). 본문은 불변, 출처 판정만 정정 가능
+  author_kind        text  NOT NULL DEFAULT 'unknown',
+  text_process       text  NOT NULL DEFAULT 'unknown',
+  provenance_history jsonb NOT NULL DEFAULT '[]',  -- 생성·정정마다 {at, by, author_kind, text_process[, from, reason]}
   UNIQUE (user_id, id),
-  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id)  -- Lookup
+  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id),  -- Lookup
+  CONSTRAINT ck_records_author_kind CHECK (author_kind IN ('self','external','unknown')),
+  CONSTRAINT ck_records_text_process CHECK (text_process IN ('verbatim','structured','rewritten','generated','unknown')),
+  CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array')
 );
 CREATE INDEX IF NOT EXISTS ix_records_user ON records (user_id, created DESC) WHERE deleted_at IS NULL;
 
@@ -56,22 +63,40 @@ CREATE TABLE IF NOT EXISTS candidates (
   edited_by_user boolean NOT NULL DEFAULT false,
   created        timestamptz NOT NULL DEFAULT now(),
   updated        timestamptz NOT NULL DEFAULT now(),
+  -- PR①: 행 revision(변경마다 +1, 이력 한 줄 = +1) · 현재 문장 작성 주체(미상 NULL) · 현재 문장 승인
+  revision         integer NOT NULL DEFAULT 1,
+  wording_by       text,
+  wording_approved boolean NOT NULL DEFAULT false,
   UNIQUE (user_id, id),
   UNIQUE (user_id, record_id, quote_start, quote_end),   -- 같은 근거 구간 재등록 방지
   FOREIGN KEY (user_id, record_id)   REFERENCES records(user_id, id)   ON DELETE CASCADE,   -- M-D: 근거 없는 판단 없음
-  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE RESTRICT
+  FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE RESTRICT,
+  CONSTRAINT ck_candidates_revision CHECK (revision > 0),
+  CONSTRAINT ck_candidates_wording_by CHECK (wording_by IN ('self','ai')),
+  CONSTRAINT ck_candidates_wording_approval CHECK (NOT wording_approved OR wording_by IS NOT NULL),
+  CONSTRAINT ck_candidates_quote_bounds CHECK (quote_start >= 0 AND quote_end > quote_start
+                                               AND char_length(quote) = quote_end - quote_start)
 );
 CREATE INDEX IF NOT EXISTS ix_candidates_user_q ON candidates (user_id, question_id, decision);
 
 CREATE TABLE IF NOT EXISTS candidate_history (
   id            bigserial PRIMARY KEY,
-  candidate_id  text NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,  -- M-D, user 는 부모 상속
-  action        text NOT NULL CHECK (action IN ('confirm','exclude','pending','edit')),
-  prev_decision text NOT NULL,
-  prev_text     text NOT NULL,
-  at            timestamptz NOT NULL DEFAULT now()
+  user_id       text NOT NULL,                    -- PR①: 소유자. 복합 FK 로 다른 사용자 후보를 못 가리킨다
+  candidate_id  text NOT NULL,
+  action        text NOT NULL,
+  prev_revision integer,                          -- 변경 전 후보 revision. 옛 이력(PR① 전)만 NULL
+  prev_state    jsonb NOT NULL,                   -- 변경 전 스냅샷. v1(옛 이력) {schema_version,text,decision} ·
+                                                  -- v2 {schema_version,text,decision,wording_by,wording_approved,edited_by_user,question_id}
+  at            timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT candidate_history_action_check CHECK (action IN ('confirm','exclude','pending','edit','restore')),
+  CONSTRAINT ck_candidate_history_prev_revision CHECK (prev_revision IS NULL OR prev_revision > 0),
+  CONSTRAINT ck_candidate_history_prev_state CHECK (jsonb_typeof(prev_state) = 'object' AND prev_state ? 'schema_version'
+                                                    AND prev_state ? 'text' AND prev_state ? 'decision'),
+  CONSTRAINT uq_candidate_history_revision UNIQUE (user_id, candidate_id, prev_revision),   -- 이력 한 줄 = revision +1
+  CONSTRAINT fk_candidate_history_tenant FOREIGN KEY (user_id, candidate_id)
+    REFERENCES candidates(user_id, id) ON UPDATE RESTRICT ON DELETE CASCADE                  -- M-D
 );
-CREATE INDEX IF NOT EXISTS ix_hist_cand ON candidate_history (candidate_id, id);
+CREATE INDEX IF NOT EXISTS ix_hist_cand ON candidate_history (user_id, candidate_id, id);
 
 CREATE TABLE IF NOT EXISTS profile (
   user_id  text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -92,8 +117,8 @@ CREATE TABLE IF NOT EXISTS tabs (
   updated   timestamptz NOT NULL DEFAULT now()
 );
 
--- 2단계 기존 테이블 변경(records.notes · candidates.question_id NULL 허용)은 위 CREATE 에 반영했고,
--- 이미 있는 DB 에는 db.init_schema 가 상태를 보고 멱등 ALTER 를 건다.
+-- 2단계 기존 테이블 변경(records.notes · candidates.question_id NULL 허용)과 PR① 코어 보수(출처·revision·이력 격리)는
+-- 위 CREATE 에 반영했다(새 설치 = 최종형). 이미 있는 DB 에는 db.init_schema 가 상태를 보고 멱등 마이그레이션을 건다.
 
 -- ── 2단계: 사용자 정의 층 (설계: data-model.md 「사용자 정의 층」) ─────────────────
 -- 사용자는 오브젝트·필드·Lookup 까지만 정의한다. 증거 규칙(원문 불변·인용 1곳·후보≠판단)은 코어가 지킨다.

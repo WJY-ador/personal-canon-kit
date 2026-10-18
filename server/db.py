@@ -68,10 +68,25 @@ def close():
         _pool = None
 
 
-def init_schema():
-    """schema.sql 을 적용한다(IF NOT EXISTS 라 몇 번 돌려도 된다).
-    2단계 기존 테이블 변경은 필요할 때만 건다 — 기존 행은 건드리지 않는다(notes 는 DEFAULT 로 채움, NOT NULL 해제만)."""
-    with pool().connection() as c:
+def init_schema(conn=None):
+    """스키마를 최종형으로 맞춘다. 몇 번 돌려도 된다. 서버 시작(main.lifespan) 때 운영에도 자동으로 돈다.
+    conn 을 주면 그 연결에서(시험: 임시 스키마), 없으면 풀에서. 전체가 한 트랜잭션 — 중간 실패는 전부 롤백.
+
+    순서(바꾸지 않는다):
+      1. PR① 마이그레이션(_migrate_pr1) — 옛 테이블이 있을 때만. schema.sql 보다 **먼저** 돈다:
+         새 schema.sql 의 ix_hist_cand(user_id, …) 가 옛 candidate_history(user_id 없음)에서 컬럼 오류를 낼 수 있어서.
+      2. schema.sql — CREATE … IF NOT EXISTS. 새 DB 는 여기서 바로 최종형, 옛 DB 는 no-op.
+      3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림)."""
+    if conn is None:
+        with pool().connection() as c:
+            _init_schema(c)
+    else:
+        _init_schema(conn)
+
+
+def _init_schema(c):
+    with c.transaction():
+        _migrate_pr1(c)
         c.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
         col = lambda t, n: c.execute(
             "SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s AND column_name=%s",
@@ -81,6 +96,109 @@ def init_schema():
         q = col("candidates", "question_id")
         if q is not None and q["is_nullable"] == "NO":
             c.execute("ALTER TABLE candidates ALTER COLUMN question_id DROP NOT NULL")
+
+
+def _has_table(c, t):
+    return c.execute("SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=%s",
+                     (t,)).fetchone() is not None
+
+
+def _has_col(c, t, n):
+    return c.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s "
+                     "AND column_name=%s", (t, n)).fetchone() is not None
+
+
+def _migrate_pr1(c):
+    """PR① 코어 보수(출처·revision·이력 격리) — 옛 DB 를 schema.sql 최종형과 같은 모양으로. 근거: raw schema-round2 §4.
+    부분마다 「테이블 있음 AND 새 컬럼 없음」일 때만 돈다 → 새 DB(테이블 없음)·이미 끝난 DB 는 아무것도 안 한다(멱등).
+    호출자(_init_schema)의 트랜잭션 안에서 돈다 — 어느 단계든 실패하면 전체 롤백, 서버 시작 실패.
+    옛 writer(prev_decision/prev_text 에 쓰는 이전 코드)와 같이 돌면 안 된다 — 그 컬럼을 지운다.
+
+    실행 순서:
+      0. lock_timeout 10s · LOCK records, candidates, candidate_history ACCESS EXCLUSIVE
+      1. records: author_kind·text_process(DEFAULT 'unknown' — 기존 행 추측 백필 금지)·provenance_history + CHECK
+      2. candidates: 인용 범위 위반 행을 먼저 센다(1 이상이면 중단) → revision(1)·wording_by(NULL)·wording_approved(false) + CHECK
+      3. candidate_history: user_id·prev_revision·prev_state 추가 → 부모에서 user_id 백필 → prev_state = v1 부분 스냅샷
+         {"schema_version":1,"text":prev_text,"decision":prev_decision} → NULL 남으면 중단 → NOT NULL·CHECK·UNIQUE·복합 FK
+         → 옛 단일 FK(candidate_id→candidates.id) 제거 → action CHECK 에 restore → prev_decision·prev_text 삭제
+         → ix_hist_cand 를 (user_id, candidate_id, id) 로 다시 만든다
+    검증 SQL(적용 뒤, 운영에서 손으로 볼 때):
+      SELECT count(*) FROM records WHERE author_kind<>'unknown' OR text_process<>'unknown';           -- 0 (기존 행)
+      SELECT count(*) FROM candidates WHERE revision<>1 OR wording_by IS NOT NULL OR wording_approved; -- 0 (기존 행)
+      SELECT count(*) FROM candidate_history h LEFT JOIN candidates c ON c.user_id=h.user_id AND c.id=h.candidate_id
+        WHERE c.id IS NULL OR h.prev_state->>'schema_version'<>'1' OR h.prev_revision IS NOT NULL;     -- 0 (기존 행)
+      SELECT column_name FROM information_schema.columns WHERE table_name='candidate_history';        -- prev_text 없음"""
+    if not _has_table(c, "candidate_history"):
+        return False                       # 새 DB — schema.sql 이 최종형을 만든다
+    needs = lambda: (not _has_col(c, "records", "author_kind"), not _has_col(c, "candidates", "revision"),
+                     not _has_col(c, "candidate_history", "prev_state"))
+    if not any(needs()):
+        return False                       # 이미 최종형 — 잠금 없이 끝
+    c.execute("SET LOCAL lock_timeout = '10s'")
+    c.execute("LOCK TABLE records, candidates, candidate_history IN ACCESS EXCLUSIVE MODE")
+    need_rec, need_cand, need_hist = needs()   # 잠근 뒤 다시 본다(동시에 시작한 다른 인스턴스가 먼저 끝냈을 수 있다)
+    if need_rec:
+        c.execute("""
+            ALTER TABLE records
+              ADD COLUMN author_kind text NOT NULL DEFAULT 'unknown',
+              ADD COLUMN text_process text NOT NULL DEFAULT 'unknown',
+              ADD COLUMN provenance_history jsonb NOT NULL DEFAULT '[]'::jsonb,
+              ADD CONSTRAINT ck_records_author_kind CHECK (author_kind IN ('self','external','unknown')),
+              ADD CONSTRAINT ck_records_text_process
+                CHECK (text_process IN ('verbatim','structured','rewritten','generated','unknown')),
+              ADD CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array')""")
+    if need_cand:
+        bad = c.execute("SELECT count(*) AS n FROM candidates WHERE NOT (quote_start >= 0 AND quote_end > quote_start "
+                        "AND char_length(quote) = quote_end - quote_start)").fetchone()["n"]
+        if bad:
+            raise CanonError("DB-MIGRATE", f"PR① 마이그레이션 중단: 인용 범위가 맞지 않는 후보 {bad}개 — 전체 롤백했어요.",
+                             "그 후보의 quote·quote_start·quote_end 를 먼저 확인하세요.")
+        c.execute("""
+            ALTER TABLE candidates
+              ADD COLUMN revision integer NOT NULL DEFAULT 1,
+              ADD COLUMN wording_by text,
+              ADD COLUMN wording_approved boolean NOT NULL DEFAULT false,
+              ADD CONSTRAINT ck_candidates_revision CHECK (revision > 0),
+              ADD CONSTRAINT ck_candidates_wording_by CHECK (wording_by IN ('self','ai')),
+              ADD CONSTRAINT ck_candidates_wording_approval CHECK (NOT wording_approved OR wording_by IS NOT NULL),
+              ADD CONSTRAINT ck_candidates_quote_bounds CHECK (quote_start >= 0 AND quote_end > quote_start
+                                                               AND char_length(quote) = quote_end - quote_start)""")
+    if need_hist:
+        c.execute("ALTER TABLE candidate_history ADD COLUMN user_id text, ADD COLUMN prev_revision integer, ADD COLUMN prev_state jsonb")
+        c.execute("UPDATE candidate_history AS h SET user_id = c.user_id FROM candidates AS c WHERE c.id = h.candidate_id")
+        c.execute("UPDATE candidate_history SET prev_state = jsonb_build_object('schema_version', 1, 'text', prev_text, "
+                  "'decision', prev_decision)")
+        left = c.execute("SELECT count(*) AS n FROM candidate_history WHERE user_id IS NULL OR prev_state IS NULL "
+                         "OR prev_state->>'text' IS NULL OR prev_state->>'decision' IS NULL").fetchone()["n"]
+        if left:
+            raise CanonError("DB-MIGRATE", f"PR① 마이그레이션 중단: candidate_history 백필 실패 {left}행(부모 없음 또는 스냅샷 없음) — 전체 롤백했어요.")
+        c.execute("""
+            ALTER TABLE candidate_history
+              ALTER COLUMN user_id SET NOT NULL,
+              ALTER COLUMN prev_state SET NOT NULL,
+              ADD CONSTRAINT ck_candidate_history_prev_revision CHECK (prev_revision IS NULL OR prev_revision > 0),
+              ADD CONSTRAINT ck_candidate_history_prev_state CHECK (jsonb_typeof(prev_state) = 'object'
+                AND prev_state ? 'schema_version' AND prev_state ? 'text' AND prev_state ? 'decision'),
+              ADD CONSTRAINT uq_candidate_history_revision UNIQUE (user_id, candidate_id, prev_revision),
+              ADD CONSTRAINT fk_candidate_history_tenant FOREIGN KEY (user_id, candidate_id)
+                REFERENCES candidates(user_id, id) ON UPDATE RESTRICT ON DELETE CASCADE""")
+        # 옛 단일 FK·action CHECK 는 이름을 가정하지 않고 카탈로그에서 찾는다
+        for r in c.execute("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'candidate_history'::regclass AND contype = 'f'
+                  AND confrelid = 'candidates'::regclass AND array_length(conkey, 1) = 1""").fetchall():
+            c.execute(f'ALTER TABLE candidate_history DROP CONSTRAINT "{r["conname"]}"')
+        for r in c.execute("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'candidate_history'::regclass AND contype = 'c'
+                  AND pg_get_constraintdef(oid) LIKE '%%action%%'""").fetchall():
+            c.execute(f'ALTER TABLE candidate_history DROP CONSTRAINT "{r["conname"]}"')
+        c.execute("ALTER TABLE candidate_history ADD CONSTRAINT candidate_history_action_check "
+                  "CHECK (action IN ('confirm','exclude','pending','edit','restore'))")
+        c.execute("ALTER TABLE candidate_history DROP COLUMN prev_decision, DROP COLUMN prev_text")
+        c.execute("DROP INDEX IF EXISTS ix_hist_cand")
+        c.execute("CREATE INDEX ix_hist_cand ON candidate_history (user_id, candidate_id, id)")
+    return True
 
 
 def ping():
@@ -189,37 +307,93 @@ def question_get(uid, qid):
 
 
 # ── 기록 ───────────────────────────────────────────────
+# 출처(PR①): author_kind(self·external·unknown) × text_process(verbatim·structured·rewritten·generated·unknown).
+# 인용 적격 = self·verbatim·삭제 안 됨 — 후보(판단 근거)는 적격 기록에서만 만든다. 본문은 불변, 출처 판정만 정정한다.
 
-def record_add(uid, title, body, question_id=None, source="대화에서 입력"):
-    """body 는 받은 그대로 저장한다. 공백도 안 다듬는다."""
+AUTHOR_KINDS = ("self", "external", "unknown")
+TEXT_PROCESSES = ("verbatim", "structured", "rewritten", "generated", "unknown")
+_ELIGIBLE_SQL = "r.author_kind='self' AND r.text_process='verbatim' AND r.deleted_at IS NULL"
+INELIGIBLE_WHY = "이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요"
+_REC_COLS = "id,title,body,source,question_id,author_kind,text_process,created"
+
+
+def _eligible(r):
+    return r["author_kind"] == "self" and r["text_process"] == "verbatim" and r.get("deleted_at") is None
+
+
+def _check_provenance(author_kind, text_process):
+    if author_kind not in AUTHOR_KINDS:
+        raise CanonError("ARG-INVALID", f"author_kind 는 {', '.join(AUTHOR_KINDS)} 중 하나예요.")
+    if text_process not in TEXT_PROCESSES:
+        raise CanonError("ARG-INVALID", f"text_process 는 {', '.join(TEXT_PROCESSES)} 중 하나예요.")
+
+
+def record_add(uid, title, body, question_id=None, source="대화에서 입력", author_kind="self", text_process="verbatim"):
+    """body 는 받은 그대로 저장한다. 공백도 안 다듬는다.
+    출처 기본값 self·verbatim = MCP record_add(사용자가 대화에서 직접 준 말). 확인 못 한 출처는 호출자가 unknown 으로 넘긴다."""
     title = (title or "").strip()
     body = body or ""
     if not body.strip():
         raise CanonError("ARG-INVALID", "기록 내용이 비었어요.")
+    _check_provenance(author_kind, text_process)
     if not title:
         title = body.strip().splitlines()[0][:40]
     if question_id:
         question_get(uid, question_id)
     rid = new_id("r")
+    hist = [{"at": now().isoformat(), "by": "tool", "author_kind": author_kind, "text_process": text_process}]
     with tx() as c:
-        c.execute("INSERT INTO records (id,user_id,title,body,source,question_id) VALUES (%s,%s,%s,%s,%s,%s)",
-                  (rid, uid, title, body, source, question_id or None))
-        return _iso(_one(c, "SELECT id,title,body,source,question_id,created FROM records WHERE id=%s", (rid,)))
+        c.execute("INSERT INTO records (id,user_id,title,body,source,question_id,author_kind,text_process,provenance_history) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (rid, uid, title, body, source, question_id or None, author_kind, text_process, Jsonb(hist)))
+        return _iso(_one(c, f"SELECT {_REC_COLS} FROM records WHERE id=%s", (rid,)))
 
 
 def record_get(uid, rid):
     with tx() as c:
-        r = _one(c, "SELECT id,title,body,source,question_id,created FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, rid))
+        r = _one(c, f"SELECT {_REC_COLS} FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, rid))
     if not r:
         raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
     return _iso(r)
 
 
+def _record_in(c, uid, rid):
+    """같은 트랜잭션 안에서 읽기(출처 이력 포함)."""
+    return _iso(_one(c, f"SELECT {_REC_COLS},provenance_history FROM records WHERE user_id=%s AND id=%s", (uid, rid)))
+
+
+def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"):
+    """출처 판정 정정. 본문은 안 바뀐다. 같은 값이면 no-op.
+    후보가 있는 기록을 적격(self·verbatim) → 비적격으로 바꾸면 거절(PROVENANCE-LOCKED) — 이미 그 원문을 근거로 한 판단이 있다.
+    정정마다 provenance_history 에 {at, by, from, author_kind, text_process, reason} 한 줄. 후보 생성과 같은 행 잠금(FOR UPDATE)."""
+    _check_provenance(author_kind, text_process)
+    reason = (reason or "").strip()
+    if not reason:
+        raise CanonError("ARG-INVALID", "출처를 고치는 사유가 비었어요.")
+    with tx() as c:
+        r = _one(c, "SELECT id,author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL "
+                    "FOR UPDATE", (uid, rid))
+        if not r:
+            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
+        if (r["author_kind"], r["text_process"]) == (author_kind, text_process):
+            return _record_in(c, uid, rid)
+        if _eligible(r) and not (author_kind == "self" and text_process == "verbatim"):
+            n = _one(c, "SELECT count(*) AS n FROM candidates WHERE user_id=%s AND record_id=%s", (uid, rid))["n"]
+            if n:
+                raise CanonError("PROVENANCE-LOCKED", f"이 기록을 근거로 한 후보가 {n}개 있어 본인 원문이 아니라고 바꿀 수 없어요.",
+                                 "과거 오판정 정정은 별도 복구 작업으로 하세요.")
+        line = {"at": now().isoformat(), "by": by, "from": {"author_kind": r["author_kind"], "text_process": r["text_process"]},
+                "author_kind": author_kind, "text_process": text_process, "reason": reason}
+        c.execute("UPDATE records SET author_kind=%s, text_process=%s, provenance_history = provenance_history || %s "
+                  "WHERE user_id=%s AND id=%s", (author_kind, text_process, Jsonb([line]), uid, rid))
+        return _record_in(c, uid, rid)
+
+
 def records(uid, limit=50):
     out = []
     with tx() as c:
-        rows = _all(c, "SELECT id,title,body,source,question_id,notes,created FROM records WHERE user_id=%s AND deleted_at IS NULL "
-                       "ORDER BY created DESC LIMIT %s", (uid, limit))
+        rows = _all(c, "SELECT id,title,body,source,question_id,author_kind,text_process,notes,created FROM records "
+                       "WHERE user_id=%s AND deleted_at IS NULL ORDER BY created DESC LIMIT %s", (uid, limit))
     for r in rows:
         d = _iso(r)
         d["excerpt"] = _excerpt(d.pop("body"))
@@ -249,16 +423,24 @@ def _occurrences(body, quote):
 
 def candidates_propose(uid, record_id, question_id, items, origin):
     """items: [{"text","quote"}]. quote 는 원문에 글자 그대로 **한 곳**에만 있어야 저장한다.
-    0곳 → 버림, 2곳 이상 → 더 길게 인용하라고 버림. 같은 구간 재제출은 중복. 기록당 누적 3개까지."""
+    0곳 → 버림, 2곳 이상 → 더 길게 인용하라고 버림. 같은 구간 재제출은 중복. 기록당 누적 3개까지.
+    PR①: 부모 기록을 FOR UPDATE 로 잠그고 같은 트랜잭션에서 삭제·출처 적격·인용 일치·유일 출현을 본다(출처 정정과 경합 방지).
+    비적격(본인 원문 아님) 기록이면 전부 버린다. 새 후보 문장의 작성 주체 wording_by: origin=ai → 'ai', self → NULL(AI 가 다듬었는지 모름)."""
     if origin not in ("ai", "self"):
         raise CanonError("ARG-INVALID", "origin 은 ai 또는 self 예요.")
-    rec = record_get(uid, record_id)
     question_id = (question_id or "").strip() or None   # "" = 질문 없음 → NULL (화면은 기록별 묶음)
-    if question_id:
-        question_get(uid, question_id)
-    body = rec["body"]
+    wording_by = "ai" if origin == "ai" else None
     added, dropped = [], []
     with tx() as c:
+        rec = _one(c, "SELECT id,body,author_kind,text_process,deleted_at FROM records "
+                      "WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
+        if not rec:
+            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
+        if question_id:
+            question_get(uid, question_id)   # 기록 확인 뒤(남의 기록이면 RECORD-MISSING 이 먼저)
+        if not _eligible(rec):
+            return [], [{"text": (it.get("text") or "").strip(), "why": INELIGIBLE_WHY} for it in items or []]
+        body = rec["body"]
         have = _one(c, "SELECT count(*) AS n FROM candidates WHERE user_id=%s AND record_id=%s", (uid, record_id))["n"]
         for it in items or []:
             text = (it.get("text") or "").strip()
@@ -283,14 +465,16 @@ def candidates_propose(uid, record_id, question_id, items, origin):
                 dropped.append({"text": text, "why": f"기록 1편당 후보는 {MAX_CANDIDATES_PER_RECORD}개까지예요"})
                 continue
             cid = new_id("c")
-            c.execute("INSERT INTO candidates (id,user_id,question_id,record_id,text,quote,quote_start,quote_end,origin) "
-                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)", (cid, uid, question_id, record_id, text, quote, start, end, origin))
+            c.execute("INSERT INTO candidates (id,user_id,question_id,record_id,text,quote,quote_start,quote_end,origin,wording_by) "
+                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                      (cid, uid, question_id, record_id, text, quote, start, end, origin, wording_by))
             have += 1
             added.append(cid)
     return added, dropped
 
 
-_CAND_COLS = "id,question_id,record_id,text,quote,quote_start,quote_end,origin,decision AS status,edited_by_user,created,updated"
+_CAND_COLS = ("id,question_id,record_id,text,quote,quote_start,quote_end,origin,decision AS status,edited_by_user,"
+              "revision,wording_by,wording_approved,created,updated")
 
 
 def candidate_get(uid, cid):
@@ -304,7 +488,7 @@ def candidate_get(uid, cid):
 def candidates(uid, question_id=None, status=None):
     """status 인자는 도구 계약 이름. 내부 컬럼은 decision. 지워진 기록의 후보는 빠진다."""
     sql = (f"SELECT {_CAND_COLS} FROM candidates c WHERE c.user_id=%s "
-           "AND EXISTS (SELECT 1 FROM records r WHERE r.id=c.record_id AND r.deleted_at IS NULL)")
+           "AND EXISTS (SELECT 1 FROM records r WHERE r.user_id=c.user_id AND r.id=c.record_id AND r.deleted_at IS NULL)")
     args = [uid]
     if question_id:
         sql += " AND c.question_id=%s"; args.append(question_id)
@@ -315,53 +499,96 @@ def candidates(uid, question_id=None, status=None):
         return [_iso(r) for r in _all(c, sql, args)]
 
 
-def candidate_decide(uid, cid, action, text=None):
-    """confirm / exclude / pending(확정 취소) / edit / edit_confirm(웹 전용). 바꾸기 전 결정·문장을 이력에 남긴다.
-    같은 결정 반복은 no-op. 확정된 문장을 고치면 pending 으로 돌아간다(새 문장 확정은 별도 결정).
-    edit_confirm 은 edit → confirm 을 한 트랜잭션으로 한다(이력 두 줄). 같은 문장 + 이미 confirmed 면 no-op."""
+def _cand_snapshot(r):
+    """candidate_history.prev_state v2 — 변경 전 현재값(문장·결정·문장 주체·승인·편집 여부·질문 연결)."""
+    return {"schema_version": 2, "text": r["text"], "decision": r["decision"], "wording_by": r["wording_by"],
+            "wording_approved": r["wording_approved"], "edited_by_user": r["edited_by_user"], "question_id": r["question_id"]}
+
+
+def _cand_lock(c, uid, cid):
+    r = _one(c, "SELECT * FROM candidates WHERE user_id=%s AND id=%s FOR UPDATE", (uid, cid))
+    if not r:
+        raise CanonError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
+    return r
+
+
+def _cand_bump(c, uid, r, action, sets, args):
+    """변경 한 번 = 변경 전 스냅샷 이력 한 줄(prev_revision = 지금 revision) + 현재값 변경 + revision+1. 바뀐 행을 돌려준다."""
+    c.execute("INSERT INTO candidate_history (user_id,candidate_id,action,prev_revision,prev_state) VALUES (%s,%s,%s,%s,%s)",
+              (uid, r["id"], action, r["revision"], Jsonb(_cand_snapshot(r))))
+    c.execute(f"UPDATE candidates SET {sets}, revision=revision+1, updated=now() WHERE user_id=%s AND id=%s",
+              (*args, uid, r["id"]))
+    return _cand_lock(c, uid, r["id"])
+
+
+def candidate_decide(uid, cid, action, text=None, expected_revision=None, wording_by=None):
+    """confirm / exclude / pending(확정 취소) / edit / edit_confirm(웹 전용). 바꾸기 전 상태를 이력에 남기고 revision+1.
+    같은 결정 반복은 no-op(revision 그대로). 확정된 문장을 고치면 pending 으로 돌아간다(새 문장 확정은 별도 결정).
+    edit_confirm 은 edit → confirm 을 한 트랜잭션으로 한다(이력 두 줄, revision +2). 같은 문장 + 이미 confirmed 면 no-op.
+    expected_revision: 주면(웹) 지금 revision 과 다를 때 CONFLICT. None 이면(MCP 도구) 검사 안 함.
+    문장 수정은 wording_approved=false, wording_by=인자(웹 편집 = self, MCP edit = 모름 NULL). 승인(wording_approved=true)은 이번 범위 밖."""
     if action not in ("confirm", "exclude", "pending", "edit", "edit_confirm"):
         raise CanonError("ARG-INVALID", "action 은 confirm·exclude·pending·edit 중 하나예요.")
+    if wording_by not in (None, "self", "ai"):
+        raise CanonError("ARG-INVALID", "wording_by 는 self 또는 ai 예요.")
     with tx() as c:
-        r = _one(c, "SELECT * FROM candidates WHERE user_id=%s AND id=%s FOR UPDATE", (uid, cid))
-        if not r:
-            raise CanonError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
-        if action == "edit_confirm":
+        r = _cand_lock(c, uid, cid)
+        if expected_revision is not None and r["revision"] != expected_revision:
+            raise _conflict(f"지금 revision {r['revision']}")
+        if action in ("edit", "edit_confirm"):
             new = (text or "").strip()
             if not new:
                 raise CanonError("ARG-INVALID", "고친 문장이 비었어요.")
-            decision = r["decision"]
             if new != r["text"]:
-                c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
-                          (cid, "edit", decision, r["text"]))
-                c.execute("UPDATE candidates SET text=%s, edited_by_user=true, decision='pending', updated=now() WHERE id=%s", (new, cid))
-                decision = "pending"
-            if decision != "confirmed":
-                c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
-                          (cid, "confirm", decision, new))
-                c.execute("UPDATE candidates SET decision='confirmed', updated=now() WHERE id=%s", (cid,))
-        elif action == "edit":
-            new = (text or "").strip()
-            if not new:
-                raise CanonError("ARG-INVALID", "고친 문장이 비었어요.")
-            if new == r["text"]:
-                return candidate_get(uid, cid)
-            c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
-                      (cid, action, r["decision"], r["text"]))
-            c.execute("UPDATE candidates SET text=%s, edited_by_user=true, decision='pending', updated=now() WHERE id=%s", (new, cid))
+                r = _cand_bump(c, uid, r, "edit",
+                               "text=%s, edited_by_user=true, decision='pending', wording_by=%s, wording_approved=false",
+                               (new, wording_by))
+            if action == "edit_confirm" and r["decision"] != "confirmed":
+                r = _cand_bump(c, uid, r, "confirm", "decision='confirmed'", ())
         else:
             target = CAND_ACTIONS[action]
-            if target == r["decision"]:
-                return candidate_get(uid, cid)
-            c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
-                      (cid, action, r["decision"], r["text"]))
-            c.execute("UPDATE candidates SET decision=%s, updated=now() WHERE id=%s", (target, cid))
+            if target != r["decision"]:
+                _cand_bump(c, uid, r, action, "decision=%s", (target,))
+    return candidate_get(uid, cid)
+
+
+def candidate_restore(uid, cid, history_id, expected_revision=None):
+    """이력 한 줄의 변경 전 상태로 되돌린다. 되돌리기도 새 변경 — 지금 상태를 새 이력(action=restore)으로 남기고 revision+1.
+    v2 스냅샷: 문장·결정·문장 주체·편집 여부·질문 연결을 되살린다. v1(PR① 전 부분 이력): 문장·결정만, wording_by=NULL.
+    승인(wording_approved)은 어느 쪽이든 false — 승인은 그 revision 에 대한 것이라 새 revision 으로 넘기지 않는다.
+    MCP 도구엔 안 붙인다(웹 API 는 다음 PR)."""
+    with tx() as c:
+        r = _cand_lock(c, uid, cid)
+        if expected_revision is not None and r["revision"] != expected_revision:
+            raise _conflict(f"지금 revision {r['revision']}")
+        try:
+            hid = int(history_id)
+        except (TypeError, ValueError):
+            raise CanonError("ARG-INVALID", "history_id 는 숫자예요.")
+        h = _one(c, "SELECT id,prev_revision,prev_state FROM candidate_history WHERE user_id=%s AND candidate_id=%s AND id=%s",
+                 (uid, cid, hid))
+        if not h:
+            raise CanonError("ARG-INVALID", f"이 후보의 이력을 찾을 수 없어요: {history_id}")
+        st = h["prev_state"]
+        if st.get("decision") not in ("pending", "confirmed", "excluded") or not st.get("text"):
+            raise CanonError("ARG-INVALID", "이 이력은 되돌릴 수 있는 모양이 아니에요.")
+        if st.get("schema_version") == 2:
+            _cand_bump(c, uid, r, "restore",
+                       "text=%s, decision=%s, wording_by=%s, wording_approved=false, edited_by_user=%s, question_id=%s",
+                       (st["text"], st["decision"], st.get("wording_by"), bool(st.get("edited_by_user")), st.get("question_id")))
+        else:
+            _cand_bump(c, uid, r, "restore", "text=%s, decision=%s, wording_by=NULL, wording_approved=false",
+                       (st["text"], st["decision"]))
     return candidate_get(uid, cid)
 
 
 def candidate_history(uid, cid):
+    """이력(오래된 순). 기존 키 prev_text·prev_status 는 prev_state 에서 꺼내 호환, PR① 키 id·prev_revision·prev_state 추가."""
     candidate_get(uid, cid)
     with tx() as c:
-        rows = _all(c, "SELECT action,prev_decision AS prev_status,prev_text,at FROM candidate_history WHERE candidate_id=%s ORDER BY id", (cid,))
+        rows = _all(c, "SELECT id,action,prev_state->>'decision' AS prev_status,prev_state->>'text' AS prev_text,"
+                       "prev_revision,prev_state,at FROM candidate_history WHERE user_id=%s AND candidate_id=%s ORDER BY id",
+                    (uid, cid))
     return [_iso(r) for r in rows]
 
 
@@ -983,12 +1210,14 @@ def item_propose(uid, object_id, schema_revision, item_id, expected_revision, co
 
 
 def _promotion(c, uid, policy, links):
-    """승격 조건 충족 여부(사실만). 판단은 사용자. 확정·지워지지 않은 기록의 후보만 센다."""
+    """승격 조건 충족 여부(사실만). 판단은 사용자. 확정 + 인용 적격 기록(본인 원문·삭제 안 됨)의 후보만 센다.
+    PR①: 출처 미확인(unknown 등) 기록의 후보는 목록엔 보이지만 근거 수에서 빠진다(raw §4 「현재 근거 집계」)."""
     p = {**DEFAULT_PROMOTION, **((policy or {}).get("promotion") or {})}
     claim_ids = [ln["target_id"] for ln in links if ln["field_key"] == p["claim_field"] and ln["target_kind"] == "candidate"]
     ok_ids = set()
     if claim_ids:
-        ok_ids = {r["id"] for r in _all(c, "SELECT c.id FROM candidates c JOIN records r ON r.id=c.record_id AND r.deleted_at IS NULL "
+        ok_ids = {r["id"] for r in _all(c, "SELECT c.id FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
+                                           f"AND {_ELIGIBLE_SQL} "
                                            "WHERE c.user_id=%s AND c.id = ANY(%s) AND c.decision='confirmed'", (uid, claim_ids))}
     events = 0
     if p["distinct_events_min"] > 0 and p.get("event_field"):
