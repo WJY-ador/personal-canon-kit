@@ -1982,7 +1982,20 @@ def test_consent_versions():
     assert web.read_consent_versions(web.GUIDES_DIR, dev=False) == db.CONSENT_VERSIONS
     with tempfile.TemporaryDirectory() as t:
         d = Path(t)
-        assert web.read_consent_versions(d, dev=False) == {}, "문서가 없으면 게이트 없음(열린 채 시작)"
+        assert web.read_consent_versions(d, dev=True) == {}, "DEV: 문서가 없으면 게이트 없음(열린 채 시작)"
+        try:
+            web.read_consent_versions(d, dev=False)
+            raise AssertionError("비DEV 는 처리방침(11-privacy.md) 없이 뜨면 안 된다")
+        except SystemExit as e:
+            assert str(e) == "동의 문서 11-privacy.md 가 없어요. 운영은 처리방침 없이 뜨지 않아요.", e
+        (d / web.PRIVACY_FILE).mkdir()   # 읽기 오류(없음이 아님) — 같은 이름의 디렉터리
+        assert web.read_consent_versions(d, dev=True) == {}, "DEV: 못 읽는 문서는 로그 + 제외"
+        try:
+            web.read_consent_versions(d, dev=False)
+            raise AssertionError("비DEV 는 못 읽는 동의 문서로 뜨면 안 된다")
+        except SystemExit as e:
+            assert web.PRIVACY_FILE in str(e) and "IsADirectoryError" in str(e), e
+        (d / web.PRIVACY_FILE).rmdir()
         (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n버전 머리글 없음\n", encoding="utf-8")
         assert web.read_consent_versions(d, dev=True) == {}, "DEV: 버전 없는 문서는 뺀다"
         try:
@@ -1990,6 +2003,18 @@ def test_consent_versions():
             raise AssertionError("비DEV 는 버전 없는 동의 문서로 뜨면 안 된다")
         except SystemExit as e:
             assert web.PRIVACY_FILE in str(e), e
+        # 머리글은 줄 머리 `vN · 만 — 줄 중간 예시는 버전이 아니다 · 첫 20줄에 둘이면 비DEV 거부, DEV 는 첫 것
+        (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n머리글 예: `v9` 처럼 적는다.\n`v8` 은 줄 머리지만 가운뎃점이 없다.\n"
+                                          "`v1 · 2027-01-01` 시행. 예: `v9` 는 예시.\n", encoding="utf-8")
+        assert web.read_consent_versions(d, dev=False) == {"privacy": "v1"}
+        (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v1 · 2027-01-01` 시행.\n\n`v1 · 2027-02-01` 시행.\n", encoding="utf-8")
+        try:
+            web.read_consent_versions(d, dev=False)
+            raise AssertionError("비DEV 는 머리글이 둘인 동의 문서로 뜨면 안 된다")
+        except SystemExit as e:
+            assert web.PRIVACY_FILE in str(e), e
+        (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v4 · 2027-01-01` 시행.\n\n`v5 · 2027-02-01` 시행.\n", encoding="utf-8")
+        assert web.read_consent_versions(d, dev=True) == {"privacy": "v4"}, "DEV: 둘이면 첫 것"
         (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v3 · 2027-01-01` 시행.\n", encoding="utf-8")
         (d / "12-terms.md").write_text("# 약관\n\n`v2 · 2027-01-01`\n", encoding="utf-8")
         assert web.read_consent_versions(d, dev=False) == {"privacy": "v3", "terms": "v2"}, "terms 문서가 생기면 자동으로 둘"
@@ -2004,7 +2029,7 @@ def test_consent_versions():
     finally:
         db.set_consent_versions(real)
     db.require_consent(tester)
-    print("OK — α2 동의 버전(guides 머리글 v1·비DEV 기동 거부·terms 자동·버전 올리면 재동의) 통과")
+    print("OK — α2 동의 버전(guides 머리글 v1·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동·버전 올리면 재동의) 통과")
 
 
 async def test_consent_gate():
@@ -2158,6 +2183,21 @@ async def test_daily_limits():
         assert e.message == "오늘 결정은 300개까지예요.", e.message
         expect("RATE-LIMIT", db.item_decide, u, "i_none", 0, None, "confirm")   # 항목 결정도 같은 한도(조회 전에 거절)
         assert db.candidate_get(u, cid)["status"] == "confirmed"
+        # edit_confirm 은 이력 2줄 — 299 에서 거절, 298 에서 통과(이력 300)
+        def n_hist():
+            with db.tx() as c:
+                return c.execute(f"SELECT count(*) AS n FROM candidate_history WHERE user_id=%s AND at >= {db._KST_TODAY}", (u,)).fetchone()["n"]
+        assert n_hist() == 300, n_hist()
+        _bulk("DELETE FROM candidate_history WHERE id = (SELECT min(id) FROM candidate_history WHERE user_id=%s AND prev_revision > 1000)", (u,))
+        assert n_hist() == 299
+        e = expect("RATE-LIMIT", db.candidate_decide, u, cid, "edit_confirm", "결정 고침")
+        assert e.message == "오늘 결정은 300개까지예요.", e.message
+        assert n_hist() == 299 and db.candidate_get(u, cid)["text"] == "결정"
+        _bulk("DELETE FROM candidate_history WHERE id = (SELECT min(id) FROM candidate_history WHERE user_id=%s AND prev_revision > 1000)", (u,))
+        assert n_hist() == 298
+        got = db.candidate_decide(u, cid, "edit_confirm", "결정 고침")
+        assert got["status"] == "confirmed" and got["text"] == "결정 고침", got
+        assert n_hist() == 300, n_hist()
 
         # 제안 100 — 오브젝트 정의 + 항목. 새 행을 만드는 경로만 센다(기존 오브젝트의 draft 갱신은 안 센다)
         u = U["proposals"]
@@ -2201,7 +2241,7 @@ async def test_daily_limits():
         db.ADMIN_USER_IDS = real_admins
         site.dev, site.dev_user = True, TESTER
         os.environ["CANON_DEV_USER"] = TESTER
-    print("OK — α2 일일 한도(기록 50·질문 50·후보 148+3/147+3·결정 300·제안 100·관리자 같음·KST 날짜 경계·합산) 통과")
+    print("OK — α2 일일 한도(기록 50·질문 50·후보 148+3/147+3·결정 300·edit_confirm 2줄 299 거절/298 통과·제안 100·관리자 같음·KST 날짜 경계·합산) 통과")
 
 
 def _usage_row(day, uid, name, code):
@@ -2346,6 +2386,58 @@ def test_alpha2_delete():
     print("OK — α2 계정 삭제(usage_daily·agreements 0·동의 캐시 제거) 통과")
 
 
+def test_alpha2_delete_lock():
+    """usage_flush 가 _flush_lock 을 잡은(INSERT 직전) 동안 user_delete 는 블록된다 — flush 가 올린 그 uid 행을 delete 가 지운다.
+    user_delete 뒤 메모리 _usage 에 그 uid 키 0."""
+    import threading
+    from contextlib import contextmanager
+    uid = db.user_by_email(LIM_EMAIL["records"])["id"]
+    today = db._dt.datetime.now(db.KST).date()
+    db.usage_flush()
+    assert _agreements(uid), "동의한 사용자여야 flush 가 자기 uid 로 올린다"
+    entered, go, errs = threading.Event(), threading.Event(), []
+    real_conn = db._usage_conn
+
+    @contextmanager
+    def held_conn():   # flush 가 잠금을 잡고 INSERT 직전에서 멈춘다(풀 연결은 아직 안 잡는다)
+        entered.set()
+        assert go.wait(10), "go 신호가 오지 않았다"
+        with real_conn() as c:
+            yield c
+
+    def run(fn, *a):
+        try:
+            fn(*a)
+        except BaseException as e:   # noqa: BLE001 — 스레드 예외를 본 스레드로
+            errs.append(e)
+
+    db.usage_count(uid, "record_add", "OK")
+    try:
+        db._usage_conn = held_conn
+        tf = threading.Thread(target=run, args=(db.usage_flush,))
+        tf.start()
+        assert entered.wait(5), "flush 가 INSERT 단계에 오지 않았다"
+        assert db._flush_lock.locked()
+        db.usage_count(uid, "state_get", "OK")   # 삭제 전 메모리에 남은 키 — delete 가 지워야 한다
+        td = threading.Thread(target=run, args=(db.user_delete, uid))
+        td.start()
+        td.join(0.5)
+        assert td.is_alive(), "flush 가 잠금을 잡은 동안 user_delete 가 블록되지 않았다"
+        go.set()
+        tf.join(10)
+        td.join(10)
+        assert not tf.is_alive() and not td.is_alive(), "flush·delete 가 끝나지 않았다"
+    finally:
+        go.set()
+        db._usage_conn = real_conn
+    assert not errs, errs
+    assert not [k for k in db.usage_snapshot() if k[1] == uid], "user_delete 뒤 메모리 _usage 에 그 uid 키가 남았다"
+    assert _usage_row(today, uid, "record_add", "OK") == 0, "flush 가 올린 삭제 uid 행이 남았다"
+    with db.tx() as c:
+        assert c.execute("SELECT count(*) AS n FROM users WHERE id=%s", (uid,)).fetchone()["n"] == 0
+    print("OK — α2 삭제 잠금(flush 가 잠금 잡은 동안 user_delete 블록·삭제 uid 행 0·메모리 키 0) 통과")
+
+
 def consent_setup():
     """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
     for email in TEST_EMAILS:
@@ -2378,6 +2470,7 @@ async def run():
         await test_daily_limits()
         await test_usage()
         test_alpha2_delete()
+        test_alpha2_delete_lock()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
