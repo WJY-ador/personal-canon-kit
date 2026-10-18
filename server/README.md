@@ -36,7 +36,7 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
 운영엔 `CANON_DEV`·`CANON_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
 확인: `curl https://<주소>/health` → `{"ok":true,"db":true}` · 토큰 없이 `POST /mcp` → 401 + `WWW-Authenticate` · `GET /.well-known/oauth-protected-resource/mcp` → 200.
 웹 로그인 확인: `GET /` 시작 화면(세션 있으면 `/app`) → [로그인] = `/login` → AuthKit → `/auth/callback` → `/app` 에 이메일 표시. `GET /app` 세션 없음 → 302 `/`.
-로그아웃: `POST /logout` 이 쿠키를 지우고 `redirect` 를 준다 — 세션에 AuthKit `sid` 가 있으면 WorkOS `user_management/sessions/logout?session_id&return_to=/?out=1`(AuthKit 세션까지 종료), 없으면 `/?out=1`. 운영 확인 필요: 토큰에 `sid` 가 오는지, WorkOS 가 `return_to` 를 지키는지.
+로그아웃: `POST /logout` 이 쿠키를 지우고 `redirect: /?out=1` 을 준다. AuthKit 세션은 끝낼 엔드포인트가 없다(end_session 없음, `user_management/sessions/logout` 은 Connect 토큰의 `sid=app_consent_…` 에 안 맞아 멈춤 — 2026-10-18 실측). 대신 `/?out=1` 의 [로그인] 은 `/login?fresh=1` → authorize 에 `prompt=login` 을 붙여 로그인 폼을 강제한다(실측: 세션 있어도 폼 뜸).
 WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없다. Connect > Configuration 의 MCP resource indicator = `<주소>/mcp` 는 그대로.
 
 ## 웹 (`web.py` · `app.html`)
