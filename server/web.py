@@ -218,12 +218,12 @@ def render_help(docs: dict) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>내 노트 — 도움말</title>
+<title>대시보드 — 도움말</title>
 <style>{css}{_HELP_CSS}</style>
 </head>
 <body>
 <div class="wrap">
-  <header class="top"><div class="name"><a href="/">내 노트</a> <span>— 도움말</span></div><!--nav--></header>
+  <header class="top"><div class="name"><a href="/">대시보드</a> <span>— 도움말</span></div><!--nav--></header>
   <nav class="toc" aria-label="목차">{"".join(toc_html)}</nav>
   <main>
 {chr(10).join(body_html)}
@@ -324,7 +324,7 @@ class Web:
             return _page("도움말을 찾지 못했어요", "<p>서버에 도움말 문서(guides/09-hosted-start.md · 10-words.md)가 없어요. 운영자에게 알려 주세요.</p>", 503)
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
-        nav = '<a class="btn" href="/app">노트로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
+        nav = '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
         return HTMLResponse(self.help_html.replace("<!--nav-->", nav, 1), headers={"cache-control": "no-store"})
 
     # ── 로그인 ─────────────────────────────────────────
