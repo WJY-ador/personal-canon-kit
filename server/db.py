@@ -1549,7 +1549,8 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
 
 # ── 문의 데스크 (desk-0) ────────────────────────────────
 # 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
-# 사용자는 「내 문의」에서 상태만 본다. 답은 메일로만, 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
+# 사용자는 「내 문의」에서 처리 상태만 본다(답변 본문 없음). 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
+# 관리자(ADMIN_USER_IDS)는 웹 「문의함」에서 전체 문의·메모를 보고 상태·메모를 바꾼다. 감사 테이블은 β — 지금은 tickets.updated 만 갱신한다.
 
 TICKET_KINDS = ("bug", "request", "question", "privacy")
 TICKET_STATUSES = ("open", "ack", "doing", "done", "wontfix")
@@ -1557,6 +1558,8 @@ TICKET_PAGES = ("today", "question", "record", "structure", "map", "review", "st
 TICKET_DAILY_USER = 10             # 사용자 하루(KST) 10건
 TICKET_DAILY_ALL = 100             # 전역 하루(KST) 100건
 TICKET_KEEP_DAYS = 180             # 종결 뒤 보관 일수
+TICKET_ADMIN_LIST = 100            # 관리자 「문의함」 최근 건수
+LIMIT_ADMIN_NOTE = 2 * KB          # 운영자 메모(바이트)
 NOTICE = "이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요."
 # 오분류된 개인정보 요청을 SQL 한 줄로 거르는 표식. kind 가 privacy 가 아닐 때만 단다.
 _PRIVACY_HINT = re.compile(r"삭제|탈퇴|지워|열람|내 ?정보")
@@ -1597,6 +1600,68 @@ def tickets_mine(uid, limit=50):
     with tx() as c:
         return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated FROM tickets WHERE user_id=%s "
                                          "ORDER BY created DESC LIMIT %s", (uid, limit))]
+
+
+def is_admin(uid) -> bool:
+    """관리자 = env CANON_ADMIN_USER_IDS 의 내부 user id(main 이 시작 때 채운다)."""
+    return bool(uid) and uid in ADMIN_USER_IDS
+
+
+def tickets_admin_counts():
+    """관리자 띠. open = 아직 확인 안 한 문의(status open) · privacy_open = 종결 안 된 개인정보 요청(10일 시계가 도는 것)."""
+    with tx() as c:
+        return dict(_one(c, "SELECT count(*) FILTER (WHERE status='open') AS open, "
+                            "count(*) FILTER (WHERE kind='privacy' AND status NOT IN ('done','wontfix')) AS privacy_open FROM tickets"))
+
+
+_TICKET_ADMIN_COLS = ("SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.hint,t.admin_note,"
+                      "t.created,t.updated,t.closed_at,u.email FROM tickets t JOIN users u ON u.id=t.user_id ")
+
+
+def tickets_all(limit=TICKET_ADMIN_LIST):
+    """관리자 「문의함」 — 전체 사용자 문의 최근 100건. 이메일·admin_note·hint 포함. 호출하는 쪽이 관리자인지 먼저 본다."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, _TICKET_ADMIN_COLS + "ORDER BY t.created DESC LIMIT %s", (limit,))]
+
+
+def _ticket_admin_row(c, tid):
+    r = _one(c, _TICKET_ADMIN_COLS + "WHERE t.id=%s", (tid,))
+    if not r:
+        raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+    return _iso(r)
+
+
+def ticket_set_status(tid, status):
+    """관리자 상태 변경. 다섯 상태 사이 어느 쪽으로든 옮긴다. 종결(done·wontfix)이면 closed_at = 처음 종결한 때(종결끼리 옮겨도 유지),
+    다시 열면 NULL(파기 대상에서 빠진다). updated 갱신. 감사 테이블은 β.
+    kind=privacy 면 같은 트랜잭션에서 privacy_log(ticket_id) — 종결: notified=KST 오늘(없을 때만)·result done→done/wontfix→refused,
+    다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다."""
+    if status not in TICKET_STATUSES:
+        raise CanonError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
+    with tx() as c:
+        r = _one(c, "UPDATE tickets SET status=%s, updated=now(), closed_at = CASE WHEN %s IN ('done','wontfix') "
+                    "THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=%s RETURNING kind", (status, status, str(tid)))
+        if not r:
+            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        if r["kind"] == "privacy":
+            if status in ("done", "wontfix"):
+                c.execute("UPDATE privacy_log SET notified = COALESCE(notified, (now() AT TIME ZONE 'Asia/Seoul')::date), result=%s "
+                          "WHERE ticket_id=%s", ("done" if status == "done" else "refused", str(tid)))
+            else:
+                c.execute("UPDATE privacy_log SET result=NULL WHERE ticket_id=%s", (str(tid),))
+        return _ticket_admin_row(c, str(tid))
+
+
+def ticket_set_note(tid, note):
+    """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신."""
+    if not isinstance(note, str):
+        raise CanonError("ARG-INVALID", "메모는 문자열이에요.")
+    check_len("admin_note", note, LIMIT_ADMIN_NOTE)
+    with tx() as c:
+        n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s", (note, str(tid))).rowcount
+        if not n:
+            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        return _ticket_admin_row(c, str(tid))
 
 
 def tickets_purge():

@@ -435,6 +435,8 @@ class Web:
             return err
         st, me = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid)))
         st["user"] = {"email": me["email"]}
+        if db.is_admin(uid):   # 관리자만 키가 있다 — 비관리자 응답엔 admin_tickets 자체가 없다. MCP state_get 에는 넣지 않는다
+            st["admin_tickets"] = await run_in_threadpool(db.tickets_admin_counts)
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
     async def api_journal(self, request):
@@ -520,12 +522,15 @@ class Web:
         return JSONResponse(out)
 
     async def api_feedback(self, request):
-        """문의(desk-0). GET = 「내 문의」(본인 글·상태, 운영자 메모 없음) · POST {kind, text, page} = 접수.
-        POST 는 세션 + Origin. 길이는 write_gate(전역 DB 크기는 면제 — QUOTA_EXEMPT), 하루 한도는 db.ticket_add."""
+        """문의(desk-0). GET = 「내 문의」(본인 글·상태, 운영자 메모 없음) — 관리자면 「문의함」(전체 최근 100건·이메일·메모 + admin_tickets)
+        · POST {kind, text, page} = 접수. POST 는 세션 + Origin. 길이는 write_gate(전역 DB 크기는 면제 — QUOTA_EXEMPT), 하루 한도는 db.ticket_add."""
         uid, err = await self._need(request)
         if err:
             return err
         if request.method == "GET":
+            if db.is_admin(uid):
+                out, counts = await run_in_threadpool(lambda: (db.tickets_all(), db.tickets_admin_counts()))
+                return JSONResponse({"tickets": out, "admin": True, "admin_tickets": counts}, headers={"cache-control": "no-store"})
             out = await run_in_threadpool(db.tickets_mine, uid)
             return JSONResponse({"tickets": out}, headers={"cache-control": "no-store"})
         if not self.same_origin(request):
@@ -548,6 +553,37 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse({**out, "notice": db.NOTICE})
 
+    async def _admin_write(self, request, fields, fn):
+        """관리자 문의 쓰기 공통 — 세션(401) → Origin(403) → 관리자(403) → JSON 본문 문자열 필드 → fn(...).
+        감사 테이블은 β. 지금은 tickets.updated 만 바뀐다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        if not db.is_admin(uid):
+            return JSONResponse({"code": "FORBIDDEN", "msg": "운영자만 할 수 있어요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            args = [body.get(f) for f in fields]
+            assert all(isinstance(a, str) for a in args)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
+        try:
+            out = await run_in_threadpool(fn, *args)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
+        return JSONResponse(out)
+
+    async def api_feedback_status(self, request):
+        """관리자 — 문의 상태 바꾸기 {id, status}. 종결이면 closed_at, 다시 열면 NULL(db.ticket_set_status)."""
+        return await self._admin_write(request, ("id", "status"), db.ticket_set_status)
+
+    async def api_feedback_note(self, request):
+        """관리자 — 운영자 메모 {id, admin_note}(2KB 바이트). 사용자에게 안 보인다."""
+        return await self._admin_write(request, ("id", "admin_note"), db.ticket_set_note)
+
     def routes(self) -> list[Route]:
         return [
             Route("/", self.root),
@@ -562,4 +598,6 @@ class Web:
             Route("/api/item", self.api_item),
             Route("/api/item/decide", self.api_item_decide, methods=["POST"]),
             Route("/api/feedback", self.api_feedback, methods=["GET", "POST"]),
+            Route("/api/feedback/status", self.api_feedback_status, methods=["POST"]),
+            Route("/api/feedback/note", self.api_feedback_note, methods=["POST"]),
         ]

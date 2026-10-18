@@ -4,8 +4,8 @@
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
 환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
           · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
-          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 에서만 예외)
-          · CANON_CONTACT(운영 필수 — 로그인 못 하는 사람의 문의·개인정보 요청 메일 주소. 비어 있으면 시작 거부)
+          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 예외 + 웹 「문의함」·새 문의 띠·문의 상태/메모 변경)
+          · CANON_CONTACT(선택 — 처리방침의 보조 메일. 없어도 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나)
 """
 import functools
 import inspect
@@ -56,8 +56,6 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
 if not DEV and os.environ.get("CANON_DEV_USER"):
     raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
-if not DEV and not os.environ.get("CANON_CONTACT", "").strip():
-    raise SystemExit("CANON_CONTACT 가 없어요. 로그인 못 하는 사람의 문의 경로(메일 주소)라 운영은 이것 없이 뜨지 않아요.")
 # 시작 때 한 번 읽는다. 비어 있으면 예외 없음.
 db.ADMIN_USER_IDS = frozenset(x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip())
 
@@ -345,7 +343,7 @@ def feedback_send(
     tool: Annotated[str, Field(description="문제가 난 이 서버의 도구 이름(예: record_add). 없으면 빈 문자열")] = "",
 ) -> dict:
     """운영자에게 문의를 보낸다. 보낼 글을 사용자에게 먼저 그대로 보여 주고, 사용자가 확인한 뒤에만 부른다.
-    글은 서버에 저장되고 운영자가 직접 읽는다. 처리 상태는 대시보드 「내 문의」에서 보이고, 답은 메일로 간다. 응답의 notice 를 사용자에게 그대로 전한다."""
+    글은 서버에 저장되고 운영자가 직접 읽는다. 처리 상태는 대시보드 「내 문의」에서 보인다. 응답의 notice 를 사용자에게 그대로 전한다."""
     tool = tool if mcp._tool_manager.get_tool(tool) is not None else ""   # 이 서버의 도구 이름만 남긴다 — 자유 문자열은 저장하지 않는다
     t = db.ticket_add(uid_of(ctx), kind, text, "mcp", tool=tool)
     return {"id": t["id"], "kind": t["kind"], "status": t["status"], "text": text,

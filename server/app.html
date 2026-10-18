@@ -382,6 +382,18 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 .desktbl th { color: var(--muted); font-weight: 600; font-size: .74rem; white-space: nowrap; }
 .desktbl td:nth-child(-n+3) { white-space: nowrap; }
 @media (min-width: 1000px) { .desk .paper { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
+/* 관리자 「문의함」 — 표가 넓어 한 단, 표가 먼저 */
+@media (min-width: 1000px) { .desk.admin .paper { grid-template-columns: minmax(0, 1fr); } }
+.desk.admin .paper > div { order: -1; }
+.desktbl.admin td.txt { white-space: pre-wrap; overflow-wrap: anywhere; min-width: 14rem; }
+.desktbl.admin td.note { min-width: 12rem; }
+.desktbl.admin td.note textarea { display: block; width: 100%; font: inherit; font-size: .8rem; padding: .3rem .4rem; margin-bottom: .25rem;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); resize: vertical; }
+.desktbl.admin select { font: inherit; font-size: .8rem; min-height: 32px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--ink); }
+.desktbl.admin .hintflag { color: var(--warn); font-size: .74rem; }
+#desk-admin-status { font-size: .82rem; color: var(--muted); margin: .4rem 0 0; }
+#desk-admin-status:empty, #desk-admin-error:empty { margin: 0; }
+.band .refresh { margin-left: .5rem; }
 @media (max-width: 700px) { #desk-text { font-size: 16px; } .desktbl th, .desktbl td { padding: .4rem .3rem; } }
 
 @media (max-width: 900px) {
@@ -422,6 +434,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <div class="axislegend" id="legend"></div></div>
   <div class="who"><span id="who"></span><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><button class="refresh" id="logout">로그아웃</button></div>
 </div></header>
+<div class="wrap bands" id="admin-band" hidden></div>
 <nav class="tabs" id="nav" aria-label="내 탭"></nav>
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
@@ -429,7 +442,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 <section class="wrap desk" id="desk" aria-labelledby="desk-title"><div class="paper">
   <form id="desk-form" novalidate>
     <h2 class="sh" id="desk-title">문의</h2>
-    <p class="hint">안 되는 것·바라는 것·궁금한 것을 운영자에게 보내요. 답은 가입한 메일로 가요.</p>
+    <p class="hint">안 되는 것·바라는 것·궁금한 것을 운영자에게 보내요. 처리 상태는 「내 문의」에서 보여요.</p>
     <fieldset class="deskkinds"><legend class="sr">문의 종류</legend>
       <label><input type="radio" name="kind" value="bug" checked> 버그</label>
       <label><input type="radio" name="kind" value="request"> 요청</label>
@@ -444,11 +457,12 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <p id="desk-status" role="status"></p><p id="desk-error" role="alert" class="blocked"></p>
   </form>
   <div>
-    <h2 class="sh">내 문의</h2>
-    <p class="hint">처리 상태만 보여요. 답은 메일로 가요.</p>
-    <div class="desktbl-wrap"><table class="desktbl"><thead><tr><th scope="col">접수일</th><th scope="col">종류</th><th scope="col">상태</th><th scope="col">글</th></tr></thead>
+    <h2 class="sh" id="desk-list-title">내 문의</h2>
+    <p class="hint" id="desk-list-hint">처리 상태만 보여요.</p>
+    <div class="desktbl-wrap"><table class="desktbl" id="desk-tbl"><thead id="desk-head"><tr><th scope="col">접수일</th><th scope="col">종류</th><th scope="col">상태</th><th scope="col">글</th></tr></thead>
       <tbody id="desk-list"></tbody></table></div>
     <p id="desk-empty" class="empty" hidden>아직 보낸 문의가 없어요.</p>
+    <p id="desk-admin-status" role="status"></p><p id="desk-admin-error" role="alert" class="blocked"></p>
   </div>
 </div></section>
 <footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a></footer>
@@ -1395,7 +1409,7 @@ document.addEventListener("keydown", e => {
 });
 $("dlg-close").onclick = () => $("dlg").close();
 window.addEventListener("hashchange", () => { if (S) { render(); window.scrollTo(0, 0); } });
-$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); };
+$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); deskLoad(); };
 $("logout").onclick = async () => {
   let to = "/?out=1";
   try { const j = await (await fetch("/logout", {method: "POST"})).json(); if (j && j.ok && j.redirect) to = j.redirect; } catch (e) {}
@@ -1407,6 +1421,11 @@ const DESK_MAX = 4096;   // 서버 db.LIMIT_TICKET 과 같은 단위(UTF-8 바�
 const DESK_CHIP = {open: "st-wait", ack: "", doing: "flag", done: "st-mine", wontfix: "st-off"};
 const DESK_PAGE = {today: "today", question: "question", record: "record", structure: "structure", map: "map"};
 const deskBytes = s => new TextEncoder().encode(s).length;
+// 관리자(서버 env CANON_ADMIN_USER_IDS)면 GET /api/feedback 이 admin:true·전체 문의·admin_tickets 를 준다 — 띠와 「문의함」은 그때만.
+const DESK_STATUSES = ["open", "ack", "doing", "done", "wontfix"];
+const DESK_NOTE_MAX = 2048;   // 서버 db.LIMIT_ADMIN_NOTE(UTF-8 바이트)
+const DESK_HEAD = {user: ["접수일", "종류", "상태", "글"], admin: ["접수일", "사용자", "종류", "상태", "글", "메모"]};
+let deskAdmin = null;
 function deskPage() {
   if (!S) return "other";
   const R = route();
@@ -1425,13 +1444,88 @@ function deskRow(t) {
     <td><span class="chip ${esc(DESK_CHIP[t.status] || "")}">${esc(LABELS.ticketStatus[t.status] || t.status)}</span></td><td>${esc(clip(t.text, 60))}</td>`;
   return tr;
 }
+function deskMode(admin) {
+  if (deskAdmin === admin) return;
+  deskAdmin = admin;
+  $("desk").classList.toggle("admin", admin);
+  $("desk-tbl").classList.toggle("admin", admin);
+  $("desk-list-title").textContent = admin ? "문의함" : "내 문의";
+  $("desk-list-hint").textContent = admin ? "전체 사용자 문의 최근 100건이에요. 상태는 고르면 바로 저장돼요. 메모는 사용자에게 보이지 않아요." : "처리 상태만 보여요.";
+  $("desk-empty").textContent = admin ? "아직 들어온 문의가 없어요." : "아직 보낸 문의가 없어요.";
+  const tr = document.createElement("tr");
+  for (const h of DESK_HEAD[admin ? "admin" : "user"]) {
+    const th = document.createElement("th");
+    th.scope = "col";
+    th.textContent = h;
+    tr.append(th);
+  }
+  $("desk-head").replaceChildren(tr);
+}
+function deskBand(c) {
+  const el = $("admin-band");
+  if (!c) { el.hidden = true; el.textContent = ""; return; }
+  el.hidden = false;
+  el.innerHTML = `<div class="band" role="status"><b>새 문의 ${esc(c.open)}건 · 개인정보 요청 ${esc(c.privacy_open)}건</b><button type="button" class="refresh" id="admin-band-go">문의함 보기</button></div>`;
+  $("admin-band-go").onclick = () => $("desk").scrollIntoView({block: "start"});
+}
+async function deskAdminWrite(url, body, undo) {
+  $("desk-admin-error").textContent = "";
+  $("desk-admin-status").textContent = "저장하고 있어요…";
+  let r, j = {};
+  try {
+    r = await fetch(url, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    j = await r.json().catch(() => ({}));
+  } catch (err) { r = null; }
+  if (r && r.status === 401) { location.href = "/"; return; }
+  if (!r || !r.ok) {
+    $("desk-admin-status").textContent = "";
+    $("desk-admin-error").textContent = (j && j.msg) || "저장하지 못했어요. 새로 고침한 뒤 다시 해 보세요.";
+    if (undo) undo();
+    return;
+  }
+  $("desk-admin-status").textContent = "저장했어요.";
+  deskLoad();
+}
+function deskAdminRow(t) {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td>${esc(mdhm(t.created))}</td><td>${esc(t.email)}</td><td>${esc(LABELS.ticketKind[t.kind] || t.kind)}<br><span class="hintflag">${esc(t.hint ? "개인정보?" : "")}</span></td>
+    <td class="st"></td><td class="txt">${esc(t.text)}</td><td class="note"></td>`;
+  const sel = document.createElement("select");
+  sel.setAttribute("aria-label", "상태 바꾸기");
+  for (const k of DESK_STATUSES) {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = LABELS.ticketStatus[k];
+    sel.append(o);
+  }
+  sel.value = t.status;
+  sel.onchange = () => deskAdminWrite("/api/feedback/status", {id: t.id, status: sel.value}, () => { sel.value = t.status; });
+  tr.querySelector(".st").append(sel);
+  const ta = document.createElement("textarea");
+  ta.rows = 2;
+  ta.value = t.admin_note || "";
+  ta.setAttribute("aria-label", "운영자 메모");
+  const bt = document.createElement("button");
+  bt.type = "button";
+  bt.className = "refresh";
+  bt.textContent = "메모 저장";
+  bt.onclick = () => {
+    if (deskBytes(ta.value) > DESK_NOTE_MAX) { $("desk-admin-error").textContent = "메모가 너무 길어요(" + DESK_NOTE_MAX + " 바이트까지)."; return; }
+    deskAdminWrite("/api/feedback/note", {id: t.id, admin_note: ta.value});
+  };
+  tr.querySelector(".note").append(ta, bt);
+  return tr;
+}
 async function deskLoad() {
   let r, j;
   try { r = await fetch("/api/feedback", {cache: "no-store"}); j = await r.json(); } catch (e) { r = null; }
   if (r && r.status === 401) return;   // 로그인이 풀렸으면 load() 가 시작 화면으로 보낸다
   if (!r || !r.ok) { $("desk-error").textContent = "내 문의를 불러오지 못했어요. 새로 고침해 주세요."; return; }
+  const admin = j.admin === true;
+  deskMode(admin);
+  deskBand(admin ? j.admin_tickets : null);
   const list = j.tickets || [];
-  $("desk-list").replaceChildren(...list.map(deskRow));
+  $("desk-list").replaceChildren(...list.map(admin ? deskAdminRow : deskRow));
   $("desk-empty").hidden = list.length > 0;
 }
 async function deskSend(e) {
