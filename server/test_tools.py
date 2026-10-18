@@ -3,7 +3,7 @@
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
 2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CANON_DEV 사용자)
 3) HTTP 시험: Starlette 앱을 ASGI 로 불러 토큰 → 사용자 결정, /health, PRM, 401 을 본다
-4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(AuthKit 세션 sid)
+4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -313,7 +313,7 @@ async def test_web():
     fake_jwks(verifier)
     site.client_id, site.dev, site.dev_user = "client_test", False, ""   # 운영처럼: DEV 폴백 없이 세션만
     exchanged = []
-    tok_sid = {"sid": None}   # 가짜 토큰에 넣을 AuthKit 세션 ID — 시험 중에 바꾼다
+    tok_sid = {"sid": None}   # 가짜 토큰에 넣을 sid claim — 시험 중에 바꾼다(세션에 안 담기는지 본다)
 
     async def fake_token_post(data):
         exchanged.append(data)
@@ -338,9 +338,13 @@ async def test_web():
                 assert r.status_code == 302 and r.headers["location"] == "/", "세션 없으면 시작 화면 / 으로"
                 r = await h.get("/")
                 assert r.status_code == 200 and "로그인" in r.text and 'href="/login"' in r.text, (r.status_code, r.text[:200])
-                assert r.headers.get("cache-control") == "no-store" and "로그아웃했어요" not in r.text
+                assert r.headers.get("cache-control") == "no-store" and "로그아웃했어요" not in r.text and "fresh=1" not in r.text
                 r = await h.get("/", params={"out": "1"})
                 assert r.status_code == 200 and "로그아웃했어요" in r.text and 'role="status"' in r.text, r.text[:200]
+                assert "다시 로그인하면 계정을 고를 수 있어요" in r.text, r.text[:400]
+                assert 'href="/login?fresh=1"' in r.text and 'href="/login"' not in r.text, "로그아웃 직후 [로그인]은 fresh=1"
+                r = await h.get("/login", params={"fresh": "1"})
+                assert r.status_code == 302 and parse_qs(urlparse(r.headers["location"]).query)["prompt"] == ["login"], r.headers
                 assert (await h.get("/api/state")).status_code == 401
                 assert (await h.post("/api/candidate/decide", json={}, headers=origin)).status_code == 401
                 r = await h.get("/login")
@@ -348,6 +352,7 @@ async def test_web():
                 q = parse_qs(urlparse(r.headers["location"]).query)
                 assert q["client_id"] == ["client_test"] and q["resource"] == [RESOURCE] and q["code_challenge_method"] == ["S256"], q
                 assert q["redirect_uri"] == [f"{PUBLIC}/auth/callback"] and q["scope"] == ["openid email"], q
+                assert "prompt" not in q, "일반 /login 엔 prompt 없음"
                 state = q["state"][0]
                 # state 틀림 → 400, 교환 안 함
                 r = await h.get("/auth/callback", params={"code": "c1", "state": "wrong"})
@@ -404,19 +409,16 @@ async def test_web():
                 assert (await h.post("/logout")).status_code == 403
                 r = await h.post("/logout", headers=origin)
                 assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
-                assert r.json() == {"ok": True, "redirect": "/?out=1"}, "sid 없는 세션은 AuthKit 로그아웃 없이 시작 화면으로"
+                assert r.json() == {"ok": True, "redirect": "/?out=1"}, "로그아웃은 시작 화면으로"
                 assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
-                # sid 있는 토큰 → 세션에 sid → 로그아웃이 AuthKit 세션까지 끝내는 주소를 준다
-                tok_sid["sid"] = "sess_test"
+                # 토큰에 sid 가 있어도 세션에 담지 않고, 로그아웃 주소도 같다
+                tok_sid["sid"] = "app_consent_test"
                 await login_once(h)
                 assert (await h.get("/api/state")).status_code == 200
-                assert site.unsign(h.cookies.get("canon_session"))["sid"] == "sess_test"
+                assert "sid" not in site.unsign(h.cookies.get("canon_session")), "세션에 sid 를 담지 않는다"
                 r = await h.post("/logout", headers=origin)
                 assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
-                red = r.json()["redirect"]
-                assert red.startswith("https://api.workos.com/user_management/sessions/logout?"), red
-                rq = parse_qs(urlparse(red).query)
-                assert "session_id=sess_test" in red and "return_to=" in red and rq["return_to"] == [f"{PUBLIC}/?out=1"], red
+                assert r.json() == {"ok": True, "redirect": "/?out=1"}, r.json()
                 assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
                 r = await h.get("/")
                 assert r.status_code == 200 and "로그인" in r.text, "로그아웃 뒤 시작 화면"

@@ -32,7 +32,6 @@ SESSION_TTL = 30 * 24 * 3600
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
-WORKOS_LOGOUT = "https://api.workos.com/user_management/sessions/logout"
 ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
 
 
@@ -116,11 +115,13 @@ class Web:
         return HTMLResponse(APP_HTML.read_text(encoding="utf-8"), headers={"cache-control": "no-store"})
 
     async def root(self, request):
-        """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남긴다."""
+        """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남기고 [로그인]을 /login?fresh=1 로."""
         if await self.uid_of(request) is not None:
             return RedirectResponse("/app", status_code=302)
         html = START_HTML.read_text(encoding="utf-8")
-        if request.query_params.get("out") != "1":
+        if request.query_params.get("out") == "1":
+            html = html.replace('href="/login"', 'href="/login?fresh=1"', 1)
+        else:
             html = re.sub(r"<!--out-->.*?<!--/out-->", "", html, flags=re.S)
         return HTMLResponse(html, headers={"cache-control": "no-store"})
 
@@ -134,6 +135,8 @@ class Web:
         q = {"client_id": self.client_id, "redirect_uri": f"{self.public_url}/auth/callback", "response_type": "code",
              "scope": "openid email", "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
              "resource": f"{self.public_url}/mcp"}
+        if request.query_params.get("fresh") == "1":   # 로그아웃 직후 — AuthKit 세션이 살아 있어도 로그인 폼을 띄운다
+            q["prompt"] = "login"
         resp = RedirectResponse(f"{self.issuer}/oauth2/authorize?{urlencode(q)}", status_code=302)
         self.set_cookie(resp, FLOW_COOKIE, self.sign({"v": verifier, "s": state}, FLOW_TTL), FLOW_TTL)
         return resp
@@ -171,24 +174,16 @@ class Web:
         except Exception as e:   # ToolError·CanonError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
             return _page("사용자를 연결하지 못했어요", f"<p>{msg}</p>{again}", 502)
-        sess = {"uid": uid}
-        sid = (verified.claims or {}).get("sid")
-        if sid:   # AuthKit 세션 ID — 로그아웃 때 AuthKit 세션까지 끝내려고 담는다
-            sess["sid"] = str(sid)
         resp = RedirectResponse("/app", status_code=302)
-        self.set_cookie(resp, SESSION_COOKIE, self.sign(sess, SESSION_TTL), SESSION_TTL)
+        self.set_cookie(resp, SESSION_COOKIE, self.sign({"uid": uid}, SESSION_TTL), SESSION_TTL)
         self.clear_cookie(resp, FLOW_COOKIE)
         return resp
 
     async def logout(self, request):
         if not self.same_origin(request):
             return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
-        sid = (self.unsign(request.cookies.get(SESSION_COOKIE)) or {}).get("sid")
-        if sid:   # AuthKit 세션도 끝내야 다음 /login 에서 자동 재로그인되지 않는다
-            redirect = f"{WORKOS_LOGOUT}?{urlencode({'session_id': sid, 'return_to': f'{self.public_url}/?out=1'})}"
-        else:
-            redirect = "/?out=1"
-        resp = JSONResponse({"ok": True, "redirect": redirect})
+        # AuthKit 세션은 끝낼 엔드포인트가 없다 — 다음 로그인은 /login?fresh=1(prompt=login)로 폼을 다시 띄운다
+        resp = JSONResponse({"ok": True, "redirect": "/?out=1"})
         self.clear_cookie(resp, SESSION_COOKIE)
         return resp
 
