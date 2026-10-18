@@ -68,6 +68,18 @@ def _esc(v) -> str:
     return _html.escape(str(v))
 
 
+def ua_family(ua: str | None) -> str:
+    """User-Agent 에서 브라우저 계열만(버전·OS 없음). 순서가 중요하다 — Edge·Chrome 의 UA 에도 Safari/ 가 들어 있다."""
+    ua = ua or ""
+    if not ua.strip():
+        return ""
+    for mark, fam in (("Edg/", "edge"), ("Firefox/", "firefox"), ("FxiOS/", "firefox"), ("Chrome/", "chrome"), ("CriOS/", "chrome"),
+                      ("Safari/", "safari")):
+        if mark in ua:
+            return fam
+    return "other"
+
+
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
     """title 은 escape 한다. body 는 HTML 조각 — 동적 값은 호출하는 쪽이 _esc 로 감싸서 넘긴다."""
     t = _esc(title)
@@ -507,6 +519,35 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
+    async def api_feedback(self, request):
+        """문의(desk-0). GET = 「내 문의」(본인 글·상태, 운영자 메모 없음) · POST {kind, text, page} = 접수.
+        POST 는 세션 + Origin. 길이는 write_gate(전역 DB 크기는 면제 — QUOTA_EXEMPT), 하루 한도는 db.ticket_add."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if request.method == "GET":
+            out = await run_in_threadpool(db.tickets_mine, uid)
+            return JSONResponse({"tickets": out}, headers={"cache-control": "no-store"})
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            kind, text, page = body.get("kind"), body.get("text"), body.get("page", "other")
+            assert isinstance(kind, str) and isinstance(text, str) and isinstance(page, str)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(kind·text·page 문자열)이 필요해요."}, status_code=400)
+        fam = ua_family(request.headers.get("user-agent"))
+
+        def write():
+            db.write_gate("feedback_send", {"kind": kind, "text": text, "page": page}, uid, quota="feedback_send" not in db.QUOTA_EXEMPT)
+            return db.ticket_add(uid, kind, text, "web", page=page, ua_family=fam)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse({**out, "notice": db.NOTICE})
+
     def routes(self) -> list[Route]:
         return [
             Route("/", self.root),
@@ -520,4 +561,5 @@ class Web:
             Route("/api/candidate/decide", self.api_decide, methods=["POST"]),
             Route("/api/item", self.api_item),
             Route("/api/item/decide", self.api_item_decide, methods=["POST"]),
+            Route("/api/feedback", self.api_feedback, methods=["GET", "POST"]),
         ]

@@ -8,6 +8,9 @@
    · question_id "" → NULL · 원작자 템플릿 시드(시험 사용자에게만) · /api/item·/api/item/decide
 6) 전역 상한(α1): 요청 본문 256KB(413, Content-Length·chunked) · MCP SSE 응답이 미들웨어 뒤에서 그대로 · 인자 길이 PAYLOAD-LIMIT
    (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
+7) 문의 데스크(desk-0): 401·Origin 403 · 4KB+1 PAYLOAD-LIMIT(웹·MCP) · 사용자 11번째·전역 101번째 RATE-LIMIT · QUOTA-GLOBAL 면제
+   · 「내 문의」에 운영자 메모·hint·남의 글 없음 · privacy → privacy_log · hint · page·tool 정규화 · MCP echo · 파기 181/179일·reopen
+   · 비DEV+CANON_CONTACT 없음 → 기동 실패 · app.html 문의 구간 esc 정적 검사
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -63,7 +66,7 @@ import main  # noqa: E402
 import web  # noqa: E402
 
 TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com",
-               "core1@example.com", "core2@example.com")
+               "core1@example.com", "core2@example.com") + tuple(f"desk{i}@example.com" for i in range(11))   # desk* = 전역 한도 시험
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WRONG_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -275,6 +278,12 @@ async def test_http():
 
     nomail = make_token(sub="user_nomail_sub")
     real_post, auth.httpx.post = auth.httpx.post, fake_userinfo
+    purged, real_purge = [], db.tickets_purge
+
+    def boom_purge():   # desk-0: 시작 때 문의 파기가 실패해도 기동은 계속한다
+        purged.append(1)
+        raise RuntimeError("파기 실패 주입")
+    db.tickets_purge = boom_purge
     # DEV 폴백이 쓰이면 other 의 빈 상태가 나온다 → 토큰 경로가 tester 로 가는지 구분된다
     os.environ["CANON_DEV_USER"] = "other@example.com"
     hdr = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
@@ -284,6 +293,7 @@ async def test_http():
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
                 r = await h.get("/health")
                 assert r.status_code == 200 and r.json() == {"ok": True, "db": True}, r.text
+                assert purged == [1], "lifespan 이 시작 때 파기를 한 번 부른다(실패해도 기동)"
                 prm = (await h.get("/.well-known/oauth-protected-resource/mcp")).json()
                 assert prm["resource"] == RESOURCE and prm["authorization_servers"] == [FAKE_ISSUER], prm
                 assert prm["scopes_supported"] == ["openid", "email"], prm
@@ -327,7 +337,7 @@ async def test_http():
                 assert r.status_code == 200, r.status_code
                 await limits_http(h, {**hdr, "authorization": f"Bearer {tok}"})   # 6) 절 — 세션 매니저 run() 은 한 번만 돈다
     finally:
-        auth.httpx.post = real_post
+        auth.httpx.post, db.tickets_purge = real_post, real_purge
         os.environ["CANON_DEV_USER"] = "tester@example.com"
     print("OK — HTTP 인증 경로 통과")
 
@@ -778,7 +788,7 @@ async def test_definition_tools():
         new = {"definitions_get", "definition_propose", "definition_apply", "item_propose", "item_decide", "record_attach"}
         base = {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose", "candidate_decide",
                 "candidate_list", "profile_set"}
-        assert base | new | {"help_get"} == tools and len(tools) == 16, tools   # 기존 15개 그대로 + help_get
+        assert base | new | {"help_get", "feedback_send"} == tools and len(tools) == 17, tools   # 기존 15개 그대로 + help_get + feedback_send(desk-0)
         assert val(await c.call_tool("definitions_get", {"object_ids": None, "include_archived": False})) == []
         p = val(await c.call_tool("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": json.dumps(
             {"key": "notes", "label": "메모", "semantic_kind": "principle", "fields": []})}))
@@ -1242,6 +1252,7 @@ async def test_limits():
         names = {t.name for t in (await c.list_tools()).tools}
     assert set(db.WRITE_LIMITS) <= names, set(db.WRITE_LIMITS) - names
     assert names - set(db.WRITE_LIMITS) == {"state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get"}, names
+    assert len(names) == 17 and db.QUOTA_EXEMPT == {"feedback_send"} <= set(db.WRITE_LIMITS), (len(names), db.QUOTA_EXEMPT)
 
     def nrec():
         return len(db.records(uid, limit=1000))
@@ -1338,6 +1349,232 @@ async def test_limits():
     print("OK — 인자 길이·전역 DB 크기 상한 통과")
 
 
+# ── 8) 문의 데스크 (desk-0) ─────────────────────────────
+
+def _kst_today():
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    return dt.datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
+def _ticket(tid):
+    with db.tx() as c:
+        return c.execute("SELECT * FROM tickets WHERE id=%s", (tid,)).fetchone()
+
+
+def _today_count(uid=None):
+    q = f"SELECT count(*) AS n FROM tickets WHERE created >= {db._KST_TODAY}" + (" AND user_id=%s" if uid else "")
+    with db.tx() as c:
+        return c.execute(q, (uid,) if uid else ()).fetchone()["n"]
+
+
+async def test_feedback():
+    site = main.site
+    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    site.dev, site.dev_user = True, "tester@example.com"
+    uid = db.user_by_email("tester@example.com")["id"]
+    other = db.user_by_email("other@example.com")["id"]
+    origin = {"origin": PUBLIC}
+    chrome = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+    real_measure = db._measure_db_size
+    privacy_ids = []   # privacy_log 는 FK·cascade 밖 — 시험이 만든 행은 끝에 직접 지운다
+    with db.tx() as c:
+        c.execute("DELETE FROM tickets WHERE user_id = ANY(%s)", ([uid, other],))
+
+    def post(h, body, hdr=None):
+        return h.post("/api/feedback", json=body, headers={**origin, **(hdr or {})})
+
+    try:
+        async with Client(main.mcp) as mc, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # 세션 없음 → 401 (DEV 폴백을 끄고)
+            site.dev, site.dev_user = False, ""
+            try:
+                assert (await h.get("/api/feedback")).status_code == 401
+                assert (await post(h, {"kind": "bug", "text": "x"})).status_code == 401
+            finally:
+                site.dev, site.dev_user = True, "tester@example.com"
+            # Origin 없음·다름 → 403
+            for hd in ({}, {"origin": "https://evil.example"}):
+                r = await h.post("/api/feedback", json={"kind": "bug", "text": "x"}, headers=hd)
+                assert r.status_code == 403 and r.json()["code"] == "ORIGIN", (hd, r.text)
+            # 본문 틀림 → 400 ARG-INVALID
+            for bad in ({"kind": "bug"}, {"kind": 1, "text": "x"}, ["bug", "x"], {"kind": "nope", "text": "x"},
+                        {"kind": "bug", "text": "  \n "}, {"kind": "bug", "text": "x", "page": 3}):
+                r = await post(h, bad)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (bad, r.text)
+            # 4KB+1 → PAYLOAD-LIMIT (웹·MCP), 행 안 생김
+            r = await post(h, {"kind": "bug", "text": "a" * (db.LIMIT_TICKET + 1), "page": "today"})
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT" and "text" in r.json()["msg"], r.text
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "a" * (db.LIMIT_TICKET + 1)})
+            assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text, r.content[0].text[:200]
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "a", "tool": "t" * (db.LIMIT_TEXT + 1)})
+            assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text and "tool" in r.content[0].text, r.content[0].text[:200]
+            r = await mc.call_tool("feedback_send", {"kind": "praise", "text": "a"})
+            assert r.is_error and "validation error" in r.content[0].text, r.content[0].text[:200]
+            assert _today_count(uid) == 0
+            # 웹 접수: page·ua 계열·hint, 응답에 고지
+            r = await post(h, {"kind": "bug", "text": "기록을 삭제하고 싶은데 버튼이 없어요", "page": "today"}, {"user-agent": chrome})
+            j = r.json()
+            assert r.status_code == 200 and set(j) == {"id", "kind", "status", "created", "notice"} and j["status"] == "open", j
+            assert j["id"].startswith("tk_") and j["notice"] == db.NOTICE, j
+            t1 = _ticket(j["id"])
+            assert (t1["via"], t1["page"], t1["ua_family"], t1["hint"], t1["tool"], t1["user_id"]) == ("web", "today", "chrome", "privacy?", "", uid), t1
+            assert t1["closed_at"] is None and t1["admin_note"] == "", t1
+            # page 열거형 밖 → other · 표식 없는 글은 hint ''
+            r = await post(h, {"kind": "request", "text": "검색이 있으면 좋겠어요", "page": "<script>"})
+            t2 = _ticket(r.json()["id"])
+            assert r.status_code == 200 and t2["page"] == "other" and t2["hint"] == "" and t2["ua_family"] == "other", t2   # httpx 기본 UA
+            # privacy → hint 없음 + privacy_log 1행(받은 날 = KST 오늘, via=form)
+            r = await post(h, {"kind": "privacy", "text": "내 계정을 삭제해 주세요", "page": "help"})
+            pid = r.json()["id"]
+            privacy_ids.append(pid)
+            assert r.status_code == 200 and _ticket(pid)["hint"] == "" and _ticket(pid)["kind"] == "privacy", r.text
+            with db.tx() as c:
+                pl = c.execute("SELECT * FROM privacy_log WHERE ticket_id=%s", (pid,)).fetchall()
+            assert len(pl) == 1 and pl[0]["id"].startswith("pl_"), pl
+            assert (pl[0]["kind"], pl[0]["via"], pl[0]["received"]) == ("other", "form", _kst_today()), pl
+            assert pl[0]["notified"] is None and pl[0]["result"] is None and pl[0]["identity_checked"] is False, pl
+            with db.tx() as c:
+                n = c.execute("SELECT count(*) AS n FROM privacy_log WHERE ticket_id = ANY(%s)", ([j["id"], t2["id"]],)).fetchone()["n"]
+            assert n == 0, "privacy 가 아닌 문의는 privacy_log 를 만들지 않는다"
+            # MCP: 보낸 글 그대로 되돌려 준다 · via=mcp · tool 은 이 서버의 도구 이름만
+            text = "  record_add 가 안 돼요\n줄바꿈·앞뒤 공백 그대로  "
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": text, "tool": "record_add"})
+            v = val(r)
+            assert not r.is_error and set(v) == {"id", "kind", "status", "text", "notice"} and v["text"] == text, v
+            assert v["kind"] == "bug" and v["status"] == "open" and db.NOTICE in v["notice"] and f"{PUBLIC}/privacy" in v["notice"], v
+            t4 = _ticket(v["id"])
+            assert (t4["via"], t4["tool"], t4["page"], t4["ua_family"], t4["text"]) == ("mcp", "record_add", "other", "", text), t4
+            r = await mc.call_tool("feedback_send", {"kind": "question", "text": "이건 왜 이래요", "tool": "no_such_tool"})
+            assert not r.is_error and _ticket(val(r)["id"])["tool"] == "", "모르는 도구 이름은 저장하지 않는다"
+            # hint 판정: 다섯 표식(띄어 쓰지 않은 「내정보」 포함) / 없음
+            for w in ("삭제", "탈퇴", "지워", "열람", "내 정보", "내정보"):
+                assert db._PRIVACY_HINT.search(f"앞 {w} 뒤"), w
+            for w in ("기록이 안 보여요", "정보 탭이 비어요", "내보내기"):
+                assert not db._PRIVACY_HINT.search(w), w
+            # 「내 문의」: 본인 글·상태만. 운영자 메모·hint·남의 글 없음
+            db.ticket_add(other, "bug", "다른 사람의 문의 글", "web")
+            with db.tx() as c:
+                c.execute("UPDATE tickets SET admin_note='운영자만 보는 메모', status='doing' WHERE id=%s", (j["id"],))
+            r = await h.get("/api/feedback")
+            assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+            ts = r.json()["tickets"]
+            assert len(ts) == 5, ts   # 웹 3 + MCP 2
+            assert all(set(t) == {"id", "kind", "text", "status", "via", "created", "updated"} for t in ts), ts
+            assert "운영자만 보는 메모" not in r.text and "privacy?" not in r.text and "다른 사람의 문의 글" not in r.text, r.text
+            assert [t["status"] for t in ts if t["id"] == j["id"]] == ["doing"], ts
+            assert ts == sorted(ts, key=lambda t: t["created"], reverse=True), "최근 것부터"
+            mine_other = db.tickets_mine(other)
+            assert len(mine_other) == 1 and mine_other[0]["text"] == "다른 사람의 문의 글", mine_other
+            assert 'id="desk-form"' in (await h.get("/app")).text, "/app 에 문의 절"
+            # QUOTA-GLOBAL 면제: 401MB 주입 → 기록은 거절, 문의는 웹·MCP 모두 접수
+            db._measure_db_size = lambda: 401 * db.MB
+            db.quota_cache_reset()
+            r = await mc.call_tool("record_add", {"text": "꽉 찬 때 기록"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "저장이 안 돼요"})
+            assert not r.is_error, r.content[0].text
+            r = await post(h, {"kind": "bug", "text": "웹에서도 저장이 안 돼요", "page": "record"})
+            assert r.status_code == 200, r.text
+            db._measure_db_size = real_measure
+            db.quota_cache_reset()
+            # 파기: 종결 181일 → 삭제 · 179일 → 유지 · 다시 연 문의(closed_at NULL, 오래됨) → 유지
+            a = db.ticket_add(other, "bug", "파기 181", "web")["id"]
+            b = db.ticket_add(other, "bug", "파기 179", "web")["id"]
+            ro = db.ticket_add(other, "bug", "다시 연 문의", "web")["id"]
+            with db.tx() as c:
+                c.execute("UPDATE tickets SET status='done', closed_at=now() - interval '181 days' WHERE id=%s", (a,))
+                c.execute("UPDATE tickets SET status='wontfix', closed_at=now() - interval '179 days' WHERE id=%s", (b,))
+                c.execute("UPDATE tickets SET status='done', closed_at=now() - interval '300 days' WHERE id=%s", (ro,))
+                c.execute("UPDATE tickets SET status='open', closed_at=NULL, created=now() - interval '400 days' WHERE id=%s", (ro,))
+            assert db.tickets_purge() >= 1
+            assert _ticket(a) is None and _ticket(b) is not None and _ticket(ro) is not None, "181 삭제 · 179 유지 · reopen 유지"
+            try:
+                with db.tx() as c:
+                    c.execute("UPDATE tickets SET status='done' WHERE id=%s", (ro,))   # 종결인데 closed_at 없음 → CHECK
+                raise AssertionError("closed_at 없는 종결이 저장됐다")
+            except psycopg.errors.CheckViolation:
+                pass
+            # 사용자 하루 10건: 11번째 RATE-LIMIT(웹·MCP). 어제(KST) 것은 세지 않는다
+            while _today_count(uid) < db.TICKET_DAILY_USER:
+                db.ticket_add(uid, "question", "채우기", "web")
+            r = await post(h, {"kind": "bug", "text": "11번째"})
+            assert r.status_code == 400 and r.json()["code"] == "RATE-LIMIT" and "10건" in r.json()["msg"], r.text
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "11번째 MCP"})
+            assert r.is_error and "[RATE-LIMIT]" in r.content[0].text and "10건" in r.content[0].text, r.content[0].text
+            assert _today_count(uid) == db.TICKET_DAILY_USER
+            with db.tx() as c:
+                c.execute(f"UPDATE tickets SET created = {db._KST_TODAY} - interval '1 minute' WHERE id=%s", (t2["id"],))
+            r = await post(h, {"kind": "bug", "text": "어제 것은 세지 않아요"})
+            assert r.status_code == 200, r.text
+            assert (await post(h, {"kind": "bug", "text": "다시 11번째"})).json()["code"] == "RATE-LIMIT"
+            # 전역 하루 100건: 시험 사용자 여럿으로 채운 뒤 새 사용자의 첫 문의가 RATE-LIMIT
+            helpers = [db.user_by_email(f"desk{i}@example.com")["id"] for i in range(11)]
+            for hu in helpers[:-1]:
+                while _today_count() < db.TICKET_DAILY_ALL and _today_count(hu) < db.TICKET_DAILY_USER:
+                    db.ticket_add(hu, "request", "전역 채우기", "web")
+            assert _today_count() == db.TICKET_DAILY_ALL, _today_count()
+            assert _today_count(helpers[-1]) == 0
+            try:
+                db.ticket_add(helpers[-1], "bug", "전역 101번째", "web")
+                raise AssertionError("전역 101번째가 저장됐다")
+            except db.CanonError as e:
+                assert e.code == "RATE-LIMIT" and "많아" in e.message, (e.code, e.message)
+            r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "MCP 전역 101번째"})
+            assert r.is_error and "[RATE-LIMIT]" in r.content[0].text, r.content[0].text
+            assert _today_count() == db.TICKET_DAILY_ALL
+    finally:
+        db._measure_db_size = real_measure
+        db.quota_cache_reset()
+        site.dev, site.dev_user = True, "tester@example.com"
+        with db.tx() as c:
+            c.execute("DELETE FROM privacy_log WHERE ticket_id = ANY(%s)", (privacy_ids,))
+    print("OK — 문의 데스크(접수·한도·면제·내 문의·privacy_log·파기) 통과")
+
+
+def test_feedback_units():
+    """ua 계열 판정 · CANON_CONTACT 필수(비DEV) · app.html 문의 구간의 esc 정적 검사."""
+    import subprocess
+    for ua, fam in (("", ""), (None, ""), ("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/130.0 Safari/537.36 Edg/130.0", "edge"),
+                    ("Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0", "firefox"),
+                    ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 CriOS/130.0 Mobile/15E148 Safari/604.1", "chrome"),
+                    ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15", "safari"),
+                    ("curl/8.7.1", "other")):
+        assert web.ua_family(ua) == fam, (ua, fam, web.ua_family(ua))
+    # 비DEV 에서 CANON_CONTACT 없으면 기동 실패(문구로 구분) · 공백만도 없음 · 있으면 import 성공
+    env = {k: v for k, v in os.environ.items() if k not in ("CANON_DEV", "CANON_DEV_USER", "CANON_CONTACT")}
+    env["AUTHKIT_ISSUER"] = FAKE_ISSUER
+
+    def boot(extra):
+        return subprocess.run([sys.executable, "-c", "import main"], cwd=HERE, env={**env, **extra}, capture_output=True, text=True, timeout=120)
+    r = boot({})
+    assert r.returncode != 0 and "CANON_CONTACT" in r.stderr, (r.returncode, r.stderr[-400:])
+    r = boot({"CANON_CONTACT": "   "})
+    assert r.returncode != 0 and "CANON_CONTACT" in r.stderr, "공백만 있는 값도 없음"
+    r = boot({"CANON_CONTACT": "help@example.com"})
+    assert r.returncode == 0, r.stderr[-400:]
+    # app.html: 문의 구간의 모든 보간은 esc(…) · innerHTML 우변은 템플릿 하나(이어 붙이기 없음) · 다른 HTML 삽입 API 없음
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    blk = html[html.index("// ── 문의 데스크 (desk-0) ──"):html.index("// ── /문의 데스크 ──")]
+    assert blk.count("${") == blk.count("${esc(") >= 4, re.findall(r"\$\{(?!esc\()[^}]*", blk)
+    for bad in ("insertAdjacentHTML", "outerHTML", "document.write", "DOMParser", "createContextualFragment"):
+        assert bad not in blk, bad
+    sites = list(re.finditer(r"\.innerHTML\s*=\s*", blk))
+    assert sites, "행은 innerHTML 템플릿으로 만든다"
+    for m in sites:
+        rest = blk[m.end():]
+        assert rest.startswith("`"), rest[:60]
+        end = rest.index("`", 1)
+        assert rest[end + 1:].lstrip().startswith(";"), rest[end:end + 40]
+    sec = html[html.index('<section class="wrap desk"'):html.index("</section>")]
+    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 절 — 고지 문장·처리방침 링크"
+    for w in ('value="bug"', 'value="request"', 'value="question"', 'value="privacy"', "개인정보 요청", "내 문의", "4096"):
+        assert w in sec, w
+    assert 'ticketStatus: {open: "접수", ack: "확인", doing: "처리중", done: "완료", wontfix: "보류"}' in html
+    assert "const DESK_MAX = 4096;" in html and db.LIMIT_TICKET == 4096
+    print("OK — 문의 단위(ua 계열·CANON_CONTACT 필수·app.html esc 정적 검사) 통과")
+
+
 async def run():
     cleanup()
     try:
@@ -1352,6 +1589,8 @@ async def run():
         await test_web_items(A)
         await test_limits_sse()
         await test_limits()
+        await test_feedback()
+        test_feedback_units()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -1359,7 +1598,7 @@ async def run():
         with db.tx() as c:
             left = c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchone()["n"]
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
-                    for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates")}
+                    for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets")}
         db.close()
     assert left == 0, left
     assert not any(rest.values()), rest

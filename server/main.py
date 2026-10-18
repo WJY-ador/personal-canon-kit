@@ -5,6 +5,7 @@
 환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
           · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
           · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 에서만 예외)
+          · CANON_CONTACT(운영 필수 — 로그인 못 하는 사람의 문의·개인정보 요청 메일 주소. 비어 있으면 시작 거부)
 """
 import functools
 import inspect
@@ -43,6 +44,7 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. �
 - 기준(principle 항목)은 후보가 아니다. 여러 확정 판단을 종합해 사용자가 정한 한 문장이다. 후보 문장을 기준으로 옮겨 적거나, 사용자가 말하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
 - 승격 조건(promotion)은 사실일 뿐이다. 충족 여부와 상관없이 기준으로 남길지는 사용자가 정한다.
 - 질문에 답하지 않는 후보는 candidates_propose 의 question_id 를 빈 문자열("")로 보낸다. 화면은 기록별로 묶는다.
+- 사용자가 '안 돼요/고쳐 주세요/이건 왜 이래요' 류를 말하면 feedback_send 로 운영자에게 문의하자고 제안한다. 보낼 글을 사용자에게 그대로 보여 주고, 사용자가 확인하면 그때 호출한다.
 - 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
 """
 
@@ -54,6 +56,8 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
 if not DEV and os.environ.get("CANON_DEV_USER"):
     raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
+if not DEV and not os.environ.get("CANON_CONTACT", "").strip():
+    raise SystemExit("CANON_CONTACT 가 없어요. 로그인 못 하는 사람의 문의 경로(메일 주소)라 운영은 이것 없이 뜨지 않아요.")
 # 시작 때 한 번 읽는다. 비어 있으면 예외 없음.
 db.ADMIN_USER_IDS = frozenset(x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip())
 
@@ -80,16 +84,17 @@ def uid_of(ctx: Context) -> str:
 
 def guard(fn):
     """CanonError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
-    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·전역 DB 크기(QUOTA-GLOBAL)."""
+    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고)."""
     sig = inspect.signature(fn)
     write = fn.__name__ in db.WRITE_LIMITS
+    quota = fn.__name__ not in db.QUOTA_EXEMPT
 
     @functools.wraps(fn)
     def run(*a, **k):
         try:
             if write:
                 args = sig.bind(*a, **k).arguments
-                db.write_gate(fn.__name__, {n: v for n, v in args.items() if n != "ctx"}, lambda: uid_of(args["ctx"]))
+                db.write_gate(fn.__name__, {n: v for n, v in args.items() if n != "ctx"}, lambda: uid_of(args["ctx"]), quota)
             return fn(*a, **k)
         except db.CanonError as e:
             raise ToolError(f"[{e.code}] {e.message}" + (f" 다음 조치: {e.action}" if e.action else ""))
@@ -328,6 +333,25 @@ def help_get(
     return {"topic": topic, "text": text}
 
 
+# ── 문의 (desk-0) ──────────────────────────────────────
+
+@mcp.tool()
+@guard
+def feedback_send(
+    kind: Annotated[Literal["bug", "request", "question", "privacy"],
+                    Field(description="bug=안 되는 것, request=바랐으면 하는 것, question=궁금한 것, privacy=내 정보 열람·정정·삭제·탈퇴 요청")],
+    text: Annotated[str, Field(description="사용자가 확인한 문의 글 그대로. 기록 원문·다른 사람 정보는 넣지 않는다.")],
+    ctx: Context,
+    tool: Annotated[str, Field(description="문제가 난 이 서버의 도구 이름(예: record_add). 없으면 빈 문자열")] = "",
+) -> dict:
+    """운영자에게 문의를 보낸다. 보낼 글을 사용자에게 먼저 그대로 보여 주고, 사용자가 확인한 뒤에만 부른다.
+    글은 서버에 저장되고 운영자가 직접 읽는다. 처리 상태는 대시보드 「내 문의」에서 보이고, 답은 메일로 간다. 응답의 notice 를 사용자에게 그대로 전한다."""
+    tool = tool if mcp._tool_manager.get_tool(tool) is not None else ""   # 이 서버의 도구 이름만 남긴다 — 자유 문자열은 저장하지 않는다
+    t = db.ticket_add(uid_of(ctx), kind, text, "mcp", tool=tool)
+    return {"id": t["id"], "kind": t["kind"], "status": t["status"], "text": text,
+            "notice": f"{db.NOTICE} 처리 상태는 대시보드 「내 문의」에서 볼 수 있어요. 개인정보 처리방침: {PUBLIC_URL}/privacy"}
+
+
 # ── 웹 ─────────────────────────────────────────────────
 
 async def health(request):
@@ -412,6 +436,12 @@ mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, trans
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # Mount 된 앱의 lifespan 은 돌지 않으므로 session_manager 를 여기서 돌린다.
     await run_in_threadpool(db.init_schema)
+    try:   # 종결 180일 지난 문의 파기 — 실패해도 기동은 계속한다(다음 시작 때 다시)
+        n = await run_in_threadpool(db.tickets_purge)
+        if n:
+            print(f"[desk] 종결 {db.TICKET_KEEP_DAYS}일 지난 문의 {n}건 파기", flush=True)
+    except Exception as e:
+        print(f"[desk] 문의 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
     try:
         async with mcp.session_manager.run():
             yield

@@ -49,6 +49,7 @@ LIMIT_BODY = 64 * KB               # ② 기록 본문·항목 본문
 LIMIT_TEXT = 1 * KB                # ② 제목·질문·후보 문장, 표에 없는 문자열(ID·출처·코드·메모)
 LIMIT_PROFILE_VALUE = 4 * KB       # ② 프로필 값
 LIMIT_JSON = 32 * KB               # ② 정의·항목 JSON(직렬화 문자열 길이)
+LIMIT_TICKET = 4096                # ② 문의 글(desk-0). 바이트 — 폼 카운터도 UTF-8 바이트로 센다
 DB_QUOTA_BYTES = 400 * MB          # ③ 400 × 1024² 바이트 넘으면 비관리자 쓰기 거절
 DB_SIZE_TTL = 60                   # ③ 크기 측정 캐시(초)
 DB_SIZE_TIMEOUT = 1.0              # ③ 측정용 풀 checkout 대기(초)
@@ -68,7 +69,12 @@ WRITE_LIMITS = {
     "item_propose": {"title": LIMIT_TEXT, "body": LIMIT_BODY, "data_json": LIMIT_JSON},
     "item_decide": {},
     "record_attach": {},
+    "feedback_send": {"text": LIMIT_TICKET, "tool": LIMIT_TEXT},
 }
+# ③ 전역 DB 크기 거절(QUOTA-GLOBAL) 면제 — 저장 공간이 찼다는 문의도 받아야 한다. 길이 검사(②)는 그대로.
+# 대신 문의 한도(사용자 하루 10건·전역 100건, ticket_add)가 건다.
+# α2 동의 게이트가 들어오면 같은 꼴로 CONSENT_EXEMPT = frozenset({"feedback_send"}) 를 둔다(α2·desk-0 중 나중 PR 이 넣는다).
+QUOTA_EXEMPT = frozenset({"feedback_send"})
 
 # 관리자 내부 user id — ③ 전역 DB 크기 거절에서만 예외. main 이 시작 때 env CANON_ADMIN_USER_IDS 로 한 번 채운다.
 ADMIN_USER_IDS: frozenset = frozenset()
@@ -149,10 +155,12 @@ def check_global_quota(uid):
                      "운영자에게 알려 주세요.")
 
 
-def write_gate(op: str, args: dict, uid):
-    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다."""
+def write_gate(op: str, args: dict, uid, quota: bool = True):
+    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    quota=False 는 QUOTA_EXEMPT(문의) 만 — 호출하는 쪽이 넘긴다."""
     check_lengths(op, args)
-    check_global_quota(uid)
+    if quota:
+        check_global_quota(uid)
 
 
 def now():
@@ -1537,6 +1545,66 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
     if promotion is not None:
         out["promotion"] = promotion
     return out
+
+
+# ── 문의 데스크 (desk-0) ────────────────────────────────
+# 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
+# 사용자는 「내 문의」에서 상태만 본다. 답은 메일로만, 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
+
+TICKET_KINDS = ("bug", "request", "question", "privacy")
+TICKET_STATUSES = ("open", "ack", "doing", "done", "wontfix")
+TICKET_PAGES = ("today", "question", "record", "structure", "map", "review", "start", "help", "privacy", "other")
+TICKET_DAILY_USER = 10             # 사용자 하루(KST) 10건
+TICKET_DAILY_ALL = 100             # 전역 하루(KST) 100건
+TICKET_KEEP_DAYS = 180             # 종결 뒤 보관 일수
+NOTICE = "이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요."
+# 오분류된 개인정보 요청을 SQL 한 줄로 거르는 표식. kind 가 privacy 가 아닐 때만 단다.
+_PRIVACY_HINT = re.compile(r"삭제|탈퇴|지워|열람|내 ?정보")
+_KST_TODAY = "(date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul')"   # KST 오늘 0시(timestamptz)
+
+
+def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
+    """문의 1건. 한도는 같은 트랜잭션의 COUNT — 잠금 없음, 동시 요청이면 1~2건 초과를 허용한다(명시).
+    kind=privacy 면 같은 트랜잭션에서 privacy_log(kind=other, via=form, received=KST 오늘) 1행 — 10일 시계는 여기서 시작한다.
+    길이(PAYLOAD-LIMIT)는 호출 전에 write_gate 가 본다."""
+    if kind not in TICKET_KINDS:
+        raise CanonError("ARG-INVALID", f"문의 종류는 {', '.join(TICKET_KINDS)} 중 하나예요.")
+    if via not in ("web", "mcp"):
+        raise CanonError("ARG-INVALID", "via 는 web·mcp 중 하나예요.")
+    text = text if isinstance(text, str) else ""
+    if not text.strip():
+        raise CanonError("ARG-INVALID", "문의 글이 비었어요.")
+    page = page if page in TICKET_PAGES else "other"
+    hint = "privacy?" if kind != "privacy" and _PRIVACY_HINT.search(text) else ""
+    tid = new_id("tk")
+    with tx() as c:
+        n_me = _one(c, f"SELECT count(*) AS n FROM tickets WHERE user_id=%s AND created >= {_KST_TODAY}", (uid,))["n"]
+        if n_me >= TICKET_DAILY_USER:
+            raise CanonError("RATE-LIMIT", f"오늘 문의는 {TICKET_DAILY_USER}건까지예요.", "내일 다시 보내 주세요.")
+        n_all = _one(c, f"SELECT count(*) AS n FROM tickets WHERE created >= {_KST_TODAY}")["n"]
+        if n_all >= TICKET_DAILY_ALL:
+            raise CanonError("RATE-LIMIT", "오늘은 문의가 많아 더 받을 수 없어요.", "내일 다시 보내 주세요.")
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via,page,tool,ua_family,hint) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (tid, uid, kind, text, via, page, tool or "", ua_family or "", hint))
+        if kind == "privacy":
+            c.execute("INSERT INTO privacy_log (id,kind,via,ticket_id,received) "
+                      "VALUES (%s,'other','form',%s,(now() AT TIME ZONE 'Asia/Seoul')::date)", (new_id("pl"), tid))
+        return _iso(_one(c, "SELECT id,kind,status,created FROM tickets WHERE id=%s", (tid,)))
+
+
+def tickets_mine(uid, limit=50):
+    """「내 문의」 — 본인 글과 상태만. admin_note·hint 는 넣지 않는다. 최근 50건."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated FROM tickets WHERE user_id=%s "
+                                         "ORDER BY created DESC LIMIT %s", (uid, limit))]
+
+
+def tickets_purge():
+    """종결(closed_at 있음) 180일 지난 문의를 지운다. 서버 시작 때 1회(main.lifespan) — 배치 잡 없음.
+    다시 연 문의(closed_at NULL)는 남는다. privacy_log 는 FK 가 없어 그대로. 지운 건수를 돌려준다."""
+    with tx() as c:
+        c.execute("SET LOCAL statement_timeout = '5s'")
+        return c.execute("DELETE FROM tickets WHERE closed_at < now() - make_interval(days => %s)", (TICKET_KEEP_DAYS,)).rowcount
 
 
 # ── 상태 한 벌 (화면과 도구가 같은 것을 본다) ─────────────
