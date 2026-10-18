@@ -40,6 +40,7 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
   `token_endpoint_auth_method=none`). 환경 client ID 는 `/oauth2/authorize` 에서 `application_not_found` — Connect 흐름은 DCR·CIMD 클라이언트만 받는다(실측).
 - `CANON_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
   둘 중 하나라도 없으면 웹 로그인만 503 이고 MCP 는 정상 — 자동 배포로 서버가 죽지 않게.
+- `CANON_ADMIN_USER_IDS` — (선택) 쉼표 구분 내부 user id(`u_…`). DB 가 400MB 를 넘어 비관리자 쓰기를 `QUOTA-GLOBAL` 로 막을 때 이 계정만 쓴다. 시작 때 한 번 읽는다(바꾸면 재시작). 상한 값은 `db.py` 「전역 상한」 상수.
 
 운영엔 `CANON_DEV`·`CANON_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
 확인: `curl https://<주소>/health` → `{"ok":true,"db":true}` · 토큰 없이 `POST /mcp` → 401 + `WWW-Authenticate` · `GET /.well-known/oauth-protected-resource/mcp` → 200.

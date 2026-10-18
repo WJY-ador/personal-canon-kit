@@ -6,6 +6,8 @@
 4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login)
 5) 정의 층 시험(2단계): 정의 제안→적용·충돌·깨지는 변경 거절 · 항목 제안→적용→확정→되돌리기·이력 · 관계 검증 · 승격 · record_attach
    · question_id "" → NULL · 원작자 템플릿 시드(시험 사용자에게만) · /api/item·/api/item/decide
+6) 전역 상한(α1): 요청 본문 256KB(413, Content-Length·chunked) · MCP SSE 응답이 미들웨어 뒤에서 그대로 · 인자 길이 PAYLOAD-LIMIT
+   (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -315,6 +317,7 @@ async def test_http():
                 # 웹 상태: DEV 라 응답
                 r = await h.get("/api/state")
                 assert r.status_code == 200, r.status_code
+                await limits_http(h, {**hdr, "authorization": f"Bearer {tok}"})   # 6) 절 — 세션 매니저 run() 은 한 번만 돈다
     finally:
         auth.httpx.post = real_post
         os.environ["CANON_DEV_USER"] = "tester@example.com"
@@ -832,6 +835,188 @@ async def test_web_items(A):
 
 
 
+# ── 6) 전역 상한 (α1) ──────────────────────────────────
+
+LIM = db.MAX_BODY_BYTES
+
+
+def _mcp_body(total: int, name="state_get", arguments=None) -> bytes:
+    """정확히 total 바이트인 tools/call 본문 — JSON 끝 공백으로 맞춘다."""
+    base = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments or {}}}).encode()
+    assert len(base) <= total, (len(base), total)
+    return base + b" " * (total - len(base))
+
+
+async def _chunked(b: bytes, n: int = 5):
+    """Content-Length 없이(chunked) 보낸다."""
+    step = len(b) // n + 1
+    for i in range(0, len(b), step):
+        yield b[i:i + step]
+
+
+async def limits_http(h, hdr):
+    """① 요청 본문 상한 — 실제 /mcp 왕복(토큰 인증) · /api/*. test_http 의 lifespan 안에서 부른다."""
+    for chunked in (False, True):
+        b = _mcp_body(LIM)
+        r = await h.post("/mcp", headers=hdr, content=_chunked(b) if chunked else b)
+        assert r.status_code == 200 and r.headers["content-type"].startswith("application/json"), (chunked, r.status_code, r.text[:200])
+        assert not r.json()["result"].get("isError"), r.text[:300]
+        b = _mcp_body(LIM + 1)
+        r = await h.post("/mcp", headers=hdr, content=_chunked(b) if chunked else b)
+        assert r.status_code == 413, (chunked, r.status_code)
+        e = r.json()
+        assert e["jsonrpc"] == "2.0" and e["id"] is None and e["error"]["code"] == -32600 and "[PAYLOAD-LIMIT]" in e["error"]["message"], e
+    # 인증 전에 막힌다(큰 본문은 토큰 검사까지 가지 않는다)
+    r = await h.post("/mcp", headers={k: v for k, v in hdr.items() if k != "authorization"}, content=_mcp_body(LIM + 1))
+    assert r.status_code == 413, r.status_code
+    for body in (b"x" * (LIM + 1), _chunked(b"x" * (LIM + 1))):
+        r = await h.post("/api/candidate/decide", content=body, headers={"content-type": "application/json", "origin": PUBLIC})
+        assert r.status_code == 413 and r.json()["code"] == "PAYLOAD-LIMIT", (r.status_code, r.text[:200])
+    # 상한 밖 경로는 판정하지 않는다
+    assert (await h.post("/logout", content=b"x" * (LIM + 1), headers={"origin": PUBLIC})).status_code != 413
+    print("OK — 요청 본문 상한(256KB) 통과")
+
+
+async def test_limits_sse():
+    """① 미들웨어 뒤에서 MCP SSE 응답(json_response=False)이 깨지지 않는지 — 운영 앱은 json_response=True 라 따로 띄운다."""
+    from mcp.server import MCPServer
+    from starlette.applications import Starlette
+    from starlette.middleware import Middleware
+    from starlette.routing import Mount
+    probe = MCPServer("sse-probe")
+
+    @probe.tool()
+    def echo(text: str) -> str:
+        return text[:10]
+
+    sse_app = Starlette(routes=[Mount("/", app=probe.streamable_http_app(stateless_http=True, json_response=False))],
+                        middleware=[Middleware(main.BodyLimit)])
+    hdr = {"content-type": "application/json", "accept": "application/json, text/event-stream", "mcp-protocol-version": "2025-06-18"}
+    async with probe.session_manager.run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=sse_app), base_url="http://127.0.0.1:8800") as h:
+            for chunked in (False, True):
+                b = _mcp_body(LIM, "echo", {"text": "hello-sse"})
+                async with h.stream("POST", "/mcp", headers=hdr, content=_chunked(b) if chunked else b) as r:
+                    raw = b"".join([c async for c in r.aiter_raw()]).decode()
+                assert r.status_code == 200 and r.headers["content-type"].startswith("text/event-stream"), (r.status_code, r.headers)
+                ev = [ln for ln in raw.splitlines() if ln.startswith("data: ")]
+                assert "event: message" in raw and len(ev) == 1, raw
+                assert json.loads(ev[0][6:])["result"]["structuredContent"] == {"result": "hello-sse"}, raw
+            r = await h.post("/mcp", headers=hdr, content=_mcp_body(LIM + 1, "echo", {"text": "x"}))
+            assert r.status_code == 413, r.status_code
+    print("OK — 미들웨어 뒤 MCP SSE 응답 통과")
+
+
+async def test_limits():
+    """② 인자 길이 · ③ 전역 DB 크기 — MCP guard 와 웹 쓰기 API 가 같은 db.write_gate 를 지나는지."""
+    site = main.site
+    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    site.dev, site.dev_user = True, "tester@example.com"
+    uid = db.user_by_email("tester@example.com")["id"]
+    origin = {"origin": PUBLIC}
+    real_measure, real_admins = db._measure_db_size, db.ADMIN_USER_IDS
+    # 도구 분류: 쓰기 표에 없는 도구는 읽기 — 새 쓰기 도구가 게이트를 비켜 가지 않게 고정
+    async with Client(main.mcp) as c:
+        names = {t.name for t in (await c.list_tools()).tools}
+    assert set(db.WRITE_LIMITS) <= names, set(db.WRITE_LIMITS) - names
+    assert names - set(db.WRITE_LIMITS) == {"state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get"}, names
+
+    def nrec():
+        return len(db.records(uid, limit=1000))
+
+    try:
+        db.quota_cache_reset()
+        n = db.db_size_cached()
+        assert isinstance(n, int) and 0 < n < db.DB_QUOTA_BYTES, n   # 실제 pg_database_size 가 돈다
+        async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # ② 기록 본문: 정확히 64KB(다바이트 포함) 통과 · +1 거절, 행 안 생김
+            body = "가" * (db.LIMIT_BODY // 3) + "a" * (db.LIMIT_BODY % 3)
+            assert len(body.encode()) == db.LIMIT_BODY
+            r = await c.call_tool("record_add", {"text": body, "title": "64KB 경계"})
+            assert not r.is_error, r.content[0].text[:200]
+            rid = val(r)["id"]
+            before = nrec()
+            r = await c.call_tool("record_add", {"text": body + "a", "title": "64KB+1"})
+            msg = r.content[0].text
+            assert r.is_error and "[PAYLOAD-LIMIT]" in msg and "text" in msg and str(db.LIMIT_BODY) in msg, msg[:300]
+            assert nrec() == before, "거절된 기록은 저장되지 않는다"
+            for tool, args, field in (
+                ("record_add", {"text": "본문", "title": "t" * (db.LIMIT_TEXT + 1)}, "title"),
+                ("question_add", {"text": "질" * 342}, "text"),   # 3바이트 × 342 = 1026
+                ("profile_set", {"key": "purpose", "value": "v" * (db.LIMIT_PROFILE_VALUE + 1), "status": "guessed"}, "value"),
+                ("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": " " * (db.LIMIT_JSON + 1)}, "definition_json"),
+                ("candidates_propose", {"record_id": rid, "question_id": "", "candidates": [{"text": "c" * (db.LIMIT_TEXT + 1), "quote": "가가"}]},
+                 "candidates[].text"),
+                ("record_add", {"text": "본문", "source": "s" * (db.LIMIT_TEXT + 1)}, "source"),
+            ):
+                r = await c.call_tool(tool, args)
+                assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text and field in r.content[0].text, (tool, r.content[0].text[:200])
+            # ② 웹 쓰기 API: 후보 문장 1KB 경계
+            qq = db.question_add(uid, "α1 시험 질문")
+            rec = db.record_add(uid, "α1", "회의 전에 안건을 먼저 돌렸다.", qq["id"])
+            cid = db.candidates_propose(uid, rec["id"], qq["id"], [{"text": "안건 먼저", "quote": "안건을 먼저 돌렸다"}], "ai")[0][0]
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "x" * (db.LIMIT_TEXT + 1)}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT" and "text" in r.json()["msg"], r.text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "x" * db.LIMIT_TEXT}, headers=origin)
+            assert r.status_code == 200, r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i" * (db.LIMIT_TEXT + 1), "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT", r.text
+            r = await c.call_tool("candidate_decide", {"candidate_id": cid, "action": "edit", "text": "y" * (db.LIMIT_TEXT + 1)})
+            assert r.is_error and "[PAYLOAD-LIMIT]" in r.content[0].text, r.content[0].text
+
+            # ③ 전역 DB 크기: 401MB 주입 → 비관리자 쓰기 거절, 읽기 정상
+            db._measure_db_size = lambda: 401 * db.MB
+            db.quota_cache_reset()
+            before = nrec()
+            r = await c.call_tool("record_add", {"text": "꽉 찬 때 기록"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            r = await c.call_tool("question_add", {"text": "꽉 찬 때 질문"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "QUOTA-GLOBAL", r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "QUOTA-GLOBAL", r.text
+            assert nrec() == before and db.candidate_get(uid, cid)["status"] == "pending"
+            for tool, args in (("state_get", {}), ("record_get", {"record_id": rid}), ("question_list", {}), ("candidate_list", {}),
+                               ("definitions_get", {"object_ids": None, "include_archived": False}), ("help_get", {"topic": "words"})):
+                r = await c.call_tool(tool, args)
+                assert not r.is_error, (tool, r.content[0].text[:200])
+            assert (await h.get("/api/state")).status_code == 200
+            assert (await h.get("/api/journal", params={"id": rid})).status_code == 200
+            # 관리자는 쓴다
+            db.ADMIN_USER_IDS = frozenset({uid})
+            r = await c.call_tool("record_add", {"text": "관리자 기록"})
+            assert not r.is_error, r.content[0].text
+            r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
+            assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
+            db.ADMIN_USER_IDS = frozenset({"u_someone_else"})
+            r = await c.call_tool("record_add", {"text": "다른 사람만 관리자"})
+            assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
+            # 경계: 정확히 400MB 는 허용
+            db._measure_db_size = lambda: db.DB_QUOTA_BYTES
+            db.quota_cache_reset()
+            assert not (await c.call_tool("record_add", {"text": "400MB 정확히"})).is_error
+
+            # 측정 실패 → 허용(가용성 우선)
+            def boom():
+                raise RuntimeError("측정 실패 주입")
+            db._measure_db_size = boom
+            db.quota_cache_reset()
+            assert not (await c.call_tool("record_add", {"text": "측정 실패 때 기록"})).is_error
+            # 캐시: 만료(60초) 전엔 다시 재지 않는다
+            calls = []
+            db._measure_db_size = lambda: calls.append(1) or 1
+            db.quota_cache_reset()
+            for i in range(3):
+                assert not (await c.call_tool("question_add", {"text": f"캐시 {i}"})).is_error
+            assert calls == [1], calls
+    finally:
+        db._measure_db_size, db.ADMIN_USER_IDS = real_measure, real_admins
+        db.quota_cache_reset()
+    print("OK — 인자 길이·전역 DB 크기 상한 통과")
+
+
 async def run():
     cleanup()
     try:
@@ -842,6 +1027,8 @@ async def run():
         A = test_definitions()
         await test_definition_tools()
         await test_web_items(A)
+        await test_limits_sse()
+        await test_limits()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]

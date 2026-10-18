@@ -452,8 +452,13 @@ class Web:
         cid, action, text = str(body.get("candidate_id") or ""), str(body.get("action") or ""), body.get("text")
         if action not in ACTIONS:
             return JSONResponse({"code": "ARG-INVALID", "msg": "action 은 confirm·exclude·pending·edit 중 하나예요."}, status_code=400)
+        text = str(text) if text is not None else None
+
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+            db.write_gate("candidate_decide", {"candidate_id": cid, "action": action, "text": text}, uid)
+            return db.candidate_decide(uid, cid, action, text)
         try:
-            out = await run_in_threadpool(db.candidate_decide, uid, cid, action, str(text) if text is not None else None)
+            out = await run_in_threadpool(write)
         except db.CanonError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
@@ -488,9 +493,13 @@ class Web:
         action = str(body.get("action") or "")
         if action not in db.ITEM_ACTIONS:
             return JSONResponse({"code": "ARG-INVALID", "msg": "action 이 틀렸어요."}, status_code=400)
+        iid, pid = str(body.get("item_id") or ""), str(body.get("proposal_id") or "") or None
+
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+            db.write_gate("item_decide", {"item_id": iid, "proposal_id": pid, "action": action}, uid)
+            return db.item_decide(uid, iid, rev, pid, action, hid)
         try:
-            out = await run_in_threadpool(db.item_decide, uid, str(body.get("item_id") or ""), rev,
-                                          str(body.get("proposal_id") or "") or None, action, hid)
+            out = await run_in_threadpool(write)
         except db.CanonError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)

@@ -8,6 +8,8 @@ import json
 import os
 import re
 import secrets
+import threading
+import time
 import datetime as _dt
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +38,115 @@ class CanonError(Exception):
     def __init__(self, code, message, action=""):
         super().__init__(message)
         self.code, self.message, self.action = code, message, action
+
+
+# ── 전역 상한 (α1) ─────────────────────────────────────
+# 공개 가입에서 계정 하나가 DB(Supabase Free 500MB, 넘으면 read-only)를 채워 전원의 쓰기를 멈추지 못하게 한다.
+# ① 요청 본문은 main.BodyLimit(ASGI) ② 문자열 인자 길이·③ 전역 DB 크기는 쓰기 진입(MCP guard·웹 쓰기 API)에서 이 함수들로.
+KB, MB = 1024, 1024 * 1024
+MAX_BODY_BYTES = 256 * KB          # ① /mcp·/api/* 요청 본문
+LIMIT_BODY = 64 * KB               # ② 기록 본문·항목 본문
+LIMIT_TEXT = 1 * KB                # ② 제목·질문·후보 문장, 표에 없는 문자열(ID·출처·코드·메모)
+LIMIT_PROFILE_VALUE = 4 * KB       # ② 프로필 값
+LIMIT_JSON = 32 * KB               # ② 정의·항목 JSON(직렬화 문자열 길이)
+DB_QUOTA_BYTES = 400 * MB          # ③ 400 × 1024² 바이트 넘으면 비관리자 쓰기 거절
+DB_SIZE_TTL = 60                   # ③ 크기 측정 캐시(초)
+DB_SIZE_TIMEOUT = 1.0              # ③ 측정용 풀 checkout 대기(초)
+
+# 쓰기 도구(MCP 도구 이름 = 웹 쓰기 API 가 부르는 db 함수 이름) → 필드별 상한(UTF-8 바이트). 표에 없는 문자열은 LIMIT_TEXT.
+# 목록 인자의 항목 필드는 "목록[].필드". 이 표의 키가 쓰기 진입 집합이다 — 표에 없는 도구는 읽기로 보고 검사하지 않는다.
+WRITE_LIMITS = {
+    "question_add": {"text": LIMIT_TEXT},
+    "record_add": {"text": LIMIT_BODY, "title": LIMIT_TEXT},
+    "candidates_propose": {"candidates[].text": LIMIT_TEXT, "candidates[].quote": LIMIT_BODY},
+    "candidate_decide": {"text": LIMIT_TEXT},
+    "profile_set": {"value": LIMIT_PROFILE_VALUE},
+    "definition_propose": {"definition_json": LIMIT_JSON},
+    "definition_apply": {},
+    "item_propose": {"title": LIMIT_TEXT, "body": LIMIT_BODY, "data_json": LIMIT_JSON},
+    "item_decide": {},
+    "record_attach": {},
+}
+
+# 관리자 내부 user id — ③ 전역 DB 크기 거절에서만 예외. main 이 시작 때 env CANON_ADMIN_USER_IDS 로 한 번 채운다.
+ADMIN_USER_IDS: frozenset = frozenset()
+
+
+def _nbytes(v: str) -> int:
+    return len(v.encode("utf-8"))
+
+
+def check_lengths(op: str, args: dict):
+    """② 쓰기 인자 길이. 넘으면 PAYLOAD-LIMIT(필드명·상한). 문자열·문자열 목록·모델/딕트 목록의 문자열 필드를 본다."""
+    table = WRITE_LIMITS.get(op)
+    if table is None:
+        return
+
+    def one(name, v):
+        if isinstance(v, str):
+            lim = table.get(name, LIMIT_TEXT)
+            if _nbytes(v) > lim:
+                raise CanonError("PAYLOAD-LIMIT", f"{name} 가 너무 길어요 (상한 {lim} 바이트, 지금 {_nbytes(v)} 바이트).",
+                                 "줄이거나 나눠서 다시 보내세요.")
+
+    for name, v in args.items():
+        if isinstance(v, (list, tuple)):
+            for el in v:
+                if hasattr(el, "model_dump"):
+                    el = el.model_dump()
+                if isinstance(el, dict):
+                    for k, sv in el.items():
+                        one(f"{name}[].{k}", sv)
+                else:
+                    one(f"{name}[]", el)
+        else:
+            one(name, v)
+
+
+_dbsize_lock = threading.Lock()
+_dbsize = {"at": None, "bytes": None}   # bytes=None: 측정 실패(허용)
+
+
+def _measure_db_size() -> int:
+    """지금 DB 크기(바이트). 풀 checkout 은 짧게 기다린다. 시험은 이 함수를 바꿔 끼운다(운영 env 로는 못 바꾼다)."""
+    with pool().connection(timeout=DB_SIZE_TIMEOUT) as c:
+        return int(c.execute("SELECT pg_database_size(current_database()) AS n").fetchone()["n"])
+
+
+def quota_cache_reset():
+    with _dbsize_lock:
+        _dbsize["at"] = _dbsize["bytes"] = None
+
+
+def db_size_cached() -> int | None:
+    """DB_SIZE_TTL 초 캐시. 만료 때만 측정한다. 측정 실패는 None 으로 같은 시간 캐시(로그 1줄)."""
+    with _dbsize_lock:
+        t = time.monotonic()
+        if _dbsize["at"] is None or t - _dbsize["at"] >= DB_SIZE_TTL:
+            try:
+                _dbsize["bytes"] = _measure_db_size()
+            except Exception as e:
+                _dbsize["bytes"] = None
+                print(f"[quota] DB 크기 측정 실패 — 쓰기 허용: {type(e).__name__}", flush=True)
+            _dbsize["at"] = t
+        return _dbsize["bytes"]
+
+
+def check_global_quota(uid):
+    """③ 전역 DB 크기. 넘었으면 관리자만 쓴다. uid 는 문자열 또는 넘었을 때만 부를 함수(평소 uid 조회를 아낀다)."""
+    n = db_size_cached()
+    if n is None or n <= DB_QUOTA_BYTES:
+        return
+    if (uid() if callable(uid) else uid) in ADMIN_USER_IDS:
+        return
+    raise CanonError("QUOTA-GLOBAL", "서비스 저장 공간이 한도에 가까워 지금은 새로 쓸 수 없어요. 읽기는 그대로 돼요.",
+                     "운영자에게 알려 주세요.")
+
+
+def write_gate(op: str, args: dict, uid):
+    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다."""
+    check_lengths(op, args)
+    check_global_quota(uid)
 
 
 def now():
