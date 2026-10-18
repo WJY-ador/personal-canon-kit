@@ -26,7 +26,7 @@ Claude Code 에서 붙이기: `claude mcp add --transport http canon http://127.
 
 ## 배포 (Render Free, singapore)
 
-Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). rootDir=`server`, 시작 `uvicorn main:app --host 0.0.0.0 --port $PORT`, 헬스체크 `/health`(DB 핑 포함). MCP 는 stateless(json_response) — 무료 인스턴스가 잠들어도 다음 호출이 산다.
+Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). rootDir 없음 — 레포 루트에서 빌드 `pip install -r server/requirements.txt`, 시작 `uvicorn --app-dir server main:app --host 0.0.0.0 --port $PORT`(도움말 정본 `guides/` 가 같이 올라가야 한다. rootDir=`server` 면 안 올라간다). 파이썬은 루트 `.python-version`(3.13), 헬스체크 `/health`(DB 핑 포함). MCP 는 stateless(json_response) — 무료 인스턴스가 잠들어도 다음 호출이 산다.
 
 환경변수:
 - `DATABASE_URL` — Supabase Session pooler 연결 문자열 (비밀, 대시보드에서 입력)
@@ -55,12 +55,16 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 2단계: 구조 탭 = 360(서브 필: 기준 오브젝트 · 후보 · 그 밖의 오브젝트, 카드 그리드 + 오른쪽 서랍 `#panel`). 서랍은 본문·필드·관계 대상·들어오는 관계·이력·승격 사실, 제안이 있으면 diff + [적용][제외(discard)], 기준이면 [내 판단으로 남기기][남기지 않기][되돌리기]. 라우트 `#structure/<오브젝트ID>[/<항목ID>]` · `#structure/cand/<필터>`. 오늘 탭은 질문 없는 미결정 후보를 기록별로 묶고, 지도 「쌓이는 재료」에 확정 기준을 함께 둔다.
 - 옛 설명: `app.html` 은 `web/index.html` 의 이식본. 필드명(`record_id`·`quote`·`question_id`), 문구(Claude Code·파일 전제 제거), 기본 탭 「시작」+「기록」, 시각은 브라우저 시간대.
   `web/index.html` 은 로컬 키트가 아직 쓰므로 그대로 둔다.
+- 도움말 `GET /help`(로그인 불필요, DB 안 건드림): 레포의 `guides/09-hosted-start.md`·`10-words.md` 를 서버 시작 때 읽어(`CANON_GUIDES_DIR` 가 있으면 그 폴더, 없으면 `server/../guides`) 정규식으로 HTML 로 바꾼다(제목·문단·표·굵게·목록·인라인 코드·링크, `10-words.md` 링크는 `#words`). 모든 글자를 먼저 escape(raw HTML 통과 없음), 링크는 http(s)·#앵커·상대경로만. 좁은 화면의 표는 가로 스크롤. 토큰·글꼴은 `start.html` 의 `:root` 블록을 그대로 쓴다. 세션 쿠키가 있으면 [노트로], 없으면 [로그인]. 문서가 없으면 시작 로그에 경고 + 503.
+  문서 정본은 guides 이고 서버는 읽기만 한다. `app.html` 푸터·`start.html` 하단에 [도움말].
 
 ## 경계
 - 사용자 결정: AuthKit JWT(RS256, iss·exp·aud 검증) 의 `sub` 우선. 처음 연결 땐 userinfo 의 검증된 이메일로 같은 이메일 = 한 사용자. `email` 클레임은 토큰에 없다.
 - 저장은 Postgres (`schema.sql`, 설계 `data-model.md`). 행 격리는 user_id + 복합 FK.
 - 도구: state_get · question_add · question_list · record_add · record_get · candidates_propose · candidate_decide · candidate_list · profile_set.
   2단계(정의 층) 5+1: definitions_get · definition_propose · definition_apply · item_propose · item_decide + record_attach(「어디에 붙나」: 기준·결정·후보 연결, 관심 축, 쓸 자리·아직 안 붙는 것). 동적 내용은 JSON 문자열(`definition_json`·`data_json`).
+  도움말 help_get(`topic`: start·words·all, 기본 words) — `/help` 와 같은 guides 원문을 `{topic, text}` 로. INSTRUCTIONS 끝 줄: 해당 topic 하나만 읽고, 같은 대화에서 다시 부르지 않고, 문서에 없으면 "문서에서 확인되지 않아요" + 가장 가까운 절, 제품 밖 질문엔 적용 안 함. 도구는 모두 16개.
+  이미 붙여 둔 Claude 커넥터는 새 도구(help_get 등)를 보려면 커넥터를 다시 연결하거나 새 대화를 연다.
   웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
   `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
 - 근거 인용은 원문에 글자 그대로 **한 곳**만 있어야 저장(0곳·2곳 이상 거절). 기록 1편당 후보 3개. 결정 이력(candidate_history)으로 되돌릴 수 있고, 확정 문장을 고치면 pending 으로 돌아간다.
