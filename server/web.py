@@ -40,9 +40,8 @@ GUIDES_DIR = Path(os.environ.get("CANON_GUIDES_DIR") or Path(__file__).parent.pa
 HELP_FILES = {"start": "09-hosted-start.md", "words": "10-words.md"}
 _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md": "/privacy"}
 # 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
-# 문안의 {{CONTACT}} 는 시작 때 env CANON_CONTACT 로 바꾼다(레포에 연락처를 적지 않는다). 없으면 대체 문구.
+# 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CANON_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
-PRIVACY_CONTACT_FALLBACK = "대시보드 도움말의 문의 경로"
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
 
@@ -277,15 +276,16 @@ def render_help(docs: dict) -> str:
 
 
 def render_privacy(md: str) -> str:
-    """처리방침 페이지 전체(11). md 는 {{CONTACT}} 를 이미 바꾼 원문 — 렌더러가 모든 글자를 escape 한다."""
+    """처리방침 페이지 전체(11). md 는 {{CONTACT_LINE}} 을 이미 바꾼 원문 — 렌더러가 모든 글자를 escape 한다."""
     body, toc, h1 = md_to_html(md, "privacy", _PRIVACY_ANCHORS)
     return _doc_page("개인정보 처리방침", _toc_block("privacy", toc, h1, _PRIVACY_ANCHORS),
                      f'<section class="doc" id="privacy">{body}</section>', '<a href="/help">도움말</a>')
 
 
-def privacy_contact() -> str:
-    """env CANON_CONTACT(한 줄로 접음). 없으면 대체 문구."""
-    return " ".join(os.environ.get("CANON_CONTACT", "").split()) or PRIVACY_CONTACT_FALLBACK
+def privacy_contact_line() -> str:
+    """env CANON_CONTACT(선택, 한 줄로 접음)가 있으면 보조 메일 한 줄. 없으면 빈 문자열 — 처리방침에 메일 줄이 없다."""
+    contact = " ".join(os.environ.get("CANON_CONTACT", "").split())
+    return f"로그인할 수 없으면 메일로도 요청할 수 있습니다(보조 경로). 가입한 이메일 주소에서 보낸 메일만 처리합니다. 메일: {contact}" if contact else ""
 
 
 class Web:
@@ -319,7 +319,7 @@ class Web:
             md = (d / PRIVACY_FILE).read_text(encoding="utf-8")
         except OSError:
             md = None
-        self.privacy_html = render_privacy(md.replace("{{CONTACT}}", privacy_contact())) if md else None
+        self.privacy_html = render_privacy(md.replace("{{CONTACT_LINE}}", privacy_contact_line())) if md else None
 
     @property
     def login_ready(self) -> bool:

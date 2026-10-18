@@ -381,24 +381,24 @@ async def test_web():
                     assert word in r.text, word
                 assert 'href="/login"' in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 assert 'href="/privacy"' in r.text, "도움말 하단에 처리방침"
-                # 처리방침: 로그인 없이 200, 같은 렌더러(escape), 09·10 링크는 /help#…, {{CONTACT}} 는 env CANON_CONTACT(없으면 대체 문구)
+                # 처리방침: 로그인 없이 200, 같은 렌더러(escape), 09·10 링크는 /help#…, {{CONTACT_LINE}} 은 env CANON_CONTACT(선택 — 없으면 메일 줄 없음)
                 r = await h.get("/privacy")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
                              "제28조의8", "v1 · 2026-10-18", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
                     assert word in r.text, word
-                assert "{{CONTACT}}" not in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
+                assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 real_contact, real_privacy = os.environ.get("CANON_CONTACT"), site.privacy_html
                 try:
                     os.environ["CANON_CONTACT"] = '<b>x</b> [y](javascript:alert(1))'
                     site.load_help(web.GUIDES_DIR)
                     r = await h.get("/privacy")
                     assert r.status_code == 200 and "&lt;b&gt;x&lt;/b&gt;" in r.text and "<b>x" not in r.text, r.text[-800:]
-                    assert 'href="javascript' not in r.text.lower() and "{{CONTACT}}" not in r.text, "연락처 env 도 렌더러 escape·링크 검사를 탄다"
+                    assert 'href="javascript' not in r.text.lower() and "{{CONTACT" not in r.text and "메일: " in r.text, "연락처 env 도 렌더러 escape·링크 검사를 탄다"
                     os.environ.pop("CANON_CONTACT")
                     site.load_help(web.GUIDES_DIR)
                     r = await h.get("/privacy")
-                    assert web.PRIVACY_CONTACT_FALLBACK in r.text and "{{CONTACT}}" not in r.text, "연락처 env 없으면 대체 문구"
+                    assert r.status_code == 200 and "메일: " not in r.text and "{{CONTACT" not in r.text, "연락처 env 없으면 메일 줄 없음(500 아님)"
                 finally:
                     if real_contact is None:
                         os.environ.pop("CANON_CONTACT", None)
