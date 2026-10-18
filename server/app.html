@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>대시보드</title>
+<script src="{{asset:theme.js}}"></script>
 <style>
 /* 「보드」 — 로컬 보드(checkpoint_board)·360·지도 칸반 구조를 옮긴 넓은 화면. 주색(--accent)은 조작·확정에만.
    형광펜(--mark)은 근거 구절과 그 인용에만. 상태색: 내 판단 --mine · 아직 안 정함 --warn · AI --ai · 메모 --memo. */
@@ -18,15 +19,7 @@
   --serif: Georgia, "Noto Serif KR", "Apple SD Gothic Neo", serif;
   --mono: ui-monospace, Menlo, "Apple SD Gothic Neo", monospace;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --paper: #15181A; --card: #1E2224; --ink: #E7EAE6; --muted: #A3AAA6; --soft: #6F7773; --line: #2E3335;
-    --accent: #4FB08A; --on-accent: #0F1412; --accent-soft: #1C2E26; --warn: #D99A6C; --warn-bg: #2B241D;
-    --ai: #A79BE8; --ai-bg: #272437; --cand-bg: #202029; --cand-line: #3B3850; --memo: #A3AAA6; --memo-bg: #262A2C;
-    --mine: #4FB08A; --mine-bg: #1C2E26; --fail: #F08A7E; --fail-bg: #33201E; --mark: #6E5A1A; --mark-ink: #E7EAE6;
-  }
-}
+/* 어두운 화면 — 헤더 ☀/☾ 토글(/assets/theme.js)이 켤 때만. OS 다크 설정은 따르지 않는다(기본은 밝은 화면). */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --paper: #15181A; --card: #1E2224; --ink: #E7EAE6; --muted: #A3AAA6; --soft: #6F7773; --line: #2E3335;
@@ -89,6 +82,7 @@ button.axpage:hover { background: var(--accent-soft); }
 button.refresh { border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: .15rem .5rem; min-height: 0;
   font-size: .72rem; color: var(--muted); font-weight: 500; }
 button.refresh:hover { border-color: var(--accent); color: var(--accent); }
+button.theme-toggle { min-width: 28px; justify-content: center; font-size: .82rem; }
 
 /* 탭(종이 위 탭) · 서브 필 */
 nav.tabs { border-bottom: 1px solid var(--line); }
@@ -396,7 +390,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
   <h1 id="date"></h1><span class="sub">대시보드 — 여기서는 보기와 결정만</span>
   <div class="axiswrap"><div class="axistop" id="axistop"><span class="speclabel">오늘</span><div class="specbox"><div class="spectrum" id="spectrum" role="img"></div><div class="speckey" id="speckey"></div></div></div>
     <div class="axislegend" id="legend"></div></div>
-  <div class="who"><span id="who"></span><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><button class="refresh" id="logout">로그아웃</button></div>
+  <div class="who"><span id="who"></span><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><button class="refresh" id="logout">로그아웃</button><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
 </div></header>
 <nav class="tabs" id="nav" aria-label="내 탭"></nav>
 <nav class="subtabs" id="subnav" hidden></nav>
@@ -407,8 +401,6 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
   <button class="small" id="dlg-close">닫기</button></div><div class="db" id="dlg-body"></div></dialog>
 <script>
 "use strict";
-// ?theme=light|dark 로 OS 설정을 덮어쓴다 — 스크린샷·확인용. 저장하지 않는다.
-{ const t = new URLSearchParams(location.search).get("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; }
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const $ = id => document.getElementById(id);
 let S = null, loadedAt = "";

@@ -8,6 +8,8 @@
    · question_id "" → NULL · 원작자 템플릿 시드(시험 사용자에게만) · /api/item·/api/item/decide
 6) 전역 상한(α1): 요청 본문 256KB(413, Content-Length·chunked) · MCP SSE 응답이 미들웨어 뒤에서 그대로 · 인자 길이 PAYLOAD-LIMIT
    (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
+7) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
+   외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -1017,6 +1019,107 @@ async def test_limits():
     print("OK — 인자 길이·전역 DB 크기 상한 통과")
 
 
+# ── 7) 시작 화면 자산 ─────────────────────────────────
+ASSET_MAX = {"start-bg.webp": 400 * 1024, "start-bg-still.webp": 30 * 1024,
+             "start-bg-dark.webp": 400 * 1024, "start-bg-dark-still.webp": 30 * 1024,
+             "start-demo.webp": 800 * 1024, "start-demo-poster.webp": 60 * 1024,
+             "start-demo-dark.webp": 800 * 1024, "start-demo-dark-poster.webp": 60 * 1024, "theme.js": 4 * 1024}
+
+
+async def test_start_assets():
+    import hashlib
+    import re
+    site = main.site
+    real = site.dev, site.dev_user
+    site.dev, site.dev_user = False, ""   # 세션 없는 방문자 — / 가 시작 화면을 준다
+    adir = HERE / "assets"
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # 허용 목록 4개 전부 서빙 · 용량 상한
+            assert set(web.ASSETS) == set(web.ASSET_FILES) == set(ASSET_MAX), web.ASSETS.keys()
+            for name, mx in ASSET_MAX.items():
+                data = (adir / name).read_bytes()
+                sha = hashlib.sha256(data).hexdigest()[:10]
+                assert web.ASSETS[name][2] == sha, name
+                assert len(data) <= mx, (name, len(data), mx)
+                r = await h.get(f"/assets/{name}", params={"v": sha})
+                assert r.status_code == 200 and r.content == data, (name, r.status_code)
+                assert r.headers["content-type"] == web.ASSET_FILES[name] and r.headers.get("x-content-type-options") == "nosniff", r.headers
+                assert r.headers.get("cache-control") == "public, max-age=31536000, immutable", r.headers
+                assert r.headers.get("etag"), "FileResponse 의 ETag"
+                for params in ({}, {"v": "0000000000"}):   # v 없음·불일치 → 200 + no-cache
+                    r = await h.get(f"/assets/{name}", params=params)
+                    assert r.status_code == 200 and r.headers.get("cache-control") == "no-cache", (name, params, r.headers)
+            r = await h.get("/assets/start-bg.webp", headers={"range": "bytes=0-9"})
+            assert r.status_code == 206 and len(r.content) == 10, r.status_code
+            # 허용 목록 밖 → 404. 탐색 경로는 {name} 이 / 를 안 받아 Mount("/") 로 떨어진다 — 200 아님·web.py 내용 없음만 단정
+            for bad in ("x", "start-demo.json", "web.py"):
+                assert (await h.get(f"/assets/{bad}")).status_code == 404, bad
+            for raw in ("/assets/../web.py", "/assets/..%2Fweb.py", "/assets/%2e%2e/web.py"):
+                r = await h.get(raw)
+                assert r.status_code != 200 and b"SECURITY_HEADERS" not in r.content, (raw, r.status_code)
+            # 시작 화면: 자리표시 0 · 스크립트 0 · v = 현재 sha10 · 로그인 버튼이 데모보다 DOM 앞
+            for params in ({}, {"out": "1"}):
+                r = await h.get("/", params=params)
+                assert r.status_code == 200, r.status_code
+                t = r.text
+                assert "{{asset:" not in t, params
+                # 스크립트는 외부 self 파일 하나(/assets/theme.js?v=…, <head> 안)뿐 — 인라인 0
+                tags = re.findall(r"<script\b([^>]*)>(.*?)</script>", t, flags=re.S | re.I)
+                assert t.lower().count("<script") == 1 and len(tags) == 1, tags
+                assert re.fullmatch(r'\s*src="/assets/theme\.js\?v=[0-9a-f]{10}"\s*', tags[0][0]) and tags[0][1] == "", tags
+                assert t.index("<script") < t.index("</head>"), "theme.js 는 head 에서 — 깜빡임 방지"
+                assert t.count("data-theme-toggle") == 1, "☀/☾ 토글 하나"
+                urls = re.findall(r"/assets/([a-z.-]+)\?v=([0-9a-f]{10})", t)
+                assert {n for n, _ in urls} == set(ASSET_MAX), urls
+                assert all(web.ASSETS[n][2] == v for n, v in urls), urls
+                assert t.count('class="btn-login"') == 1 and t.count('href="/login') == 1, "로그인 버튼 하나"
+                assert t.index('class="btn-login"') < t.index('<section class="demo"'), "로그인 버튼이 데모보다 앞"
+                assert '<input type="checkbox" id="still">' in t and "움직임 멈추기" in t, "움직임 멈추기 체크박스"
+                assert t.count('alt=""') == 4 and 'class="demo" aria-label="사용 모습 미리 보기' in t, "데모 그림 alt 는 비우고 설명은 section 이름"
+                assert t.count('loading="lazy"') == 4, "테마·멈춤에 맞는 한 장만 받는다"
+                assert re.search(r"<h1>[^<]*<br><em>[^<]+</em></h1>", t), "h1 = 한 곳, 강조는 <em>"
+            # /help: 배경·자리표시 없음
+            r = await h.get("/help")
+            assert r.status_code == 200 and "{{asset:" not in r.text and "start-bg" not in r.text, r.status_code
+            assert re.findall(r'/assets/[^"?]+', r.text) == ["/assets/theme.js"] and "data-theme-toggle" in r.text, "도움말은 theme.js·토글만"
+            assert f'/assets/theme.js?v={web.ASSETS["theme.js"][2]}' in r.text
+            # 기본 밝은 화면: OS 다크 설정·?theme 를 따르지 않는다. 어두운 화면은 토글(data-theme="dark")로만
+            for f in ("app.html", "start.html"):
+                src = (HERE / f).read_text(encoding="utf-8")
+                assert "prefers-color-scheme" not in src and "dataset.theme" not in src and src.count(':root[data-theme="dark"] {') >= 1, f
+                assert '<html lang="ko">' in src and "data-theme" not in src.split("<head>", 1)[0], f"{f}: 기본은 라이트"
+            assert "prefers-color-scheme" not in r.text and ':root[data-theme="dark"]' in r.text, "/help 도 같은 토큰·토글"
+            # 대시보드도 같은 theme.js·토글
+            site.dev, site.dev_user = True, TEST_EMAILS[0]
+            r = await h.get("/app")
+            tj_tag = f'<script src="/assets/theme.js?v={web.ASSETS["theme.js"][2]}"></script>'
+            assert r.status_code == 200 and "{{asset:" not in r.text and tj_tag in r.text, r.status_code
+            assert r.text.index("theme.js") < r.text.index("</head>") and r.text.count("data-theme-toggle") == 1
+            site.dev, site.dev_user = False, ""
+    finally:
+        site.dev, site.dev_user = real
+    # 외부 셰이더 문자열 0건(바이너리 포함). 이 파일 자신에 걸리지 않게 조립한다
+    needles = [b"shaders" + b".com", b"type" + b"gpu"]
+    files = [*HERE.glob("*.html"), *HERE.glob("*.py"), *adir.glob("*")]
+    hits = [(f.name, n) for f in files for n in needles if n in f.read_bytes()]
+    assert not hits, hits
+    # theme.js: 외부 주소·네트워크 호출 0, localStorage 는 try 안에서만, OS 설정 미추종
+    tj = (adir / "theme.js").read_text(encoding="utf-8")
+    assert not re.search(r"https?:|fetch\(|XMLHttpRequest|import\(|sendBeacon|WebSocket|\.src\s*=", tj), "theme.js 외부 요청 금지"
+    assert all("try {" in ln for ln in tj.splitlines() if "localStorage." in ln), "localStorage 는 try/catch 안에서"
+    assert "prefers-color-scheme" not in tj and "matchMedia" not in tj, "OS 설정 미추종"
+    # 데모 낡음: 촬영 때 app.html 과 지금이 다르면 경고만(실패 아님) — tools/start-visuals/README.md 로 다시 찍는다
+    meta = json.loads((adir / "start-demo.json").read_text(encoding="utf-8"))
+    assert set(meta) == {"light", "dark"}, meta.keys()
+    now_sha = hashlib.sha256((HERE / "app.html").read_bytes()).hexdigest()
+    for theme, m in meta.items():
+        if m.get("app_sha256") != now_sha:
+            print(f"경고 — 시작 화면 데모({theme})가 낡았어요: app.html 이 촬영({m.get('shot_at')}) 뒤 바뀜. "
+                  "tools/start-visuals/README.md 로 다시 찍을지 PR 에 적으세요.")
+    print("OK — 시작 화면 자산·배경·데모 통과")
+
+
 async def run():
     cleanup()
     try:
@@ -1024,6 +1127,7 @@ async def run():
         await test_tools()
         await test_http()
         await test_web()
+        await test_start_assets()
         A = test_definitions()
         await test_definition_tools()
         await test_web_items(A)

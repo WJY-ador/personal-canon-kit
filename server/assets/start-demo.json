@@ -1,0 +1,10 @@
+{
+  "light": {
+    "app_sha256": "6852f2ba91f502bbf81f649aeb2abd2ce394703bd35dfd790e059f2f0e054a15",
+    "shot_at": "2026-10-19T00:14:06+09:00"
+  },
+  "dark": {
+    "app_sha256": "6852f2ba91f502bbf81f649aeb2abd2ce394703bd35dfd790e059f2f0e054a15",
+    "shot_at": "2026-10-19T00:14:10+09:00"
+  }
+}
