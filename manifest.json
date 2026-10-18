@@ -140,6 +140,10 @@
       "required": false
     },
     {
+      "path": "guides/11-privacy.md",
+      "required": false
+    },
+    {
       "path": "sample-data/candidates.json",
       "required": true
     },
