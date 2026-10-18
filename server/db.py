@@ -13,6 +13,7 @@ import time
 import datetime as _dt
 from contextlib import contextmanager
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
@@ -75,11 +76,36 @@ WRITE_LIMITS = {
 }
 # ③ 전역 DB 크기 거절(QUOTA-GLOBAL) 면제 — 저장 공간이 찼다는 문의도 받아야 한다. 길이 검사(②)는 그대로.
 # 대신 문의 한도(사용자 하루 10건·전역 100건, ticket_add)가 건다.
-# α2 동의 게이트가 들어오면 같은 꼴로 CONSENT_EXEMPT = frozenset({"feedback_send"}) 를 둔다(α2·desk-0 중 나중 PR 이 넣는다).
 QUOTA_EXEMPT = frozenset({"feedback_send"})
 
 # 관리자 내부 user id — ③ 전역 DB 크기 거절에서만 예외. main 이 시작 때 env CANON_ADMIN_USER_IDS 로 한 번 채운다.
 ADMIN_USER_IDS: frozenset = frozenset()
+
+# ── 동의 게이트 (α2) ───────────────────────────────────
+# 처리방침(·약관)에 동의하지 않은 사용자의 쓰기를 막는다. MCP guard·웹 쓰기 API 가 부르는 write_gate 안에서.
+# 동의 문서·버전: web.Web.load_consent 가 시작 때 guides 머리글(`vN · 날짜`)에서 채운다 — {"privacy": "v1"(, "terms": …)}.
+# 비어 있으면 게이트가 열린 채다(동의 문서 없음). 관리자 면제 없음.
+CONSENT_VERSIONS: dict = {}
+# 동의 안 한 사용자도 보낼 수 있어야 하는 쓰기 — 개인정보 문의. 읽기 도구·help_get·state_get·웹 GET 은 원래 게이트 밖.
+CONSENT_EXEMPT = frozenset({"feedback_send"})
+# CONSENT-REQUIRED 메시지의 /consent 주소. main 이 시작 때 CANON_PUBLIC_URL 로 채운다.
+PUBLIC_URL = ""
+_consent_lock = threading.Lock()
+_consented: set = set()   # 통과한 uid — 다음부턴 DB 를 안 본다. 버전이 바뀌면(= 재시작·set_consent_versions) 비운다
+
+# ── 일일 한도 (α2) ─────────────────────────────────────
+# 계정 하나가 하루(KST 0시 기준, _KST_TODAY)에 쓸 수 있는 양. 각 쓰기 함수의 기존 트랜잭션 안 맨 앞에서 users 행을 잠그고 센다.
+# 관리자도 같다(QUOTA-GLOBAL 만 관리자 예외).
+DAILY_LIMITS = {"records": 50, "candidates": 150, "decisions": 300, "proposals": 100, "questions": 50}
+_DAILY_NAMES = {"records": "기록은", "candidates": "후보는", "decisions": "결정은", "proposals": "제안은", "questions": "질문은"}   # 조사까지
+# 종류 → 세는 (테이블, 시각 열) 목록. 합계를 센다.
+_DAILY_SOURCES = {
+    "records": (("records", "created"),),
+    "candidates": (("candidates", "created"),),
+    "decisions": (("candidate_history", "at"), ("item_history", "at")),
+    "proposals": (("object_defs", "created_at"), ("items", "created_at")),
+    "questions": (("questions", "created"),),
+}
 
 
 def _nbytes(v: str) -> int:
@@ -157,12 +183,150 @@ def check_global_quota(uid):
                      "운영자에게 알려 주세요.")
 
 
+def set_consent_versions(versions: dict):
+    """동의 문서 버전을 바꾼다(web.Web.load_consent 가 시작 때). 내용이 바뀔 때만 통과 집합을 비운다 — 같은 값으로 다시 불러도 그대로."""
+    global CONSENT_VERSIONS
+    with _consent_lock:
+        if dict(versions) != CONSENT_VERSIONS:
+            _consented.clear()
+        CONSENT_VERSIONS = dict(versions)
+
+
+def _has_all_consents(c, uid) -> bool:
+    for kind, ver in CONSENT_VERSIONS.items():
+        if not _one(c, "SELECT 1 AS x FROM agreements WHERE user_id=%s AND kind=%s AND version=%s", (uid, kind, ver)):
+            return False
+    return True
+
+
+def require_consent(uid):
+    """CONSENT_VERSIONS 의 모든 (kind, version) 에 agreements 행이 있어야 통과. 없으면 CONSENT-REQUIRED.
+    uid 는 문자열 또는 함수(호출해 푼다). 통과한 uid 는 메모리 집합에 넣어 다음부턴 DB 를 안 본다."""
+    if not CONSENT_VERSIONS:
+        return
+    uid = uid() if callable(uid) else uid
+    with _consent_lock:
+        if uid in _consented:
+            return
+    with tx() as c:
+        ok = _has_all_consents(c, uid)
+    if not ok:
+        raise CanonError("CONSENT-REQUIRED", "개인정보 처리방침에 동의한 뒤 쓸 수 있어요.",
+                         f"브라우저에서 {PUBLIC_URL}/consent 를 열어 로그인하고 동의해 주세요.")
+    with _consent_lock:
+        _consented.add(uid)
+
+
+def has_consent(uid) -> bool:
+    """웹 /app·/consent 분기용. require_consent 와 같은 판정(같은 캐시)."""
+    try:
+        require_consent(uid)
+        return True
+    except CanonError as e:
+        if e.code == "CONSENT-REQUIRED":
+            return False
+        raise
+
+
+def consent_grant(uid, versions: dict):
+    """동의 기록. versions 가 CONSENT_VERSIONS 와 정확히 같을 때만(빠지거나 다른 버전이면 ARG-INVALID). 한 트랜잭션."""
+    if not isinstance(versions, dict) or {str(k): v for k, v in versions.items()} != CONSENT_VERSIONS:
+        raise CanonError("ARG-INVALID", "동의할 문서·버전이 지금 문서와 맞지 않아요.", "동의 화면을 새로 고쳐 다시 동의해 주세요.")
+    with tx() as c:
+        for kind, ver in CONSENT_VERSIONS.items():
+            c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (uid, kind, ver))
+    with _consent_lock:
+        _consented.add(uid)
+
+
 def write_gate(op: str, args: dict, uid, quota: bool = True):
-    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    """쓰기 진입 한 곳 — ② 길이 → 동의(α2, CONSENT_EXEMPT 는 빼고) → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
     quota=False 는 QUOTA_EXEMPT(문의) 만 — 호출하는 쪽이 넘긴다."""
     check_lengths(op, args)
+    if op not in CONSENT_EXEMPT:
+        require_consent(uid)
     if quota:
         check_global_quota(uid)
+
+
+# ── 일일 한도 헬퍼 (α2) ─────────────────────────────────
+
+def _user_lock(c, uid):
+    """사용자 행 잠금 — 같은 사용자의 한도 검사·쓰기를 직렬화한다. 잠금 순서 = users 행 → 기존 자식 잠금.
+    FOR NO KEY UPDATE: 게이트끼리는 서로 막지만(직렬화), 자식 INSERT 의 FK 검사(FOR KEY SHARE)와는 충돌하지 않는다.
+    FOR UPDATE 면 record_attach(records 잠금 → item_links INSERT 가 users KEY SHARE 대기)와 candidates_propose(users 잠금 → records 잠금 대기)가 교착한다."""
+    if not _one(c, "SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (uid,)):
+        raise CanonError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
+
+
+def _daily_gate(c, uid, kind, adding=1):
+    """일일 한도 — users 행을 잠근 뒤 KST 오늘 0시 이후 행을 센다. n + adding > 상한이면 RATE-LIMIT.
+    같은 트랜잭션에서 다시 잠가도 된다(이미 잡은 잠금)."""
+    _user_lock(c, uid)
+    n = 0
+    for table, col in _DAILY_SOURCES[kind]:
+        n += _one(c, f"SELECT count(*) AS n FROM {table} WHERE user_id=%s AND {col} >= {_KST_TODAY}", (uid,))["n"]
+    lim = DAILY_LIMITS[kind]
+    if n + adding > lim:
+        raise CanonError("RATE-LIMIT", f"오늘 {_DAILY_NAMES[kind]} {lim}개까지예요.", "내일(KST 0시 이후) 다시 보내 주세요.")
+
+
+# ── 사용 집계 usage_daily (α2) ──────────────────────────
+# 요청 경로는 메모리 카운터만(DB 0). usage_flush 가 5분마다(main.lifespan) 묶어서 upsert. 수면·재배포 때 ≤5분치 유실 허용.
+# name·code 는 열거형만 — 도구 이름·web:경로 이름 / 오류 코드·OK·EXC. 자유 텍스트·원본 오류 문자열 금지.
+KST = ZoneInfo("Asia/Seoul")
+USAGE_FLUSH_TIMEOUT = 1.0          # flush 용 풀 checkout 대기(초)
+_usage_lock = threading.Lock()
+_usage: dict = {}                  # (day_kst, uid or '', name, code) → n
+
+
+def usage_count(uid, name, code):
+    """메모리 카운터 +1. DB 호출 없음."""
+    key = (_dt.datetime.now(KST).date(), uid or "", name, code)
+    with _usage_lock:
+        _usage[key] = _usage.get(key, 0) + 1
+
+
+def usage_snapshot() -> dict:
+    with _usage_lock:
+        return dict(_usage)
+
+
+def _usage_conn():
+    """flush 용 연결. 시험은 이 함수를 바꿔 끼운다(checkout 실패 주입)."""
+    return pool().connection(timeout=USAGE_FLUSH_TIMEOUT)
+
+
+def usage_flush() -> int:
+    """스냅샷을 떼고(lock 안에서 dict 교체) usage_daily 에 합산 upsert. 반환 = 올린 키 수.
+    실패하면 그 묶음을 버리고 로그에 건수만 — 예외를 밖으로 내지 않는다.
+    현재 privacy 버전에 동의하지 않은 uid 는 '' 로 접는다(privacy 키가 없으면 전원 '')."""
+    global _usage
+    with _usage_lock:
+        batch, _usage = _usage, {}
+    if not batch:
+        return 0
+    keys = list(batch)
+    days, uids, names, codes = ([k[i] for k in keys] for i in range(4))
+    ns = [batch[k] for k in keys]
+    ver = CONSENT_VERSIONS.get("privacy")
+    if ver is None:
+        uids = [""] * len(uids)
+    try:
+        with _usage_conn() as c:
+            with c.transaction():
+                c.execute(
+                    "INSERT INTO usage_daily (day,user_id,name,code,n) "
+                    "SELECT d, CASE WHEN EXISTS (SELECT 1 FROM agreements a WHERE a.user_id = t.u AND a.kind = 'privacy' "
+                    "AND a.version = %s) THEN t.u ELSE '' END, nm, cd, sum(n)::integer "
+                    "FROM unnest(%s::date[], %s::text[], %s::text[], %s::text[], %s::integer[]) AS t(d, u, nm, cd, n) "
+                    "GROUP BY 1, 2, 3, 4 "
+                    "ON CONFLICT (day,user_id,name,code) DO UPDATE SET n = usage_daily.n + EXCLUDED.n",
+                    (ver or "", days, uids, names, codes, ns))
+    except Exception:
+        print(f"[usage] flush 실패 — {len(keys)}건 버림", flush=True)
+        return 0
+    return len(keys)
 
 
 def now():
@@ -440,7 +604,10 @@ def user_delete(uid):
         # 정의 층은 보호 Lookup(NO ACTION)이 있어 자식부터 지운다. 나머지는 users cascade.
         for t in ("item_links", "item_history", "items", "field_defs", "object_defs"):
             c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
+        c.execute("DELETE FROM usage_daily WHERE user_id=%s", (uid,))   # FK 없음(익명 '' 행이 있다) — cascade 밖
         c.execute("DELETE FROM users WHERE id=%s", (uid,))
+    with _consent_lock:
+        _consented.discard(uid)
 
 
 # ── 질문 ───────────────────────────────────────────────
@@ -451,6 +618,7 @@ def question_add(uid, text):
         raise CanonError("ARG-INVALID", "질문 문장이 비었어요.")
     qid = new_id("q")
     with tx() as c:
+        _daily_gate(c, uid, "questions")
         c.execute("INSERT INTO questions (id,user_id,text) VALUES (%s,%s,%s)", (qid, uid, text))
         return _iso(_one(c, "SELECT id,text,status,created FROM questions WHERE id=%s", (qid,)))
 
@@ -505,6 +673,7 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     rid = new_id("r")
     hist = [{"at": now().isoformat(), "by": "tool", "author_kind": author_kind, "text_process": text_process}]
     with tx() as c:
+        _daily_gate(c, uid, "records")
         c.execute("INSERT INTO records (id,user_id,title,body,source,question_id,author_kind,text_process,provenance_history) "
                   "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (rid, uid, title, body, source, question_id or None, author_kind, text_process, Jsonb(hist)))
@@ -595,6 +764,7 @@ def candidates_propose(uid, record_id, question_id, items, origin):
     wording_by = "ai" if origin == "ai" else None
     added, dropped = [], []
     with tx() as c:
+        _daily_gate(c, uid, "candidates", len(items or []))   # 제출한 수로 센다(검사 전) — 한 호출 최대 3
         rec = _one(c, "SELECT id,body,author_kind,text_process,deleted_at FROM records "
                       "WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
         if not rec:
@@ -695,6 +865,7 @@ def candidate_decide(uid, cid, action, text=None, expected_revision=None, wordin
     if wording_by not in (None, "self", "ai"):
         raise CanonError("ARG-INVALID", "wording_by 는 self 또는 ai 예요.")
     with tx() as c:
+        _daily_gate(c, uid, "decisions")
         r = _cand_lock(c, uid, cid)
         if expected_revision is not None and r["revision"] != expected_revision:
             raise _conflict(f"지금 revision {r['revision']}")
@@ -1071,6 +1242,7 @@ def definition_propose(uid, object_id, expected_revision, definition):
     """정의 제안을 draft 로 저장한다(행당 하나, 새 제안이 이전 제안을 덮는다). 적용은 definition_apply."""
     nd = normalize_definition(definition)
     with tx() as c:
+        _user_lock(c, uid)   # 잠금 순서 = users 행 → object_defs. 한도는 새 행을 만드는 경로에서만 센다
         if not object_id:
             if expected_revision != 0:
                 raise _conflict("새 오브젝트는 expected_revision 0")
@@ -1085,6 +1257,7 @@ def definition_propose(uid, object_id, expected_revision, definition):
                     raise _bad_def("id 는 od_ 로 시작하는 [a-z0-9_] 예요.")
                 if _one(c, "SELECT 1 AS x FROM object_defs WHERE user_id=%s AND id=%s", (uid, oid)):
                     raise _bad_def(f"오브젝트 ID {oid} 가 이미 있어요.")
+                _daily_gate(c, uid, "proposals")
                 c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind) VALUES (%s,%s,%s,%s,%s)",
                           (uid, oid, nd["key"], nd["label"], nd["semantic_kind"]))
                 row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, oid))
@@ -1340,6 +1513,7 @@ def item_propose(uid, object_id, schema_revision, item_id, expected_revision, co
     body = body or ""
     code = (code or "").strip() or None
     with tx() as c:
+        _user_lock(c, uid)   # 잠금 순서 = users 행 → items. 한도는 새 행을 만드는 경로에서만 센다
         od = _object_row(c, uid, object_id)
         if schema_revision != od["revision"]:
             raise _conflict(f"정의 revision 이 지금 {od['revision']}")
@@ -1367,6 +1541,7 @@ def item_propose(uid, object_id, schema_revision, item_id, expected_revision, co
         else:
             if expected_revision != 0:
                 raise _conflict("새 항목은 expected_revision 0")
+            _daily_gate(c, uid, "proposals")
             item_id = new_id("i")
             c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,decision) VALUES (%s,%s,%s,%s,%s)",
                       (uid, item_id, object_id, od["revision"], "pending" if od["semantic_kind"] == "principle" else None))
@@ -1497,6 +1672,7 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
         raise CanonError("ARG-INVALID", f"action 은 {', '.join(ITEM_ACTIONS)} 중 하나예요.")
     promotion = None
     with tx() as c:
+        _daily_gate(c, uid, "decisions")
         row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
         if not row:
             raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")

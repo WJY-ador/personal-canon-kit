@@ -264,3 +264,15 @@ CREATE TABLE IF NOT EXISTS privacy_log (
   identity_checked boolean NOT NULL DEFAULT false,
   created          timestamptz NOT NULL DEFAULT now()
 );
+
+-- α2 사용 집계(2026-10-19). 요청 경로는 메모리 카운터만, db.usage_flush 가 5분마다 합산 upsert(수면·재배포 때 ≤5분치 유실 허용).
+-- name = MCP 도구 이름 또는 web:<경로 이름>, code = OK·EXC·오류 코드(열거형만, 자유 텍스트 없음). day = KST 날짜.
+-- FK 없음(익명·미동의 '' 행이 있다). 계정 삭제는 db.user_delete 가 이 테이블을 따로 지운다.
+CREATE TABLE IF NOT EXISTS usage_daily (
+  day      date NOT NULL,
+  user_id  text NOT NULL DEFAULT '',
+  name     text NOT NULL,
+  code     text NOT NULL,
+  n        integer NOT NULL,
+  PRIMARY KEY (day, user_id, name, code)
+);

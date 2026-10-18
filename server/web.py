@@ -17,7 +17,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import httpx
 from starlette.concurrency import run_in_threadpool
@@ -42,6 +42,10 @@ _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md":
 # 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
 # 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CANON_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
+# 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
+CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
+CONSENT_LABELS = {"privacy": ("개인정보 처리방침", "/privacy"), "terms": ("이용약관", "/terms")}
+_VERSION_RE = re.compile(r"`v(\d+)")
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
 # ── 화면 자산(배경 루프·데모·테마 토글) ─────────────────
@@ -123,6 +127,11 @@ def ua_family(ua: str | None) -> str:
         if mark in ua:
             return fam
     return "other"
+
+
+def _write_status(e) -> int:
+    """웹 쓰기 API 의 CanonError → HTTP 상태. 동의 필요는 403, 나머지는 400(기존 그대로)."""
+    return 403 if e.code == "CONSENT-REQUIRED" else 400
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -341,10 +350,57 @@ def render_privacy(md: str) -> str:
                      f'<section class="doc" id="privacy">{body}</section>', '<a href="/help">도움말</a>')
 
 
+def read_consent_versions(d: Path, dev: bool) -> dict:
+    """{kind: "vN"}. 문서가 없으면 그 kind 는 빠진다. 문서가 있는데 첫 20줄에서 버전이 안 뽑히면
+    비DEV 는 기동 거부(SystemExit, 파일명), DEV 는 로그 1줄 + 그 문서 제외."""
+    out = {}
+    for kind, name in CONSENT_FILES.items():
+        try:
+            head = (d / name).read_text(encoding="utf-8").splitlines()[:20]
+        except OSError:
+            continue
+        m = next((m for m in (_VERSION_RE.search(line) for line in head) if m), None)
+        if m is None:
+            if not dev:
+                raise SystemExit(f"동의 문서 {name} 첫 20줄에 버전 머리글(`vN · 날짜`)이 없어요. 운영은 동의 버전 없이 뜨지 않아요.")
+            print(f"[consent] {name} 에 버전 머리글이 없어 동의 문서에서 뺐어요(DEV)", flush=True)
+            continue
+        out[kind] = f"v{m.group(1)}"
+    if not out:
+        print("[consent] 동의 문서 없음 — 게이트 없음", flush=True)
+    return out
+
+
 def privacy_contact_line() -> str:
     """env CANON_CONTACT(선택, 한 줄로 접음)가 있으면 보조 메일 한 줄. 없으면 빈 문자열 — 처리방침에 메일 줄이 없다."""
     contact = " ".join(os.environ.get("CANON_CONTACT", "").split())
     return f"로그인할 수 없으면 메일로도 요청할 수 있습니다(보조 경로). 가입한 이메일 주소에서 보낸 메일만 처리합니다. 메일: {contact}" if contact else ""
+
+
+_CODE_RE = re.compile(r"^[A-Z][A-Z-]*$")
+
+
+def _usage(name: str, handler):
+    """/api/* 사용 집계 래퍼(α2) — 핸들러 하나를 감싸 db.usage_count(uid, name, code). DB 호출 없음.
+    uid = 핸들러가 uid_of 로 찾아 request.state 에 둔 값(없으면 '' — 401 등). code = 2xx·3xx 는 OK,
+    4xx·5xx 는 응답 JSON 의 code(대문자·하이픈 열거형만, 아니면 EXC). 예외는 EXC 로 세고 다시 던진다.
+    200 응답의 code(항목 코드 C-07 등)는 읽지 않는다 — 자유 텍스트를 집계에 넣지 않는다."""
+    async def run(request):
+        try:
+            resp = await handler(request)
+        except Exception:
+            db.usage_count(getattr(request.state, "uid", None), name, "EXC")
+            raise
+        code = "OK"
+        if resp.status_code >= 400:
+            try:
+                code = json.loads(resp.body).get("code")
+            except Exception:
+                code = None
+            code = code if isinstance(code, str) and _CODE_RE.match(code) else "EXC"
+        db.usage_count(getattr(request.state, "uid", None), name, code)
+        return resp
+    return run
 
 
 class Web:
@@ -364,6 +420,7 @@ class Web:
         if self.dev:
             self.origins |= {"http://127.0.0.1:8800", "http://localhost:8800", f"http://127.0.0.1:{p.port or 8800}", f"http://localhost:{p.port or 8800}"}
         self.load_help(GUIDES_DIR)
+        self.load_consent(GUIDES_DIR)
         if not self.guides:
             print(f"[web] 도움말 문서가 없어요({GUIDES_DIR} 에 {' · '.join(HELP_FILES.values())}) — /help 503, help_get 오류", flush=True)
         if not self.privacy_html:
@@ -379,6 +436,10 @@ class Web:
         except OSError:
             md = None
         self.privacy_html = render_privacy(md.replace("{{CONTACT_LINE}}", privacy_contact_line())) if md else None
+
+    def load_consent(self, d: Path):
+        """동의 문서 버전(α2)을 시작 때 한 번 읽어 db 에 넣는다. 버전이 바뀔 때만 db 의 동의 통과 캐시가 비워진다."""
+        db.set_consent_versions(read_consent_versions(d, self.dev))
 
     @property
     def login_ready(self) -> bool:
@@ -412,20 +473,27 @@ class Web:
 
     # ── 세션 ───────────────────────────────────────────
     async def uid_of(self, request) -> str | None:
+        """세션 uid. 찾으면 request.state.uid 에도 둔다 — /api/* 사용 집계 래퍼가 DB 조회 없이 읽는다."""
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
+        uid = None
         if s and s.get("uid"):
-            return s["uid"]
-        if self.dev and self.dev_user:
-            return (await run_in_threadpool(db.user_by_email, self.dev_user))["id"]
-        return None
+            uid = s["uid"]
+        elif self.dev and self.dev_user:
+            uid = (await run_in_threadpool(db.user_by_email, self.dev_user))["id"]
+        if uid is not None:
+            request.state.uid = uid
+        return uid
 
     def same_origin(self, request) -> bool:
         return request.headers.get("origin", "") in self.origins
 
     # ── 화면 ───────────────────────────────────────────
     async def app(self, request):
-        if await self.uid_of(request) is None:
+        uid = await self.uid_of(request)
+        if uid is None:
             return RedirectResponse("/", status_code=302)
+        if not await run_in_threadpool(db.has_consent, uid):   # 미동의 — 동의 화면 먼저(MCP 전용 사용자도 여기로 온다)
+            return RedirectResponse("/consent", status_code=302)
         return _html_resp(_fill_assets(APP_HTML.read_text(encoding="utf-8")), headers={"cache-control": "no-store"})
 
     async def root(self, request):
@@ -465,6 +533,49 @@ class Web:
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
         return '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
+
+    # ── 동의 (α2) ─────────────────────────────────────
+    async def consent(self, request):
+        """동의 화면. 세션 없으면 /, 이미 동의했으면 /app. 스크립트 없이 form POST(/api/consent)."""
+        uid = await self.uid_of(request)
+        if uid is None:
+            return RedirectResponse("/", status_code=302)
+        if await run_in_threadpool(db.has_consent, uid):
+            return RedirectResponse("/app", status_code=302)
+        rows = "".join(
+            f'<p><label><input type="checkbox" name="{_esc(kind)}" value="{_esc(ver)}" required> '
+            f'<a href="{CONSENT_LABELS[kind][1]}">{CONSENT_LABELS[kind][0]}</a>({_esc(ver)})에 동의합니다.</label></p>'
+            for kind, ver in db.CONSENT_VERSIONS.items())
+        body = f'<form method="post" action="/api/consent">{rows}<p><button type="submit">동의하고 시작</button></p></form>'
+        resp = _page("시작하기 전에 동의해 주세요", body)
+        resp.headers["cache-control"] = "no-store"
+        return resp
+
+    async def api_consent(self, request):
+        """동의 기록. 세션(401) → Origin(403) → form 또는 JSON {kind: version} → db.consent_grant
+        → 302 /app(form) 또는 {ok, redirect}(JSON). 문서·버전이 맞지 않으면 400 ARG-INVALID. write_gate 를 지나지 않는다(동의 전 사용자가 부른다)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        is_json = request.headers.get("content-type", "").split(";")[0].strip().lower() == "application/json"
+        try:
+            if is_json:
+                body = await request.json()
+                assert isinstance(body, dict)
+            else:
+                body = dict(parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True))
+            assert all(isinstance(v, str) for v in body.values())
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "동의할 문서·버전이 필요해요."}, status_code=400)
+        try:
+            await run_in_threadpool(db.consent_grant, uid, body)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        if is_json:
+            return JSONResponse({"ok": True, "redirect": "/app"})
+        return RedirectResponse("/app", status_code=302)
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -583,7 +694,7 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CanonError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
         return JSONResponse(out)
 
     async def api_item(self, request):
@@ -624,7 +735,7 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CanonError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
         return JSONResponse(out)
 
     async def api_feedback(self, request):
@@ -691,21 +802,24 @@ class Web:
         return await self._admin_write(request, ("id", "admin_note"), db.ticket_set_note)
 
     def routes(self) -> list[Route]:
+        u = _usage
         return [
             Route("/", self.root),
             Route("/app", self.app),
             Route("/help", self.help),
             Route("/privacy", self.privacy),
+            Route("/consent", self.consent),
             Route("/assets/{name}", self.asset),
             Route("/login", self.login),
             Route("/auth/callback", self.callback),
             Route("/logout", self.logout, methods=["POST"]),
-            Route("/api/state", self.api_state),
-            Route("/api/journal", self.api_journal),
-            Route("/api/candidate/decide", self.api_decide, methods=["POST"]),
-            Route("/api/item", self.api_item),
-            Route("/api/item/decide", self.api_item_decide, methods=["POST"]),
-            Route("/api/feedback", self.api_feedback, methods=["GET", "POST"]),
-            Route("/api/feedback/status", self.api_feedback_status, methods=["POST"]),
-            Route("/api/feedback/note", self.api_feedback_note, methods=["POST"]),
+            Route("/api/state", u("web:state", self.api_state)),
+            Route("/api/journal", u("web:journal", self.api_journal)),
+            Route("/api/candidate/decide", u("web:candidate_decide", self.api_decide), methods=["POST"]),
+            Route("/api/item", u("web:item", self.api_item)),
+            Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
+            Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
+            Route("/api/feedback/status", u("web:feedback_status", self.api_feedback_status), methods=["POST"]),
+            Route("/api/feedback/note", u("web:feedback_note", self.api_feedback_note), methods=["POST"]),
+            Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
         ]
