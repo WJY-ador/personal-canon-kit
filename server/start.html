@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>대시보드</title>
+<script src="{{asset:theme.js}}"></script>
 <style>
-/* 시작 화면 — app.html 과 같은 보드 토큰·글꼴. 한 열. */
+/* 시작 화면 — app.html 과 같은 보드 토큰·글꼴. 기본은 밝은 화면(OS 다크 설정을 따르지 않는다).
+   ☀/☾ 토글(theme.js)이 <html data-theme="dark"> 를 붙이면 아래 다크 토큰. 여기부터 띠(.bands) 규칙 앞까지는 /help 도 같이 쓴다. */
 :root {
   color-scheme: light;
   --paper: #F7F8F6; --card: #FFFFFF; --ink: #1F2937; --muted: #6B7280; --soft: #9CA3AF; --line: #E3E5E1;
@@ -15,15 +17,6 @@
   --serif: Georgia, "Noto Serif KR", "Apple SD Gothic Neo", serif;
   --mono: ui-monospace, Menlo, "Apple SD Gothic Neo", monospace;
 }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --paper: #15181A; --card: #1E2224; --ink: #E7EAE6; --muted: #A3AAA6; --soft: #6F7773; --line: #2E3335;
-    --accent: #4FB08A; --on-accent: #0F1412; --accent-soft: #1C2E26;
-    --cand-bg: #202029; --cand-line: #3B3850;
-    --mine: #4FB08A; --mine-bg: #1C2E26;
-  }
-}
 :root[data-theme="dark"] {
   color-scheme: dark;
   --paper: #15181A; --card: #1E2224; --ink: #E7EAE6; --muted: #A3AAA6; --soft: #6F7773; --line: #2E3335;
@@ -32,59 +25,158 @@
   --mine: #4FB08A; --mine-bg: #1C2E26;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body { background: var(--paper); color: var(--ink); overflow-wrap: anywhere; word-break: keep-all;
   font: 14px/1.55 -apple-system, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; -webkit-font-smoothing: antialiased; }
 a { color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .wrap { max-width: 680px; margin: 0 auto; padding: 0 1.4rem; }
+.theme-toggle { font: inherit; font-size: 1rem; line-height: 1; width: 36px; height: 36px; border-radius: 999px; cursor: pointer;
+  background: var(--card); color: var(--ink); border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; }
+.theme-toggle:hover { border-color: var(--soft); }
 
-.bands { padding-top: 2.4rem; }
+.bands { max-width: 720px; width: 100%; margin: 0 auto; }
 .band { padding: .6rem .9rem; border-radius: 8px; margin-bottom: .6rem; font-size: .82rem; background: var(--card); border: 1px solid var(--line); }
 
-.paper { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 1.8rem 2rem; margin: 2.4rem 0 1rem; }
-.bands + .paper { margin-top: .2rem; }
-h1 { font-family: var(--serif); font-size: 1.65rem; line-height: 1.3; margin: 0 0 .4rem; letter-spacing: -.01em; font-weight: 500; }
-.lead { color: var(--muted); margin: 0 0 1.2rem; }
+/* ── start 전용(시안 A 「히어로」) — /help 로 안 감: web.render_help 는 위 띠 규칙 앞까지만 복사한다 ──────────────
+   배경 = 미리 렌더한 셰이더 루프 WebP(채도·밝기 필터) + 떠다니는 색 덩어리 3개(@keyframes) + SVG 노이즈 결 + 가장자리 비네팅.
+   페이지 스크립트는 <head> 의 /assets/theme.js 하나뿐(☀/☾). 멈춤은 #still 체크(CSS :has) — 배경·덩어리·데모가 같이 멈춘다. */
+:root {
+  --hero-cand-line: #B9B2E8; --hero-cand-ink: #5B4FB8;
+  --bg: url({{asset:start-bg.webp}}); --bg-still: url({{asset:start-bg-still.webp}});
+  --bg-filter: blur(10px) brightness(.8) saturate(3.6);
+  --blob-blend: multiply;
+  --b1: rgba(24, 140, 92, .55); --b2: rgba(124, 104, 238, .5); --b3: rgba(240, 160, 80, .32);
+  --veil: rgba(247, 248, 246, 0); --veil-edge: rgba(247, 248, 246, .55); --grain: .14;
+}
+:root[data-theme="dark"] {
+  --hero-cand-line: #5A5480; --hero-cand-ink: #B4ABF5;
+  --bg: url({{asset:start-bg-dark.webp}}); --bg-still: url({{asset:start-bg-dark-still.webp}});
+  --bg-filter: blur(22px) brightness(1.5) saturate(3);
+  --blob-blend: screen;
+  --b1: rgba(40, 170, 115, .42); --b2: rgba(120, 100, 240, .45); --b3: rgba(220, 140, 70, .18);
+  --veil-edge: rgba(10, 12, 13, .7); --grain: .06;
+}
+body.start:has(#still:checked) { --bg: var(--bg-still); }
 
-.steps { list-style: none; padding: 0; margin: 0 0 1.3rem; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
-.steps li { background: var(--paper); border: 1px solid var(--line); border-radius: 8px; padding: .7rem; font-size: .8rem; color: var(--muted); }
-.steps li b { display: block; color: var(--ink); font-size: .86rem; margin-bottom: 2px; }
-.steps li.cand { border: 1px dashed var(--cand-line); background: var(--cand-bg); }
-.steps li.mine { border-left: 3px solid var(--mine); }
+.stage { position: fixed; inset: 0; z-index: -1; overflow: hidden; isolation: isolate; background: var(--paper); }
+.stage .loop { position: absolute; inset: -8%; background: var(--bg) center / cover no-repeat; filter: var(--bg-filter); }
+.stage .blob { position: absolute; width: 62vmax; height: 62vmax; border-radius: 50%; filter: blur(60px);
+  mix-blend-mode: var(--blob-blend); will-change: transform; }
+.stage .b1 { background: radial-gradient(closest-side, var(--b1), transparent); left: -18vmax; top: -20vmax; animation: d1 19s ease-in-out infinite alternate; }
+.stage .b2 { background: radial-gradient(closest-side, var(--b2), transparent); right: -20vmax; top: -6vmax; animation: d2 23s ease-in-out infinite alternate; }
+.stage .b3 { background: radial-gradient(closest-side, var(--b3), transparent); left: 20vw; bottom: -34vmax; animation: d3 17s ease-in-out infinite alternate; }
+@keyframes d1 { to { transform: translate(22vw, 18vh) scale(1.15); } }
+@keyframes d2 { to { transform: translate(-24vw, 22vh) scale(.9); } }
+@keyframes d3 { to { transform: translate(18vw, -16vh) scale(1.2); } }
+body.start:has(#still:checked) .stage .blob { animation-play-state: paused; }
+.stage .grain { position: absolute; inset: 0; opacity: var(--grain); mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
+.stage .veil { position: absolute; inset: 0; background: radial-gradient(ellipse 70% 60% at 50% 38%, var(--veil), var(--veil-edge)); }
 
-.btn { font: inherit; font-weight: 600; font-size: .9rem; min-height: 40px; padding: .4rem 1.2rem; border-radius: 6px; cursor: pointer;
-  background: var(--card); color: var(--ink); border: 1px solid var(--line); display: inline-flex; align-items: center;
-  justify-content: center; gap: .35rem; text-decoration: none; white-space: nowrap; transition: background .12s; }
-.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
-.btn.primary:hover { background: color-mix(in srgb, var(--accent) 86%, var(--ink)); }
-.how { color: var(--soft); font-size: .76rem; margin: .6rem 0 0; }
+/* 레이아웃: 첫 화면 = 머리줄 + 히어로 + (남은 높이를 채우는) 데모 */
+.screen { min-height: 100svh; display: flex; flex-direction: column; padding: 0 1.4rem; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: 1rem 0; max-width: 1180px; width: 100%; margin: 0 auto; }
+.brand { font: 600 .78rem/1 var(--mono); letter-spacing: .04em; color: var(--ink); opacity: .8; }
+.top-r { display: flex; align-items: center; gap: .5rem; }
+.start .theme-toggle { background: color-mix(in srgb, var(--card) 70%, transparent); backdrop-filter: blur(8px); }
+.still-label { display: inline-flex; align-items: center; gap: .35rem; font-size: .74rem; color: var(--ink); cursor: pointer;
+  background: color-mix(in srgb, var(--card) 70%, transparent); backdrop-filter: blur(8px); border: 1px solid var(--line);
+  border-radius: 999px; padding: .3rem .65rem .3rem .5rem; }
+.still-label input { margin: 0; width: 14px; height: 14px; accent-color: var(--accent); }
 
-.foot { color: var(--soft); font-size: .72rem; padding: .4rem 0 2.4rem; }
+.hero { text-align: center; max-width: 860px; margin: 0 auto; padding: clamp(.6rem, 4vh, 2.6rem) 0 clamp(1rem, 3.4vh, 2rem); }
+.flow { display: inline-flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: .5rem; margin: 0 0 1.1rem;
+  font: 600 .74rem/1 var(--mono); letter-spacing: .02em; }
+.flow span { padding: .38rem .6rem; border-radius: 999px; background: color-mix(in srgb, var(--card) 72%, transparent); border: 1px solid var(--line); }
+.flow .c { border-style: dashed; border-color: var(--hero-cand-line); color: var(--hero-cand-ink); }
+.flow .m { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.flow i { font-style: normal; color: var(--muted); }
+h1 { font-family: var(--serif); font-weight: 500; letter-spacing: -.03em; line-height: 1.08; margin: 0;
+  font-size: clamp(2.3rem, 6.2vw, 4.8rem); }
+h1 em { font-style: normal; color: var(--accent); }
+.lead { color: var(--ink); opacity: .78; font-size: clamp(.95rem, 1.4vw, 1.08rem); margin: .9rem auto 1.5rem; max-width: 34em; }
+.cta { display: flex; flex-direction: column; align-items: center; gap: .55rem; }
+.btn-login { font: inherit; font-weight: 700; font-size: 1.08rem; letter-spacing: .01em; min-height: 56px; padding: 0 3.2rem;
+  border-radius: 999px; border: 0; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--on-accent);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), 0 14px 34px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+  transition: transform .15s, box-shadow .15s; }
+.btn-login:hover { transform: translateY(-2px); box-shadow: 0 0 0 9px color-mix(in srgb, var(--accent) 22%, transparent), 0 20px 40px -8px color-mix(in srgb, var(--accent) 75%, transparent); }
+
+/* 데모: 넓게, 남은 높이만큼만 보이고 아래는 화면 끝에 걸친다. 테마별 촬영본(라이트·다크) × (움직임·정지) 4장 중 하나만 보인다.
+   안 보이는 3장은 지연 로딩(lazy) + display:none 이라 받지 않는다. */
+.demo { flex: 1 1 auto; min-height: 200px; width: 100%; max-width: 1040px; margin: 0 auto; position: relative; perspective: 1600px; }
+.demo .win { position: absolute; inset: 0; border-radius: 14px 14px 0 0; overflow: hidden; background: var(--card);
+  border: 1px solid color-mix(in srgb, var(--line) 70%, transparent); border-bottom: 0;
+  box-shadow: 0 -2px 0 color-mix(in srgb, var(--card) 40%, transparent), 0 30px 80px -20px rgba(20, 30, 40, .45);
+  transform: rotateX(8deg); transform-origin: 50% 100%;
+  -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.demo img { display: block; width: 100%; height: auto; }
+.demo .still, :root[data-theme="dark"] .demo .t-light, :root:not([data-theme="dark"]) .demo .t-dark { display: none; }
+body.start:has(#still:checked) .demo .anim { display: none; }
+:root:not([data-theme="dark"]) body.start:has(#still:checked) .demo .still.t-light,
+:root[data-theme="dark"] body.start:has(#still:checked) .demo .still.t-dark { display: block; }
+/* 배지는 데모 프레임 바깥 위(오른쪽 위 모서리 위쪽) — 데모 속 헤더 버튼을 가리지 않게. 라이트·다크 같은 자리 */
+.badge { position: absolute; z-index: 1; bottom: 100%; right: .8rem; margin-bottom: .45rem; font: 600 .7rem/1 var(--mono); padding: .35rem .6rem; border-radius: 999px;
+  color: var(--hero-cand-ink); background: color-mix(in srgb, var(--card) 85%, transparent); border: 1px dashed var(--hero-cand-line); }
+
+.foot { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+  padding: .55rem 1.4rem; font-size: .74rem; color: var(--muted); pointer-events: none; }
+.foot > * { pointer-events: auto; background: color-mix(in srgb, var(--card) 82%, transparent); backdrop-filter: blur(8px);
+  border-radius: 999px; padding: .25rem .7rem; }
+.foot a { color: var(--ink); }
 
 @media (max-width: 640px) {
-  .wrap { padding: 0 1rem; }
-  .paper { padding: 1.2rem 1.1rem; }
-  h1 { font-size: 1.35rem; }
-  .steps { grid-template-columns: 1fr; }
-  .btn.primary { width: 100%; }
+  .screen { padding: 0 1rem; }
+  .hero { padding-top: .4rem; }
+  .flow { margin-bottom: .8rem; }
+  .lead { margin: .7rem auto 1.1rem; }
+  .cta { align-items: stretch; }
+  .btn-login { width: 100%; }
+  .demo { min-height: 0; flex: none; height: calc((100vw - 2rem) * .5625 + 4px); margin-top: 1.9rem; perspective: none; }
+  .demo .win { border-radius: 10px; border-bottom: 1px solid var(--line); transform: none; -webkit-mask-image: none; mask-image: none; }
+  .badge { right: .2rem; margin-bottom: .35rem; font-size: .62rem; }
+  .foot { position: static; padding: 1rem 0 1.2rem; justify-content: center; text-align: center; }
+  .foot > * { border-radius: 12px; }
 }
-@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  :root, :root[data-theme="dark"] { --bg: var(--bg-still); }
+  .stage .blob { animation: none; }
+  .btn-login { transition: none; }
+  .still-label { display: none; }
+}
 </style>
 </head>
-<body>
-<div class="wrap">
+<body class="start">
+<div class="stage" aria-hidden="true"><div class="loop"></div><i class="blob b1"></i><i class="blob b2"></i><i class="blob b3"></i><div class="grain"></div><div class="veil"></div></div>
+<div class="screen">
+  <header class="top"><span class="brand">내 판단 대시보드</span>
+    <div class="top-r"><label class="still-label"><input type="checkbox" id="still">움직임 멈추기</label><button type="button" class="theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div></header>
   <!--out--><div class="bands"><div class="band" role="status">로그아웃했어요. 다시 로그인하면 계정을 고를 수 있어요.</div></div><!--/out-->
-  <main class="paper">
-    <h1>대시보드</h1>
-    <p class="lead">겪은 일을 기록하고, AI 가 뽑은 문장을 원문과 대조해 내 판단으로 남겨요.</p>
-    <ol class="steps"><li><b>기록</b>겪은 일을 내 말로 적어요.</li>
-    <li class="cand"><b>후보</b>기록에서 판단이 될 만한 문장을 뽑아요. 아직 내 판단은 아니에요.</li>
-    <li class="mine"><b>내 판단</b>원문과 대조해 내가 남긴 문장만 쌓여요.</li></ol>
-    <a class="btn primary" href="/login">로그인</a>
-    <p class="how">Google 또는 이메일 코드로 로그인해요. 처음이면 계정이 만들어져요.</p>
+  <main class="hero">
+    <p class="flow" aria-label="기록, 후보, 내 판단 세 단계"><span>기록</span><i>→</i><span class="c">후보</span><i>→</i><span class="m">내 판단</span></p>
+    <!-- 문구: h1·lead 는 여기 한 곳만 바꾼다. <em> 이 강조색. -->
+    <h1>흩어진 나를,<br><em>한곳에</em></h1>
+    <p class="lead">기록하고, AI 와 대화하며 쌓은 데이터를 내 판단으로 활용하고 관리하는 대시보드예요.</p>
+    <div class="cta">
+      <a class="btn-login" href="/login">로그인</a>
+    </div>
   </main>
-  <p class="foot">기록·질문·후보는 연결한 AI 대화(ChatGPT·Claude)에서 남겨요. 이 화면은 보기와 결정만 해요. · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></p>
+  <section class="demo" aria-label="사용 모습 미리 보기 — 로그인하면 보이는 실제 화면을 샘플 데이터로 찍었어요. 기록 원문, AI 후보와 원문 대조, 내 판단으로 남기기, 구조 탭.">
+    <span class="badge">샘플 데이터예요</span>
+    <div class="win">
+      <picture class="anim t-light"><source srcset="{{asset:start-demo.webp}}" type="image/webp" media="(prefers-reduced-motion: no-preference)"><img src="{{asset:start-demo-poster.webp}}" alt="" width="1280" height="720" loading="lazy"></picture>
+      <picture class="anim t-dark"><source srcset="{{asset:start-demo-dark.webp}}" type="image/webp" media="(prefers-reduced-motion: no-preference)"><img src="{{asset:start-demo-dark-poster.webp}}" alt="" width="1280" height="720" loading="lazy"></picture>
+      <img class="still t-light" src="{{asset:start-demo-poster.webp}}" alt="" width="1280" height="720" loading="lazy">
+      <img class="still t-dark" src="{{asset:start-demo-dark-poster.webp}}" alt="" width="1280" height="720" loading="lazy">
+    </div>
+  </section>
+  <footer class="foot">
+    <span><a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></span>
+    <span>기록·질문·후보는 연결한 AI 대화(ChatGPT·Claude)에서 남겨요. 이 화면은 보기와 결정만 해요.</span>
+  </footer>
 </div>
 </body>
 </html>

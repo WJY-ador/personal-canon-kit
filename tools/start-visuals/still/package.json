@@ -1,0 +1,12 @@
+{
+  "name": "start-visuals-still",
+  "private": true,
+  "description": "시작 화면 배경 루프 렌더 전용 — render.py 가 임시 폴더에 번들한다. 페이지에는 결과 WebP 만 들어간다(런타임 번들 없음).",
+  "type": "module",
+  "dependencies": {
+    "shaders": "4.0.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

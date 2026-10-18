@@ -21,7 +21,7 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 import auth
@@ -43,6 +43,47 @@ _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md":
 # 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CANON_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
+
+# ── 화면 자산(배경 루프·데모·테마 토글) ─────────────────
+# 허용 목록만 서빙한다. 요청 name 은 이 dict 키 조회만 — 경로를 잇지 않는다. 그림 만드는 법: tools/start-visuals/README.md
+ASSETS_DIR = Path(__file__).parent / "assets"
+ASSET_FILES = {
+    "start-bg.webp": "image/webp",            # 배경 루프(animated)
+    "start-bg-still.webp": "image/webp",      # 배경 정지 — reduced-motion·멈춤
+    "start-demo.webp": "image/webp",          # 샘플 데이터 데모(animated)
+    "start-demo-poster.webp": "image/webp",   # 데모 정지 — reduced-motion·멈춤
+    "start-bg-dark.webp": "image/webp",       # 어두운 화면 배경 루프
+    "start-bg-dark-still.webp": "image/webp", # 어두운 화면 배경 정지
+    "start-demo-dark.webp": "image/webp",     # 어두운 화면 데모(다크 대시보드 촬영)
+    "start-demo-dark-poster.webp": "image/webp",
+    "theme.js": "text/javascript; charset=utf-8",   # ☀/☾ 토글 — 시작·도움말·대시보드 <head> 가 읽는 유일한 외부(self) 스크립트
+}
+ASSET_IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+def load_assets(d: Path) -> dict:
+    """{name: (path, content_type, sha10)}. 시작 때 1회. 파일이 없으면 그 이름만 빠진다(→ 404, 화면은 배경색만)."""
+    out = {}
+    for name, ctype in ASSET_FILES.items():
+        p = d / name
+        if p.is_file():
+            out[name] = (p, ctype, hashlib.sha256(p.read_bytes()).hexdigest()[:10])
+        else:
+            print(f"[web] 시작 화면 자산이 없어요: {p}", flush=True)
+    return out
+
+
+ASSETS = load_assets(ASSETS_DIR)
+
+
+def asset_url(name: str) -> str:
+    a = ASSETS.get(name)
+    return f"/assets/{name}?v={a[2]}" if a else f"/assets/{name}"
+
+
+def _fill_assets(html: str) -> str:
+    """{{asset:NAME}} → /assets/NAME?v=<sha10>. 시작 화면(root)·대시보드(app)가 부른다. /help 는 render_help 가 theme.js 만 직접 넣는다."""
+    return re.sub(r"\{\{asset:([A-Za-z0-9._-]+)\}\}", lambda m: asset_url(m.group(1)), html)
 
 
 def _b64(b: bytes) -> str:
@@ -211,6 +252,7 @@ _HELP_CSS = """
 .top .name { font-family: var(--serif); font-size: 1.15rem; font-weight: 500; }
 .top .name a { color: inherit; text-decoration: none; }
 .top .name span { color: var(--muted); }
+.top-r { display: flex; align-items: center; gap: .5rem; }
 .btn { font: inherit; font-weight: 600; font-size: .84rem; min-height: 36px; padding: .3rem 1rem; border-radius: 6px; background: var(--card);
   color: var(--ink); border: 1px solid var(--line); display: inline-flex; align-items: center; text-decoration: none; white-space: nowrap; }
 .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
@@ -245,22 +287,27 @@ _HELP_CSS = """
 """
 
 
+# ☀/☾ 토글 — theme.js 가 hidden 을 떼고 글자·누름 상태를 채운다(스크립트가 없으면 안 보인다).
+THEME_TOGGLE = '<button type="button" class="theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">\u263E</button>'
+
+
 def _doc_page(title: str, toc_html: str, body_html: str, foot: str) -> str:
     """/help·/privacy 공통 껍데기. 맨 위 링크 자리는 <!--nav--> — 요청마다 세션 보고 바꾼다. 토큰·글꼴은 start.html 의 :root 블록을 그대로 쓴다.
     title·foot 은 우리 상수(HTML 조각), toc_html·body_html 은 md_to_html 결과(escape 끝난 것)."""
     style = START_HTML.read_text(encoding="utf-8").split("<style>", 1)[1]
-    css = style.split(".bands {", 1)[0]   # 주석·:root 토큰(라이트·다크)·기본(body·a·focus·.wrap)까지
+    css = style.split(".bands {", 1)[0]   # 주석·:root 토큰(라이트·다크 토글)·기본(body·a·focus·.wrap·☀/☾)까지 — 배경·데모(start 전용)는 안 온다
     return f"""<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>대시보드 — {title}</title>
+<script src="{asset_url("theme.js")}"></script>
 <style>{css}{_HELP_CSS}</style>
 </head>
 <body>
 <div class="wrap">
-  <header class="top"><div class="name"><a href="/">대시보드</a> <span>— {title}</span></div><!--nav--></header>
+  <header class="top"><div class="name"><a href="/">대시보드</a> <span>— {title}</span></div><div class="top-r">{THEME_TOGGLE}<!--nav--></div></header>
   <nav class="toc" aria-label="목차">{toc_html}</nav>
   <main>
 {body_html}
@@ -379,18 +426,27 @@ class Web:
     async def app(self, request):
         if await self.uid_of(request) is None:
             return RedirectResponse("/", status_code=302)
-        return _html_resp(APP_HTML.read_text(encoding="utf-8"), headers={"cache-control": "no-store"})
+        return _html_resp(_fill_assets(APP_HTML.read_text(encoding="utf-8")), headers={"cache-control": "no-store"})
 
     async def root(self, request):
         """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남기고 [로그인]을 /login?fresh=1 로."""
         if await self.uid_of(request) is not None:
             return RedirectResponse("/app", status_code=302)
-        html = START_HTML.read_text(encoding="utf-8")
+        html = _fill_assets(START_HTML.read_text(encoding="utf-8"))
         if request.query_params.get("out") == "1":
             html = html.replace('href="/login"', 'href="/login?fresh=1"', 1)
         else:
             html = re.sub(r"<!--out-->.*?<!--/out-->", "", html, flags=re.S)
         return _html_resp(html, headers={"cache-control": "no-store"})
+
+    async def asset(self, request):
+        """시작 화면 자산. ?v 가 현재 sha10 과 같으면 1년 immutable, 없거나 다르면 no-cache(매번 ETag 재검증)."""
+        a = ASSETS.get(request.path_params["name"])
+        if a is None:
+            return Response("없는 자산이에요.", status_code=404, media_type="text/plain; charset=utf-8")
+        path, ctype, sha = a
+        cc = ASSET_IMMUTABLE if request.query_params.get("v") == sha else "no-cache"
+        return FileResponse(path, media_type=ctype, headers={"cache-control": cc, "x-content-type-options": "nosniff"})
 
     async def help(self, request):
         """도움말. 로그인 불필요. DB 를 건드리지 않는다 — 세션은 쿠키 서명만 본다(DEV 는 dev_user 가 있으면 세션으로 친다)."""
@@ -640,6 +696,7 @@ class Web:
             Route("/app", self.app),
             Route("/help", self.help),
             Route("/privacy", self.privacy),
+            Route("/assets/{name}", self.asset),
             Route("/login", self.login),
             Route("/auth/callback", self.callback),
             Route("/logout", self.logout, methods=["POST"]),

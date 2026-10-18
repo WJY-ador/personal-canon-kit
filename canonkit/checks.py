@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import SCHEMA_VERSION, VERSION, paths
 
-SKIP_DIRS = {"__pycache__", ".git", ".DS_Store", ".pytest_cache"}
+SKIP_DIRS = {"__pycache__", ".git", ".DS_Store", ".pytest_cache", "node_modules"}   # node_modules: tools/start-visuals 렌더 도구(제작자 Mac 전용)
 SKIP_FILES = {"local.json", ".DS_Store", "CLAUDE.local.md", "settings.local.json"}   # 배포 안 하는 로컬 파일
 TEXT_EXT = {".md", ".py", ".json", ".html", ".txt", ".cmd", ".sh", ".ps1", ""}
 
