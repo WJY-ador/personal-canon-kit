@@ -496,8 +496,14 @@ def availability(data):
 
 # ── 다음 행동 ───────────────────────────────────────────
 
+def _act(kind, text, command=None, target=None):
+    return {"kind": kind, "target": target, "text": text, "command": command}
+
+
 def next_action(data):
-    """지금 할 일 하나. 읽기만 한다."""
+    """지금 할 일 하나. 읽기만 한다.
+    {"kind", "target", "text", "command"} 를 돌려준다. text 는 화면에 그대로 쓰는 사람 말이라
+    내부 ID·명령어를 넣지 않는다(기록·질문은 제목으로 부른다). 명령어는 command 에만 둔다."""
     data = Path(data)
     p = load(data, "profile.json")
     st = load(data, "setup-state.json").get("steps", {})
@@ -506,28 +512,48 @@ def next_action(data):
     cands = load(data, "candidates.json")["candidates"]
     recs = list(data.glob("journal/j-*.md"))
     if st.get("env") != "done":
-        return "환경 점검: python3 canon.py doctor 를 실행하고 결과를 확인하세요."
+        return _act("setup", "환경 점검부터 해요. 점검 결과를 읽고 다음 조치 하나를 따르면 돼요.",
+                    "python3 canon.py doctor")
     if not p["consent"].get("updated"):
-        return "읽을 자료와 모델 전송 범위를 정하세요: Claude Code 에서 「canon-setup 스킬로 설정 시작」."
+        return _act("setup", "읽을 자료와 모델에 보낼 범위를 정해요. "
+                             "Claude Code 에서 「canon-setup 스킬로 설정 시작」이라고 말하면 돼요.")
     if not qs and not recs:
-        return "질문이 아직 없어도 됩니다. 최근 경험 메모 1편부터: python3 canon.py record add --title \"…\" --text \"…\""
+        return _act("record", "질문은 나중에 정해도 돼요. 최근에 겪은 일을 한 편 적어 보세요.",
+                    'python3 canon.py record add --title "…" --text "…"')
     if not tabs:
-        return "매일 볼 것(최대 3개)을 내 말로 탭 이름에 담으세요: python3 canon.py tabs propose …"
+        return _act("tabs", "매일 볼 것(최대 3개)을 내 말로 탭 이름에 담아요.",
+                    'python3 canon.py tabs propose --tab "이름=블록,블록"')
     if not recs:
-        return "기록 1편을 추가하세요: python3 canon.py record add --title \"…\" --text \"…\""
+        return _act("record", "기록을 한 편 적어 보세요.",
+                    'python3 canon.py record add --title "…" --text "…"')
     used = {c["evidence"]["record"] for c in cands}
-    fresh = [r for r in recs if r.stem not in used]
+    fresh = [r for r in sorted(recs) if r.stem not in used]
     if qs and fresh and not cands:
-        return f"기록 {fresh[0].stem} 에서 판단 후보를 뽑으세요: python3 canon.py digest --record {fresh[0].stem} --question {qs[0]['id']}"
+        try:
+            title = parse_journal(fresh[0])["title"]
+        except (OSError, UnicodeDecodeError):
+            title = "읽지 못한 기록"
+        return _act("digest", f"「{title}」 기록에서 판단 후보를 뽑아요.",
+                    f"python3 canon.py digest --record {fresh[0].stem} --question {qs[0]['id']}",
+                    fresh[0].stem)
     pend = [c for c in cands if c["status"] == "pending"]
     if pend:
-        return f"확인 대기 후보 {len(pend)}건 — 원문과 대조해 확인하거나 제외하세요: python3 canon.py candidate confirm {pend[0]['id']}"
+        return _act("review", f"아직 안 정한 문장이 {len(pend)}개 있어요. 원문과 대조해 남길지 정해요.",
+                    f"python3 canon.py candidate confirm {pend[0]['id']}", pend[0]["id"])
     for q in qs:
         si = sheet_info(data, q["id"])
         if any(c["question"] == q["id"] for c in cands) and (not si["exists"] or si["stale"]):
-            return f"한 장을 갱신하세요: python3 canon.py sheet build {q['id']}"
+            return _act("sheet", f"「{q['text']}」 한 장 파일을 새로 만들어요.",
+                        f"python3 canon.py sheet build {q['id']}", q["id"])
     if st.get("reopen") != "done":
-        return "새 터미널에서 python3 canon.py serve 로 다시 열어 같은 결과가 보이는지 확인하고 setup done reopen."
+        return _act("reopen", "새 터미널에서 대시보드를 다시 열어 같은 내용이 보이는지 확인해요.",
+                    "python3 canon.py serve 로 연 뒤 python3 canon.py setup done reopen")
     if st.get("drill") != "done":
-        return "복구 리허설: python3 canon.py drill start (가이드 guides/07-check-and-recover.md)"
-    return "기록 1편 추가 또는 질문·탭 수정 중 하나를 고르세요."
+        return _act("drill", "복구 리허설을 한 번 해 봐요. 점검·복구 가이드(guides/07)를 따라 하면 돼요.",
+                    "python3 canon.py drill start")
+    return _act("free", "기록을 한 편 더 쓰거나 질문·탭을 다듬어요.")
+
+
+def next_line(act):
+    """CLI 출력용 — 사람 말 한 줄, 명령이 있으면 다음 줄에."""
+    return act["text"] + (f"\n  → {act['command']}" if act.get("command") else "")

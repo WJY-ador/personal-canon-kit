@@ -13,49 +13,100 @@ from . import VERSION, data as D, paths, schema, store
 from .store import CanonError
 
 
+def _err(e):
+    return {"code": e.code, "msg": e.message, "action": e.action}
+
+
+def _excerpt(r, n=60):
+    """목록용 첫 줄 — 제목·양식 절을 뺀 본문의 첫 문장 앞부분."""
+    for line in str(r.get("body") or "").splitlines():
+        t = line.strip()
+        if not t or t.startswith("#") or t.startswith("-"):
+            continue
+        if t.startswith("## 이게 어디에 붙나"):
+            break
+        return t[:n] + ("…" if len(t) > n else "")
+    return ""
+
+
 def build_state(data):
-    """화면에 필요한 모든 것을 읽어 모은다. 실패한 부분은 오류로 싣고 나머지는 보여 준다."""
+    """화면에 필요한 모든 것을 읽어 모은다.
+
+    읽기 결과는 부분마다 st["read"][이름] = {"ok": True} 또는 {"ok": False, "error": {code, msg, action}} 로 싣는다.
+    「0개」와 「못 읽음」을 화면이 가를 수 있게, 실패한 부분을 빈 값으로 숨기지 않는다.
+    값 키(questions·tabs 등)는 실패해도 빈 값으로 두어 화면 코드가 깨지지 않게 하되, 판정은 read 로 한다.
+    errors 는 실패 목록 전체(이전 판과 같은 모양)다.
+    """
     data = Path(data)
-    st = {"version": VERSION, "errors": [], "generated": store.now()}
+    st = {"version": VERSION, "errors": [], "generated": store.now(), "read": {}}
+
+    def fail(part, e):
+        er = _err(e)
+        st["read"][part] = {"ok": False, "error": er}
+        st["errors"].append(dict(er, part=part))
+
     try:
         st["meta"] = D.load(data, "meta.json")
+        st["read"]["meta"] = {"ok": True}
     except CanonError as e:
-        st["errors"].append({"code": e.code, "msg": e.message, "action": e.action})
+        fail("meta", e)
         return st
 
-    def safe(name, key, default):
+    def part(part_name, name, key, default):
         try:
-            return D.load(data, name).get(key, default) if key else D.load(data, name)
+            d = D.load(data, name)
         except CanonError as e:
-            st["errors"].append({"code": e.code, "msg": e.message, "action": e.action})
+            fail(part_name, e)
             return default
+        st["read"][part_name] = {"ok": True}
+        return d.get(key, default) if key else d
 
-    prof = safe("profile.json", None, {})
+    prof = part("profile", "profile.json", None, {})
     st["profile"] = {k: {"label": f.get("label", k), "value": f.get("value"),
                          "status": schema.STATUS_KO.get(f.get("status"), f.get("status"))}
                      for k, f in (prof.get("fields") or {}).items()}
-    st["questions"] = safe("questions.json", "questions", [])
-    tabs_doc = safe("tabs.json", None, {})
-    st["tabs_ok"] = bool(tabs_doc)
+    st["questions"] = part("questions", "questions.json", "questions", [])
+    tabs_doc = part("tabs", "tabs.json", None, {})
+    st["tabs_ok"] = st["read"]["tabs"]["ok"]
     st["tabs"] = tabs_doc.get("tabs", [])
     st["requests"] = tabs_doc.get("requests", [])
-    st["candidates"] = safe("candidates.json", "candidates", [])
+    st["candidates"] = part("candidates", "candidates.json", "candidates", [])
     st["blocks"] = schema.BLOCKS
-    st["journal"] = [{"id": r["id"], "title": r["title"], "created": r["meta"].get("created", ""),
-                      "question": r["meta"].get("question", ""), "broken": r.get("broken", False)}
-                     for r in D.list_journal(data)]
+    try:
+        st["journal"] = [{"id": r["id"], "title": r["title"], "created": r["meta"].get("created", ""),
+                          "question": r["meta"].get("question", ""), "broken": r.get("broken", False),
+                          "excerpt": _excerpt(r)}
+                         for r in D.list_journal(data)]
+        st["read"]["journal"] = {"ok": True}
+    except OSError as e:
+        st["journal"] = []
+        fail("journal", CanonError("JOURNAL-UNREADABLE", f"기록 폴더를 읽을 수 없습니다 ({e.__class__.__name__})",
+                                   "python3 canon.py doctor 로 확인하세요."))
     st["sheets"] = {}
-    for q in st["questions"]:
+    if st["read"]["questions"]["ok"]:
+        for q in st["questions"]:
+            try:
+                st["sheets"][q["id"]] = dict(D.sheet_info(data, q["id"]), ok=True)
+            except CanonError as e:
+                st["sheets"][q["id"]] = {"ok": False, "exists": False, "error": _err(e)}
+    # 실행 상태: 파일이 없으면 "아직 실행 안 함"(정상), 있는데 못 읽으면 실패.
+    rp = store.runs_path(data)
+    st["runs"] = {}
+    if rp.exists():
         try:
-            st["sheets"][q["id"]] = D.sheet_info(data, q["id"])
-        except CanonError as e:
-            st["sheets"][q["id"]] = {"exists": False, "error": e.message}
-    runs = store.read_runs(data)
-    st["runs"] = runs
+            st["runs"] = json.loads(rp.read_text(encoding="utf-8"))
+            st["read"]["runs"] = {"ok": True}
+        except (OSError, ValueError):
+            fail("runs", CanonError("FILE-CORRUPT", f"{rp.name} 을(를) 읽을 수 없습니다",
+                                    "python3 canon.py doctor 로 확인하세요."))
+    else:
+        st["read"]["runs"] = {"ok": True}
     try:
         st["next"] = D.next_action(data)
     except CanonError as e:
-        st["next"] = e.action or e.message
+        st["next"] = {"kind": "blocked", "target": None,
+                      "text": "읽지 못한 부분이 있어 다음 할 일을 정하지 못했어요. 그 부분부터 고쳐요.",
+                      "command": "python3 canon.py doctor", "error": _err(e)}
     st["has"] = D.availability(data)
     return st
 

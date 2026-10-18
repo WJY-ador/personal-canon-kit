@@ -4,6 +4,7 @@ python3 -m unittest discover -s tests -v
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,6 +21,8 @@ sys.path.insert(0, str(ROOT))
 from canonkit import server  # noqa: E402
 
 FAKE = str(ROOT / "tests" / "fake_claude.py")
+# 화면에 나오면 안 되는 내부 ID·명령어 (next.text 는 화면에 그대로 쓰인다)
+SCREEN_LEAK = re.compile(r"c-\d{4}|q-\d{3}|j-\d{8}|t-\d{3}|canon\.py")
 
 
 def snapshot(d):
@@ -150,6 +153,9 @@ class Flow(unittest.TestCase):
                 st = json.loads(urllib.request.urlopen(base + "/api/state").read())
             self.assertEqual([t["label"] for t in st["tabs"]], ["회고 재료", "글감"])
             self.assertEqual(st["errors"], [])
+            self.assertTrue(all(v["ok"] for v in st["read"].values()), st["read"])
+            self.assertEqual(set(st["next"]), {"kind", "target", "text", "command"})
+            self.assertIsNone(SCREEN_LEAK.search(st["next"]["text"]), st["next"]["text"])
             self.assertEqual(urllib.request.urlopen(base + "/").status, 200)
             self.assertEqual(json.loads(urllib.request.urlopen(f"{base}/api/journal?id={jid}").read())["id"], jid)
             with self.assertRaises(urllib.error.HTTPError) as cm:
@@ -167,6 +173,12 @@ class Flow(unittest.TestCase):
         # 복구 리허설: 깨뜨림 → doctor 실패 → restore → 같은 탭
         r = c("drill", "start")
         bid = json.loads((self.data / ".canon" / "drill.json").read_text(encoding="utf-8"))["backup"]
+        # 깨진 탭 설정은 「못 읽음」으로 따로 내려가고, 나머지는 정상으로 읽힌다 (빈 값으로 숨기지 않음)
+        st = server.build_state(self.data)
+        self.assertFalse(st["read"]["tabs"]["ok"])
+        self.assertEqual(st["read"]["tabs"]["error"]["code"], "FILE-CORRUPT")
+        self.assertTrue(st["read"]["questions"]["ok"] and st["read"]["candidates"]["ok"])
+        self.assertEqual(st["next"]["kind"], "blocked")
         r = c("doctor", "--port", "1", ok=False)
         self.assertEqual(r.returncode, 1)
         self.assertIn("DATA-CORRUPT", r.stdout)
@@ -186,6 +198,38 @@ class Flow(unittest.TestCase):
         self.assertNotIn("입력 담당", r.stdout)
         self.assertNotIn("새 도구를 들일 때", r.stdout)
         self.assertNotIn(str(self.tmp), r.stdout.split("저장:")[0])
+
+    def test_next_action_shape_and_cli(self):
+        from canonkit import data as D
+        d = self.tmp / "다음 행동 시험"
+        shutil.copytree(ROOT / "sample-data", d)
+        act = D.next_action(d)
+        self.assertEqual(set(act), {"kind", "target", "text", "command"})
+        self.assertEqual(act["kind"], "setup")
+        self.assertIsNone(SCREEN_LEAK.search(act["text"]))
+        st = json.loads((d / "setup-state.json").read_text(encoding="utf-8"))
+        st["steps"]["env"] = "done"
+        (d / "setup-state.json").write_text(json.dumps(st), encoding="utf-8")
+        p = json.loads((d / "profile.json").read_text(encoding="utf-8"))
+        p["consent"]["updated"] = "2026-10-15T00:00:00+09:00"
+        (d / "profile.json").write_text(json.dumps(p, ensure_ascii=False), encoding="utf-8")
+        act = D.next_action(d)
+        self.assertEqual((act["kind"], act["target"]), ("review", "c-0002"))
+        self.assertIsNone(SCREEN_LEAK.search(act["text"]))
+        self.assertIn("candidate confirm c-0002", act["command"])
+        r = subprocess.run([sys.executable, str(ROOT / "canon.py"), "--data", str(d), "next"],
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("아직 안 정한 문장이 2개", r.stdout)
+        self.assertIn("→ python3 canon.py candidate confirm c-0002", r.stdout)
+        # 깨진 후보 파일: 그 부분만 못 읽음, 질문은 정상, 0개로 위장하지 않음
+        (d / "candidates.json").write_text("{ 깨짐", encoding="utf-8")
+        before = snapshot(d)
+        st = server.build_state(d)
+        self.assertFalse(st["read"]["candidates"]["ok"])
+        self.assertTrue(st["read"]["questions"]["ok"])
+        self.assertEqual(st["read"]["candidates"]["error"]["code"], "FILE-CORRUPT")
+        self.assertEqual(before, snapshot(d), "build_state 가 파일을 바꿈")
 
     def test_lock_blocks_second_writer(self):
         from canonkit import store

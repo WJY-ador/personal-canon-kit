@@ -52,7 +52,7 @@ def c_init(a, data):
     say(f"데이터 폴더: {target}", f"새로 만든 파일: {', '.join(created) or '없음 (기존 파일은 그대로 둠)'}")
     if a.sample:
         say("※ 가짜 샘플입니다. 내 자료는 다른 폴더에 init 하세요.")
-    say("", f"다음: {D.next_action(target)}")
+    say("", f"다음: {D.next_line(D.next_action(target))}")
 
 
 def c_where(a, data):
@@ -103,13 +103,13 @@ def c_status(a, data):
     req = D.load(data, "tabs.json").get("requests", [])
     if req:
         say(f"보류한 요구 {len(req)}건: " + " / ".join(r["text"] for r in req))
-    say("", f"다음: {D.next_action(data)}")
+    say("", f"다음: {D.next_line(D.next_action(data))}")
 
 
 def c_setup(a, data):
     D.require_data(data)
     D.mark_step(data, a.step, "skipped" if a.skip else "done")
-    say(f"단계 {a.step}: {'건너뜀' if a.skip else '완료'}", f"다음: {D.next_action(data)}")
+    say(f"단계 {a.step}: {'건너뜀' if a.skip else '완료'}", f"다음: {D.next_line(D.next_action(data))}")
 
 
 def c_consent(a, data):
@@ -392,7 +392,7 @@ def c_issue(a, data):
 
 def c_next(a, data):
     D.require_data(data)
-    say(D.next_action(data))
+    say(D.next_line(D.next_action(data)))
 
 
 def c_check(a, data):
