@@ -13,3 +13,6 @@ CLAUDE.local.md
 
 # 원작자 작업 노트(가안·스펙·매핑) — 공개 레포에 올리지 않는다 (2026-10-18)
 notes/
+
+# 시작 화면 렌더 도구의 npm 설치물(37MB) — package-lock.json 으로 재현 (2026-10-18)
+tools/**/node_modules/
