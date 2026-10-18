@@ -293,21 +293,36 @@ def candidates(uid, question_id=None, status=None):
         sql += " AND c.question_id=%s"; args.append(question_id)
     if status:
         sql += " AND c.decision=%s"; args.append(status)
-    sql += " ORDER BY c.created"
+    sql += " ORDER BY c.created, c.quote_start, c.id"
     with tx() as c:
         return [_iso(r) for r in _all(c, sql, args)]
 
 
 def candidate_decide(uid, cid, action, text=None):
-    """confirm / exclude / pending(확정 취소) / edit. 바꾸기 전 결정·문장을 이력에 남긴다.
-    같은 결정 반복은 no-op. 확정된 문장을 고치면 pending 으로 돌아간다(새 문장 확정은 별도 결정)."""
-    if action not in ("confirm", "exclude", "pending", "edit"):
+    """confirm / exclude / pending(확정 취소) / edit / edit_confirm(웹 전용). 바꾸기 전 결정·문장을 이력에 남긴다.
+    같은 결정 반복은 no-op. 확정된 문장을 고치면 pending 으로 돌아간다(새 문장 확정은 별도 결정).
+    edit_confirm 은 edit → confirm 을 한 트랜잭션으로 한다(이력 두 줄). 같은 문장 + 이미 confirmed 면 no-op."""
+    if action not in ("confirm", "exclude", "pending", "edit", "edit_confirm"):
         raise CanonError("ARG-INVALID", "action 은 confirm·exclude·pending·edit 중 하나예요.")
     with tx() as c:
         r = _one(c, "SELECT * FROM candidates WHERE user_id=%s AND id=%s FOR UPDATE", (uid, cid))
         if not r:
             raise CanonError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
-        if action == "edit":
+        if action == "edit_confirm":
+            new = (text or "").strip()
+            if not new:
+                raise CanonError("ARG-INVALID", "고친 문장이 비었어요.")
+            decision = r["decision"]
+            if new != r["text"]:
+                c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
+                          (cid, "edit", decision, r["text"]))
+                c.execute("UPDATE candidates SET text=%s, edited_by_user=true, decision='pending', updated=now() WHERE id=%s", (new, cid))
+                decision = "pending"
+            if decision != "confirmed":
+                c.execute("INSERT INTO candidate_history (candidate_id,action,prev_decision,prev_text) VALUES (%s,%s,%s,%s)",
+                          (cid, "confirm", decision, new))
+                c.execute("UPDATE candidates SET decision='confirmed', updated=now() WHERE id=%s", (cid,))
+        elif action == "edit":
             new = (text or "").strip()
             if not new:
                 raise CanonError("ARG-INVALID", "고친 문장이 비었어요.")

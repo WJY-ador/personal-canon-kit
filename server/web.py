@@ -30,7 +30,7 @@ FLOW_COOKIE = "canon_login"
 SESSION_TTL = 30 * 24 * 3600
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
-ACTIONS = ("confirm", "exclude", "pending", "edit")
+ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
 
 
 def _b64(b: bytes) -> str:

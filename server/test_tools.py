@@ -366,6 +366,22 @@ async def test_web():
                 r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
                 assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
                 assert [x["action"] for x in db.candidate_history(uid, cid)] == ["edit", "confirm"]
+                # edit_confirm: 고치기와 남기기를 한 트랜잭션으로 (이력 두 줄)
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit_confirm", "text": "입력 담당을 맨 먼저 정한다"}, headers=origin)
+                assert r.status_code == 200 and r.json()["status"] == "confirmed" and r.json()["edited_by_user"] is True, r.text
+                assert r.json()["text"] == "입력 담당을 맨 먼저 정한다", r.text
+                hist = db.candidate_history(uid, cid)
+                assert [x["action"] for x in hist][-2:] == ["edit", "confirm"], hist
+                assert hist[-2]["prev_status"] == "confirmed" and hist[-1]["prev_status"] == "pending", hist
+                st = (await h.get("/api/state")).json()
+                assert [x["status"] for x in st["candidates"] if x["id"] == cid] == ["confirmed"], st["candidates"]
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit_confirm", "text": "  "}, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit_confirm", "text": "입력 담당을 맨 먼저 정한다"}, headers=origin)
+                assert r.status_code == 200 and r.json()["status"] == "confirmed" and len(db.candidate_history(uid, cid)) == len(hist), r.text
+                async with Client(main.mcp) as mc:   # MCP 도구는 edit_confirm 을 모른다(Literal 고정)
+                    bad = await mc.call_tool("candidate_decide", {"candidate_id": cid, "action": "edit_confirm", "text": "MCP 로 고침"})
+                assert bad.is_error and "validation error" in bad.content[0].text and len(db.candidate_history(uid, cid)) == len(hist), bad
                 r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
                 assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
                 assert (await h.post("/logout")).status_code == 403

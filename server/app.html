@@ -81,6 +81,12 @@ button.small { min-height: 36px; padding: 0 12px; font-size: 14px; background: t
 button.small:hover { background: var(--accent-soft); }
 button:disabled, button:disabled:hover { cursor: default; opacity: .45; transform: none; background: var(--paper); color: var(--ink); border-color: var(--line); }
 button.primary:disabled { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.secondary { background: var(--paper); color: var(--ink); border: 1px solid var(--line); }
+button.tertiary { background: transparent; border-color: transparent; color: var(--accent); }
+button.tertiary:hover { background: var(--accent-soft); }
+button.tertiary:disabled, button.tertiary:disabled:hover { background: transparent; border-color: transparent; color: var(--accent); }
+a.link { color: var(--accent); font-size: 15px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
+.sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
 /* 띠 — 화면 전체에 걸리는 것만 */
 .bands { padding-top: 16px; }
@@ -195,9 +201,10 @@ mark { background: var(--mark); color: var(--mark-ink); padding: 1px 3px; border
 .recmeta { color: var(--meta); font-size: 13px; margin: -10px 0 16px; }
 
 /* 대조 — 한 열: 질문 → 문장 → 근거 → 결정 */
-.rvhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 24px 0 16px; }
+.rvhead { display: flex; align-items: baseline; gap: 4px 12px; flex-wrap: wrap; margin: 24px 0 16px; }
 .rvhead h2 { font-size: 22px; margin: 0; font-weight: 800; letter-spacing: -.01em; }
-.rvhead .pos { color: var(--meta); font-size: 14px; margin-left: 8px; font-weight: 500; }
+.rvhead .pos { color: var(--meta); font-size: 14px; margin: 0; font-weight: 500; }
+.rvhead a.link { margin-left: auto; }
 .rvcard { background: var(--cand-bg); border: 1.5px dashed var(--cand-line); border-radius: 18px; padding: 22px 24px; margin-bottom: 18px; }
 .rvq { font-size: 13px; color: var(--meta); font-weight: 600; }
 .rvcard .sent { font-size: 21px; line-height: 1.5; margin: 8px 0 12px; font-weight: 700; letter-spacing: -.01em; }
@@ -206,13 +213,23 @@ mark { background: var(--mark); color: var(--mark-ink); padding: 1px 3px; border
 .rvsrc .doc { background: var(--paper); box-shadow: var(--shadow); border: var(--paper-border); }
 .srcwarn { background: var(--fail-bg); border-radius: 14px; padding: 12px 16px; font-size: 14px; margin-bottom: 10px; }
 .srcnote { background: var(--warn-bg); border-radius: 14px; padding: 10px 16px; font-size: 14px; margin-bottom: 10px; }
+.rvact h3 { margin: 22px 0 0; font-size: 13px; font-weight: 700; color: var(--meta); }
 .dest { font-size: 14px; color: var(--muted); margin: 22px 0 10px; line-height: 1.6; }
-.acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.acts .primary { grid-column: 1 / -1; }
+.rvact h3 + .dest { margin-top: 4px; }
+.acts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+#rvedit { margin-top: 14px; }
+#rvedit label { display: block; font-size: 15px; font-weight: 600; }
+#rvedit .hint { margin: 0 0 8px; }
+#rvedit textarea { display: block; width: 100%; font: inherit; padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); color: var(--ink); }
+#rvedit .acts { grid-template-columns: 1fr; margin-top: 8px; }
+#rvedit .acts .primary { grid-column: 1 / -1; }
+#save-status { font-size: 14px; color: var(--muted); margin: 10px 0 0; }
 .later { font-size: 13px; color: var(--meta); margin: 12px 0 0; line-height: 1.6; }
 .blocked { font-size: 14px; color: var(--fail); font-weight: 600; margin: 10px 0 0; }
 .rvnav { display: flex; gap: 8px; justify-content: center; margin: 26px 0 8px; flex-wrap: wrap; }
+.rvnav .hint { flex-basis: 100%; text-align: center; margin: 0; }
 .done { text-align: center; padding: 48px 16px; }
+.done .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 16px; }
 
 dialog { border: var(--paper-border); border-radius: 22px; padding: 0; width: min(760px, calc(100vw - 32px));
   background: var(--paper); color: var(--ink); box-shadow: 0 24px 64px rgba(0, 0, 0, .18); }
@@ -231,6 +248,9 @@ dialog .db { padding: 18px 24px; max-height: 72vh; overflow: auto; }
   .doc { padding: 20px; }
   .rvcard .sent { font-size: 19px; }
   .acts { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 14px; }
+  #rvacts { grid-template-columns: 1fr 1fr; }
+  #rvacts [data-act="exclude"] { grid-column: 1 / -1; }
+  #rvedit .acts { position: static; padding: 0; background: none; }
 }
 @media (prefers-reduced-motion: reduce) { button, .btn { transition: none; } }
 </style>
@@ -302,24 +322,33 @@ function partFail(err, what) {
     ${techInfo(err)}</div>`;
 }
 function sayLine(phrase) {
-  return `<div class="say">연결한 AI 대화에서 「${esc(phrase)}」라고 말하기 <button class="small" data-copy="${esc(phrase)}">문장 복사</button></div>`;
+  return `<div class="say">연결한 AI 대화에서 「${esc(phrase)}」라고 말하기 <button class="small" data-copy="${esc(phrase)}">요청 복사</button></div>`;
 }
 
 // ── 불러오기 ─────────────────────────────────────────
-async function load() {
-  let next;
-  try {
-    const r = await fetch("/api/state", {cache: "no-store"});
-    if (r.status === 401) { location.href = "/login"; return; }
-    next = await r.json();
-  } catch (e) {
-    $("bands").innerHTML = `<div class="band fail" role="alert"><b>서버에 연결하지 못했어요.</b> 잠시 뒤 새로 고침해 주세요.
-      ${loadedAt ? `아래 화면은 ${esc(loadedAt)}에 불러온 내용이에요.` : ""}</div>`;
-    return;
-  }
+// 상태 한 벌을 받아 온다. 로그인이 풀렸으면 null(이미 /login 으로 보냄). 연결 실패는 throw.
+async function fetchState() {
+  const r = await fetch("/api/state", {cache: "no-store"});
+  if (r.status === 401) { location.href = "/login"; return null; }
+  return r.json();
+}
+function applyState(next) {
   S = next;
   loadedAt = mdhm(S.generated);
   render();
+}
+async function load() {
+  let next;
+  try {
+    next = await fetchState();
+    if (!next) return false;
+  } catch (e) {
+    $("bands").innerHTML = `<div class="band fail" role="alert"><b>서버에 연결하지 못했어요.</b> 잠시 뒤 새로 고침해 주세요.
+      ${loadedAt ? `아래 화면은 ${esc(loadedAt)}에 불러온 내용이에요.` : ""}</div>`;
+    return false;
+  }
+  applyState(next);
+  return true;
 }
 
 function tabsList() {
@@ -339,7 +368,7 @@ function render() {
   const tab = tabs.find(t => t.id === R.tab) || tabs[0];
   $("nav").innerHTML = tabs.map(t => `<a href="#${esc(t.id)}" class="${t.id === tab.id ? "on" : ""}"${t.id === tab.id ? ' aria-current="page"' : ""}>${esc(t.label)}</a>`).join("");
   $("who").textContent = S.user && S.user.email ? S.user.email : "";
-  $("foot").textContent = `여기서 바꾸는 건 문장의 결정뿐이에요. 기록·질문·후보는 연결한 AI 대화(ChatGPT·Claude)에서 남겨요.${loadedAt ? ` 불러온 시각 ${loadedAt}.` : ""}`;
+  $("foot").textContent = `기록·질문·후보 추가는 연결한 AI 대화에서 해요. 여기서는 후보를 고쳐 남기거나, 남길지 정해요. 원문은 바뀌지 않아요.${loadedAt ? ` 불러온 시각 ${loadedAt}.` : ""}`;
   let b = "";
   if (!ok("meta")) {
     $("bands").innerHTML = b;
@@ -350,7 +379,7 @@ function render() {
       ${esc(WHAT[S.read.tabs.error.code] || "")} ${esc(FIXHINT)}${techInfo(S.read.tabs.error)}</div>`;
   $("bands").innerHTML = b;
 
-  if (R.a === "review") return renderReview(tab, R.b, parseInt(R.c || "0", 10) || 0);
+  if (R.a === "review") return renderReview(tab, R.b, R.c);
   const kind = tab.blocks[0] === "journal" ? "record" : "question";
   if (kind === "record") renderRecordTab(tab, R.a);
   else renderQuestionTab(tab, R.a);
@@ -448,7 +477,7 @@ function sheetSections(tab, q) {
   h += `<section class="sec"><h3>아직 안 정한 문장<span class="count">${wait.length}</span></h3>
     ${wait.length ? `<div class="cards">${wait.map(c => `<div class="card cand"><p class="sent">${esc(c.text)}</p>
       <div class="labels">${origin(c)}${decision(c)}</div></div>`).join("")}</div>
-      <div class="cta"><p class="hint">남기기 전까진 내 판단이 아니에요.</p><a class="btn primary" href="#${esc(tab.id)}/review/${esc(q.id)}/0">원문과 대조하기 · ${wait.length}개</a></div>`
+      <div class="cta"><p class="hint">남기기 전까진 내 판단이 아니에요.</p><a class="btn primary" href="#${esc(tab.id)}/review/${esc(q.id)}/${esc(wait[0].id)}">원문과 대조하기 · ${wait.length}개</a></div>`
       : `<div class="empty">${cs.length ? "정할 문장이 남아 있지 않아요." : "아직 이 질문에 뽑힌 문장이 없어요. 기록에서 후보를 뽑으면 여기에 떠요."}</div>`}</section>`;
   if (off.length) h += `<details class="fold"><summary>남기지 않은 문장 보기 · ${off.length}개</summary><div class="cards">${off.map(c =>
       `<div class="card cand"><p class="sent">${esc(c.text)}</p><div class="labels">${origin(c)}${decision(c)}</div>${evLine(c)}</div>`).join("")}</div></details>`;
@@ -564,63 +593,112 @@ async function openRec(id, quote) {
 }
 
 // ── 원문과 대조하기 (한 열, 한 장씩, 여기서 결정을 저장한다) ─────
-function renderReview(tab, qid, idx) {
+// 라우트 #탭/review/질문ID/후보ID. 「목록 끝」은 후보ID 자리에 end. 옛 숫자 idx 는 그 자리의 후보 ID 로 바꿔 끼운다.
+const SAVED = {confirm: "내 판단으로 남겼어요.", edit_confirm: "고친 문장을 내 판단으로 남겼어요.", exclude: "남기지 않음으로 저장했어요."};
+let lastSave = "";      // 저장 성공 문구 — 다음에 그리는 대조 화면의 #save-status 에 한 번만 찍는다
+let afterSave = null;   // {qid, nextId} — 저장 직전 목록에서 현재 다음 후보
+
+function renderReview(tab, qid, key) {
   const q = qById(qid);
-  const wait = pendingOf(qid);
+  const qText = q ? q.text : "찾을 수 없는 질문";
   const back = `#${tab.id}/${qid}`;
-  const head = (pos) => `<div class="rvhead"><h2>원문과 대조하기${pos ? `<span class="pos">${pos}</span>` : ""}</h2><a class="btn" href="${esc(back)}">닫기</a></div>`;
-  const nav = wait.length > 1 ? `<div class="rvnav"><a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${Math.max(0, idx - 1)}"${idx <= 0 ? ' aria-disabled="true" style="pointer-events:none;color:var(--muted)"' : ""}>이전 문장</a>
-      <a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${idx + 1}">다음 문장</a></div>` : "";
-  if (!ok("candidates")) { $("view").innerHTML = `${head("")}<div class="paper">${partFail(S.read.candidates.error, "문장 목록")}</div>`; return; }
-  if (!wait.length || idx >= wait.length) {
-    $("view").innerHTML = `${head("")}<div class="paper done"><b>${wait.length ? "이 질문의 문장을 끝까지 봤어요." : "대조할 문장이 없어요."}</b>
-      <p>${wait.length ? `아직 안 정한 문장 ${wait.length}개는 그대로 남아 있어요.` : "새 기록에서 후보를 뽑으면 여기에 떠요."}</p>
-      <a class="btn primary" href="${esc(back)}">질문으로 돌아가기</a></div>`;
+  const base = `#${tab.id}/review/${qid}/`;
+  const go = id => location.replace(base + id);
+  const head = (m, link) => `<div class="rvhead"><h2 id="review-title" tabindex="-1">원문과 대조하기</h2>${m ? `<p class="pos">아직 안 정한 문장 ${m}개</p>` : ""}${link ? `<a class="link" href="${esc(back)}">질문으로 돌아가기</a>` : ""}</div>`;
+  const status = `<p id="save-status" role="status" aria-atomic="true"></p>`;
+  const show = html => {
+    $("view").innerHTML = html;
+    if (!lastSave) return;
+    if ($("save-status")) $("save-status").textContent = lastSave;
+    lastSave = "";
+    $("review-title").focus();
+  };
+  if (!ok("candidates")) { show(`${head(0, true)}<div class="paper">${partFail(S.read.candidates.error, "문장 목록")}</div>`); return; }
+  const wait = pendingOf(qid);
+  if (!key.startsWith("c_") && key !== "end") {   // 옛 숫자 idx(또는 빈 자리)
+    const t = wait[parseInt(key || "0", 10) || 0];
+    if (t) { go(t.id); return; }
+    if (wait.length) { go("end"); return; }
+  }
+  const idx = wait.findIndex(x => x.id === key);
+  const nav = afterSave && afterSave.qid === qid ? afterSave : null;
+  afterSave = null;
+  if (key.startsWith("c_") && idx < 0) {   // 이미 정한(또는 없는) 후보 — 저장 직후면 기억해 둔 다음 후보, 아니면 남은 첫 후보로
+    const t = (nav && wait.find(x => x.id === nav.nextId)) || wait[0];
+    if (t) { go(t.id); return; }
+  }
+  if (!wait.length) {
+    show(`${head(0, false)}<div class="paper done"><b>아직 안 정한 문장이 없어요.</b><p>새 기록에서 후보를 뽑으면 여기에 떠요.</p>
+      <div class="row"><a class="btn primary" href="${esc(back)}">질문으로 돌아가기</a></div>${status}</div>`);
+    return;
+  }
+  if (idx < 0) {   // end — 건너뛰기로 목록 끝에 닿았다
+    show(`${head(0, false)}<div class="paper done"><b>목록 끝이에요. 아직 안 정한 문장 ${wait.length}개가 남아 있어요.</b>
+      <div class="row"><a class="btn primary" href="${esc(base + wait[0].id)}">남은 문장 보기</a><a class="btn" href="${esc(back)}">질문으로 돌아가기</a></div>${status}</div>`);
     return;
   }
   const c = wait[idx];
-  const qText = q ? q.text : "찾을 수 없는 질문";
-  $("view").innerHTML = `${head(`${idx + 1} / ${wait.length}`)}
-    <div class="rvcard"><div class="rvq">질문 · ${esc(qText)}</div>
-      <p class="sent">${esc(c.text)}</p>
-      <div class="labels">${origin(c)}${decision(c)}</div></div>
-    <div class="rvsrc" id="rvsrc"><div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></div>
-    <div class="rvact"><p class="dest">남기면 「${esc(qText)}」의 내 판단에 들어가요. 원문은 바뀌지 않아요.</p>
-      <div class="acts" id="rvacts">
-        <button class="primary" data-act="confirm" disabled>내 판단으로 남기기</button><button data-act="edit" disabled>고쳐서 남기기</button>
-        <button data-act="exclude" disabled>남기지 않기</button><a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${idx + 1}">나중에 보기</a></div>
-      <div id="rvedit" hidden><textarea id="rvtext" rows="3" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink)">${esc(c.text)}</textarea>
-        <div class="acts" style="margin-top:8px"><button class="primary" data-act="edit-save">고친 문장으로 남기기</button><button data-act="edit-cancel">취소</button></div></div>
-      <div id="rvwhy"></div></div>${nav}`;
+  const cur = {qid, c, nextId: wait[idx + 1] ? wait[idx + 1].id : ""};
+  show(`${head(wait.length, true)}
+    <section class="rvcard" data-candidate-id="${esc(c.id)}" aria-labelledby="candidate-title">
+      <p class="rvq">질문 · ${esc(qText)}</p><h3 id="candidate-title" class="sr">판단 후보</h3><p class="sent">${esc(c.text)}</p>
+      <div class="labels">${decision(c)}${origin(c)}</div></section>
+    <section class="rvsrc" id="rvsrc" aria-labelledby="source-title"><div class="srchead"><h3 id="source-title">근거 원문</h3></div>
+      <div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></section>
+    <section class="rvact" aria-labelledby="decision-title" aria-busy="false">
+      <h3 id="decision-title">남길지 정하기</h3>
+      <p id="decision-help" class="dest">남기면 「${esc(qText)}」의 내 판단에 들어가요. 남기지 않아도 후보와 원문은 삭제되지 않아요. 원문은 바뀌지 않아요.</p>
+      <div class="acts" id="rvacts" role="group" aria-label="후보 결정" aria-describedby="decision-help">
+        <button class="secondary" type="button" data-act="confirm" disabled>내 판단으로 남기기</button>
+        <button class="secondary" type="button" data-act="edit" aria-expanded="false" aria-controls="rvedit" disabled>고쳐서 남기기</button>
+        <button class="secondary" type="button" data-act="exclude" disabled>남기지 않기</button></div>
+      <form id="rvedit" hidden aria-describedby="edit-help">
+        <label for="rvtext">내 판단으로 남길 문장</label><p id="edit-help" class="hint">후보 문장을 고쳐요. 원문은 바뀌지 않아요.</p>
+        <textarea id="rvtext" name="text" rows="3" required>${esc(c.text)}</textarea>
+        <div class="acts"><button class="primary" type="submit" data-act="edit_confirm">고친 문장으로 남기기</button><button class="tertiary" type="button" data-act="edit-cancel">취소</button></div></form>
+      ${status}<p id="save-error" role="alert" aria-atomic="true" class="blocked"></p></section>
+    <nav class="rvnav" aria-label="후보 이동" aria-describedby="skip-help">
+      <button class="tertiary" type="button" data-nav="previous"${idx === 0 ? " disabled" : ""}>이전 문장</button><button class="tertiary" type="button" data-nav="skip">건너뛰기</button>
+      <p id="skip-help" class="hint">건너뛰어도 아직 안 정한 문장으로 남아요.</p></nav>`);
   $("rvacts").onclick = e => {
-    const b = e.target.closest("[data-act]"); if (!b) return;
-    if (b.dataset.act === "edit") { $("rvedit").hidden = false; $("rvtext").focus(); return; }
-    decide(c.id, b.dataset.act);
+    const b = e.target.closest("button[data-act]"); if (!b || b.disabled) return;
+    if (b.dataset.act === "edit") {
+      const f = $("rvedit"), open = f.hidden;
+      f.hidden = !open; b.setAttribute("aria-expanded", String(open));
+      if (open) $("rvtext").focus();
+      return;
+    }
+    decide(cur, b.dataset.act);
   };
+  $("rvedit").onsubmit = e => { e.preventDefault(); decide(cur, "edit_confirm", $("rvtext").value); };
   $("rvedit").onclick = e => {
-    const b = e.target.closest("[data-act]"); if (!b) return;
-    if (b.dataset.act === "edit-cancel") { $("rvedit").hidden = true; return; }
-    decide(c.id, "edit", $("rvtext").value);
+    if (!e.target.closest('[data-act="edit-cancel"]')) return;
+    $("rvedit").hidden = true;
+    $("rvtext").value = c.text;
+    const eb = document.querySelector('#rvacts [data-act="edit"]');
+    eb.setAttribute("aria-expanded", "false"); eb.focus();
+  };
+  document.querySelector(".rvnav").onclick = e => {
+    const b = e.target.closest("button[data-nav]"); if (!b || b.disabled) return;
+    if (b.dataset.nav === "previous" && idx > 0) location.hash = base + wait[idx - 1].id;
+    if (b.dataset.nav === "skip") location.hash = base + (cur.nextId || "end");
   };
   fetchRec(c.record_id).then(r => {
-    if (!$("rvsrc")) return;
-    const why = $("rvwhy");
-    const enable = () => document.querySelectorAll("#rvacts button[data-act]").forEach(b => b.disabled = false);
+    const card = document.querySelector(".rvcard");
+    if (!card || card.dataset.candidateId !== c.id || !$("rvsrc")) return;   // 그사이 다른 화면으로 옮겼으면 그리지 않는다
     if (!r.ok) {
-      $("rvsrc").innerHTML = `<div class="srchead"><h3>근거 원문</h3></div><div class="srcwarn"><b>원문을 열지 못했어요.</b> ${esc(WHAT[r.code] || "기록을 읽는 중에 문제가 생겼어요.")}
-        근거를 확인할 수 없어 이 문장은 남길 수 없어요. ${esc(FIXHINT)}${techInfo({code: r.code, msg: r.msg})}</div>`;
-      why.innerHTML = `<p class="blocked">원문을 찾지 못해 남길 수 없어요.</p>`;
+      $("rvsrc").innerHTML = `<div class="srchead"><h3 id="source-title">근거 원문</h3></div><div class="srcwarn"><b>원문을 불러오지 못했어요. 근거를 확인할 수 없어 남길 수 없어요.</b>
+        ${esc(FIXHINT)}${techInfo({code: r.code, msg: r.msg})}</div>`;
       return;
     }
     const quote = c.quote;
-    const meta = `<div class="srchead"><h3>근거 원문 · ${esc(r.title)}</h3><span class="recmeta" style="margin:0">${esc(md(r.meta.created))}</span></div>`;
+    const meta = `<div class="srchead"><h3 id="source-title">근거 원문 · ${esc(r.title)}</h3><span class="recmeta" style="margin:0">${esc(md(r.meta.created))}</span></div>`;
     const d = splitDoc(r.body, r.title);
     const full = docHtml(r, quote).html;
     const tech = `<details class="tech"><summary>기술 정보</summary>만든 시각 ${esc(mdhm(r.meta.created))} · 출처 ${esc(srcLabel(r.meta.source))} · 근거 구절 ${quote.length}자</details>`;
     if (!String(r.body).includes(quote)) {
-      $("rvsrc").innerHTML = meta + `<div class="srcwarn"><b>근거 구절이 원문에 그대로 없어요.</b> 기록이 나중에 고쳐졌을 수 있어요.
+      $("rvsrc").innerHTML = meta + `<div class="srcwarn"><b>후보의 근거 구절이 저장된 원문과 일치하지 않아 남길 수 없어요.</b>
         찾던 구절: <q>${esc(quote)}</q></div><div class="doc">${full}</div>${tech}`;
-      why.innerHTML = `<p class="blocked">근거를 원문에서 찾지 못해 남길 수 없어요.</p>`;
       return;
     }
     const at = d.paras.findIndex(p => p.includes(quote));
@@ -633,38 +711,61 @@ function renderReview(tab, qid, idx) {
         <details class="fold" style="margin-top:12px"><summary>전체 원문 보기</summary><div class="doc">${full}</div></details>`;
     }
     $("rvsrc").innerHTML = meta + body + tech;
-    enable();
+    if (document.querySelector(".rvact").getAttribute("aria-busy") !== "true")
+      document.querySelectorAll("#rvacts button[data-act]").forEach(b => b.disabled = false);
   });
 }
 
-// 결정 저장: confirm / exclude / edit(고친 문장을 pending 으로 저장한 뒤 바로 confirm — 이력 두 줄). 저장 뒤 상태를 다시 불러온다.
-async function post(url, body) {
-  const r = await fetch(url, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body || {})});
-  const j = await r.json().catch(() => ({}));
-  if (r.status === 401) { location.href = "/login"; throw new Error("login"); }
-  if (!r.ok) throw Object.assign(new Error(j.msg || "저장하지 못했어요"), {code: j.code});
-  return j;
+// 저장 중엔 결정·편집·이동을 잠근다. 풀 때는 잠그기 전 상태(근거 확인 전 disabled, 첫 후보의 「이전 문장」)로 되돌린다.
+function lockReview(on) {
+  const act = document.querySelector(".rvact");
+  if (act) act.setAttribute("aria-busy", on ? "true" : "false");
+  document.querySelectorAll("#rvacts button, #rvedit button, .rvnav button").forEach(b => {
+    if (on) { b.dataset.was = b.disabled ? "1" : ""; b.disabled = true; }
+    else if ("was" in b.dataset) { b.disabled = b.dataset.was === "1"; delete b.dataset.was; }
+  });
 }
-async function decide(cid, action, text) {
-  const why = $("rvwhy");
-  document.querySelectorAll("#rvacts button, #rvedit button").forEach(b => b.disabled = true);
+
+// 결정 저장: 호출 하나(confirm / exclude / edit_confirm). 성공하면 상태를 다시 불러와 다음 후보로 간다.
+async function decide(cur, action, text) {
+  const st = $("save-status"), er = $("save-error");
+  er.textContent = "";
+  st.textContent = "저장하고 있어요…";
+  lockReview(true);
+  const saved = async next => {
+    lastSave = SAVED[action];
+    afterSave = {qid: cur.qid, nextId: cur.nextId};
+    for (const k in recCache) delete recCache[k];
+    if (next) { applyState(next); return; }
+    if (!(await load())) { st.textContent = lastSave; lastSave = ""; afterSave = null; }   // 저장은 됐고 화면만 못 바꿨다 — 띠가 새로 고침을 안내한다
+  };
+  const body = {candidate_id: cur.c.id, action};
+  if (action === "edit_confirm") body.text = text;
+  let r;
   try {
-    if (action === "edit") {
-      if (!String(text || "").trim()) throw new Error("고친 문장이 비었어요.");
-      await post("/api/candidate/decide", {candidate_id: cid, action: "edit", text});
-      await post("/api/candidate/decide", {candidate_id: cid, action: "confirm"});
-    } else {
-      await post("/api/candidate/decide", {candidate_id: cid, action});
-    }
+    r = await fetch("/api/candidate/decide", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body),
+      signal: typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(15000) : undefined});
   } catch (e) {
-    if (e.message === "login") return;
-    document.querySelectorAll("#rvacts button, #rvedit button").forEach(b => b.disabled = false);
-    if (why) why.innerHTML = `<p class="blocked">${esc(e.message)}</p>`;
+    // 응답을 받지 못했다 — 상태를 다시 읽어 이 후보의 결정이 바뀌었는지 본다
+    st.textContent = "저장 결과를 확인하고 있어요…";
+    let next;
+    try { next = await fetchState(); if (next === null) return; } catch (e2) { next = undefined; }
+    const now = next && (next.candidates || []).find(x => x.id === cur.c.id);
+    if (now && now.status !== cur.c.status) { await saved(next); return; }
+    st.textContent = "";
+    er.textContent = "저장 여부를 확인하지 못했어요. 새로 고침해 확인해 주세요.";
+    lockReview(false);
     return;
   }
-  for (const k in recCache) delete recCache[k];
-  await load();
-  window.scrollTo(0, 0);
+  if (r.status === 401) { location.href = "/login"; return; }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    st.textContent = "";
+    er.textContent = j.msg || "저장하지 못했어요. 다시 시도해 주세요.";
+    lockReview(false);
+    return;
+  }
+  await saved(null);
 }
 
 // ── 이벤트 ───────────────────────────────────────────
@@ -673,7 +774,7 @@ document.addEventListener("click", e => {
   if (a) { e.preventDefault(); openRec(a.dataset.rec, a.dataset.quote || ""); return; }
   const cp = e.target.closest("[data-copy]");
   if (cp) {
-    const done = () => { const t = cp.textContent; cp.textContent = "복사했어요"; setTimeout(() => cp.textContent = t, 1500); };
+    const done = () => { const t = cp.textContent; cp.textContent = "요청을 복사했어요."; setTimeout(() => cp.textContent = t, 1500); };
     if (navigator.clipboard) navigator.clipboard.writeText(cp.dataset.copy).then(done, () => {});
   }
 });
