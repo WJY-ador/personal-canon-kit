@@ -6,12 +6,15 @@
 """
 import json
 import os
+import re
 import secrets
 import datetime as _dt
 from contextlib import contextmanager
 from pathlib import Path
 
+from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -66,9 +69,18 @@ def close():
 
 
 def init_schema():
-    """schema.sql 을 적용한다(IF NOT EXISTS 라 몇 번 돌려도 된다)."""
+    """schema.sql 을 적용한다(IF NOT EXISTS 라 몇 번 돌려도 된다).
+    2단계 기존 테이블 변경은 필요할 때만 건다 — 기존 행은 건드리지 않는다(notes 는 DEFAULT 로 채움, NOT NULL 해제만)."""
     with pool().connection() as c:
         c.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        col = lambda t, n: c.execute(
+            "SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s AND column_name=%s",
+            (t, n)).fetchone()
+        if col("records", "notes") is None:
+            c.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS notes jsonb NOT NULL DEFAULT '{}'")
+        q = col("candidates", "question_id")
+        if q is not None and q["is_nullable"] == "NO":
+            c.execute("ALTER TABLE candidates ALTER COLUMN question_id DROP NOT NULL")
 
 
 def ping():
@@ -145,6 +157,9 @@ def user_get(uid):
 def user_delete(uid):
     """계정 삭제 = 그 사용자 데이터 전체 삭제(cascade)."""
     with tx() as c:
+        # 정의 층은 보호 Lookup(NO ACTION)이 있어 자식부터 지운다. 나머지는 users cascade.
+        for t in ("item_links", "item_history", "items", "field_defs", "object_defs"):
+            c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
         c.execute("DELETE FROM users WHERE id=%s", (uid,))
 
 
@@ -203,7 +218,7 @@ def record_get(uid, rid):
 def records(uid, limit=50):
     out = []
     with tx() as c:
-        rows = _all(c, "SELECT id,title,body,source,question_id,created FROM records WHERE user_id=%s AND deleted_at IS NULL "
+        rows = _all(c, "SELECT id,title,body,source,question_id,notes,created FROM records WHERE user_id=%s AND deleted_at IS NULL "
                        "ORDER BY created DESC LIMIT %s", (uid, limit))
     for r in rows:
         d = _iso(r)
@@ -238,7 +253,9 @@ def candidates_propose(uid, record_id, question_id, items, origin):
     if origin not in ("ai", "self"):
         raise CanonError("ARG-INVALID", "origin 은 ai 또는 self 예요.")
     rec = record_get(uid, record_id)
-    question_get(uid, question_id)
+    question_id = (question_id or "").strip() or None   # "" = 질문 없음 → NULL (화면은 기록별 묶음)
+    if question_id:
+        question_get(uid, question_id)
     body = rec["body"]
     added, dropped = [], []
     with tx() as c:
@@ -386,6 +403,795 @@ def tabs(uid):
     return r["doc"] if r else {"tabs": [], "requests": [], "revision": 0}
 
 
+# ── 사용자 정의 층: 정의(object_defs·field_defs) · 항목(items) · 관계(item_links) · 이력(item_history) ──
+# 사용자는 오브젝트·필드·Lookup 까지만 정의한다. 제안(draft)은 MCP 가, 적용·확정은 사용자가 말했을 때만.
+# 모든 변경은 행 잠금(FOR UPDATE) + expected_revision 검사. 항목 이력 한 줄 = revision +1.
+
+VALUE_TYPES = ("text", "number", "boolean", "date", "select", "text_list", "reference")
+SEMANTIC_KINDS = ("collection", "event", "principle")
+TARGET_KINDS = ("item", "record", "candidate")
+ITEM_ACTIONS = ("apply", "confirm", "exclude", "pending", "archive", "restore", "discard")
+ITEM_DECISIONS = {"confirm": "confirmed", "exclude": "excluded", "pending": "pending"}
+RECORD_LINK_KEYS = ("attach_to", "axes")
+DEFAULT_PROMOTION = {"confirmed_claims_min": 2, "claim_field": "evidence_claims", "distinct_events_min": 0,
+                     "event_field": None, "event_claim_field": None}
+DEFAULT_CLAIM_FIELD = {"key": "evidence_claims", "label": "근거 판단", "value_type": "reference", "required": False,
+                       "options": [], "target_kind": "candidate", "target_object_id": None, "multiple": True}
+_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+_OBJ_ID_RE = re.compile(r"^od_[a-z0-9_]{1,40}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+CONFLICT_MSG = "다른 곳에서 먼저 바뀌었어요."
+CONFLICT_ACT = "definitions_get·state_get 으로 지금 revision 을 다시 보고, 사용자에게 확인한 뒤 다시 하세요."
+
+
+def _conflict(what=""):
+    return CanonError("CONFLICT", CONFLICT_MSG + (f" ({what})" if what else ""), CONFLICT_ACT)
+
+
+def _bad_def(msg, action=""):
+    return CanonError("DEF-INVALID", msg, action)
+
+
+def _bad_link(msg, action=""):
+    return CanonError("LINK-INVALID", msg, action)
+
+
+# ── 정의 정규화·검증 (DB 없이 — 시드 --dry-run 도 같은 함수) ──
+
+def _norm_options(raw, fkey):
+    if not isinstance(raw, list) or not raw:
+        raise _bad_def(f"select 필드 {fkey} 에 options 가 비었어요.",
+                       "options 에 고를 값을 넣으세요. 예: [\"customer\", \"work\"] 또는 [{\"value\":\"customer\",\"label\":\"고객 업무\"}]")
+    out, seen = [], set()
+    for o in raw:
+        if isinstance(o, str):
+            o = {"value": o, "label": o}
+        if not isinstance(o, dict) or not isinstance(o.get("value"), str) or not o["value"].strip():
+            raise _bad_def(f"select 필드 {fkey} 의 option 형식이 틀렸어요.")
+        v = o["value"].strip()
+        if v in seen:
+            raise _bad_def(f"select 필드 {fkey} 에 같은 값 {v} 가 두 번 있어요.")
+        seen.add(v)
+        out.append({"value": v, "label": str(o.get("label") or v).strip()})
+    return out
+
+
+def normalize_definition(d):
+    """definition_json → 저장 형태. 형식만 본다(대상 오브젝트·기존 항목은 _check_definition)."""
+    if not isinstance(d, dict):
+        raise _bad_def("정의는 JSON 객체여야 해요.")
+    key, label, kind = d.get("key"), str(d.get("label") or "").strip(), d.get("semantic_kind")
+    if not isinstance(key, str) or not _KEY_RE.match(key):
+        raise _bad_def("key 는 영문 소문자로 시작하는 40자 이내 [a-z0-9_] 예요.")
+    if not label:
+        raise _bad_def("label(화면 이름)이 비었어요.")
+    if kind not in SEMANTIC_KINDS:
+        raise _bad_def(f"semantic_kind 는 {', '.join(SEMANTIC_KINDS)} 중 하나예요.")
+    policy = d.get("policy") or {}
+    if not isinstance(policy, dict):
+        raise _bad_def("policy 는 JSON 객체예요.")
+    raw_fields = d.get("fields") or []
+    if not isinstance(raw_fields, list):
+        raise _bad_def("fields 는 목록이에요.")
+    fields, seen = [], set()
+    for f in raw_fields:
+        if not isinstance(f, dict):
+            raise _bad_def("필드 정의는 JSON 객체예요.")
+        fk, vt = f.get("key"), f.get("value_type")
+        if not isinstance(fk, str) or not _KEY_RE.match(fk):
+            raise _bad_def(f"필드 key 형식이 틀렸어요: {fk!r}")
+        if fk in seen:
+            raise _bad_def(f"필드 key {fk} 가 두 번 있어요.")
+        seen.add(fk)
+        if vt not in VALUE_TYPES:
+            raise _bad_def(f"필드 {fk} 의 value_type 은 {', '.join(VALUE_TYPES)} 중 하나예요.")
+        nf = {"key": fk, "label": str(f.get("label") or fk).strip(), "value_type": vt, "required": bool(f.get("required")),
+              "options": [], "target_kind": None, "target_object_id": None, "multiple": False}
+        if vt == "select":
+            nf["options"] = _norm_options(f.get("options"), fk)
+        if vt == "reference":
+            tk = f.get("target_kind")
+            if tk not in TARGET_KINDS:
+                raise _bad_def(f"reference 필드 {fk} 의 target_kind 는 item·record·candidate 중 하나예요.")
+            nf["target_kind"] = tk
+            nf["multiple"] = bool(f.get("multiple"))
+            if tk == "item":
+                to = f.get("target_object_id")
+                if not isinstance(to, str) or not to:
+                    raise _bad_def(f"reference 필드 {fk} 는 target_object_id(대상 오브젝트 ID)가 필요해요.")
+                nf["target_object_id"] = to
+        fields.append(nf)
+    policy = dict(policy)
+    if kind == "principle":
+        promo = {**DEFAULT_PROMOTION, **(policy.get("promotion") or {})}
+        if promo["claim_field"] == DEFAULT_CLAIM_FIELD["key"] and DEFAULT_CLAIM_FIELD["key"] not in seen:
+            fields.append(dict(DEFAULT_CLAIM_FIELD))   # 신규 기준 정의엔 근거 판단 필드를 서버가 넣는다(raw R8)
+            seen.add(DEFAULT_CLAIM_FIELD["key"])
+        policy["promotion"] = promo
+    byk = {f["key"]: f for f in fields}
+    if "promotion" in policy:
+        p = policy["promotion"]
+        if not isinstance(p, dict):
+            raise _bad_def("policy.promotion 은 JSON 객체예요.")
+        for n in ("confirmed_claims_min", "distinct_events_min"):
+            if not isinstance(p.get(n), int) or isinstance(p.get(n), bool) or p[n] < 0:
+                raise _bad_def(f"policy.promotion.{n} 는 0 이상 정수예요.")
+        cf = byk.get(p.get("claim_field"))
+        if not cf or cf["value_type"] != "reference" or cf["target_kind"] != "candidate":
+            raise _bad_def("policy.promotion.claim_field 는 후보(candidate)를 가리키는 reference 필드여야 해요.")
+        if p["distinct_events_min"] > 0:
+            ef = byk.get(p.get("event_field"))
+            if not ef or ef["value_type"] != "reference" or ef["target_kind"] != "item":
+                raise _bad_def("결정(event) 조건을 쓰려면 policy.promotion.event_field 가 항목(item)을 가리키는 reference 필드여야 해요.")
+    if "exactly_one_reference" in policy:
+        keys = policy["exactly_one_reference"]
+        if not isinstance(keys, list) or not keys or any((byk.get(k) or {}).get("value_type") != "reference" for k in keys):
+            raise _bad_def("policy.exactly_one_reference 는 reference 필드 key 목록이에요.")
+    out = {"key": key, "label": label, "semantic_kind": kind, "policy": policy, "fields": fields}
+    if d.get("id") is not None:
+        out["id"] = d["id"]
+    return out
+
+
+def _value_error(f, v):
+    """일반 필드 값 하나가 타입에 맞으면 None, 아니면 이유."""
+    vt = f["value_type"]
+    if vt == "text":
+        return None if isinstance(v, str) else "글자여야 해요"
+    if vt == "number":
+        return None if isinstance(v, (int, float)) and not isinstance(v, bool) else "숫자여야 해요"
+    if vt == "boolean":
+        return None if isinstance(v, bool) else "true/false 여야 해요"
+    if vt == "date":
+        if not isinstance(v, str) or not _DATE_RE.match(v):
+            return "YYYY-MM-DD 날짜여야 해요"
+        try:
+            _dt.date.fromisoformat(v)
+        except ValueError:
+            return "없는 날짜예요"
+        return None
+    if vt == "select":
+        vals = [o["value"] for o in f["options"]]
+        return None if v in vals else f"{', '.join(vals)} 중 하나여야 해요"
+    if vt == "text_list":
+        return None if isinstance(v, list) and all(isinstance(x, str) for x in v) else "글자 목록이어야 해요"
+    return "관계 값은 data 가 아니라 links 로 보내요"
+
+
+def _empty(v):
+    return v is None or v == "" or v == []
+
+
+def _item_problems(fields, policy, data, links, strict):
+    """항목 하나가 정의에 맞는지 → (data 문제, links 문제). strict=False 면 정의에 없는 data 키는 넘어간다(필드 제거 뒤 남은 값)."""
+    dprob, lprob = [], []
+    byk = {f["key"]: f for f in fields}
+    for k, v in (data or {}).items():
+        f = byk.get(k)
+        if f is None:
+            if strict:
+                dprob.append(f"정의에 없는 필드 {k}")
+            continue
+        if f["value_type"] == "reference":
+            dprob.append(f"{k}: 관계 값은 data 가 아니라 links 로 보내요")
+            continue
+        if _empty(v):
+            continue
+        why = _value_error(f, v)
+        if why:
+            dprob.append(f"{f['label']}({k}): {why}")
+    per = {}
+    for ln in links:
+        per.setdefault(ln["field_key"], []).append(ln)
+    for f in fields:
+        if f["value_type"] == "reference":
+            got = per.get(f["key"], [])
+            if f["required"] and not got:
+                lprob.append(f"{f['label']}({f['key']}) 연결이 필요해요")
+            if not f["multiple"] and len(got) > 1:
+                lprob.append(f"{f['label']}({f['key']}) 는 하나만 연결할 수 있어요")
+            for ln in got:
+                if ln["target_kind"] != f["target_kind"]:
+                    lprob.append(f"{f['label']}({f['key']}) 는 {f['target_kind']} 만 가리켜요")
+                elif f["target_kind"] == "item" and ln.get("target_object_id") and ln["target_object_id"] != f["target_object_id"]:
+                    lprob.append(f"{f['label']}({f['key']}) 의 대상 오브젝트가 달라요")
+        elif f["required"] and _empty((data or {}).get(f["key"])):
+            dprob.append(f"{f['label']}({f['key']}) 값이 필요해요")
+    for k in per:
+        if k not in byk:
+            lprob.append(f"정의에 없는 관계 필드 {k}")
+        elif byk[k]["value_type"] != "reference":   # reference 를 일반 타입으로 바꾸면 남은 연결이 고아가 된다
+            lprob.append(f"{byk[k]['label']}({k}) 에 연결이 남아 있어 관계가 아닌 필드로 바꿀 수 없어요")
+    one = policy.get("exactly_one_reference")
+    if one:
+        n = sum(len(per.get(k, [])) for k in one)
+        if n != 1:
+            lprob.append(f"{', '.join(one)} 중 정확히 하나만 연결해요 (지금 {n}개)")
+    return dprob, lprob
+
+
+# ── 정의 읽기·쓰기 ──
+
+_DEF_COLS = "id,key,label,semantic_kind,revision,policy,draft_doc,draft_id,draft_base_revision,archived_at,created_at,updated_at"
+_FIELD_COLS = "key,label,value_type,required,options,target_kind,target_object_id,multiple,position,archived_at"
+
+
+def _fields(c, uid, oid, include_archived=False):
+    sql = f"SELECT {_FIELD_COLS} FROM field_defs WHERE user_id=%s AND object_id=%s"
+    if not include_archived:
+        sql += " AND archived_at IS NULL"
+    return [_iso(r) for r in _all(c, sql + " ORDER BY position, key", (uid, oid))]
+
+
+def _def_out(c, uid, row, include_archived=False):
+    d = _iso(row)
+    d["fields"] = _fields(c, uid, row["id"], include_archived)
+    d["proposal"] = ({"proposal_id": row["draft_id"], "base_revision": row["draft_base_revision"], "definition": row["draft_doc"]}
+                     if row["draft_id"] else None)
+    for k in ("draft_id", "draft_base_revision", "draft_doc"):
+        d.pop(k, None)
+    return d
+
+
+def definitions(uid, object_ids=None, include_archived=False):
+    """적용된(revision>0) 정의 + 필드. 적용 전 새 오브젝트 제안은 definition_propose 결과의 proposal_id 로만 다룬다."""
+    sql = f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND revision > 0"
+    args = [uid]
+    if not include_archived:
+        sql += " AND archived_at IS NULL"
+    if object_ids:
+        sql += " AND id = ANY(%s)"
+        args.append(list(object_ids))
+    with tx() as c:
+        return [_def_out(c, uid, r, include_archived) for r in _all(c, sql + " ORDER BY created_at, id", args)]
+
+
+def _check_definition(c, uid, oid, row, nd):
+    """대상 오브젝트·기존 항목과 맞는지. 깨지면 DEF-INVALID."""
+    for f in nd["fields"]:
+        to = f["target_object_id"]
+        if to and to != oid:
+            t = _one(c, "SELECT revision,archived_at FROM object_defs WHERE user_id=%s AND id=%s", (uid, to))
+            if not t or t["revision"] == 0 or t["archived_at"]:
+                raise _bad_def(f"필드 {f['key']} 의 대상 오브젝트 {to} 가 없어요(적용 전·보관 포함).", "definitions_get 으로 오브젝트 ID 를 확인하세요.")
+    if row is None or row["revision"] == 0:
+        return
+    if nd["key"] != row["key"]:
+        raise _bad_def("적용된 오브젝트의 key 는 바꿀 수 없어요. 화면 이름은 label 로 바꿔요.")
+    has_items = _one(c, "SELECT 1 AS x FROM items WHERE user_id=%s AND object_id=%s LIMIT 1", (uid, oid))
+    if nd["semantic_kind"] != row["semantic_kind"] and has_items:
+        raise _bad_def("항목이 있는 오브젝트의 종류(semantic_kind)는 바꿀 수 없어요.")
+    rows = _all(c, "SELECT id,code,title,data FROM items WHERE user_id=%s AND object_id=%s AND revision > 0 AND archived_at IS NULL",
+                (uid, oid))
+    if not rows:
+        return
+    links = _links_by_item(c, uid, [i["id"] for i in rows])
+    broken = []
+    for it in rows:
+        dp, lp = _item_problems(nd["fields"], nd["policy"], it["data"], links.get(it["id"], []), strict=False)
+        if dp or lp:
+            broken.append(f"{it['code'] or it['title'] or it['id']}: {(dp + lp)[0]}")
+    if broken:
+        raise _bad_def(f"이 정의로 바꾸면 기존 항목 {len(broken)}개가 깨져요 — " + " · ".join(broken[:3]),
+                       "필수로 바꾸기 전에 항목을 먼저 채우거나, 필수를 빼고 다시 제안하세요.")
+
+
+def definition_propose(uid, object_id, expected_revision, definition):
+    """정의 제안을 draft 로 저장한다(행당 하나, 새 제안이 이전 제안을 덮는다). 적용은 definition_apply."""
+    nd = normalize_definition(definition)
+    with tx() as c:
+        if not object_id:
+            if expected_revision != 0:
+                raise _conflict("새 오브젝트는 expected_revision 0")
+            row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND key=%s FOR UPDATE", (uid, nd["key"]))
+            if row and row["revision"] > 0:
+                raise _bad_def(f"key {nd['key']} 오브젝트가 이미 있어요({row['id']}).", "고치려면 object_id 를 넣어 제안하세요.")
+            if row:   # 아직 적용 안 된 같은 key 제안 행 — 그 행의 제안을 바꾼다
+                oid = row["id"]
+            else:
+                oid = nd.get("id") or f"od_{secrets.token_hex(5)}"
+                if not isinstance(oid, str) or not _OBJ_ID_RE.match(oid):
+                    raise _bad_def("id 는 od_ 로 시작하는 [a-z0-9_] 예요.")
+                if _one(c, "SELECT 1 AS x FROM object_defs WHERE user_id=%s AND id=%s", (uid, oid)):
+                    raise _bad_def(f"오브젝트 ID {oid} 가 이미 있어요.")
+                c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind) VALUES (%s,%s,%s,%s,%s)",
+                          (uid, oid, nd["key"], nd["label"], nd["semantic_kind"]))
+                row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, oid))
+        else:
+            oid = object_id
+            row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, oid))
+            if not row:
+                raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
+            if row["revision"] != expected_revision:
+                raise _conflict(f"지금 revision {row['revision']}")
+            if row["archived_at"]:
+                raise _bad_def("보관된 오브젝트는 고칠 수 없어요.")
+        nd.pop("id", None)
+        _check_definition(c, uid, oid, row, nd)
+        pid = new_id("dp")
+        c.execute("UPDATE object_defs SET draft_doc=%s, draft_id=%s, draft_base_revision=%s, updated_at=now() WHERE user_id=%s AND id=%s",
+                  (Jsonb(nd), pid, row["revision"], uid, oid))
+    return {"object_id": oid, "proposal_id": pid, "base_revision": row["revision"], "definition": nd,
+            "note": "제안만 저장했어요. 사용자가 적용하라고 말할 때만 definition_apply 를 부르세요."}
+
+
+def definition_apply(uid, object_id, proposal_id, expected_revision):
+    """제안 ID·기반 revision 이 맞을 때만 적용. revision+1, history 에 전체 정의 스냅샷, field_defs 동기화(빠진 필드는 archived_at)."""
+    with tx() as c:
+        row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, object_id))
+        if not row:
+            raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+        if row["revision"] != expected_revision:
+            raise _conflict(f"지금 revision {row['revision']}")
+        if not row["draft_id"] or row["draft_id"] != proposal_id or row["draft_base_revision"] != row["revision"]:
+            raise _conflict("제안이 없거나 바뀌었어요")
+        nd = row["draft_doc"]
+        _check_definition(c, uid, object_id, row, nd)
+        rev = row["revision"] + 1
+        keep = []
+        for pos, f in enumerate(nd["fields"]):
+            keep.append(f["key"])
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,required,options,target_kind,target_object_id,multiple,position,archived_at) "
+                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL) ON CONFLICT (user_id,object_id,key) DO UPDATE SET "
+                      "label=excluded.label,value_type=excluded.value_type,required=excluded.required,options=excluded.options,"
+                      "target_kind=excluded.target_kind,target_object_id=excluded.target_object_id,multiple=excluded.multiple,"
+                      "position=excluded.position,archived_at=NULL",
+                      (uid, object_id, f["key"], f["label"], f["value_type"], f["required"], Jsonb(f["options"]), f["target_kind"],
+                       f["target_object_id"], f["multiple"], pos))
+        c.execute("UPDATE field_defs SET archived_at=now() WHERE user_id=%s AND object_id=%s AND archived_at IS NULL AND NOT (key = ANY(%s))",
+                  (uid, object_id, keep))
+        snap = {**nd, "revision": rev, "applied_at": now().isoformat()}
+        c.execute("UPDATE object_defs SET key=%s,label=%s,semantic_kind=%s,policy=%s,revision=%s,history=history || %s,"
+                  "draft_doc=NULL,draft_id=NULL,draft_base_revision=NULL,updated_at=now() WHERE user_id=%s AND id=%s",
+                  (nd["key"], nd["label"], nd["semantic_kind"], Jsonb(nd["policy"]), rev, Jsonb([snap]), uid, object_id))
+        out = _def_out(c, uid, _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id)))
+    return out
+
+
+def definition_history(uid, object_id):
+    with tx() as c:
+        r = _one(c, "SELECT history FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id))
+    if not r:
+        raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+    return r["history"]
+
+
+# ── 관계 ──
+
+def _link_out(r):
+    if r["target_item_id"]:
+        return {"field_key": r["field_key"], "target_kind": "item", "target_id": r["target_item_id"]}
+    if r["target_record_id"]:
+        return {"field_key": r["field_key"], "target_kind": "record", "target_id": r["target_record_id"]}
+    return {"field_key": r["field_key"], "target_kind": "candidate", "target_id": r["target_candidate_id"]}
+
+
+def _links_by_item(c, uid, item_ids):
+    out = {}
+    if not item_ids:
+        return out
+    rows = _all(c, "SELECT l.source_item_id,l.field_key,l.target_item_id,l.target_record_id,l.target_candidate_id,t.object_id AS t_obj "
+                   "FROM item_links l LEFT JOIN items t ON t.user_id=l.user_id AND t.id=l.target_item_id "
+                   "WHERE l.user_id=%s AND l.source_item_id = ANY(%s) ORDER BY l.id", (uid, list(item_ids)))
+    for r in rows:
+        d = _link_out(r)
+        if r["t_obj"]:
+            d["target_object_id"] = r["t_obj"]
+        out.setdefault(r["source_item_id"], []).append(d)
+    return out
+
+
+def _resolve_target(c, uid, kind, tid):
+    """대상이 이 사용자 것이고 살아 있으면 {kind,id,object_id?,semantic_kind?}, 아니면 None."""
+    if kind == "item":
+        r = _one(c, "SELECT i.id,i.object_id,o.semantic_kind FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                    "WHERE i.user_id=%s AND i.id=%s AND i.revision > 0 AND i.archived_at IS NULL", (uid, tid))
+        return r and {"kind": kind, "id": r["id"], "object_id": r["object_id"], "semantic_kind": r["semantic_kind"]}
+    if kind == "record":
+        r = _one(c, "SELECT id FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, tid))
+        return r and {"kind": kind, "id": r["id"]}
+    if kind == "candidate":
+        r = _one(c, "SELECT c.id FROM candidates c JOIN records r ON r.id=c.record_id AND r.deleted_at IS NULL "
+                    "WHERE c.user_id=%s AND c.id=%s", (uid, tid))
+        return r and {"kind": kind, "id": r["id"]}
+    return None
+
+
+def _norm_links(c, uid, fields, links):
+    """links 인자 → [{field_key,target_kind,target_id,target_object_id?}]. 필드·대상 종류·소유·대상 오브젝트를 본다."""
+    if links is None:
+        links = []
+    if not isinstance(links, list):
+        raise _bad_link("links 는 목록이에요.")
+    byk = {f["key"]: f for f in fields}
+    out, seen = [], set()
+    for ln in links:
+        if not isinstance(ln, dict):
+            raise _bad_link("link 는 {field_key, target_kind, target_id} 예요.")
+        fk, kind, tid = ln.get("field_key"), ln.get("target_kind"), str(ln.get("target_id") or "")
+        f = byk.get(fk)
+        if not f or f["value_type"] != "reference":
+            raise _bad_link(f"{fk} 는 이 오브젝트의 관계(reference) 필드가 아니에요.", "definitions_get 으로 필드를 확인하세요.")
+        if kind != f["target_kind"]:
+            raise _bad_link(f"{f['label']}({fk}) 는 {f['target_kind']} 만 가리켜요.")
+        t = _resolve_target(c, uid, kind, tid)
+        if not t:
+            raise _bad_link(f"연결할 대상을 찾을 수 없어요: {kind} {tid}")
+        if kind == "item" and t["object_id"] != f["target_object_id"]:
+            raise _bad_link(f"{f['label']}({fk}) 는 오브젝트 {f['target_object_id']} 의 항목만 가리켜요.")
+        if (fk, kind, tid) in seen:
+            continue
+        seen.add((fk, kind, tid))
+        d = {"field_key": fk, "target_kind": kind, "target_id": tid}
+        if kind == "item":
+            d["target_object_id"] = t["object_id"]
+        out.append(d)
+    return out
+
+
+def _insert_link(c, uid, link, source_item=None, source_object=None, source_record=None):
+    col = {"item": "target_item_id", "record": "target_record_id", "candidate": "target_candidate_id"}[link["target_kind"]]
+    c.execute(f"INSERT INTO item_links (user_id,source_item_id,source_object_id,source_record_id,field_key,{col}) "
+              "VALUES (%s,%s,%s,%s,%s,%s)", (uid, source_item, source_object, source_record, link["field_key"], link["target_id"]))
+
+
+def _replace_item_links(c, uid, item_id, object_id, links):
+    c.execute("DELETE FROM item_links WHERE user_id=%s AND source_item_id=%s", (uid, item_id))
+    for ln in links:
+        _insert_link(c, uid, ln, source_item=item_id, source_object=object_id)
+
+
+def record_links(uid, record_ids=None):
+    sql = ("SELECT source_record_id AS record_id,field_key,target_item_id,target_record_id,target_candidate_id FROM item_links "
+           "WHERE user_id=%s AND source_record_id IS NOT NULL")
+    args = [uid]
+    if record_ids:
+        sql += " AND source_record_id = ANY(%s)"
+        args.append(list(record_ids))
+    with tx() as c:
+        return [{"record_id": r["record_id"], **_link_out(r)} for r in _all(c, sql + " ORDER BY id", args)]
+
+
+def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unattached=None):
+    """「이게 어디에 붙나」 네 줄. 항목 → links(attach_to: 기준·결정 항목 또는 후보) · 관심 축 → links(axes: 모음 항목)
+    · 쓸 자리·아직 안 붙는 것 → records.notes. None 인 인자는 그대로 두고, 값이 오면(빈 목록·빈 문자열 포함) 바꾼다. 원문은 안 바뀐다."""
+    with tx() as c:
+        rec = _one(c, "SELECT id,notes FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
+        if not rec:
+            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
+        if attach_to is not None:
+            links, seen = [], set()
+            for ln in attach_to:
+                if not isinstance(ln, dict):
+                    raise _bad_link("attach_to 는 {field_key, target_kind, target_id} 목록이에요.")
+                if (ln.get("field_key") or "attach_to") != "attach_to":
+                    raise _bad_link("attach_to 의 field_key 는 attach_to 예요.")
+                kind, tid = ln.get("target_kind"), str(ln.get("target_id") or "")
+                if kind not in ("item", "candidate"):
+                    raise _bad_link("attach_to 는 항목(item) 또는 후보(candidate)만 가리켜요.")
+                t = _resolve_target(c, uid, kind, tid)
+                if not t:
+                    raise _bad_link(f"붙일 대상을 찾을 수 없어요: {kind} {tid}")
+                if kind == "item" and t["semantic_kind"] not in ("principle", "event"):
+                    raise _bad_link("attach_to 항목은 기준(principle)·결정(event) 종류만이에요.")
+                if (kind, tid) not in seen:
+                    seen.add((kind, tid))
+                    links.append({"field_key": "attach_to", "target_kind": kind, "target_id": tid})
+            c.execute("DELETE FROM item_links WHERE user_id=%s AND source_record_id=%s AND field_key='attach_to'", (uid, record_id))
+            for ln in links:
+                _insert_link(c, uid, ln, source_record=record_id)
+        if axes is not None:
+            ids = []
+            for tid in axes:
+                tid = str(tid or "")
+                t = _resolve_target(c, uid, "item", tid)
+                if not t:
+                    raise _bad_link(f"관심 축 항목을 찾을 수 없어요: {tid}")
+                if t["semantic_kind"] != "collection":
+                    raise _bad_link("관심 축은 모음(collection) 종류 항목만이에요.")
+                if tid not in ids:
+                    ids.append(tid)
+            c.execute("DELETE FROM item_links WHERE user_id=%s AND source_record_id=%s AND field_key='axes'", (uid, record_id))
+            for tid in ids:
+                _insert_link(c, uid, {"field_key": "axes", "target_kind": "item", "target_id": tid}, source_record=record_id)
+        notes = dict(rec["notes"] or {})
+        if use_at is not None:
+            notes["use_at"] = use_at
+        if unattached is not None:
+            notes["unattached"] = unattached
+        if use_at is not None or unattached is not None:
+            c.execute("UPDATE records SET notes=%s WHERE user_id=%s AND id=%s", (Jsonb(notes), uid, record_id))
+    return {"record_id": record_id, "notes": notes, "links": record_links(uid, [record_id])}
+
+
+# ── 항목 ──
+
+_ITEM_COLS = ("id,object_id,schema_revision,code,title,body,data,decision,revision,draft_doc,draft_id,draft_base_revision,"
+              "archived_at,created_at,updated_at")
+
+
+def _object_row(c, uid, oid, applied=True):
+    r = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, oid))
+    if not r or (applied and (r["revision"] == 0 or r["archived_at"])):
+        raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
+    return r
+
+
+def _item_state(row, links):
+    """item_history.prev_state — 변경 전 현재값 전체."""
+    return {"title": row["title"], "body": row["body"], "data": row["data"], "decision": row["decision"], "code": row["code"],
+            "schema_revision": row["schema_revision"],
+            "links": [{k: ln[k] for k in ("field_key", "target_kind", "target_id")} for ln in links],
+            "archived": row["archived_at"] is not None}
+
+
+def _code_taken(c, uid, oid, code, item_id):
+    return _one(c, "SELECT id FROM items WHERE user_id=%s AND object_id=%s AND code=%s AND id<>%s", (uid, oid, code, item_id or ""))
+
+
+def item_propose(uid, object_id, schema_revision, item_id, expected_revision, code, title, body, data, links):
+    """항목 제안 → draft. 신규는 revision 0 행을 만든다(일반 조회에서 빠짐). 적용은 item_decide(apply)."""
+    if not isinstance(data, dict):
+        raise CanonError("ARG-INVALID", "data 는 JSON 객체예요.")
+    title = (title or "").strip()
+    if not title:
+        raise CanonError("ARG-INVALID", "제목(title)이 비었어요.")
+    body = body or ""
+    code = (code or "").strip() or None
+    with tx() as c:
+        od = _object_row(c, uid, object_id)
+        if schema_revision != od["revision"]:
+            raise _conflict(f"정의 revision 이 지금 {od['revision']}")
+        fields = _fields(c, uid, object_id)
+        nlinks = _norm_links(c, uid, fields, links)
+        dp, lp = _item_problems(fields, od["policy"], data, nlinks, strict=True)
+        if dp:
+            raise CanonError("ARG-INVALID", "항목 값이 정의와 맞지 않아요 — " + " · ".join(dp), "definitions_get 으로 필드를 확인하세요.")
+        if lp:
+            raise _bad_link("관계가 정의와 맞지 않아요 — " + " · ".join(lp))
+        if item_id:
+            row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
+            if not row:
+                raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+            if row["object_id"] != object_id:
+                raise CanonError("ARG-INVALID", "항목의 오브젝트가 달라요.")
+            if row["revision"] != expected_revision:
+                raise _conflict(f"지금 revision {row['revision']}")
+            if row["archived_at"]:
+                raise CanonError("ARG-INVALID", "보관된 항목이에요. 먼저 되돌리세요(restore).")
+            if row["code"] is not None:
+                if code is not None and code != row["code"]:
+                    raise CanonError("ARG-INVALID", f"코드는 적용 뒤 바꿀 수 없어요(지금 {row['code']}).")
+                code = row["code"]
+        else:
+            if expected_revision != 0:
+                raise _conflict("새 항목은 expected_revision 0")
+            item_id = new_id("i")
+            c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,decision) VALUES (%s,%s,%s,%s,%s)",
+                      (uid, item_id, object_id, od["revision"], "pending" if od["semantic_kind"] == "principle" else None))
+        if code and _code_taken(c, uid, object_id, code, item_id):
+            raise CanonError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요. 코드는 다시 쓰지 않아요(보관 포함).")
+        pid = new_id("ip")
+        draft = {"schema_revision": od["revision"], "code": code, "title": title, "body": body, "data": data,
+                 "links": [{k: ln[k] for k in ("field_key", "target_kind", "target_id")} for ln in nlinks],
+                 "proposed_at": now().isoformat()}
+        c.execute("UPDATE items SET draft_doc=%s, draft_id=%s, draft_base_revision=revision WHERE user_id=%s AND id=%s",
+                  (Jsonb(draft), pid, uid, item_id))
+    return {"item_id": item_id, "proposal_id": pid, "base_revision": expected_revision,
+            "note": "제안만 저장했어요. 사용자가 적용하라고 말할 때만 item_decide(action=apply) 를 부르세요. 웹 화면에서도 적용할 수 있어요."}
+
+
+def _promotion(c, uid, policy, links):
+    """승격 조건 충족 여부(사실만). 판단은 사용자. 확정·지워지지 않은 기록의 후보만 센다."""
+    p = {**DEFAULT_PROMOTION, **((policy or {}).get("promotion") or {})}
+    claim_ids = [ln["target_id"] for ln in links if ln["field_key"] == p["claim_field"] and ln["target_kind"] == "candidate"]
+    ok_ids = set()
+    if claim_ids:
+        ok_ids = {r["id"] for r in _all(c, "SELECT c.id FROM candidates c JOIN records r ON r.id=c.record_id AND r.deleted_at IS NULL "
+                                           "WHERE c.user_id=%s AND c.id = ANY(%s) AND c.decision='confirmed'", (uid, claim_ids))}
+    events = 0
+    if p["distinct_events_min"] > 0 and p.get("event_field"):
+        ev_ids = [ln["target_id"] for ln in links if ln["field_key"] == p["event_field"] and ln["target_kind"] == "item"]
+        if ev_ids:
+            live = [r["id"] for r in _all(c, "SELECT id FROM items WHERE user_id=%s AND id = ANY(%s) AND revision > 0 AND archived_at IS NULL",
+                                          (uid, ev_ids))]
+            if p.get("event_claim_field"):   # 결정(event)의 판단 중 하나 이상이 이 기준의 확정 근거에도 있어야 센다
+                ev_links = _links_by_item(c, uid, live)
+                live = [e for e in live if any(ln["field_key"] == p["event_claim_field"] and ln["target_id"] in ok_ids
+                                               for ln in ev_links.get(e, []))]
+            events = len(set(live))
+    met = len(ok_ids) >= p["confirmed_claims_min"] and events >= p["distinct_events_min"]
+    return {"met": met, "confirmed_claims": len(ok_ids), "confirmed_claims_min": p["confirmed_claims_min"],
+            "linked_claims": len(set(claim_ids)), "distinct_events": events, "distinct_events_min": p["distinct_events_min"]}
+
+
+def promotion_status(uid, item_id):
+    with tx() as c:
+        row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
+        if not row:
+            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+        od = _object_row(c, uid, row["object_id"], applied=False)
+        return _promotion(c, uid, od["policy"], _links_by_item(c, uid, [item_id]).get(item_id, []))
+
+
+def _item_out(c, uid, row, links, od):
+    d = _iso(row)
+    d["links"] = links
+    d["semantic_kind"] = od["semantic_kind"]
+    d["proposal"] = ({"proposal_id": row["draft_id"], "base_revision": row["draft_base_revision"], **(row["draft_doc"] or {})}
+                     if row["draft_id"] else None)
+    for k in ("draft_id", "draft_base_revision", "draft_doc"):
+        d.pop(k, None)
+    if od["semantic_kind"] == "principle" and row["revision"] > 0:
+        d["promotion"] = _promotion(c, uid, od["policy"], links)
+    return d
+
+
+def _items_query(c, uid, where, args):
+    rows = _all(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND {where} ORDER BY updated_at DESC, id", [uid, *args])
+    links = _links_by_item(c, uid, [r["id"] for r in rows])
+    ods = {r["id"]: r for r in _all(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s", (uid,))}
+    return [_item_out(c, uid, r, links.get(r["id"], []), ods[r["object_id"]]) for r in rows]
+
+
+def items(uid, object_id=None):
+    """적용된(revision>0)·보관 안 된 항목. 관계·제안·(기준이면) 승격 상태 포함."""
+    with tx() as c:
+        if object_id:
+            return _items_query(c, uid, "revision > 0 AND archived_at IS NULL AND object_id=%s", [object_id])
+        return _items_query(c, uid, "revision > 0 AND archived_at IS NULL", [])
+
+
+def item_proposals(uid):
+    """아직 적용 안 된 새 항목 제안(revision 0). 웹에서 적용·제외할 수 있게 상태에 싣는다."""
+    with tx() as c:
+        return _items_query(c, uid, "revision = 0 AND draft_id IS NOT NULL", [])
+
+
+def item_get(uid, item_id):
+    """항목 하나 + 관계 대상 요약 + 들어오는 관계 + 이력 + 승격 상태. 웹 서랍용."""
+    with tx() as c:
+        row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
+        if not row:
+            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+        od = _object_row(c, uid, row["object_id"], applied=False)
+        out = _item_out(c, uid, row, _links_by_item(c, uid, [item_id]).get(item_id, []), od)
+        out["object"] = {"id": od["id"], "key": od["key"], "label": od["label"], "semantic_kind": od["semantic_kind"], "revision": od["revision"]}
+        out["fields"] = _fields(c, uid, od["id"])
+        tg = {}
+        for ln in out["links"] + ((out["proposal"] or {}).get("links") or []):
+            k = (ln["target_kind"], ln["target_id"])
+            if k in tg:
+                continue
+            if ln["target_kind"] == "candidate":
+                r = _one(c, f"SELECT {_CAND_COLS} FROM candidates WHERE user_id=%s AND id=%s", (uid, ln["target_id"]))
+            elif ln["target_kind"] == "record":
+                r = _one(c, "SELECT id,title,created,deleted_at FROM records WHERE user_id=%s AND id=%s", (uid, ln["target_id"]))
+            else:
+                r = _one(c, "SELECT i.id,i.code,i.title,i.object_id,i.decision,i.archived_at,o.label AS object_label FROM items i "
+                            "JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id WHERE i.user_id=%s AND i.id=%s",
+                         (uid, ln["target_id"]))
+            tg[k] = _iso(r) if r else None
+        out["targets"] = [{"target_kind": k[0], "target_id": k[1], "target": v} for k, v in tg.items()]
+        inc = _all(c, "SELECT l.field_key,l.source_item_id,l.source_record_id,i.code,i.title,i.object_id,o.label AS object_label,"
+                      "r.title AS record_title FROM item_links l "
+                      "LEFT JOIN items i ON i.user_id=l.user_id AND i.id=l.source_item_id "
+                      "LEFT JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                      "LEFT JOIN records r ON r.user_id=l.user_id AND r.id=l.source_record_id "
+                      "WHERE l.user_id=%s AND l.target_item_id=%s AND (i.id IS NULL OR (i.revision > 0 AND i.archived_at IS NULL)) "
+                      "AND (r.id IS NULL OR r.deleted_at IS NULL) ORDER BY l.id", (uid, item_id))
+        out["incoming"] = [_iso(r) for r in inc]
+        out["history"] = [_iso(r) for r in _all(c, "SELECT id,action,prev_revision,prev_state,event_meta,at FROM item_history "
+                                                   "WHERE user_id=%s AND item_id=%s ORDER BY id", (uid, item_id))]
+    return out
+
+
+def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id=None):
+    """apply(제안 적용) · confirm/exclude/pending(기준만, 사용자 판단) · archive · restore(history_id 의 스냅샷을 새 변경으로).
+    discard 는 제안(draft)만 버린다 — 새 항목 제안(revision 0)이면 행 삭제, 아니면 draft_* 만 비움. 이력·revision 변화 없음.
+    모든 변경은 이력 한 줄 + revision+1. 같은 결정 반복은 no-op. confirm 은 승격 조건을 거절 사유로 쓰지 않고 결과에 사실로 싣는다."""
+    if action not in ITEM_ACTIONS:
+        raise CanonError("ARG-INVALID", f"action 은 {', '.join(ITEM_ACTIONS)} 중 하나예요.")
+    promotion = None
+    with tx() as c:
+        row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
+        if not row:
+            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+        if row["revision"] != expected_revision:
+            raise _conflict(f"지금 revision {row['revision']}")
+        od = _object_row(c, uid, row["object_id"], applied=False)
+        kind = od["semantic_kind"]
+        cur_links = _links_by_item(c, uid, [item_id]).get(item_id, [])
+        snap = _item_state(row, cur_links)
+
+        def bump(act, sets, args, meta=None):
+            c.execute("INSERT INTO item_history (user_id,item_id,action,prev_revision,prev_state,event_meta) VALUES (%s,%s,%s,%s,%s,%s)",
+                      (uid, item_id, act, row["revision"], Jsonb(snap), Jsonb(meta or {})))
+            c.execute("UPDATE items SET " + sets + (", " if sets else "") + "revision=revision+1, updated_at=now() WHERE user_id=%s AND id=%s",
+                      (*args, uid, item_id))
+
+        def revalidate(data, links):
+            if od["revision"] == 0 or od["archived_at"]:
+                raise _bad_def("이 항목의 오브젝트 정의가 보관됐거나 적용 전이에요.")
+            fields = _fields(c, uid, od["id"])
+            try:
+                nl = _norm_links(c, uid, fields, links)
+            except CanonError as e:
+                raise _bad_link(e.message + " — 연결 대상이 그사이 보관·삭제됐을 수 있어요.", e.action)
+            dp, lp = _item_problems(fields, od["policy"], data, nl, strict=False)
+            if dp:
+                raise CanonError("ARG-INVALID", "지금 정의와 맞지 않아요 — " + " · ".join(dp), "새로 제안하세요(item_propose).")
+            if lp:
+                raise _bad_link("지금 정의와 맞지 않아요 — " + " · ".join(lp), "새로 제안하세요(item_propose).")
+            return nl
+
+        if action == "discard":
+            if not proposal_id or row["draft_id"] != proposal_id:
+                raise _conflict("제안이 없거나 바뀌었어요")
+            if row["revision"] == 0:
+                c.execute("DELETE FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
+                return {"id": item_id, "discarded": True, "deleted": True}
+            c.execute("UPDATE items SET draft_doc=NULL, draft_id=NULL, draft_base_revision=NULL WHERE user_id=%s AND id=%s", (uid, item_id))
+        elif action == "apply":
+            if not row["draft_id"] or row["draft_id"] != proposal_id or row["draft_base_revision"] != row["revision"]:
+                raise _conflict("제안이 없거나 바뀌었어요")
+            dr = row["draft_doc"]
+            nl = revalidate(dr["data"], dr["links"])
+            code = row["code"] if row["code"] is not None else dr.get("code")
+            if code and _code_taken(c, uid, row["object_id"], code, item_id):
+                raise CanonError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요.")
+            try:   # 위 검사와 이 UPDATE 사이에 다른 곳이 같은 코드를 쓰면 UNIQUE 가 막는다 — savepoint 로 잡아 CONFLICT 로
+                with c.transaction():
+                    bump("apply", "code=%s, title=%s, body=%s, data=%s, schema_revision=%s, draft_doc=NULL, draft_id=NULL, draft_base_revision=NULL",
+                         (code, dr["title"], dr["body"], Jsonb(dr["data"]), od["revision"]),
+                         {"proposal_id": proposal_id, "created": row["revision"] == 0})
+            except pg_errors.UniqueViolation:
+                raise CanonError("CONFLICT", f"같은 코드({code})가 방금 다른 곳에서 쓰였어요. 다른 코드로 다시 제안하세요.",
+                                 "state_get 으로 지금 코드를 확인하고 item_propose 로 다시 제안하세요.")
+            _replace_item_links(c, uid, item_id, row["object_id"], nl)
+        elif action in ITEM_DECISIONS:
+            if kind != "principle":
+                raise CanonError("ARG-INVALID", "내 판단으로 남기기·남기지 않기·되돌리기는 기준(principle) 항목만 해요.",
+                                 "다른 항목은 apply·archive·restore 만 있어요.")
+            if row["revision"] == 0:
+                raise CanonError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 먼저 적용(apply)하세요.")
+            target = ITEM_DECISIONS[action]
+            if target != row["decision"]:
+                bump(action, "decision=%s", (target,))
+            if action == "confirm":
+                promotion = _promotion(c, uid, od["policy"], cur_links)
+        elif action == "archive":
+            if row["revision"] == 0:
+                raise CanonError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 버리려면 discard 에 proposal_id 를 주세요.")
+            if row["archived_at"] is None:
+                bump("archive", "archived_at=now()", ())
+        else:   # restore
+            if history_id is None:
+                raise CanonError("ARG-INVALID", "restore 는 history_id 가 필요해요.")
+            h = _one(c, "SELECT id,prev_revision,prev_state FROM item_history WHERE user_id=%s AND item_id=%s AND id=%s",
+                     (uid, item_id, int(history_id)))
+            if not h:
+                raise CanonError("ARG-INVALID", f"이 항목의 이력을 찾을 수 없어요: {history_id}")
+            if h["prev_revision"] == 0:
+                raise CanonError("ARG-INVALID", "처음 적용하기 전 상태로는 되돌릴 수 없어요. 보관(archive)하세요.")
+            st = h["prev_state"]
+            nl = revalidate(st.get("data") or {}, st.get("links") or [])
+            dec = st.get("decision") if kind == "principle" else None
+            if kind == "principle" and dec not in ("pending", "confirmed", "excluded"):
+                dec = "pending"
+            arch = "COALESCE(archived_at, now())" if st.get("archived") else "NULL"
+            bump("restore", "title=%s, body=%s, data=%s, decision=%s, schema_revision=%s, archived_at=" + arch,
+                 (st.get("title") or "", st.get("body") or "", Jsonb(st.get("data") or {}), dec, od["revision"]),
+                 {"history_id": h["id"], "restored_revision": h["prev_revision"]})
+            _replace_item_links(c, uid, item_id, row["object_id"], nl)
+        row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
+        out = _item_out(c, uid, row, _links_by_item(c, uid, [item_id]).get(item_id, []), od)
+    if promotion is not None:
+        out["promotion"] = promotion
+    return out
+
+
 # ── 상태 한 벌 (화면과 도구가 같은 것을 본다) ─────────────
 
 def next_action(uid):
@@ -415,4 +1221,9 @@ def state(uid):
         "candidates": candidates(uid),
         "journal": records(uid),
         "next": next_action(uid),
+        # 2단계 — 사용자 정의 층
+        "definitions": definitions(uid),
+        "items": items(uid),
+        "item_proposals": item_proposals(uid),
+        "record_links": record_links(uid),
     }

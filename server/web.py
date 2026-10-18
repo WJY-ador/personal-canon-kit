@@ -235,6 +235,43 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
+    async def api_item(self, request):
+        """항목 하나 + 관계 대상 + 들어오는 관계 + 이력 + 승격 상태(서랍)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.item_get, uid, request.query_params.get("id", ""))
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message}, status_code=404)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_item_decide(self, request):
+        """항목 결정 — 제안 적용(apply)·제외(discard), 기준 남기기·남기지 않기·되돌리기. expected_revision 이 맞을 때만."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            rev = body.get("expected_revision")
+            assert isinstance(rev, int) and not isinstance(rev, bool)
+            hid = body.get("history_id")
+            assert hid is None or (isinstance(hid, int) and not isinstance(hid, bool))
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(item_id·expected_revision·action)이 필요해요."}, status_code=400)
+        action = str(body.get("action") or "")
+        if action not in db.ITEM_ACTIONS:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "action 이 틀렸어요."}, status_code=400)
+        try:
+            out = await run_in_threadpool(db.item_decide, uid, str(body.get("item_id") or ""), rev,
+                                          str(body.get("proposal_id") or "") or None, action, hid)
+        except db.CanonError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out)
+
     def routes(self) -> list[Route]:
         return [
             Route("/", self.root),
@@ -245,4 +282,6 @@ class Web:
             Route("/api/state", self.api_state),
             Route("/api/journal", self.api_journal),
             Route("/api/candidate/decide", self.api_decide, methods=["POST"]),
+            Route("/api/item", self.api_item),
+            Route("/api/item/decide", self.api_item_decide, methods=["POST"]),
         ]
