@@ -45,7 +45,7 @@ PRIVACY_FILE = "11-privacy.md"
 # 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
 CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
 CONSENT_LABELS = {"privacy": ("개인정보 처리방침", "/privacy"), "terms": ("이용약관", "/terms")}
-_VERSION_RE = re.compile(r"`v(\d+)")
+_VERSION_RE = re.compile(r"^`v(\d+) · ")   # 줄 머리 고정 — 본문 중간의 예시(`v9`)는 머리글이 아니다
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
 # ── 화면 자산(배경 루프·데모·테마 토글) ─────────────────
@@ -351,22 +351,34 @@ def render_privacy(md: str) -> str:
 
 
 def read_consent_versions(d: Path, dev: bool) -> dict:
-    """{kind: "vN"}. 문서가 없으면 그 kind 는 빠진다. 문서가 있는데 첫 20줄에서 버전이 안 뽑히면
-    비DEV 는 기동 거부(SystemExit, 파일명), DEV 는 로그 1줄 + 그 문서 제외."""
+    """{kind: "vN"}. terms 는 문서가 없으면 빠진다. privacy 는 필수 — 비DEV 에서 없으면 기동 거부.
+    문서가 없는 것(FileNotFoundError)과 못 읽는 것(그 밖 OSError)을 가른다. 못 읽거나, 첫 20줄 머리글(`vN · 날짜`)이
+    없거나 둘 이상이면 비DEV 는 기동 거부(SystemExit, 파일명), DEV 는 로그 1줄 + 그 문서 제외(둘 이상이면 첫 것 사용)."""
     out = {}
     for kind, name in CONSENT_FILES.items():
         try:
             head = (d / name).read_text(encoding="utf-8").splitlines()[:20]
-        except OSError:
+        except FileNotFoundError:
+            if kind == "privacy" and not dev:
+                raise SystemExit(f"동의 문서 {PRIVACY_FILE} 가 없어요. 운영은 처리방침 없이 뜨지 않아요.")
             continue
-        m = next((m for m in (_VERSION_RE.search(line) for line in head) if m), None)
-        if m is None:
+        except OSError as e:
+            if not dev:
+                raise SystemExit(f"동의 문서 {name} 을 읽지 못했어요({type(e).__name__}). 운영은 동의 문서를 못 읽은 채 뜨지 않아요.")
+            print(f"[consent] {name} 을 읽지 못해 동의 문서에서 뺐어요({type(e).__name__}, DEV)", flush=True)
+            continue
+        ms = [m for m in (_VERSION_RE.match(line) for line in head) if m]
+        if not ms:
             if not dev:
                 raise SystemExit(f"동의 문서 {name} 첫 20줄에 버전 머리글(`vN · 날짜`)이 없어요. 운영은 동의 버전 없이 뜨지 않아요.")
             print(f"[consent] {name} 에 버전 머리글이 없어 동의 문서에서 뺐어요(DEV)", flush=True)
             continue
-        out[kind] = f"v{m.group(1)}"
-    if not out:
+        if len(ms) > 1:
+            if not dev:
+                raise SystemExit(f"동의 문서 {name} 첫 20줄에 버전 머리글(`vN · 날짜`)이 {len(ms)}개예요. 하나만 두세요.")
+            print(f"[consent] {name} 에 버전 머리글이 {len(ms)}개라 첫 것({ms[0].group(0).strip()})을 썼어요(DEV)", flush=True)
+        out[kind] = f"v{ms[0].group(1)}"
+    if not out and dev:
         print("[consent] 동의 문서 없음 — 게이트 없음", flush=True)
     return out
 

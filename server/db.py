@@ -272,12 +272,15 @@ def _daily_gate(c, uid, kind, adding=1):
 
 
 # ── 사용 집계 usage_daily (α2) ──────────────────────────
-# 요청 경로는 메모리 카운터만(DB 0). usage_flush 가 5분마다(main.lifespan) 묶어서 upsert. 수면·재배포 때 ≤5분치 유실 허용.
+# 요청 경로는 메모리 카운터만(DB 0). usage_flush 가 5분마다(main.lifespan) 묶어서 upsert. 수면·재배포 때 통상 약 5분치 유실 허용(flush 연속 실패면 더).
 # name·code 는 열거형만 — 도구 이름·web:경로 이름 / 오류 코드·OK·EXC. 자유 텍스트·원본 오류 문자열 금지.
 KST = ZoneInfo("Asia/Seoul")
 USAGE_FLUSH_TIMEOUT = 1.0          # flush 용 풀 checkout 대기(초)
 _usage_lock = threading.Lock()
 _usage: dict = {}                  # (day_kst, uid or '', name, code) → n
+# flush INSERT 와 user_delete tx 를 서로 막는다. flush INSERT 가 시작된 뒤 delete 가 커밋되면 삭제한 uid 행이 남는 창을 닫는다(1인스턴스).
+# 잠금 순서: _flush_lock → _usage_lock(user_delete 끝의 키 제거). usage_flush 는 _usage_lock 을 놓은 뒤 _flush_lock 을 잡는다.
+_flush_lock = threading.Lock()
 
 
 def usage_count(uid, name, code):
@@ -313,7 +316,7 @@ def usage_flush() -> int:
     if ver is None:
         uids = [""] * len(uids)
     try:
-        with _usage_conn() as c:
+        with _flush_lock, _usage_conn() as c:
             with c.transaction():
                 c.execute(
                     "INSERT INTO usage_daily (day,user_id,name,code,n) "
@@ -599,13 +602,19 @@ def user_get(uid):
 
 
 def user_delete(uid):
-    """계정 삭제 = 그 사용자 데이터 전체 삭제(cascade)."""
-    with tx() as c:
-        # 정의 층은 보호 Lookup(NO ACTION)이 있어 자식부터 지운다. 나머지는 users cascade.
-        for t in ("item_links", "item_history", "items", "field_defs", "object_defs"):
-            c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
-        c.execute("DELETE FROM usage_daily WHERE user_id=%s", (uid,))   # FK 없음(익명 '' 행이 있다) — cascade 밖
-        c.execute("DELETE FROM users WHERE id=%s", (uid,))
+    """계정 삭제 = 그 사용자 데이터 전체 삭제(cascade).
+    tx 전체를 _flush_lock 안에서 — flush INSERT 가 시작된 뒤 delete 가 커밋되면 삭제한 uid 행이 남는 창을 닫는다(1인스턴스).
+    끝에 메모리 _usage 의 그 uid 키도 지운다(다음 flush 가 다시 올리지 않게)."""
+    with _flush_lock:
+        with tx() as c:
+            # 정의 층은 보호 Lookup(NO ACTION)이 있어 자식부터 지운다. 나머지는 users cascade.
+            for t in ("item_links", "item_history", "items", "field_defs", "object_defs"):
+                c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
+            c.execute("DELETE FROM usage_daily WHERE user_id=%s", (uid,))   # FK 없음(익명 '' 행이 있다) — cascade 밖
+            c.execute("DELETE FROM users WHERE id=%s", (uid,))
+        with _usage_lock:
+            for k in [k for k in _usage if k[1] == uid]:
+                del _usage[k]
     with _consent_lock:
         _consented.discard(uid)
 
@@ -865,7 +874,7 @@ def candidate_decide(uid, cid, action, text=None, expected_revision=None, wordin
     if wording_by not in (None, "self", "ai"):
         raise CanonError("ARG-INVALID", "wording_by 는 self 또는 ai 예요.")
     with tx() as c:
-        _daily_gate(c, uid, "decisions")
+        _daily_gate(c, uid, "decisions", 2 if action == "edit_confirm" else 1)   # edit_confirm 은 이력 2줄
         r = _cand_lock(c, uid, cid)
         if expected_revision is not None and r["revision"] != expected_revision:
             raise _conflict(f"지금 revision {r['revision']}")
