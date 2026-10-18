@@ -45,7 +45,8 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 서버 메모리에 상태 없음. PKCE verifier·state 는 10분 서명 쿠키, 세션은 30일 서명 쿠키(HMAC-SHA256, HttpOnly, SameSite=Lax, https 면 Secure).
 - 쓰기 API 는 `POST /api/candidate/decide` 하나(confirm·exclude·pending·edit). 세션 + `Origin` 이 공개 주소와 같을 때만. 「고쳐서 남기기」는 edit→confirm 두 번(이력 두 줄).
   기록·질문·후보 추가는 웹에 없다 — 연결한 AI 대화에서 한다.
-- `app.html` 은 `web/index.html` 의 이식본. 필드명(`record_id`·`quote`·`question_id`), 문구(Claude Code·파일 전제 제거), 기본 탭 「시작」+「기록」, 시각은 브라우저 시간대.
+- `app.html` 은 로컬 보드(`~/Personal/scripts/checkpoint_board.html`·360·지도) 구조를 옮긴 보드형 화면(2026-10-18): 마스트(날짜·상태 스펙트럼·질문 레전드) + 기본 탭 오늘/질문/기록/구조/지도(사용자 정의 tabs 있으면 그 탭 + 구조·지도 고정) + 대조 2열(≥1000px). 토큰은 보드 값. 가안·스펙은 레포 `notes/`(gitignore).
+- 옛 설명: `app.html` 은 `web/index.html` 의 이식본. 필드명(`record_id`·`quote`·`question_id`), 문구(Claude Code·파일 전제 제거), 기본 탭 「시작」+「기록」, 시각은 브라우저 시간대.
   `web/index.html` 은 로컬 키트가 아직 쓰므로 그대로 둔다.
 
 ## 경계
