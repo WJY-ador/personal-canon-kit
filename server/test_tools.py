@@ -870,6 +870,111 @@ async def test_web_items(A):
     print("OK — 정의 층 웹 API 통과")
 
 
+# ── 5-1) 템플릿 계보 (template_slot) ───────────────────
+
+def _slots(uid, c=None):
+    """사용자 한 명의 오브젝트·필드 슬롯 {id: slot}, {(object_id, key): slot}. c 를 주면 그 연결에서."""
+    def read(c):
+        objs = {r["id"]: r["template_slot"] for r in c.execute(
+            "SELECT id,template_slot FROM object_defs WHERE user_id=%s", (uid,)).fetchall()}
+        flds = {(r["object_id"], r["key"]): r["template_slot"] for r in c.execute(
+            "SELECT object_id,key,template_slot FROM field_defs WHERE user_id=%s", (uid,)).fetchall()}
+        return objs, flds
+    if c is not None:
+        return read(c)
+    with db.tx() as c:
+        return read(c)
+
+
+def test_template_slot(A):
+    """시드만 슬롯을 단다 · 사용자 정의는 같은 key 여도 NULL · 사용자 적용이 슬롯을 못 지운다 · 옛 DB 열 추가·백필 멱등 · 동결 파일 = TEMPLATE."""
+    import inspect
+    import template_author as ta
+    # 동결 파일 = 지금 TEMPLATE (바뀌면 TEMPLATE_VERSION 을 올리고 새 판 파일을 만든다)
+    frozen = json.loads(ta.FROZEN_PATH.read_text(encoding="utf-8"))
+    assert (ta.TEMPLATE_KEY, ta.TEMPLATE_VERSION, ta.TEMPLATE_NAME, db.BACKFILL_TEMPLATE) == ("author", 1, "author@1", "author@1")
+    assert frozen == ta.frozen_doc() == db.template_frozen(db.BACKFILL_TEMPLATE), "TEMPLATE 이 동결 author@1 과 다르다"
+    want_obj = {d["id"]: f"author@1:{d['key']}" for d in frozen["objects"]}
+    want_fld = {(d["id"], f["key"]): f"author@1:{d['key']}.{f['key']}" for d in frozen["objects"] for f in d["fields"]}
+    assert (len(want_obj), len(want_fld)) == (6, 25), (len(want_obj), len(want_fld))
+
+    # (1) 시드(test_definitions 가 A 에 적용) → 템플릿 6/25 만 채워지고 A 의 다른 정의는 NULL
+    objs, flds = _slots(A)
+    assert {k: v for k, v in objs.items() if v} == want_obj, objs
+    assert {k: v for k, v in flds.items() if v} == want_fld, flds
+    assert objs["od_principles"] == "author@1:principles" and flds[("od_principles", "register")] == "author@1:principles.register"
+    assert len(objs) > 6 and len(flds) > 25, "A 에는 템플릿 밖 정의도 있다(시험 재료)"
+
+    # (2) 시드 전용: apply 의 ON CONFLICT … DO UPDATE SET·UPDATE 에 template_slot 없음, MCP·웹 경로는 표시 함수를 안 부른다
+    assert "template_slot" not in inspect.getsource(db.definition_apply), "definition_apply 가 template_slot 을 건드린다"
+    for f in ("main.py", "web.py"):
+        assert "template_slot" not in (HERE / f).read_text(encoding="utf-8"), f"{f} 가 template_slot 을 건드린다"
+
+    # (3) 사용자 적용이 기존 슬롯을 지우지 않는다 — 라벨 변경 + 템플릿 필드 빼기(archived) → 다시 넣기(ON CONFLICT 경로)
+    rev = {d["id"]: d for d in db.definitions(A)}["od_axes"]["revision"]
+    base = {"key": "axes", "semantic_kind": "collection", "policy": {}, "template_slot": "author@1:hack"}   # 정의에 넣어도 무시
+    note = {"key": "note", "label": "메모", "value_type": "text"}
+    p = db.definition_propose(A, "od_axes", rev, {**base, "label": "관심축", "fields": [note]})
+    db.definition_apply(A, "od_axes", p["proposal_id"], rev)
+    objs, flds = _slots(A)
+    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert flds[("od_axes", "note")] is None, "사용자가 더한 필드는 NULL"
+    p = db.definition_propose(A, "od_axes", rev + 1, {**base, "label": "축",
+                                                      "fields": [{"key": "keywords", "label": "검색어", "value_type": "text_list"}, note]})
+    db.definition_apply(A, "od_axes", p["proposal_id"], rev + 1)
+    objs, flds = _slots(A)
+    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert flds[("od_axes", "note")] is None and {k: v for k, v in objs.items() if v} == want_obj
+
+    # (4) 다른 사용자가 propose/apply 로 템플릿과 같은 key(id 는 자동) · 같은 id(key 는 다름)를 만들어도 NULL
+    B = db.user_by_email("def2@example.com")["id"]
+    p = db.definition_propose(B, None, 0, {"key": "principles", "label": "기준", "semantic_kind": "principle", "fields": [],
+                                           "template_slot": "author@1:principles"})
+    db.definition_apply(B, p["object_id"], p["proposal_id"], 0)
+    p = db.definition_propose(B, None, 0, {"id": "od_axes", "key": "my_axes", "label": "축", "semantic_kind": "collection",
+                                           "fields": [{"key": "keywords", "label": "검색어", "value_type": "text_list"}]})
+    db.definition_apply(B, "od_axes", p["proposal_id"], 0)
+    before_b = _slots(B)
+    assert not any(before_b[0].values()) and not any(before_b[1].values()), before_b
+    before_a = _slots(A)
+    db.init_schema()   # 백필이 사용자 정의(id·key 쌍 불일치)를 잡지 않고, 이미 찬 슬롯은 그대로
+    assert _slots(B) == before_b and _slots(A) == before_a
+
+    # (5) 옛 DB(열 없음)에 시드된 원작자 → init_schema 가 열을 더하고 6/25 를 백필, 다시 돌리면 0/0. 임시 스키마에서
+    name = f"canon_tslot_{secrets.token_hex(3)}"
+    create_schema(name)
+    try:
+        with schema_conn(name) as c:
+            db.init_schema(c)
+            c.commit()
+        with pool_on(name):
+            u1 = db.user_by_email("tslot1@example.com")["id"]
+            u2 = db.user_by_email("tslot2@example.com")["id"]
+            assert [g[1] for g in ta.seed(u1, log=lambda *_: None)] == ["applied"] * 6
+            p = db.definition_propose(u2, None, 0, {"key": "craft", "label": "방식", "semantic_kind": "collection",
+                                                    "fields": [{"key": "project", "label": "프로젝트", "value_type": "text"}]})
+            db.definition_apply(u2, p["object_id"], p["proposal_id"], 0)
+            seeded = (_slots(u1), _slots(u2))
+        assert seeded[0] == (want_obj, want_fld), seeded[0]
+        with schema_conn(name) as c:
+            c.execute("ALTER TABLE field_defs DROP COLUMN template_slot")
+            c.execute("ALTER TABLE object_defs DROP COLUMN template_slot")
+            c.commit()
+            db.init_schema(c)
+            c.commit()
+            assert (_slots(u1, c), _slots(u2, c)) == seeded, "백필 ≠ 시드 표시"
+            assert not any(seeded[1][0].values()) and not any(seeded[1][1].values()), "같은 key·다른 id 사용자 정의는 NULL"
+            with c.transaction():
+                assert db._backfill_template_slots(c) == (0, 0), "두 번째 백필이 뭔가 바꿨다"
+            c.execute("UPDATE object_defs SET template_slot=NULL")
+            c.execute("UPDATE field_defs SET template_slot=NULL")
+            with c.transaction():
+                assert db._backfill_template_slots(c) == (6, 25), "백필 대상 = 원작자 1명 6오브젝트/25필드"
+            c.rollback()
+    finally:
+        drop_schema(name)
+    print("OK — 템플릿 계보(template_slot: 시드만 표시·사용자 적용 보존·백필 6/25 멱등·동결 파일) 통과")
+
 
 # ── 6) PR① 코어 보수: 출처·revision·이력 격리 ──────────────
 
@@ -1727,6 +1832,7 @@ async def run():
         A = test_definitions()
         await test_definition_tools()
         await test_web_items(A)
+        test_template_slot(A)
         await test_limits_sse()
         await test_limits()
         await test_feedback()

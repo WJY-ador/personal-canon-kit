@@ -66,8 +66,8 @@ imports(3단계)가 기대는 저장 계약을 코어에 먼저 넣었다. 기�
 
 | 오브젝트 | 용도 | 관계 |
 |---|---|---|
-| object_defs | 오브젝트 정의. `semantic_kind` collection/event/principle · `policy`(승격·대상 규칙) · `history`(적용 revision 마다 전체 정의 스냅샷) · draft_* | users M-D |
-| field_defs | 필드. `value_type` text/number/boolean/date/select/text_list/reference · select `options`=[{value,label}] · reference 는 target_kind(item/record/candidate)·target_object_id·multiple. 빠진 필드는 `archived_at` | object_defs M-D · 대상 오브젝트 보호 Lookup |
+| object_defs | 오브젝트 정의. `semantic_kind` collection/event/principle · `policy`(승격·대상 규칙) · `history`(적용 revision 마다 전체 정의 스냅샷) · draft_* · `template_slot`(템플릿 계보, 시드만) | users M-D |
+| field_defs | 필드. `value_type` text/number/boolean/date/select/text_list/reference · select `options`=[{value,label}] · reference 는 target_kind(item/record/candidate)·target_object_id·multiple. 빠진 필드는 `archived_at` · `template_slot`(시드만) | object_defs M-D · 대상 오브젝트 보호 Lookup |
 | items | 항목. `code`(적용 뒤 변경·재사용 금지) · title · body · `data`(일반 필드만) · `decision`(principle 만) · revision · draft_* | object_defs 보호 Lookup |
 | item_links | 관계. 출발은 item(필드 key) 또는 record(`attach_to`·`axes`) 중 하나 → 대상 item/record/candidate 중 하나. 값은 data 가 아니라 여기 | 출발 M-D · 대상 보호 Lookup |
 | item_history | 항목 이력. `prev_state`(title·body·data·decision·code·schema_revision·links·archived) + `prev_revision` | items M-D |
@@ -89,7 +89,13 @@ principle 정의의 `policy.promotion`. 기본 `{"confirmed_claims_min":2,"claim
 `confirm` 은 미충족이어도 거절하지 않는다. 결과에 `promotion: {met, …}` 사실만 싣고 판단은 사용자 몫.
 
 ### 원작자 템플릿 (`template_author.py`)
-정의 데이터일 뿐 테이블이 아니다. 기준 `od_principles`(principle, register·maturity·근거 판단·근거 결정·관심 축, 결정 2개 조건) · 결정 `od_events`(event) · 숙제 `od_open_questions`(대상 기준·결정·판단 중 정확히 하나) · 발행 `od_publications` · 축 `od_axes` · 접근 방식 `od_craft`. 라벨은 정의 데이터라 뒤에 바꿀 수 있다 — 시드 라벨은 `template_author.py` 맨 위 `LABELS`, 화면 코어 라벨(질문·기록·후보 등)은 `app.html` 의 `const LABELS` 한 곳. questions 자동 생성 없음, works·E 카드 제외.
+정의 데이터일 뿐 테이블이 아니다. 기준 `od_principles`(principle, register·maturity·근거 판단·근거 결정·관심 축, 결정 2개 조건) · 결정 `od_events`(event) · 숙제 `od_open_questions`(대상 기준·결정·판단 중 정확히 하나) · 발행 `od_publications` · 축 `od_axes` · 접근 방식 `od_craft`. 라벨은 정의 데이터라 뒤에 바꿀 수 있다 — 시드 라벨은 `template_author.py` 맨 위 `LABELS`(동결 뒤엔 판을 올린다 — 아래 계보), 화면 코어 라벨(질문·기록·후보 등)은 `app.html` 의 `const LABELS` 한 곳. questions 자동 생성 없음, works·E 카드 제외.
+
+**템플릿 계보 (`template_slot`, 2026-10-19).** 출처는 id 가 아니라 이 열로 판정한다 — 사용자도 `od_axes` 같은 id 를 직접 만들 수 있어서다.
+- 형식: 오브젝트 `author@1:<object_key>` · 필드 `author@1:<object_key>.<field_key>`. 판(`@1`)이 문자열에 들어 있다.
+- 시드만 채운다: `template_author.seed` 가 `definition_apply` 직후 `db.template_slot_mark` 를 한 번 부른다. MCP·웹 경로는 이 함수를 부르지 않고, 정의 JSON 에 `template_slot` 을 넣어도 정규화가 버린다. `definition_apply` 의 `ON CONFLICT … DO UPDATE SET`·`UPDATE` 에 이 열이 없다 → 사용자가 고쳐 적용해도(필드 빼기·다시 넣기 포함) 슬롯이 남는다. 사용자가 더한 필드는 NULL.
+- 동결: `TEMPLATE_KEY="author"`·`TEMPLATE_VERSION=1` + `server/templates/author@1.json`(정규화 정의 덤프). `TEMPLATE`·`LABELS` 를 바꾸면 시험이 깨진다 — 판을 올리고 새 판 파일을 만든다(옛 판 파일은 남긴다).
+- 백필: `init_schema` 4단계(멱등, `template_slot IS NULL` 만). 동결 v1 의 id·key **쌍**이 둘 다 같은 오브젝트, 그 아래 key 가 템플릿 필드 key 인 필드. key 는 비교만 한다. 한계: 사용자가 시드 전에 id·key 를 둘 다 템플릿과 똑같이 만들었으면 템플릿으로 잡힌다(드묾, 수용). 시드가 적용 뒤 표시 전에 끊겨도 다음 시작 때 백필이 채운다.
 
 ## 제약 검증
 Governor limit 없음. M-D 깊이 최대 2(users→candidates→candidate_history). cascade 끝은 users 삭제 = 그 사용자 데이터 전체 삭제 — 계정 삭제 요청 처리와 같다. 인덱스: `(user_id, question_id, decision)`, `(user_id, created)`.
