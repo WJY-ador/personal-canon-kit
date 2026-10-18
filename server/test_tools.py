@@ -474,6 +474,49 @@ async def test_web():
                 # 서명 위조 쿠키
                 h.cookies.set("canon_session", site.sign({"uid": uid}, 60)[:-3] + "xxx")
                 assert (await h.get("/api/state")).status_code == 401, "서명 깨진 쿠키"
+                # 반사 XSS: 쿼리·토큰 서버 응답·예외 문구는 escape 해서 글자로만 보인다
+                xss = "<script>alert(1)</script>"
+                r = await h.get("/auth/callback", params={"error": "x", "error_description": xss})
+                assert r.status_code == 400 and "<script>alert(1)" not in r.text and "&lt;script&gt;alert(1)&lt;/script&gt;" in r.text, r.text
+                r = await h.get("/auth/callback", params={"error": xss})
+                assert r.status_code == 400 and "<script>alert(1)" not in r.text and "&lt;script&gt;" in r.text, r.text
+
+                async def bad_token_post(data):
+                    return 400, {"error_description": '<img src=x onerror="alert(1)">'}
+                site.token_post = bad_token_post
+                r = await h.get("/login")
+                st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+                r = await h.get("/auth/callback", params={"code": "c3", "state": st})
+                assert r.status_code == 502 and "<img" not in r.text and "&lt;img src=x onerror=&quot;alert(1)&quot;&gt;" in r.text, r.text
+                site.token_post = fake_token_post
+
+                def bad_link(_verified):
+                    raise RuntimeError("<svg onload=alert(1)>")
+                real_uif, auth.user_id_for = auth.user_id_for, bad_link
+                try:
+                    r = await h.get("/login")
+                    st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+                    r = await h.get("/auth/callback", params={"code": "c4", "state": st})
+                finally:
+                    auth.user_id_for = real_uif
+                assert r.status_code == 502 and "<svg" not in r.text and "&lt;svg onload=alert(1)&gt;" in r.text, r.text
+                # 보안 헤더: 웹 HTML 응답에만. JSON API·/health 는 그대로
+                sec = {"x-content-type-options": "nosniff", "x-frame-options": "DENY",
+                       "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+                       "referrer-policy": "same-origin"}
+                h.cookies.clear()   # 위에서 넣은 위조 세션 쿠키를 지우고 새로 로그인
+                pages = [await h.get("/"), await h.get("/help"), await h.get("/auth/callback", params={"error": "x"})]
+                await login_once(h)
+                pages.append(await h.get("/app"))
+                for r in pages:
+                    assert r.headers.get("content-type", "").startswith("text/html"), (r.url, r.headers)
+                    for k, v in sec.items():
+                        assert r.headers.get(k) == v, (r.url, k, r.headers.get(k))
+                    assert "script-src" not in r.headers["content-security-policy"], "script-src 는 nonce 작업 뒤에"
+                for r in (await h.get("/api/state"), await h.get("/health")):
+                    assert r.headers.get("content-type", "").startswith("application/json"), (r.url, r.headers)
+                    assert not any(k in r.headers for k in sec), (r.url, r.headers)
+                assert (await h.post("/logout", headers=origin)).status_code == 200
     finally:
         auth.httpx.post, site.token_post = real_post, real_tp
         site.dev, site.dev_user = True, "tester@example.com"

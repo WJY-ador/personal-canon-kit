@@ -49,10 +49,31 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
+# 웹 HTML 응답(/, /app, /help, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
+# script-src 는 아직 없다 — app.html·start.html 인라인 스크립트에 nonce 를 붙여야 넣을 수 있다.
+SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    "referrer-policy": "same-origin",
+}
+
+
+def _html_resp(content: str, status: int = 200, headers: dict | None = None) -> HTMLResponse:
+    return HTMLResponse(content, status_code=status, headers={**SECURITY_HEADERS, **(headers or {})})
+
+
+def _esc(v) -> str:
+    """외부·동적 값(쿼리·토큰 서버 응답·예외 문구)을 HTML 에 넣기 전에 반드시 거친다."""
+    return _html.escape(str(v))
+
+
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
-    return HTMLResponse(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title><style>body{{font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;color:#2B2824;background:#FBF8F4;line-height:1.6}}
-a{{color:#E4705A}}</style></head><body><h2>{title}</h2>{body}</body></html>""", status_code=status)
+    """title 은 escape 한다. body 는 HTML 조각 — 동적 값은 호출하는 쪽이 _esc 로 감싸서 넘긴다."""
+    t = _esc(title)
+    return _html_resp(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{t}</title><style>body{{font-family:system-ui,sans-serif;max-width:520px;margin:15vh auto;padding:0 20px;color:#2B2824;background:#FBF8F4;line-height:1.6}}
+a{{color:#E4705A}}</style></head><body><h2>{t}</h2>{body}</body></html>""", status)
 
 
 # ── 도움말: guides 마크다운 → HTML ─────────────────────
@@ -305,7 +326,7 @@ class Web:
     async def app(self, request):
         if await self.uid_of(request) is None:
             return RedirectResponse("/", status_code=302)
-        return HTMLResponse(APP_HTML.read_text(encoding="utf-8"), headers={"cache-control": "no-store"})
+        return _html_resp(APP_HTML.read_text(encoding="utf-8"), headers={"cache-control": "no-store"})
 
     async def root(self, request):
         """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남기고 [로그인]을 /login?fresh=1 로."""
@@ -316,7 +337,7 @@ class Web:
             html = html.replace('href="/login"', 'href="/login?fresh=1"', 1)
         else:
             html = re.sub(r"<!--out-->.*?<!--/out-->", "", html, flags=re.S)
-        return HTMLResponse(html, headers={"cache-control": "no-store"})
+        return _html_resp(html, headers={"cache-control": "no-store"})
 
     async def help(self, request):
         """도움말. 로그인 불필요. DB 를 건드리지 않는다 — 세션은 쿠키 서명만 본다(DEV 는 dev_user 가 있으면 세션으로 친다)."""
@@ -325,7 +346,7 @@ class Web:
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
         nav = '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
-        return HTMLResponse(self.help_html.replace("<!--nav-->", nav, 1), headers={"cache-control": "no-store"})
+        return _html_resp(self.help_html.replace("<!--nav-->", nav, 1), headers={"cache-control": "no-store"})
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -359,7 +380,7 @@ class Web:
         qp = request.query_params
         again = '<p><a href="/login">다시 로그인하기</a></p>'
         if qp.get("error"):
-            return _page("로그인이 취소됐거나 실패했어요", f"<p>{qp.get('error_description') or qp['error']}</p>{again}", 400)
+            return _page("로그인이 취소됐거나 실패했어요", f"<p>{_esc(qp.get('error_description') or qp['error'])}</p>{again}", 400)
         if not flow or not qp.get("code") or qp.get("state") != flow.get("s"):
             return _page("로그인 절차가 맞지 않아요", "<p>로그인 창을 10분 안에 끝내지 않았거나, 다른 탭에서 시작한 로그인이에요.</p>" + again, 400)
         status, tok = await self.token_post({
@@ -367,7 +388,7 @@ class Web:
             "client_id": self.client_id, "code_verifier": flow["v"], "resource": f"{self.public_url}/mcp"})
         access = tok.get("access_token") if isinstance(tok, dict) else None
         if status != 200 or not access:
-            return _page("로그인 서버가 토큰을 주지 않았어요", f"<p>{tok.get('error_description') or tok.get('error') or status}</p>{again}", 502)
+            return _page("로그인 서버가 토큰을 주지 않았어요", f"<p>{_esc(tok.get('error_description') or tok.get('error') or status)}</p>{again}", 502)
         verified = await self.verifier.verify_token(access)
         if verified is None:
             return _page("받은 토큰을 믿을 수 없어요", "<p>토큰의 발급자·대상이 이 서버와 맞지 않아요.</p>" + again, 502)
@@ -375,7 +396,7 @@ class Web:
             uid = await run_in_threadpool(auth.user_id_for, verified)
         except Exception as e:   # ToolError·CanonError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
-            return _page("사용자를 연결하지 못했어요", f"<p>{msg}</p>{again}", 502)
+            return _page("사용자를 연결하지 못했어요", f"<p>{_esc(msg)}</p>{again}", 502)
         resp = RedirectResponse("/app", status_code=302)
         self.set_cookie(resp, SESSION_COOKIE, self.sign({"uid": uid}, SESSION_TTL), SESSION_TTL)
         self.clear_cookie(resp, FLOW_COOKIE)
