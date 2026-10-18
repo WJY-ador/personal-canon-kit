@@ -514,6 +514,7 @@ const WHAT = {
   "RECORD-MISSING": "기록이 지워졌거나 찾을 수 없어요.",
   "UNAUTHORIZED": "로그인이 풀렸어요.",
   "OFFLINE": "서버에 연결하지 못했어요.",
+  "CONSENT-REQUIRED": "처리방침 동의가 필요해요.",
 };
 const FIXHINT = "새로 고침해도 그대로면 다시 로그인해 보세요.";
 function techInfo(err) {
@@ -979,6 +980,7 @@ async function itemAct(tab, it, act) {
     j = await r.json().catch(() => ({}));
   } catch (e) { r = null; }
   if (r && r.status === 401) { location.href = "/"; return; }
+  if (j.code === "CONSENT-REQUIRED") { location.href = "/consent"; return; }
   if (!r || !r.ok) {
     st.textContent = "";
     er.textContent = !r ? "서버에 연결하지 못했어요. 새로 고침해 확인해 주세요." : j.code === "CONFLICT" ? CONFLICT_TEXT : (j.msg || "저장하지 못했어요.");
@@ -1367,6 +1369,7 @@ async function decide(cur, action, text) {
   }
   if (r.status === 401) { location.href = "/"; return; }
   const j = await r.json().catch(() => ({}));
+  if (j.code === "CONSENT-REQUIRED") { location.href = "/consent"; return; }
   if (!r.ok && j.code === "CONFLICT") {
     // 다른 곳에서 먼저 바뀌었다 — 서버 문구를 저장 상태 띠에 남기고 상태를 다시 받아 그린다
     lastSave = j.msg || CONFLICT_TEXT;

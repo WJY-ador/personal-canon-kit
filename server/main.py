@@ -7,6 +7,8 @@
           · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 예외 + 웹 「문의함」·새 문의 띠·문의 상태/메모 변경)
           · CANON_CONTACT(선택 — 처리방침의 보조 메일. 없어도 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나)
 """
+import asyncio
+import contextvars
 import functools
 import inspect
 import json
@@ -58,6 +60,8 @@ if not DEV and os.environ.get("CANON_DEV_USER"):
     raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
 # 시작 때 한 번 읽는다. 비어 있으면 예외 없음.
 db.ADMIN_USER_IDS = frozenset(x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip())
+db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
+USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
 
 _auth_kwargs = {}
 if ISSUER:
@@ -71,31 +75,55 @@ if ISSUER:
 mcp = MCPServer("personal-canon-kit", instructions=INSTRUCTIONS, **_auth_kwargs)
 
 
+# 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(동의·전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
+# 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
+_call_uid: contextvars.ContextVar = contextvars.ContextVar("canon_call_uid", default=None)
+
+
 def uid_of(ctx: Context) -> str:
+    memo = _call_uid.get()
+    if memo is not None and "uid" in memo:
+        return memo["uid"]
     tok = get_access_token()
     if tok is not None:
-        return auth.user_id_for(tok)
-    if DEV:
-        return db.user_by_email(os.environ.get("CANON_DEV_USER", "dev@local"))["id"]
-    raise ToolError("[AUTH] 로그인 정보가 없어요. 커넥터를 다시 연결하세요.")
+        uid = auth.user_id_for(tok)
+    elif DEV:
+        uid = db.user_by_email(os.environ.get("CANON_DEV_USER", "dev@local"))["id"]
+    else:
+        raise ToolError("[AUTH] 로그인 정보가 없어요. 커넥터를 다시 연결하세요.")
+    if memo is not None:
+        memo["uid"] = uid
+    return uid
 
 
 def guard(fn):
     """CanonError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
-    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고)."""
+    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·동의(CONSENT-REQUIRED, CONSENT_EXEMPT 는 빼고)
+    ·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고). 모든 도구(읽기 포함)를 db.usage_count 로 센다 — 정상 OK, CanonError 는 그 code,
+    그 밖 예외(ToolError 포함)는 EXC. uid 는 이 호출 안에서 이미 푼 것만 쓴다(못 풀었으면 '')."""
     sig = inspect.signature(fn)
-    write = fn.__name__ in db.WRITE_LIMITS
-    quota = fn.__name__ not in db.QUOTA_EXEMPT
+    name = fn.__name__
+    write = name in db.WRITE_LIMITS
+    quota = name not in db.QUOTA_EXEMPT
 
     @functools.wraps(fn)
     def run(*a, **k):
+        memo = {}
+        token = _call_uid.set(memo)
+        code = "EXC"
         try:
             if write:
                 args = sig.bind(*a, **k).arguments
-                db.write_gate(fn.__name__, {n: v for n, v in args.items() if n != "ctx"}, lambda: uid_of(args["ctx"]), quota)
-            return fn(*a, **k)
+                db.write_gate(name, {n: v for n, v in args.items() if n != "ctx"}, lambda: uid_of(args["ctx"]), quota)
+            out = fn(*a, **k)
+            code = "OK"
+            return out
         except db.CanonError as e:
+            code = e.code
             raise ToolError(f"[{e.code}] {e.message}" + (f" 다음 조치: {e.action}" if e.action else ""))
+        finally:
+            _call_uid.reset(token)
+            db.usage_count(memo.get("uid"), name, code)
     return run
 
 
@@ -317,6 +345,7 @@ def record_attach(
 # 웹 /help 와 같은 원문(guides/09·10, web.Web.load_help 가 시작 때 읽음)을 돌려준다.
 
 @mcp.tool()
+@guard
 def help_get(
     ctx: Context,
     topic: Annotated[Literal["start", "words", "all"],
@@ -440,11 +469,25 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
             print(f"[desk] 종결 {db.TICKET_KEEP_DAYS}일 지난 문의 {n}건 파기", flush=True)
     except Exception as e:
         print(f"[desk] 문의 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
+    flusher = asyncio.create_task(_usage_flusher())
     try:
         async with mcp.session_manager.run():
             yield
-    finally:
+    finally:   # 순서 고정: 주기 태스크 취소 → 마지막 flush 1회 → db.close()
+        flusher.cancel()
+        try:
+            await flusher
+        except asyncio.CancelledError:
+            pass
+        await run_in_threadpool(db.usage_flush)
         db.close()
+
+
+async def _usage_flusher():
+    """usage_daily 주기 flush(α2). db.usage_flush 는 실패해도 예외를 내지 않는다."""
+    while True:
+        await asyncio.sleep(USAGE_FLUSH_EVERY)
+        await run_in_threadpool(db.usage_flush)
 
 
 # 웹 화면·로그인. Mount("/") 가 나머지를 전부 받으므로 웹 경로는 그 앞에 둔다.

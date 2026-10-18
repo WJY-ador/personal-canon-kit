@@ -14,6 +14,8 @@
    · 관리자 문의함: 비관리자 응답에 admin 키 없음 · 상태/메모 API 401·403(Origin·비관리자) · 상태 전이·closed_at · 메모 2KB · 띠 숫자
 8) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
+9) α2: 동의 버전(guides 머리글)·게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로) · 일일 한도(기록·질문·후보·결정·제안)
+   · usage_daily(메모리만·flush 합산/접기/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -22,6 +24,7 @@
 """
 import asyncio
 import json
+from contextlib import asynccontextmanager
 import os
 import re
 import secrets
@@ -68,8 +71,12 @@ import db  # noqa: E402
 import main  # noqa: E402
 import web  # noqa: E402
 
+LIM_KINDS = ("records", "candidates", "decisions", "proposals", "questions")   # α2 일일 한도 — 종류마다 전용 사용자
+LIM_EMAIL = {k: f"lim-{k}@example.com" for k in LIM_KINDS}
 TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com",
-               "core1@example.com", "core2@example.com") + tuple(f"desk{i}@example.com" for i in range(11))   # desk* = 전역 한도 시험
+               "core1@example.com", "core2@example.com", "noconsent@example.com") + tuple(f"desk{i}@example.com" for i in range(11)) \
+    + tuple(LIM_EMAIL.values())   # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도
+TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WRONG_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -1120,8 +1127,10 @@ def test_migration():
             _seed_old(c)
             before = _data(c)
             c.commit()   # 운영처럼 유휴 연결에서 시작(init_schema 트랜잭션이 최상위가 되게)
+            assert not db._has_table(c, "usage_daily"), "옛 DB 엔 usage_daily 가 없다"
             db.init_schema(c)
             c.commit()
+            assert db._has_table(c, "usage_daily"), "α2: init_schema 가 옛 DB 에 usage_daily 를 만든다"
             got = _shape(c)
             assert got == new_shape, ("마이그레이션 결과 ≠ 새 설치", got[0] ^ new_shape[0], got[1] ^ new_shape[1], got[2] ^ new_shape[2])
             cols = {t: [r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns "
@@ -1953,8 +1962,400 @@ def test_feedback_units():
     print("OK — 문의 단위(ua 계열·CANON_CONTACT 선택·app.html esc 정적 검사) 통과")
 
 
+# ── 9) α2 — 동의 게이트 · 일일 한도 · usage_daily ─────────────
+
+def _as_user(site, email):
+    """MCP(DEV 사용자)와 웹(DEV 폴백)을 같은 사용자로."""
+    os.environ["CANON_DEV_USER"] = email
+    site.dev, site.dev_user = True, email
+
+
+def _agreements(uid):
+    with db.tx() as c:
+        return c.execute("SELECT kind,version FROM agreements WHERE user_id=%s ORDER BY kind", (uid,)).fetchall()
+
+
+def test_consent_versions():
+    """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v1."""
+    import tempfile
+    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v1", db.CONSENT_VERSIONS
+    assert web.read_consent_versions(web.GUIDES_DIR, dev=False) == db.CONSENT_VERSIONS
+    with tempfile.TemporaryDirectory() as t:
+        d = Path(t)
+        assert web.read_consent_versions(d, dev=False) == {}, "문서가 없으면 게이트 없음(열린 채 시작)"
+        (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n버전 머리글 없음\n", encoding="utf-8")
+        assert web.read_consent_versions(d, dev=True) == {}, "DEV: 버전 없는 문서는 뺀다"
+        try:
+            web.read_consent_versions(d, dev=False)
+            raise AssertionError("비DEV 는 버전 없는 동의 문서로 뜨면 안 된다")
+        except SystemExit as e:
+            assert web.PRIVACY_FILE in str(e), e
+        (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v3 · 2027-01-01` 시행.\n", encoding="utf-8")
+        (d / "12-terms.md").write_text("# 약관\n\n`v2 · 2027-01-01`\n", encoding="utf-8")
+        assert web.read_consent_versions(d, dev=False) == {"privacy": "v3", "terms": "v2"}, "terms 문서가 생기면 자동으로 둘"
+    # 머리글 N 을 올리면 전원 재동의 — 캐시도 비워진다
+    tester = db.user_by_email(TESTER)["id"]
+    db.require_consent(tester)
+    real = dict(db.CONSENT_VERSIONS)
+    try:
+        db.set_consent_versions({**real, "privacy": "v2"})
+        expect("CONSENT-REQUIRED", db.require_consent, tester)
+        expect("ARG-INVALID", db.consent_grant, tester, real)   # 옛 버전으로는 동의 못 한다
+    finally:
+        db.set_consent_versions(real)
+    db.require_consent(tester)
+    print("OK — α2 동의 버전(guides 머리글 v1·비DEV 기동 거부·terms 자동·버전 올리면 재동의) 통과")
+
+
+async def test_consent_gate():
+    """미동의 사용자: MCP·웹 쓰기 거절(문의는 면제), 읽기 정상 → /consent 동의(B5 경로) → 통과."""
+    site = main.site
+    origin = {"origin": PUBLIC}
+    nc = db.user_by_email(NOCONSENT)["id"]
+    assert not _agreements(nc) and nc not in db._consented
+    real_site, real_all = (site.dev, site.dev_user), db.TICKET_DAILY_ALL
+    try:
+        db.TICKET_DAILY_ALL = 10 ** 6   # 7) 절이 오늘 전역 문의 한도(100)를 채워 뒀다 — 여기선 동의 면제만 본다
+        _as_user(site, NOCONSENT)
+        async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # 게이트 — MCP 쓰기
+            r = await c.call_tool("record_add", {"text": "동의 전 기록"})
+            msg = r.content[0].text
+            assert r.is_error and "[CONSENT-REQUIRED]" in msg and f"{PUBLIC}/consent" in msg, msg
+            r = await c.call_tool("question_add", {"text": "동의 전 질문"})
+            assert r.is_error and "[CONSENT-REQUIRED]" in r.content[0].text, r.content[0].text
+            assert db.records(nc) == [] and db.questions(nc) == []
+            # 게이트 — 웹 쓰기 API 는 403 JSON
+            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
+            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
+            # 게이트 밖 — 읽기·도움말
+            for tool, args in (("state_get", {}), ("help_get", {"topic": "words"}), ("question_list", {})):
+                r = await c.call_tool(tool, args)
+                assert not r.is_error, (tool, r.content[0].text[:200])
+            assert (await h.get("/api/state")).status_code == 200
+            # 면제 — 개인정보 문의는 동의 전에도(MCP·웹)
+            r = await c.call_tool("feedback_send", {"kind": "privacy", "text": "동의 전 탈퇴 문의"})
+            assert not r.is_error, r.content[0].text
+            r = await h.post("/api/feedback", json={"kind": "question", "text": "동의 전 웹 문의"}, headers=origin)
+            assert r.status_code == 200, r.text
+            # /app → /consent, /consent 화면(스크립트 0·form POST·버전 라벨·no-store·보안 헤더)
+            r = await h.get("/app")
+            assert r.status_code == 302 and r.headers["location"] == "/consent", (r.status_code, r.headers.get("location"))
+            r = await h.get("/consent")
+            t = r.text
+            assert r.status_code == 200 and r.headers["cache-control"] == "no-store", r.status_code
+            assert r.headers["x-frame-options"] == "DENY" and "frame-ancestors 'none'" in r.headers["content-security-policy"]
+            assert "<script" not in t and 'method="post" action="/api/consent"' in t, t[:500]
+            assert 'name="privacy" value="v1"' in t and 'href="/privacy"' in t and "(v1)" in t and "동의하고 시작" in t, t
+            assert "terms" not in t, "약관 문서가 없으면 체크박스도 없다"
+            # 세션 없음 → /consent 는 / 로
+            site.dev, site.dev_user = False, ""
+            r = await h.get("/consent")
+            assert r.status_code == 302 and r.headers["location"] == "/", r.headers.get("location")
+            r = await h.post("/api/consent", data={"privacy": "v1"}, headers=origin)
+            assert r.status_code == 401, r.status_code
+
+            # B5: MCP 거절 → 브라우저 로그인(세션 쿠키) → /app 이 /consent 로 → 동의 → MCP 다음 호출 통과
+            h.cookies.set("canon_session", site.sign({"uid": nc}, 600))
+            r = await h.get("/app")
+            assert r.status_code == 302 and r.headers["location"] == "/consent"
+            r = await h.post("/api/consent", data={"privacy": "v1"})   # Origin 없음
+            assert r.status_code == 403 and r.json()["code"] == "ORIGIN", r.text
+            r = await h.post("/api/consent", json={"privacy": "v0"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+            r = await h.post("/api/consent", data={}, headers=origin)   # 체크 안 함
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+            r = await h.post("/api/consent", json={"privacy": "v1", "terms": "v1"}, headers=origin)   # 없는 문서까지
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+            assert not _agreements(nc)
+            assert (await c.call_tool("record_add", {"text": "아직 동의 전"})).is_error
+            r = await h.post("/api/consent", data={"privacy": "v1"}, headers=origin)   # form POST
+            assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
+            assert [(a["kind"], a["version"]) for a in _agreements(nc)] == [("privacy", "v1")]
+            r = await c.call_tool("record_add", {"text": "동의 뒤 기록"})
+            assert not r.is_error, r.content[0].text
+            r = await h.get("/consent")
+            assert r.status_code == 302 and r.headers["location"] == "/app"
+            assert (await h.get("/app")).status_code == 200
+            r = await h.post("/api/consent", json={"privacy": "v1"}, headers=origin)   # JSON 경로 · 다시 해도 한 행
+            assert r.status_code == 200 and r.json() == {"ok": True, "redirect": "/app"}, r.text
+            assert len(_agreements(nc)) == 1
+            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", "동의 뒤엔 게이트를 지나 db 판정"
+            h.cookies.clear()
+        # 캐시: 통과한 uid 는 메모리 집합에 — 다음 판정은 DB 를 안 본다
+        assert nc in db._consented
+    finally:
+        site.dev, site.dev_user = real_site
+        db.TICKET_DAILY_ALL = real_all
+        os.environ["CANON_DEV_USER"] = TESTER
+    print("OK — α2 동의 게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로·Origin 403·버전 불일치 400) 통과")
+
+
+def _bulk(sql, args):
+    with db.tx() as c:
+        c.execute(sql, args)
+
+
+async def test_daily_limits():
+    """일일 한도 — 종류마다 전용 사용자(앞 시험이 쌓은 행과 섞이지 않게). 경계 = 상한까지 통과, 하나 더면 RATE-LIMIT."""
+    site = main.site
+    U = {k: db.user_by_email(LIM_EMAIL[k])["id"] for k in LIM_KINDS}
+    real_admins = db.ADMIN_USER_IDS
+    assert db.DAILY_LIMITS == {"records": 50, "candidates": 150, "decisions": 300, "proposals": 100, "questions": 50}
+    try:
+        # 기록 50 — 관리자도 같다
+        u = U["records"]
+        db.ADMIN_USER_IDS = frozenset({u})
+        for i in range(49):
+            db.record_add(u, f"한도 {i}", f"기록 {i}")
+        r50 = db.record_add(u, "한도 50", "50번째 기록")
+        e = expect("RATE-LIMIT", db.record_add, u, "한도 51", "51번째 기록")
+        assert e.message == "오늘 기록은 50개까지예요." and "KST" in e.action, (e.message, e.action)
+        _as_user(site, LIM_EMAIL["records"])
+        async with Client(main.mcp) as c:   # MCP 도 같은 판정(관리자 uid)
+            r = await c.call_tool("record_add", {"text": "MCP 51번째"})
+            assert r.is_error and "[RATE-LIMIT] 오늘 기록은 50개까지예요." in r.content[0].text, r.content[0].text
+        assert len(db.records(u, limit=1000)) == 50
+        # 날짜 경계(_KST_TODAY): 하나를 어제로 옮기면 오늘 카운트에서 빠진다
+        _bulk("UPDATE records SET created = created - interval '1 day' WHERE user_id=%s AND id=%s", (u, r50["id"]))
+        db.record_add(u, "어제로 옮긴 뒤", "다시 50번째")
+        expect("RATE-LIMIT", db.record_add, u, "다시 51", "다시 51번째")
+        db.ADMIN_USER_IDS = real_admins
+
+        # 질문 50
+        u = U["questions"]
+        for i in range(50):
+            db.question_add(u, f"질문 {i}")
+        e = expect("RATE-LIMIT", db.question_add, u, "질문 51")
+        assert e.message == "오늘 질문은 50개까지예요.", e.message
+
+        # 후보 150 — 묶음 단위(제출 수로): 148 + 3 거절, 147 + 3 통과
+        u = U["candidates"]
+        src = db.record_add(u, "후보 원천", "x" * 200)
+        _bulk("INSERT INTO candidates (id,user_id,question_id,record_id,text,quote,quote_start,quote_end,origin) "
+              "SELECT 'c_lim' || g, %s, NULL, %s, '후보', 'x', g, g + 1, 'ai' FROM generate_series(1, 148) AS g", (u, src["id"]))
+        rec = db.record_add(u, "새 기록", "하나 둘 셋 넷")
+        three = [{"text": "하나", "quote": "하나"}, {"text": "둘", "quote": "둘"}, {"text": "셋", "quote": "셋"}]
+        e = expect("RATE-LIMIT", db.candidates_propose, u, rec["id"], "", three, "ai")
+        assert e.message == "오늘 후보는 150개까지예요.", e.message
+        _bulk("DELETE FROM candidates WHERE user_id=%s AND id='c_lim1'", (u,))
+        added, dropped = db.candidates_propose(u, rec["id"], "", three, "ai")
+        assert len(added) == 3 and not dropped, (added, dropped)
+        expect("RATE-LIMIT", db.candidates_propose, u, rec["id"], "", [{"text": "넷", "quote": "넷"}], "ai")
+
+        # 결정 300 — 후보 이력 + 항목 이력의 합. candidate_decide·item_decide 둘 다
+        u = U["decisions"]
+        rec = db.record_add(u, "결정 원천", "결정할 문장이 여기 있다")
+        cid = db.candidates_propose(u, rec["id"], "", [{"text": "결정", "quote": "결정할 문장"}], "ai")[0][0]
+        _bulk("INSERT INTO candidate_history (user_id,candidate_id,action,prev_revision,prev_state) "
+              "SELECT %s, %s, 'confirm', 1000 + g, '{\"schema_version\":2,\"text\":\"x\",\"decision\":\"pending\"}'::jsonb "
+              "FROM generate_series(1, 299) AS g", (u, cid))
+        assert db.candidate_decide(u, cid, "confirm")["status"] == "confirmed"   # 300번째
+        e = expect("RATE-LIMIT", db.candidate_decide, u, cid, "exclude")
+        assert e.message == "오늘 결정은 300개까지예요.", e.message
+        expect("RATE-LIMIT", db.item_decide, u, "i_none", 0, None, "confirm")   # 항목 결정도 같은 한도(조회 전에 거절)
+        assert db.candidate_get(u, cid)["status"] == "confirmed"
+
+        # 제안 100 — 오브젝트 정의 + 항목. 새 행을 만드는 경로만 센다(기존 오브젝트의 draft 갱신은 안 센다)
+        u = U["proposals"]
+        _bulk("INSERT INTO object_defs (user_id,id,key,label,semantic_kind) "
+              "SELECT %s, 'od_lim' || g, 'lim' || g, '한도', 'collection' FROM generate_series(1, 99) AS g", (u,))
+        d100 = {"key": "lim_last", "label": "100번째", "semantic_kind": "collection", "fields": []}
+        p = db.definition_propose(u, None, 0, d100)   # 100번째 새 행
+        e = expect("RATE-LIMIT", db.definition_propose, u, None, 0, {**d100, "key": "lim_over"})
+        assert e.message == "오늘 제안은 100개까지예요.", e.message
+        db.definition_propose(u, None, 0, {**d100, "label": "같은 key 다시"})   # 적용 전 같은 key 행의 제안 바꾸기 — 새 행 아님
+        db.definition_apply(u, p["object_id"], db.definition_propose(u, p["object_id"], 0, d100)["proposal_id"], 0)
+        db.definition_propose(u, p["object_id"], 1, {**d100, "label": "고친 정의"})   # 기존 오브젝트 draft 갱신 — 안 센다
+        e = expect("RATE-LIMIT", db.item_propose, u, p["object_id"], 1, None, 0, None, "새 항목", "", {}, [])
+        assert e.message == "오늘 제안은 100개까지예요.", e.message
+
+        # 합산 소스: 정의 층 시험 사용자(def1)의 오늘 결정·제안 = 두 테이블 합 — 상한을 그 수로 바꿔 경계를 본다
+        real_limits = dict(db.DAILY_LIMITS)
+        d1 = db.user_by_email(DEF1)["id"]
+        with db.tx() as c:
+            cnt = lambda t, col: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s AND {col} >= {db._KST_TODAY}", (d1,)).fetchone()["n"]
+            n_dec = cnt("candidate_history", "at") + cnt("item_history", "at")
+            n_prop = cnt("object_defs", "created_at") + cnt("items", "created_at")
+            assert cnt("item_history", "at") > 0 and cnt("items", "created_at") > 0, "def1 에 항목 이력·항목이 있어야 합산을 본다"
+        try:
+            for kind, n in (("decisions", n_dec), ("proposals", n_prop)):
+                db.DAILY_LIMITS[kind] = n
+                with db.tx() as c:
+                    db._daily_gate(c, d1, kind, 0)
+                try:
+                    with db.tx() as c:
+                        db._daily_gate(c, d1, kind, 1)
+                    raise AssertionError(f"{kind}: 두 테이블 합을 세지 않았다")
+                except db.CanonError as e:
+                    assert e.code == "RATE-LIMIT", e.code
+        finally:
+            db.DAILY_LIMITS.clear()
+            db.DAILY_LIMITS.update(real_limits)
+        # 사용자 행이 없으면 AUTH-INVALID
+        expect("AUTH-INVALID", db.record_add, "u_no_such_user", "t", "b")
+    finally:
+        db.ADMIN_USER_IDS = real_admins
+        site.dev, site.dev_user = True, TESTER
+        os.environ["CANON_DEV_USER"] = TESTER
+    print("OK — α2 일일 한도(기록 50·질문 50·후보 148+3/147+3·결정 300·제안 100·관리자 같음·KST 날짜 경계·합산) 통과")
+
+
+def _usage_row(day, uid, name, code):
+    with db.tx() as c:
+        r = c.execute("SELECT n FROM usage_daily WHERE day=%s AND user_id=%s AND name=%s AND code=%s", (day, uid, name, code)).fetchone()
+    return r["n"] if r else 0
+
+
+async def test_usage():
+    """usage_daily — 요청 경로는 메모리만 · MCP 모든 도구·웹 /api/* 래퍼 · flush 합산·접기·실패 버림 · lifespan 종료 순서."""
+    site = main.site
+    today = db._dt.datetime.now(db.KST).date()
+    tester = db.user_by_email(TESTER)["id"]
+    _as_user(site, TESTER)
+    snap = db.usage_snapshot
+    # 요청 경로 풀 checkout 0회
+    db.pool()
+    before = db.pool().get_stats().get("requests_num", 0)
+    for _ in range(50):
+        db.usage_count(tester, "state_get", "OK")
+    assert db.pool().get_stats().get("requests_num", 0) == before, "usage_count 가 DB 를 건드렸다"
+
+    def delta(s0, key):
+        return snap().get(key, 0) - s0.get(key, 0)
+
+    async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+        s0 = snap()
+        assert not (await c.call_tool("record_add", {"text": "집계 시험 기록"})).is_error
+        assert (await c.call_tool("candidate_decide", {"candidate_id": "c_nope", "action": "confirm"})).is_error
+        assert not (await c.call_tool("help_get", {"topic": "words"})).is_error
+        assert not (await c.call_tool("state_get", {})).is_error
+        rid = db.record_add(tester, "집계", "가 나 다 라")["id"]
+        r = await c.call_tool("candidates_propose", {"record_id": rid, "question_id": "",
+                                                     "candidates": [{"text": t, "quote": t} for t in ("가", "나", "다", "라")]})
+        assert r.is_error   # 4개 — 도구 본문의 ToolError(CanonError 아님)
+        assert delta(s0, (today, tester, "record_add", "OK")) == 1
+        assert delta(s0, (today, tester, "candidate_decide", "ARG-INVALID")) == 1
+        assert delta(s0, (today, tester, "state_get", "OK")) == 1
+        assert delta(s0, (today, "", "help_get", "OK")) == 1, "help_get 은 uid 를 풀지 않는다 — 추가 조회 없이 ''"
+        assert delta(s0, (today, tester, "candidates_propose", "EXC")) == 1, "쓰기 도구는 게이트(동의)에서 uid 를 이미 풀었다"
+        # 웹: 경로 이름 · 응답 code · 401 은 '' · 200 본문의 code(항목 코드)는 읽지 않는다
+        s0 = snap()
+        assert (await h.get("/api/state")).status_code == 200
+        assert (await h.get("/api/journal", params={"id": "r_none"})).status_code == 404
+        r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"})   # Origin 없음
+        assert r.status_code == 403
+        site.dev, site.dev_user = False, ""
+        assert (await h.get("/api/state")).status_code == 401
+        site.dev, site.dev_user = True, TESTER
+        assert delta(s0, (today, tester, "web:state", "OK")) == 1
+        assert delta(s0, (today, tester, "web:journal", "RECORD-MISSING")) == 1
+        assert delta(s0, (today, tester, "web:candidate_decide", "ORIGIN")) == 1
+        assert delta(s0, (today, "", "web:state", "UNAUTHORIZED")) == 1
+    names = {k[2] for k in snap()}
+    codes = {k[3] for k in snap()}
+    assert all(re.fullmatch(r"[a-z_]+|web:[a-z_]+", n) for n in names), names
+    assert all(re.fullmatch(r"OK|EXC|[A-Z][A-Z-]*", cd) for cd in codes), codes
+
+    # flush: 합산 upsert · 두 번이면 n 합산 · 미동의 uid 는 '' 로 접힘(같은 묶음의 여러 미동의 uid 가 한 키로 — 중복 키 오류 없음)
+    db.usage_flush()
+    assert snap() == {}, "flush 는 스냅샷을 뗀다"
+    t0, a0 = _usage_row(today, tester, "record_add", "OK"), _usage_row(today, "", "state_get", "OK")
+    for _ in range(2):
+        db.usage_count(tester, "record_add", "OK")
+    db.usage_count("u_ghost_a", "state_get", "OK")
+    db.usage_count("u_ghost_b", "state_get", "OK")
+    assert db.usage_flush() == 3
+    assert _usage_row(today, tester, "record_add", "OK") == t0 + 2
+    assert _usage_row(today, "", "state_get", "OK") == a0 + 2
+    assert _usage_row(today, "u_ghost_a", "state_get", "OK") == 0 and _usage_row(today, "u_ghost_b", "state_get", "OK") == 0
+    for _ in range(3):
+        db.usage_count(tester, "record_add", "OK")
+    db.usage_flush()
+    assert _usage_row(today, tester, "record_add", "OK") == t0 + 5, "두 번째 flush 는 n 에 더한다"
+    # privacy 키가 없으면 전원 ''
+    real_v = dict(db.CONSENT_VERSIONS)
+    try:
+        db.set_consent_versions({})
+        a1, t1 = _usage_row(today, "", "record_get", "OK"), _usage_row(today, tester, "record_get", "OK")
+        db.usage_count(tester, "record_get", "OK")
+        db.usage_flush()
+        assert _usage_row(today, "", "record_get", "OK") == a1 + 1 and _usage_row(today, tester, "record_get", "OK") == t1
+    finally:
+        db.set_consent_versions(real_v)
+    # 풀 checkout 실패 → 묶음 버림, 예외 없음
+    real_conn = db._usage_conn
+
+    def boom():
+        raise RuntimeError("checkout 실패 주입")
+    q0 = _usage_row(today, tester, "question_list", "OK")
+    try:
+        db._usage_conn = boom
+        db.usage_count(tester, "question_list", "OK")
+        assert db.usage_flush() == 0
+        assert snap() == {}, "실패한 묶음은 버린다(다시 쌓지 않는다)"
+    finally:
+        db._usage_conn = real_conn
+    assert _usage_row(today, tester, "question_list", "OK") == q0
+
+    # lifespan: 주기 flush 가 돌고, 종료 때 태스크 취소 → flush 1회 → db.close() 순서
+    order = []
+    real_flush, real_close, real_every = db.usage_flush, db.close, main.USAGE_FLUSH_EVERY
+    sm = main.mcp.session_manager
+
+    @asynccontextmanager
+    async def fake_run():   # 세션 매니저 run() 은 인스턴스당 한 번 — test_http 가 이미 썼다
+        yield
+
+    try:
+        db.usage_flush = lambda: order.append("flush") or 0
+        db.close = lambda: order.append("close")
+        main.USAGE_FLUSH_EVERY = 0.01
+        sm.run = fake_run
+        async with main.lifespan(main.app):
+            for _ in range(100):
+                if order:
+                    break
+                await asyncio.sleep(0.01)
+            assert order and set(order) == {"flush"}, ("5분 주기 태스크가 돌지 않았다", order)
+            main.USAGE_FLUSH_EVERY = 3600
+            await asyncio.sleep(0.05)   # 돌던 주기를 긴 수면으로 넘긴다
+            n_periodic = len(order)
+        assert order[n_periodic:] == ["flush", "close"], order
+    finally:
+        db.usage_flush, db.close, main.USAGE_FLUSH_EVERY = real_flush, real_close, real_every
+        del sm.run
+    print("OK — α2 usage_daily(메모리만·풀 checkout 0·MCP 전 도구·웹 래퍼·flush 합산/접기/실패 버림·종료 순서 flush→close) 통과")
+
+
+def test_alpha2_delete():
+    """user_delete 뒤 usage_daily·agreements 에 그 uid 행 0, 동의 캐시에서도 빠진다."""
+    nc = db.user_by_email(NOCONSENT)["id"]
+    db.usage_count(nc, "record_add", "OK")
+    db.usage_flush()
+    today = db._dt.datetime.now(db.KST).date()
+    assert _usage_row(today, nc, "record_add", "OK") >= 1 and _agreements(nc), "동의한 사용자는 자기 uid 로 집계된다"
+    db.user_delete(nc)
+    with db.tx() as c:
+        left = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (nc,)).fetchone()["n"] for t in ("usage_daily", "agreements")}
+    assert left == {"usage_daily": 0, "agreements": 0}, left
+    assert nc not in db._consented
+    print("OK — α2 계정 삭제(usage_daily·agreements 0·동의 캐시 제거) 통과")
+
+
+def consent_setup():
+    """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
+    for email in TEST_EMAILS:
+        if email != NOCONSENT:
+            db.consent_grant(db.user_by_email(email)["id"], dict(db.CONSENT_VERSIONS))
+
+
 async def run():
     cleanup()
+    consent_setup()
     try:
         test_migration()
         test_core_pr1()
@@ -1972,6 +2373,11 @@ async def run():
         await test_feedback()
         await test_feedback_admin()
         test_feedback_units()
+        test_consent_versions()
+        await test_consent_gate()
+        await test_daily_limits()
+        await test_usage()
+        test_alpha2_delete()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -1979,7 +2385,8 @@ async def run():
         with db.tx() as c:
             left = c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchone()["n"]
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
-                    for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets")}
+                    for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets",
+                              "agreements", "usage_daily")}
         db.close()
     assert left == 0, left
     assert not any(rest.values()), rest
