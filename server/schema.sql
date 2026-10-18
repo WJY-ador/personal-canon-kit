@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS object_defs (
   archived_at         timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
+  template_slot       text,                         -- 템플릿 계보 `author@1:<key>`. 시드만 채운다(apply 는 안 건드림). 옛 DB 는 init_schema ADD COLUMN
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, key)
 );
@@ -156,6 +157,7 @@ CREATE TABLE IF NOT EXISTS field_defs (
   multiple         boolean NOT NULL DEFAULT false,
   position         integer NOT NULL DEFAULT 0,
   archived_at      timestamptz,
+  template_slot    text,                            -- 템플릿 계보 `author@1:<object_key>.<field_key>`. 시드만 채운다
   PRIMARY KEY (user_id, object_id, key),
   FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE,
   FOREIGN KEY (user_id, target_object_id) REFERENCES object_defs(user_id, id),          -- 보호 Lookup
