@@ -20,6 +20,8 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+TEMPLATES_DIR = Path(__file__).parent / "templates"   # 동결 템플릿 정의(template_author.py 가 만든다)
+BACKFILL_TEMPLATE = "author@1"                         # template_slot 백필 기준 판 — 열이 생기기 전에 시드된 판은 이것뿐
 
 PROFILE_KEYS = {
     "purpose": "이 노트로 하려는 일",
@@ -49,6 +51,7 @@ LIMIT_BODY = 64 * KB               # ② 기록 본문·항목 본문
 LIMIT_TEXT = 1 * KB                # ② 제목·질문·후보 문장, 표에 없는 문자열(ID·출처·코드·메모)
 LIMIT_PROFILE_VALUE = 4 * KB       # ② 프로필 값
 LIMIT_JSON = 32 * KB               # ② 정의·항목 JSON(직렬화 문자열 길이)
+LIMIT_TICKET = 4096                # ② 문의 글(desk-0). 바이트 — 폼 카운터도 UTF-8 바이트로 센다
 DB_QUOTA_BYTES = 400 * MB          # ③ 400 × 1024² 바이트 넘으면 비관리자 쓰기 거절
 DB_SIZE_TTL = 60                   # ③ 크기 측정 캐시(초)
 DB_SIZE_TIMEOUT = 1.0              # ③ 측정용 풀 checkout 대기(초)
@@ -68,7 +71,12 @@ WRITE_LIMITS = {
     "item_propose": {"title": LIMIT_TEXT, "body": LIMIT_BODY, "data_json": LIMIT_JSON},
     "item_decide": {},
     "record_attach": {},
+    "feedback_send": {"text": LIMIT_TICKET, "tool": LIMIT_TEXT},
 }
+# ③ 전역 DB 크기 거절(QUOTA-GLOBAL) 면제 — 저장 공간이 찼다는 문의도 받아야 한다. 길이 검사(②)는 그대로.
+# 대신 문의 한도(사용자 하루 10건·전역 100건, ticket_add)가 건다.
+# α2 동의 게이트가 들어오면 같은 꼴로 CONSENT_EXEMPT = frozenset({"feedback_send"}) 를 둔다(α2·desk-0 중 나중 PR 이 넣는다).
+QUOTA_EXEMPT = frozenset({"feedback_send"})
 
 # 관리자 내부 user id — ③ 전역 DB 크기 거절에서만 예외. main 이 시작 때 env CANON_ADMIN_USER_IDS 로 한 번 채운다.
 ADMIN_USER_IDS: frozenset = frozenset()
@@ -149,10 +157,12 @@ def check_global_quota(uid):
                      "운영자에게 알려 주세요.")
 
 
-def write_gate(op: str, args: dict, uid):
-    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다."""
+def write_gate(op: str, args: dict, uid, quota: bool = True):
+    """쓰기 진입 한 곳 — ② 길이 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    quota=False 는 QUOTA_EXEMPT(문의) 만 — 호출하는 쪽이 넘긴다."""
     check_lengths(op, args)
-    check_global_quota(uid)
+    if quota:
+        check_global_quota(uid)
 
 
 def now():
@@ -193,7 +203,8 @@ def init_schema(conn=None):
       1. PR① 마이그레이션(_migrate_pr1) — 옛 테이블이 있을 때만. schema.sql 보다 **먼저** 돈다:
          새 schema.sql 의 ix_hist_cand(user_id, …) 가 옛 candidate_history(user_id 없음)에서 컬럼 오류를 낼 수 있어서.
       2. schema.sql — CREATE … IF NOT EXISTS. 새 DB 는 여기서 바로 최종형, 옛 DB 는 no-op.
-      3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림)."""
+      3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림).
+      4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다."""
     if conn is None:
         with pool().connection() as c:
             _init_schema(c)
@@ -213,6 +224,40 @@ def _init_schema(c):
         q = col("candidates", "question_id")
         if q is not None and q["is_nullable"] == "NO":
             c.execute("ALTER TABLE candidates ALTER COLUMN question_id DROP NOT NULL")
+        for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
+            if not _has_col(c, t, "template_slot"):
+                c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
+        _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
+
+
+def template_slot_of(template, object_key, field_key=None):
+    """템플릿 슬롯 문자열 — 오브젝트 `author@1:principles` · 필드 `author@1:principles.register`."""
+    return f"{template}:{object_key}" + (f".{field_key}" if field_key else "")
+
+
+def template_frozen(template):
+    """동결 템플릿 파일 templates/<key>@<version>.json — {template_key, template_version, objects:[정규화 정의]}."""
+    return json.loads((TEMPLATES_DIR / f"{template}.json").read_text(encoding="utf-8"))
+
+
+def _backfill_template_slots(c):
+    """열이 생기기 전에 시드된 정의에 슬롯을 단다. 멱등(template_slot IS NULL 만), 전 사용자 대상.
+    오브젝트: id·key 가 동결 템플릿의 같은 쌍과 둘 다 같을 때. 필드: 그 슬롯이 잡힌 오브젝트 아래 key 가 템플릿 필드 key 인 것.
+    key 는 비교만 하고 값은 남기지 않는다. 한계: 사용자가 시드 전에 id·key 를 둘 다 템플릿과 똑같이 만들었으면 템플릿으로 잡힌다.
+    반환 (오브젝트 수, 필드 수)."""
+    tpl = template_frozen(BACKFILL_TEMPLATE)
+    name = f"{tpl['template_key']}@{tpl['template_version']}"
+    n_obj = n_field = 0
+    for d in tpl["objects"]:
+        slot = template_slot_of(name, d["key"])
+        n_obj += c.execute("UPDATE object_defs SET template_slot=%s WHERE template_slot IS NULL AND id=%s AND key=%s",
+                           (slot, d["id"], d["key"])).rowcount
+        # 필드는 오브젝트 슬롯이 이 판으로 잡힌 곳 아래에서만(이번에 잡힌 것 + 시드 표시 중 필드 표시가 빠진 것)
+        n_field += c.execute("UPDATE field_defs AS f SET template_slot = %s || '.' || f.key FROM object_defs AS o "
+                             "WHERE o.user_id = f.user_id AND o.id = f.object_id AND o.id = %s AND o.template_slot = %s "
+                             "AND f.template_slot IS NULL AND f.key = ANY(%s)",
+                             (slot, d["id"], slot, [f["key"] for f in d["fields"]])).rowcount
+    return n_obj, n_field
 
 
 def _has_table(c, t):
@@ -1094,6 +1139,16 @@ def definition_apply(uid, object_id, proposal_id, expected_revision):
     return out
 
 
+def template_slot_mark(uid, object_id, slot, field_slots):
+    """템플릿 시드 전용 — template_author.seed 가 definition_apply 직후 한 번 부른다. MCP·웹 경로는 부르지 않는다.
+    definition_apply 는 template_slot 을 건드리지 않으므로 뒤의 사용자 적용이 슬롯을 지우지 못한다."""
+    with tx() as c:
+        if c.execute("UPDATE object_defs SET template_slot=%s WHERE user_id=%s AND id=%s", (slot, uid, object_id)).rowcount != 1:
+            raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+        for fk, fs in field_slots.items():
+            c.execute("UPDATE field_defs SET template_slot=%s WHERE user_id=%s AND object_id=%s AND key=%s", (fs, uid, object_id, fk))
+
+
 def definition_history(uid, object_id):
     with tx() as c:
         r = _one(c, "SELECT history FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id))
@@ -1537,6 +1592,131 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
     if promotion is not None:
         out["promotion"] = promotion
     return out
+
+
+# ── 문의 데스크 (desk-0) ────────────────────────────────
+# 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
+# 사용자는 「내 문의」에서 처리 상태만 본다(답변 본문 없음). 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
+# 관리자(ADMIN_USER_IDS)는 웹 「문의함」에서 전체 문의·메모를 보고 상태·메모를 바꾼다. 감사 테이블은 β — 지금은 tickets.updated 만 갱신한다.
+
+TICKET_KINDS = ("bug", "request", "question", "privacy")
+TICKET_STATUSES = ("open", "ack", "doing", "done", "wontfix")
+TICKET_PAGES = ("today", "question", "record", "structure", "map", "review", "start", "help", "privacy", "other")
+TICKET_DAILY_USER = 10             # 사용자 하루(KST) 10건
+TICKET_DAILY_ALL = 100             # 전역 하루(KST) 100건
+TICKET_KEEP_DAYS = 180             # 종결 뒤 보관 일수
+TICKET_ADMIN_LIST = 100            # 관리자 「문의함」 최근 건수
+LIMIT_ADMIN_NOTE = 2 * KB          # 운영자 메모(바이트)
+NOTICE = "이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요."
+# 오분류된 개인정보 요청을 SQL 한 줄로 거르는 표식. kind 가 privacy 가 아닐 때만 단다.
+_PRIVACY_HINT = re.compile(r"삭제|탈퇴|지워|열람|내 ?정보")
+_KST_TODAY = "(date_trunc('day', now() AT TIME ZONE 'Asia/Seoul') AT TIME ZONE 'Asia/Seoul')"   # KST 오늘 0시(timestamptz)
+
+
+def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
+    """문의 1건. 한도는 같은 트랜잭션의 COUNT — 잠금 없음, 동시 요청이면 1~2건 초과를 허용한다(명시).
+    kind=privacy 면 같은 트랜잭션에서 privacy_log(kind=other, via=form, received=KST 오늘) 1행 — 10일 시계는 여기서 시작한다.
+    길이(PAYLOAD-LIMIT)는 호출 전에 write_gate 가 본다."""
+    if kind not in TICKET_KINDS:
+        raise CanonError("ARG-INVALID", f"문의 종류는 {', '.join(TICKET_KINDS)} 중 하나예요.")
+    if via not in ("web", "mcp"):
+        raise CanonError("ARG-INVALID", "via 는 web·mcp 중 하나예요.")
+    text = text if isinstance(text, str) else ""
+    if not text.strip():
+        raise CanonError("ARG-INVALID", "문의 글이 비었어요.")
+    page = page if page in TICKET_PAGES else "other"
+    hint = "privacy?" if kind != "privacy" and _PRIVACY_HINT.search(text) else ""
+    tid = new_id("tk")
+    with tx() as c:
+        n_me = _one(c, f"SELECT count(*) AS n FROM tickets WHERE user_id=%s AND created >= {_KST_TODAY}", (uid,))["n"]
+        if n_me >= TICKET_DAILY_USER:
+            raise CanonError("RATE-LIMIT", f"오늘 문의는 {TICKET_DAILY_USER}건까지예요.", "내일 다시 보내 주세요.")
+        n_all = _one(c, f"SELECT count(*) AS n FROM tickets WHERE created >= {_KST_TODAY}")["n"]
+        if n_all >= TICKET_DAILY_ALL:
+            raise CanonError("RATE-LIMIT", "오늘은 문의가 많아 더 받을 수 없어요.", "내일 다시 보내 주세요.")
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via,page,tool,ua_family,hint) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (tid, uid, kind, text, via, page, tool or "", ua_family or "", hint))
+        if kind == "privacy":
+            c.execute("INSERT INTO privacy_log (id,kind,via,ticket_id,received) "
+                      "VALUES (%s,'other','form',%s,(now() AT TIME ZONE 'Asia/Seoul')::date)", (new_id("pl"), tid))
+        return _iso(_one(c, "SELECT id,kind,status,created FROM tickets WHERE id=%s", (tid,)))
+
+
+def tickets_mine(uid, limit=50):
+    """「내 문의」 — 본인 글과 상태만. admin_note·hint 는 넣지 않는다. 최근 50건."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated FROM tickets WHERE user_id=%s "
+                                         "ORDER BY created DESC LIMIT %s", (uid, limit))]
+
+
+def is_admin(uid) -> bool:
+    """관리자 = env CANON_ADMIN_USER_IDS 의 내부 user id(main 이 시작 때 채운다)."""
+    return bool(uid) and uid in ADMIN_USER_IDS
+
+
+def tickets_admin_counts():
+    """관리자 띠. open = 아직 확인 안 한 문의(status open) · privacy_open = 종결 안 된 개인정보 요청(10일 시계가 도는 것)."""
+    with tx() as c:
+        return dict(_one(c, "SELECT count(*) FILTER (WHERE status='open') AS open, "
+                            "count(*) FILTER (WHERE kind='privacy' AND status NOT IN ('done','wontfix')) AS privacy_open FROM tickets"))
+
+
+_TICKET_ADMIN_COLS = ("SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.hint,t.admin_note,"
+                      "t.created,t.updated,t.closed_at,u.email FROM tickets t JOIN users u ON u.id=t.user_id ")
+
+
+def tickets_all(limit=TICKET_ADMIN_LIST):
+    """관리자 「문의함」 — 전체 사용자 문의 최근 100건. 이메일·admin_note·hint 포함. 호출하는 쪽이 관리자인지 먼저 본다."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, _TICKET_ADMIN_COLS + "ORDER BY t.created DESC LIMIT %s", (limit,))]
+
+
+def _ticket_admin_row(c, tid):
+    r = _one(c, _TICKET_ADMIN_COLS + "WHERE t.id=%s", (tid,))
+    if not r:
+        raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+    return _iso(r)
+
+
+def ticket_set_status(tid, status):
+    """관리자 상태 변경. 다섯 상태 사이 어느 쪽으로든 옮긴다. 종결(done·wontfix)이면 closed_at = 처음 종결한 때(종결끼리 옮겨도 유지),
+    다시 열면 NULL(파기 대상에서 빠진다). updated 갱신. 감사 테이블은 β.
+    kind=privacy 면 같은 트랜잭션에서 privacy_log(ticket_id) — 종결: notified=KST 오늘(없을 때만)·result done→done/wontfix→refused,
+    다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다."""
+    if status not in TICKET_STATUSES:
+        raise CanonError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
+    with tx() as c:
+        r = _one(c, "UPDATE tickets SET status=%s, updated=now(), closed_at = CASE WHEN %s IN ('done','wontfix') "
+                    "THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=%s RETURNING kind", (status, status, str(tid)))
+        if not r:
+            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        if r["kind"] == "privacy":
+            if status in ("done", "wontfix"):
+                c.execute("UPDATE privacy_log SET notified = COALESCE(notified, (now() AT TIME ZONE 'Asia/Seoul')::date), result=%s "
+                          "WHERE ticket_id=%s", ("done" if status == "done" else "refused", str(tid)))
+            else:
+                c.execute("UPDATE privacy_log SET result=NULL WHERE ticket_id=%s", (str(tid),))
+        return _ticket_admin_row(c, str(tid))
+
+
+def ticket_set_note(tid, note):
+    """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신."""
+    if not isinstance(note, str):
+        raise CanonError("ARG-INVALID", "메모는 문자열이에요.")
+    check_len("admin_note", note, LIMIT_ADMIN_NOTE)
+    with tx() as c:
+        n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s", (note, str(tid))).rowcount
+        if not n:
+            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        return _ticket_admin_row(c, str(tid))
+
+
+def tickets_purge():
+    """종결(closed_at 있음) 180일 지난 문의를 지운다. 서버 시작 때 1회(main.lifespan) — 배치 잡 없음.
+    다시 연 문의(closed_at NULL)는 남는다. privacy_log 는 FK 가 없어 그대로. 지운 건수를 돌려준다."""
+    with tx() as c:
+        c.execute("SET LOCAL statement_timeout = '5s'")
+        return c.execute("DELETE FROM tickets WHERE closed_at < now() - make_interval(days => %s)", (TICKET_KEEP_DAYS,)).rowcount
 
 
 # ── 상태 한 벌 (화면과 도구가 같은 것을 본다) ─────────────
