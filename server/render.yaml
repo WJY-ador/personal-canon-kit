@@ -15,3 +15,7 @@ services:
         value: https://wealthy-technology-63-staging.authkit.app
       - key: CANON_PUBLIC_URL
         sync: false
+      - key: AUTHKIT_WEB_CLIENT_ID
+        value: client_01M56STKY61NSCEJCN6141YVEQ
+      - key: CANON_SESSION_SECRET
+        generateValue: true

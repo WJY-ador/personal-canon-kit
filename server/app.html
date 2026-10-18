@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>내 노트</title>
+<style>
+/* 「펼친 노트」 — 한 열, 종이 한 장. 라이트: 따뜻한 흰 바탕 + 산호 주색. 다크: 같은 온기의 어두운 종이.
+   상태색 6종은 Primer 10.4.0. 주색은 조작(버튼·링크·초점)에만. 형광펜(--mark)은 근거 구절과 그 인용에만. */
+:root {
+  color-scheme: light;
+  --bg: #FBF8F4; --paper: #FFFFFF; --ink: #2B2824; --muted: #6F685E; --meta: #9A9288; --line: #EFE8DF;
+  --accent: #E4705A; --on-accent: #FFFFFF; --accent-soft: #FDEDE8;
+  --ai: #8250DF; --ai-bg: #F4EEFF; --cand-bg: #FBF9FF; --cand-line: #D9CFF5;
+  --memo: #59636E; --memo-bg: #F0F1F2;
+  --mine: #1A7F37; --mine-bg: #E5F6EA;
+  --warn: #9A6700; --warn-bg: #FFF8C5;
+  --fail: #D1242F; --fail-bg: #FFEBE9;
+  --mark: #FFE98A; --mark-ink: #2B2824;
+  --shadow: 0 6px 24px rgba(43, 40, 36, .05); --paper-border: 0 solid transparent;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #221F1B; --paper: #2C2925; --ink: #F3EEE6; --muted: #B9B0A4; --meta: #847C72; --line: #3F3A34;
+    --accent: #F08E78; --on-accent: #221F1B; --accent-soft: #3B2A25;
+    --ai: #B9A8EC; --ai-bg: #342D3E; --cand-bg: #2E2B36; --cand-line: #4A4160;
+    --memo: #9198A1; --memo-bg: #35332F;
+    --mine: #3FB950; --mine-bg: #213223;
+    --warn: #D29922; --warn-bg: #362D1A;
+    --fail: #F85149; --fail-bg: #352421;
+    --mark: #6E5A1A; --mark-ink: #F3EEE6;
+    --shadow: none; --paper-border: 1px solid var(--line);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #221F1B; --paper: #2C2925; --ink: #F3EEE6; --muted: #B9B0A4; --meta: #847C72; --line: #3F3A34;
+  --accent: #F08E78; --on-accent: #221F1B; --accent-soft: #3B2A25;
+  --ai: #B9A8EC; --ai-bg: #342D3E; --cand-bg: #2E2B36; --cand-line: #4A4160;
+  --memo: #9198A1; --memo-bg: #35332F;
+  --mine: #3FB950; --mine-bg: #213223;
+  --warn: #D29922; --warn-bg: #362D1A;
+  --fail: #F85149; --fail-bg: #352421;
+  --mark: #6E5A1A; --mark-ink: #F3EEE6;
+  --shadow: none; --paper-border: 1px solid var(--line);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); overflow-wrap: anywhere; word-break: keep-all;
+  font: 17px/1.75 "Pretendard Variable", Pretendard, "Apple SD Gothic Neo", "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 8px; }
+.wrap { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+
+/* 머리 */
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 28px; }
+.bar h1 { font-size: 15px; margin: 0; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+.bar .right { display: flex; align-items: center; gap: 8px; }
+.pill { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border-radius: 999px;
+  background: var(--paper); color: var(--muted); font-size: 13px; font-weight: 600; border: var(--paper-border); box-shadow: 0 1px 0 rgba(43, 40, 36, .05); }
+.pill.warn { color: var(--warn); }
+nav.tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+nav.tabs a { display: inline-flex; align-items: center; min-height: 40px; padding: 0 18px; border-radius: 999px; color: var(--muted);
+  text-decoration: none; font-size: 15px; font-weight: 600; }
+nav.tabs a:hover { background: var(--paper); }
+nav.tabs a.on { background: var(--accent); color: var(--on-accent); }
+.scope { color: var(--meta); font-size: 13px; padding: 6px 4px 0; }
+
+/* 버튼 */
+button, .btn { font: inherit; font-size: 15px; font-weight: 600; min-height: 44px; padding: 0 18px; border-radius: 14px; cursor: pointer;
+  background: var(--paper); color: var(--ink); border: 1px solid var(--line); display: inline-flex; align-items: center;
+  justify-content: center; gap: 6px; text-decoration: none; white-space: nowrap; transition: background .12s, transform .06s; }
+button:hover, .btn:hover { background: var(--accent-soft); }
+button:active, .btn:active { transform: translateY(1px); }
+button.primary, .btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 700;
+  font-size: 16px; min-height: 48px; padding: 0 22px; }
+button.primary:hover, .btn.primary:hover { background: color-mix(in srgb, var(--accent) 88%, var(--ink)); }
+button.small { min-height: 36px; padding: 0 12px; font-size: 14px; background: transparent; border-color: transparent; color: var(--accent); }
+button.small:hover { background: var(--accent-soft); }
+button:disabled, button:disabled:hover { cursor: default; opacity: .45; transform: none; background: var(--paper); color: var(--ink); border-color: var(--line); }
+button.primary:disabled { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+
+/* 띠 — 화면 전체에 걸리는 것만 */
+.bands { padding-top: 16px; }
+.band { padding: 12px 18px; border-radius: 14px; margin-bottom: 12px; font-size: 14px; background: var(--paper); border: var(--paper-border); }
+.band.fail { background: var(--fail-bg); }
+
+/* 날짜·인사 */
+.day { display: flex; align-items: baseline; gap: 14px; margin: 26px 0 4px; }
+.day b { font-size: 44px; font-weight: 800; letter-spacing: -.03em; line-height: 1; }
+.day span { font-size: 15px; color: var(--muted); }
+.greet { font-size: 17px; color: var(--muted); margin: 0 0 22px; }
+
+/* 질문·기록 고르기 (둘 이상일 때만) */
+.pick { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+.pick a { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px; border-radius: 999px; background: var(--paper);
+  color: var(--ink); text-decoration: none; font-size: 14px; font-weight: 600; border: var(--paper-border); box-shadow: 0 1px 0 rgba(43, 40, 36, .05); max-width: 100%; }
+.pick a span { color: var(--meta); font-weight: 500; }
+.pick a.on { background: var(--ink); color: var(--bg); }
+.pick a.on span { color: var(--bg); opacity: .7; }
+
+/* 종이 */
+.paper { background: var(--paper); border-radius: 22px; padding: 36px 40px; box-shadow: var(--shadow); border: var(--paper-border); margin-bottom: 24px; }
+.eyebrow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--meta); font-weight: 600; letter-spacing: .02em; }
+h2.title { font-size: 30px; line-height: 1.3; margin: 8px 0 18px; letter-spacing: -.02em; font-weight: 800; }
+.nextline { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: 14px;
+  background: var(--accent-soft); font-size: 15px; margin-bottom: 30px; }
+.nextline .lbl { font-size: 12px; color: var(--accent); font-weight: 700; flex: none; }
+.nextline .txt { flex: 1 1 240px; min-width: 0; }
+.nextline details { flex-basis: 100%; font-size: 14px; color: var(--muted); }
+.say { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; color: var(--ink); }
+
+section.sec { margin-top: 30px; }
+section.sec:first-child { margin-top: 0; }
+.sechead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.sechead h3, section.sec > h3 { font-size: 14px; margin: 0 0 12px; font-weight: 700; color: var(--meta); letter-spacing: .02em; }
+.sechead h3 { margin: 0; }
+.count { color: var(--muted); font-weight: 500; margin-left: 6px; }
+.hint { color: var(--muted); font-size: 14px; margin: -4px 0 12px; }
+.empty { color: var(--muted); font-size: 15px; padding: 14px 18px; border-radius: 14px; background: var(--bg); }
+
+/* 판단·문장 */
+.cards { display: flex; flex-direction: column; gap: 10px; }
+.card { border-radius: 14px; padding: 16px 18px; background: var(--bg); }
+.card.mine { background: transparent; border-left: 4px solid var(--mine); border-radius: 0; padding: 2px 0 2px 18px; margin-bottom: 8px; }
+.card.cand { border: 1.5px dashed var(--cand-line); background: var(--cand-bg); }
+.card .sent { margin: 0 0 8px; font-size: 16px; line-height: 1.6; }
+.card.mine .sent { font-size: 18px; font-weight: 600; line-height: 1.55; }
+.labels { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 10px 3px 8px; border-radius: 999px; line-height: 1.6; }
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.b-ai { color: var(--ai); background: var(--ai-bg); }
+.b-memo { color: var(--memo); background: var(--memo-bg); }
+.b-mine { color: var(--mine); background: var(--mine-bg); }
+.b-wait { color: var(--muted); background: transparent; border: 1px dashed color-mix(in srgb, var(--muted) 50%, transparent); }
+.b-wait::before { background: transparent; border: 1.5px solid currentColor; width: 5px; height: 5px; }
+.b-off { color: var(--muted); background: var(--bg); }
+.b-off::before { display: none; }
+.b-warn { color: var(--warn); background: var(--warn-bg); }
+.b-fail { color: var(--fail); background: var(--fail-bg); }
+.ev { font-size: 14px; color: var(--muted); line-height: 1.6; }
+.ev a { cursor: pointer; text-decoration: none; font-weight: 600; }
+.ev q { quotes: "“" "”"; }
+.cta { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 16px 0 4px; }
+.cta .hint { margin: 0; }
+
+/* 기록 목록 — 날짜 큰 숫자 */
+.recs { list-style: none; margin: 0; padding: 0; }
+.recs li { border-top: 1px solid var(--line); }
+.recs li:first-child { border-top: 0; }
+.recs a { display: grid; grid-template-columns: 56px 1fr; gap: 14px; align-items: start; padding: 12px 0; color: var(--ink); text-decoration: none; cursor: pointer; border-radius: 10px; }
+.recs a:hover { background: var(--bg); }
+.recs .d { font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; }
+.recs .d small { display: block; font-size: 11px; color: var(--meta); font-weight: 600; letter-spacing: .04em; }
+.recs .t { font-size: 16px; font-weight: 600; line-height: 1.5; }
+.recs .s { font-size: 13px; color: var(--meta); }
+.recs a.on .t { color: var(--accent); }
+
+details > summary { cursor: pointer; color: var(--muted); font-size: 14px; min-height: 32px; padding: 4px 0; }
+details.fold { margin-top: 20px; }
+.partfail { background: var(--fail-bg); border-radius: 14px; padding: 12px 16px; font-size: 14px; }
+.partfail b { color: var(--fail); }
+.partfail p { margin: 4px 0; }
+.tech { font-size: 12px; color: var(--meta); }
+.tech code { font-size: 12px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 13px; overflow-wrap: anywhere; }
+.runs { margin-top: 30px; font-size: 14px; }
+.runs.bad { background: var(--warn-bg); border-radius: 14px; padding: 12px 16px; }
+.runs.bad b { color: var(--warn); }
+
+/* 첫 실행 */
+.first h2 { font-size: 26px; margin: 0 0 6px; font-weight: 800; letter-spacing: -.02em; }
+.first > p { color: var(--muted); margin: 0 0 20px; }
+.steps { list-style: none; padding: 0; margin: 0 0 20px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.steps li { background: var(--bg); border-radius: 14px; padding: 14px; font-size: 14px; color: var(--muted); }
+.steps li b { display: block; color: var(--ink); font-size: 15px; margin-bottom: 2px; }
+.steps li.cand { border: 1.5px dashed var(--cand-line); background: var(--cand-bg); }
+.steps li.mine { border-left: 4px solid var(--mine); }
+
+/* 원문 */
+.doc { background: var(--bg); border-radius: 18px; padding: 24px 28px; line-height: 1.8; }
+.doc p { margin: 0 0 16px; white-space: pre-wrap; }
+.doc p:last-child { margin-bottom: 0; }
+.doc .h { font-weight: 700; font-size: 17px; }
+.doc .dim { color: var(--muted); }
+mark { background: var(--mark); color: var(--mark-ink); padding: 1px 3px; border-radius: 3px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.attach { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 14px; font-size: 14px; line-height: 1.6; }
+.attach h4 { margin: 0 0 8px; font-size: 12px; color: var(--meta); font-weight: 600; letter-spacing: .02em; }
+.attach dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0; }
+.attach dt { color: var(--meta); font-size: 13px; }
+.attach dd { margin: 0; }
+.recmeta { color: var(--meta); font-size: 13px; margin: -10px 0 16px; }
+
+/* 대조 — 한 열: 질문 → 문장 → 근거 → 결정 */
+.rvhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 24px 0 16px; }
+.rvhead h2 { font-size: 22px; margin: 0; font-weight: 800; letter-spacing: -.01em; }
+.rvhead .pos { color: var(--meta); font-size: 14px; margin-left: 8px; font-weight: 500; }
+.rvcard { background: var(--cand-bg); border: 1.5px dashed var(--cand-line); border-radius: 18px; padding: 22px 24px; margin-bottom: 18px; }
+.rvq { font-size: 13px; color: var(--meta); font-weight: 600; }
+.rvcard .sent { font-size: 21px; line-height: 1.5; margin: 8px 0 12px; font-weight: 700; letter-spacing: -.01em; }
+.srchead { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+.srchead h3 { margin: 0; font-size: 13px; font-weight: 700; color: var(--meta); }
+.rvsrc .doc { background: var(--paper); box-shadow: var(--shadow); border: var(--paper-border); }
+.srcwarn { background: var(--fail-bg); border-radius: 14px; padding: 12px 16px; font-size: 14px; margin-bottom: 10px; }
+.srcnote { background: var(--warn-bg); border-radius: 14px; padding: 10px 16px; font-size: 14px; margin-bottom: 10px; }
+.dest { font-size: 14px; color: var(--muted); margin: 22px 0 10px; line-height: 1.6; }
+.acts { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.acts .primary { grid-column: 1 / -1; }
+.later { font-size: 13px; color: var(--meta); margin: 12px 0 0; line-height: 1.6; }
+.blocked { font-size: 14px; color: var(--fail); font-weight: 600; margin: 10px 0 0; }
+.rvnav { display: flex; gap: 8px; justify-content: center; margin: 26px 0 8px; flex-wrap: wrap; }
+.done { text-align: center; padding: 48px 16px; }
+
+dialog { border: var(--paper-border); border-radius: 22px; padding: 0; width: min(760px, calc(100vw - 32px));
+  background: var(--paper); color: var(--ink); box-shadow: 0 24px 64px rgba(0, 0, 0, .18); }
+dialog::backdrop { background: rgba(43, 40, 36, .4); }
+dialog .dh { display: flex; justify-content: space-between; align-items: start; gap: 12px; padding: 18px 24px; border-bottom: 1px solid var(--line); }
+dialog .dh b { font-size: 18px; }
+dialog .db { padding: 18px 24px; max-height: 72vh; overflow: auto; }
+.foot { color: var(--meta); font-size: 12px; padding: 8px 0 40px; }
+
+@media (max-width: 640px) {
+  .wrap { padding: 0 16px; }
+  .paper { padding: 26px 22px; border-radius: 18px; }
+  h2.title { font-size: 26px; }
+  .day b { font-size: 36px; }
+  .steps { grid-template-columns: 1fr; }
+  .doc { padding: 20px; }
+  .rvcard .sent { font-size: 19px; }
+  .acts { position: sticky; bottom: 0; background: var(--bg); padding: 12px 0 14px; }
+}
+@media (prefers-reduced-motion: reduce) { button, .btn { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><h1>내 노트</h1>
+    <div class="right"><span id="who" class="recmeta" style="margin:0"></span><button class="small" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><button class="small" id="logout">로그아웃</button></div></div>
+  <nav class="tabs" id="nav" aria-label="내 탭"></nav>
+  <div class="scope">모든 질문과 기록</div>
+  <div class="bands" id="bands"></div>
+</div>
+<main class="wrap" id="view"></main>
+<div class="wrap foot" id="foot"></div>
+<dialog id="dlg" aria-labelledby="dlg-title"><div class="dh"><div><b id="dlg-title"></b><div id="dlg-meta" class="recmeta" style="margin:2px 0 0"></div></div>
+  <button class="small" id="dlg-close">닫기</button></div><div class="db" id="dlg-body"></div></dialog>
+<script>
+"use strict";
+// ?theme=light|dark 로 OS 설정을 덮어쓴다 — 스크린샷·확인용. 저장하지 않는다.
+{ const t = new URLSearchParams(location.search).get("theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; }
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const $ = id => document.getElementById(id);
+let S = null, loadedAt = "";
+const recCache = {};
+
+// ── 날짜·이름 ─────────────────────────────────────────
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+// 서버 시각은 UTC(ISO, 오프셋 포함) — 보는 사람의 시간대로 바꿔 그린다.
+const toDate = iso => { const d = new Date(iso || ""); return isNaN(d) ? null : d; };
+const pad2 = n => String(n).padStart(2, "0");
+function md(iso) { const d = toDate(iso); return d ? `${d.getMonth() + 1}월 ${d.getDate()}일` : ""; }
+function mdhm(iso) { const d = toDate(iso); return d ? `${d.getMonth() + 1}월 ${d.getDate()}일 ${pad2(d.getHours())}:${pad2(d.getMinutes())}` : ""; }
+function dayParts(iso) { const d = toDate(iso); return d ? {d: d.getDate(), mo: d.getMonth() + 1} : {d: "", mo: ""}; }
+const ok = part => !S.read || !S.read[part] || S.read[part].ok;
+const qById = id => (S.questions || []).find(q => q.id === id);
+const recById = id => (S.journal || []).find(j => j.id === id);
+function recLabel(id) {
+  const r = recById(id);
+  if (!r) return "찾을 수 없는 기록";
+  if (r.broken) return "읽지 못한 기록";
+  return `${r.title} · ${md(r.created)}`;
+}
+function origin(c) {
+  const base = c.origin === "ai" ? "AI가 쓴 문장" : "내가 쓴 메모";
+  return `<span class="badge ${c.origin === "ai" ? "b-ai" : "b-memo"}">${base}${c.edited_by_user ? " · 내가 고침" : ""}</span>`;
+}
+function decision(c) {
+  if (c.status === "confirmed") return `<span class="badge b-mine">내 판단</span>`;
+  if (c.status === "excluded") return `<span class="badge b-off">남기지 않음</span>`;
+  return `<span class="badge b-wait">아직 안 정함</span>`;
+}
+
+// ── 못 읽음 표시 — 서버의 조치 문장(명령어 포함)은 그리지 않고 코드로 사람 말을 고른다 ──
+const WHAT = {
+  "RECORD-MISSING": "기록이 지워졌거나 찾을 수 없어요.",
+  "UNAUTHORIZED": "로그인이 풀렸어요.",
+  "OFFLINE": "서버에 연결하지 못했어요.",
+};
+const FIXHINT = "새로 고침해도 그대로면 다시 로그인해 보세요.";
+function techInfo(err) {
+  if (!err) return "";
+  // 내부 번호·명령어는 화면에 내지 않는다 — 지원이 필요하면 진단 파일이 따로 있다.
+  const msg = String(err.msg || "");
+  return `<details class="tech"><summary>기술 정보</summary><code>${esc(err.code)}</code> ${esc(msg)}</details>`;
+}
+function partFail(err, what) {
+  return `<div class="partfail" role="alert"><b>${esc(what || "이 부분")}을 읽지 못했어요 · 나머지는 정상</b>
+    <p>${esc(WHAT[err && err.code] || "읽는 중에 문제가 생겼어요.")} ${esc(FIXHINT)}</p>
+    ${techInfo(err)}</div>`;
+}
+function sayLine(phrase) {
+  return `<div class="say">연결한 AI 대화에서 「${esc(phrase)}」라고 말하기 <button class="small" data-copy="${esc(phrase)}">문장 복사</button></div>`;
+}
+
+// ── 불러오기 ─────────────────────────────────────────
+async function load() {
+  let next;
+  try {
+    const r = await fetch("/api/state", {cache: "no-store"});
+    if (r.status === 401) { location.href = "/login"; return; }
+    next = await r.json();
+  } catch (e) {
+    $("bands").innerHTML = `<div class="band fail" role="alert"><b>서버에 연결하지 못했어요.</b> 잠시 뒤 새로 고침해 주세요.
+      ${loadedAt ? `아래 화면은 ${esc(loadedAt)}에 불러온 내용이에요.` : ""}</div>`;
+    return;
+  }
+  S = next;
+  loadedAt = mdhm(S.generated);
+  render();
+}
+
+function tabsList() {
+  const tabs = ok("tabs") ? (S.tabs || []).slice() : [];
+  if (!tabs.length) tabs.push({id: "home", label: "시작", blocks: ["sheet", "candidates", "next"], virtual: true},
+                              {id: "journal", label: "기록", blocks: ["journal", "next", "candidates"], virtual: true});
+  return tabs;
+}
+function route() {
+  const p = decodeURIComponent(location.hash.slice(1)).split("/");
+  return {tab: p[0] || "", a: p[1] || "", b: p[2] || "", c: p[3] || ""};
+}
+
+function render() {
+  const R = route();
+  const tabs = tabsList();
+  const tab = tabs.find(t => t.id === R.tab) || tabs[0];
+  $("nav").innerHTML = tabs.map(t => `<a href="#${esc(t.id)}" class="${t.id === tab.id ? "on" : ""}"${t.id === tab.id ? ' aria-current="page"' : ""}>${esc(t.label)}</a>`).join("");
+  $("who").textContent = S.user && S.user.email ? S.user.email : "";
+  $("foot").textContent = `여기서 바꾸는 건 문장의 결정뿐이에요. 기록·질문·후보는 연결한 AI 대화(ChatGPT·Claude)에서 남겨요.${loadedAt ? ` 불러온 시각 ${loadedAt}.` : ""}`;
+  let b = "";
+  if (!ok("meta")) {
+    $("bands").innerHTML = b;
+    $("view").innerHTML = `<div class="paper">${partFail(S.read.meta.error, "이 데이터 폴더")}</div>`;
+    return;
+  }
+  if (!ok("tabs")) b += `<div class="band fail" role="alert"><b>탭 설정을 읽지 못해 기본 화면을 보여 드려요.</b> 내 탭은 지워지지 않았어요.
+      ${esc(WHAT[S.read.tabs.error.code] || "")} ${esc(FIXHINT)}${techInfo(S.read.tabs.error)}</div>`;
+  $("bands").innerHTML = b;
+
+  if (R.a === "review") return renderReview(tab, R.b, parseInt(R.c || "0", 10) || 0);
+  const kind = tab.blocks[0] === "journal" ? "record" : "question";
+  if (kind === "record") renderRecordTab(tab, R.a);
+  else renderQuestionTab(tab, R.a);
+}
+
+// ── 날짜·인사 줄 ─────────────────────────────────────
+function dayLine() {
+  const now = new Date();
+  const cs = ok("candidates") ? (S.candidates || []) : [];
+  const mine = cs.filter(c => c.status === "confirmed").length, wait = cs.filter(c => c.status === "pending").length;
+  const n = ok("journal") ? (S.journal || []).length : 0;
+  let g;
+  if (!n && !cs.length) g = "아직 비어 있어요. 오늘 있었던 일 한 줄이면 돼요.";
+  else if (wait) g = `남긴 판단 ${mine}개, 아직 안 정한 문장이 ${wait}개 있어요.`;
+  else if (mine) g = `남긴 판단 ${mine}개. 정할 문장은 다 봤어요.`;
+  else g = `기록 ${n}편이 있어요. 후보를 뽑으면 여기서 정할 수 있어요.`;
+  return `<div class="day"><b>${now.getDate()}</b><span>${now.getMonth() + 1}월 ${DOW[now.getDay()]}요일</span></div><p class="greet">${esc(g)}</p>`;
+}
+
+// ── 다음 할 일 한 줄 ──────────────────────────────────
+function nextReviewsHere(qid) {
+  const n = S.next;
+  if (!qid || !n || n.kind !== "review") return false;
+  const c = (S.candidates || []).find(x => x.id === n.target);
+  return !!c && c.question_id === qid && pendingOf(qid).length > 0;
+}
+const SAY = {record: "기록 남기자", digest: "후보 뽑아 줘", question: "질문 하나 남길게", free: "기록 남기자"};
+function nextLine(tab, qid) {
+  const n = S.next;
+  if (!n || typeof n !== "object") return "";
+  let how = "";
+  if (n.kind !== "review" && SAY[n.kind]) how = `<details><summary>어떻게 하나요?</summary>${sayLine(SAY[n.kind])}</details>`;
+  return `<div class="nextline"><span class="lbl">다음 할 일</span><span class="txt">${esc(n.text)}</span>${how}</div>`;
+}
+
+// ── 질문형 탭 ─────────────────────────────────────────
+const pendingOf = qid => (S.candidates || []).filter(c => c.question_id === qid && c.status === "pending");
+function pickQuestions(tab, qs, sel) {
+  if (qs.length < 2) return "";
+  return `<nav class="pick" aria-label="질문 고르기">${qs.map(q => {
+    const w = pendingOf(q.id).length;
+    const on = sel === q.id;
+    return `<a href="#${esc(tab.id)}/${esc(q.id)}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${esc(q.text)}${w ? `<span>${w}</span>` : ""}</a>`;
+  }).join("")}</nav>`;
+}
+function renderQuestionTab(tab, sel) {
+  const bl = new Set(tab.blocks);
+  const qs = ok("questions") ? (S.questions || []) : [];
+  const q = qs.find(x => x.id === sel) || qs[0];
+  let body;
+  if (!ok("questions")) {
+    body = partFail(S.read.questions.error, "질문 목록");
+  } else if (!q) {
+    body = firstRun(tab, bl);
+  } else {
+    body = `<div class="eyebrow">질문</div><h2 class="title">${esc(q.text)}</h2>
+      ${bl.has("next") ? nextLine(tab, q.id) : ""}
+      ${bl.has("sheet") || bl.has("candidates") ? sheetSections(tab, q) : ""}
+      ${bl.has("journal") ? recentRecords() : ""}
+      ${bl.has("status") ? runStatus() : ""}`;
+  }
+  $("view").innerHTML = dayLine() + pickQuestions(tab, qs, q ? q.id : "") + `<div class="paper">${body}</div>`;
+}
+
+function firstRun(tab, bl) {
+  const n = (S.journal || []).length;
+  return `<div class="first"><h2>최근에 겪은 일을 한 편 적어볼까요?</h2><p>질문은 나중에 정해도 돼요.${n ? ` 지금 기록이 ${n}편 있어요.` : ""}</p>
+    <ol class="steps"><li><b>기록</b>겪은 일을 내 말로 적어요.</li>
+    <li class="cand"><b>후보</b>기록에서 판단이 될 만한 문장을 뽑아요. 아직 내 판단은 아니에요.</li>
+    <li class="mine"><b>내 판단</b>원문과 대조해 내가 남긴 문장만 쌓여요.</li></ol>
+    ${sayLine("기록 남기자")}</div>
+    ${bl.has("status") ? runStatus() : ""}`;
+}
+
+function evLine(c) {
+  return `<div class="ev">근거 <a data-rec="${esc(c.record_id)}" data-quote="${esc(c.quote)}" tabindex="0" role="button">${esc(recLabel(c.record_id))}</a> · <q><mark>${esc(c.quote)}</mark></q></div>`;
+}
+function recRow(id, on) {
+  const r = recById(id);
+  const dp = dayParts(r ? r.created : "");
+  const title = !r ? "찾을 수 없는 기록" : r.broken ? "읽지 못한 기록" : r.title;
+  return `<li><a data-rec="${esc(id)}" tabindex="0" role="button" class="${on ? "on" : ""}"><div class="d">${esc(dp.d)}<small>${dp.mo ? dp.mo + "월" : ""}</small></div>
+    <div><div class="t">${esc(title)}</div><div class="s">${esc(r && r.excerpt ? r.excerpt : "")}</div></div></a></li>`;
+}
+
+function sheetSections(tab, q) {
+  if (!ok("candidates")) return `<section class="sec">${partFail(S.read.candidates.error, "문장 목록")}</section>`;
+  const cs = (S.candidates || []).filter(c => c.question_id === q.id);
+  const mine = cs.filter(c => c.status === "confirmed"), wait = cs.filter(c => c.status === "pending"),
+        off = cs.filter(c => c.status === "excluded");
+  let h = `<section class="sec"><h3>내 판단<span class="count">${mine.length}</span></h3>
+    ${mine.length ? `<div class="cards">${mine.map(c => `<div class="card mine"><p class="sent">${esc(c.text)}</p>
+      <div class="labels">${decision(c)}${origin(c)}</div>${evLine(c)}</div>`).join("")}</div>`
+      : `<div class="empty">아직 내 판단이 없어요. 아래 문장을 원문과 대조해 남기면 여기에 쌓여요.</div>`}</section>`;
+  h += `<section class="sec"><h3>아직 안 정한 문장<span class="count">${wait.length}</span></h3>
+    ${wait.length ? `<div class="cards">${wait.map(c => `<div class="card cand"><p class="sent">${esc(c.text)}</p>
+      <div class="labels">${origin(c)}${decision(c)}</div></div>`).join("")}</div>
+      <div class="cta"><p class="hint">남기기 전까진 내 판단이 아니에요.</p><a class="btn primary" href="#${esc(tab.id)}/review/${esc(q.id)}/0">원문과 대조하기 · ${wait.length}개</a></div>`
+      : `<div class="empty">${cs.length ? "정할 문장이 남아 있지 않아요." : "아직 이 질문에 뽑힌 문장이 없어요. 기록에서 후보를 뽑으면 여기에 떠요."}</div>`}</section>`;
+  if (off.length) h += `<details class="fold"><summary>남기지 않은 문장 보기 · ${off.length}개</summary><div class="cards">${off.map(c =>
+      `<div class="card cand"><p class="sent">${esc(c.text)}</p><div class="labels">${origin(c)}${decision(c)}</div>${evLine(c)}</div>`).join("")}</div></details>`;
+  const recs = [...new Set(cs.map(c => c.record_id))];
+  if (recs.length) h += `<section class="sec"><h3>연결된 기록<span class="count">${recs.length}</span></h3>
+    <ul class="recs">${recs.map(r => recRow(r, false)).join("")}</ul></section>`;
+  return h;
+}
+
+function recentRecords() {
+  if (!ok("journal")) return `<section class="sec">${partFail(S.read.journal.error, "기록 목록")}</section>`;
+  const js = (S.journal || []).slice(0, 8);
+  return `<section class="sec"><h3>최근 기록<span class="count">${(S.journal || []).length}</span></h3>
+    ${js.length ? `<ul class="recs">${js.map(j => recRow(j.id, false)).join("")}</ul>` : `<div class="empty">아직 기록이 없어요.</div>`}</section>`;
+}
+
+function runStatus() { return ""; }
+
+// ── 기록형 탭 — 종이 위에 고른 기록 본문, 아래에 날짜 목록 ──
+function renderRecordTab(tab, sel) {
+  const bl = new Set(tab.blocks);
+  const js = ok("journal") ? (S.journal || []) : [];
+  const j = js.find(x => x.id === sel) || js[0];
+  let body;
+  if (!ok("journal")) body = partFail(S.read.journal.error, "기록 목록");
+  else if (!j) body = firstRun(tab, bl);
+  else {
+    const cs = (S.candidates || []).filter(c => c.record_id === j.id);
+    const q = qById(j.question_id);
+    body = `<div class="eyebrow">기록${q ? ` · ${esc(q.text)}` : ""}</div><h2 class="title">${esc(j.broken ? "읽지 못한 기록" : j.title)}</h2>
+      ${bl.has("next") ? nextLine(tab, "") : ""}
+      <div id="recbody"><div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></div>
+      ${(bl.has("candidates") || bl.has("sheet")) && cs.length ? `<section class="sec"><h3>이 기록에서 나온 문장<span class="count">${cs.length}</span></h3>
+        <div class="cards">${cs.map(c => `<div class="card ${c.status === "confirmed" ? "mine" : "cand"}"><p class="sent">${esc(c.text)}</p>
+        <div class="labels">${decision(c)}${origin(c)}</div></div>`).join("")}</div></section>` : ""}
+      ${js.length > 1 ? `<section class="sec"><h3>다른 기록<span class="count">${js.length - 1}</span></h3>
+        <ul class="recs">${js.filter(x => x.id !== j.id).slice(0, 12).map(x => `<li><a href="#${esc(tab.id)}/${esc(x.id)}">
+          <div class="d">${esc(dayParts(x.created).d)}<small>${dayParts(x.created).mo ? dayParts(x.created).mo + "월" : ""}</small></div>
+          <div><div class="t">${esc(x.broken ? "읽지 못한 기록" : x.title)}</div><div class="s">${esc(x.excerpt || "")}</div></div></a></li>`).join("")}</ul></section>` : ""}
+      ${bl.has("status") ? runStatus() : ""}`;
+  }
+  $("view").innerHTML = dayLine() + `<div class="paper">${body}</div>`;
+  if (j) fetchRec(j.id).then(r => {
+    const box = $("recbody");
+    if (!box) return;
+    box.innerHTML = r.ok ? `<div class="recmeta">${esc(mdhm(r.meta.created))} · ${esc(srcLabel(r.meta.source))}</div><div class="doc">${docHtml(r, "").html}</div>`
+                         : partFail({code: r.code, msg: r.msg}, "이 기록");
+  });
+}
+
+// ── 원문 그리기 ───────────────────────────────────────
+function fetchRec(id) {
+  if (!recCache[id]) recCache[id] = fetch("/api/journal?id=" + encodeURIComponent(id), {cache: "no-store"})
+    .then(async r => Object.assign({ok: r.ok}, await r.json()))
+    .catch(() => ({ok: false, code: "OFFLINE", msg: "서버에 연결하지 못했어요"}));
+  return recCache[id];
+}
+function srcLabel(s) {
+  if (!s) return "출처 없음";
+  if (s.startsWith("파일:")) return "파일에서 가져옴";
+  return s;
+}
+// 본문을 빈 줄 기준 문단으로 나눈다. 제목(# …)은 화면 제목과 겹쳐 뺀다.
+// 「이게 어디에 붙나」 절은 키트가 붙이는 양식이라 따로 그리고, 질문 ID 는 질문 문장으로 바꿔 보인다.
+function splitDoc(body, title) {
+  const parts = String(body || "").split(/\n\s*\n/).map(s => s.replace(/^\n+|\s+$/g, "")).filter(Boolean);
+  const out = [], attach = [];
+  let inAttach = false;
+  for (const p of parts) {
+    if (/^##\s*이게 어디에 붙나/.test(p)) { inAttach = true; continue; }
+    if (inAttach) { attach.push(p); continue; }
+    if (/^#\s/.test(p) && p.replace(/^#\s+/, "").trim() === String(title || "").trim()) continue;
+    out.push(p);
+  }
+  return {paras: out, attach: attach.join("\n")};
+}
+function paraHtml(p, quote) {
+  const isH = /^#{1,6}\s/.test(p);
+  const text = isH ? p.replace(/^#{1,6}\s+/, "") : p;
+  let inner = esc(text);
+  if (quote && text.includes(quote)) { const i = text.indexOf(quote);
+    inner = esc(text.slice(0, i)) + `<mark>${esc(quote)}</mark>` + esc(text.slice(i + quote.length)); }
+  return `<p class="${isH ? "h" : ""}">${inner}</p>`;
+}
+function attachHtml(raw) {
+  const KEYS = {"질문": "질문", "판단": "판단 메모", "다음": "다음", "출처": "출처"};
+  const rows = [];
+  for (const line of raw.split("\n")) {
+    const m = /^\s*-\s*([^:：]+)\s*[:：]\s*(.*)$/.exec(line);
+    if (!m || !m[2].trim()) continue;
+    let v = m[2].trim();
+    if (m[1].trim() === "질문") { const q = qById(v); v = q ? `「${q.text}」` : "연결된 질문을 찾을 수 없음"; }
+    rows.push(`<dt>${esc(KEYS[m[1].trim()] || m[1].trim())}</dt><dd>${esc(v)}</dd>`);
+  }
+  if (!rows.length) return "";
+  return `<div class="attach"><h4>이 기록이 붙는 곳</h4><dl>${rows.join("")}</dl></div>`;
+}
+function docHtml(r, quote) {
+  const d = splitDoc(r.body, r.title);
+  return {html: d.paras.map(p => paraHtml(p, quote)).join("") + attachHtml(d.attach), split: d};
+}
+
+async function openRec(id, quote) {
+  $("dlg-title").textContent = recLabel(id).split(" · ")[0];
+  $("dlg-meta").textContent = "";
+  $("dlg-body").innerHTML = `<p style="color:var(--muted)">원문을 불러오는 중이에요…</p>`;
+  $("dlg").showModal();
+  const r = await fetchRec(id);
+  if (!r.ok) { $("dlg-body").innerHTML = partFail({code: r.code, msg: r.msg}, "이 기록"); return; }
+  $("dlg-title").textContent = r.title;
+  $("dlg-meta").textContent = `${mdhm(r.meta.created)} · ${srcLabel(r.meta.source)}`;
+  $("dlg-body").innerHTML = `<div class="doc">${docHtml(r, quote || "").html}</div>`;
+}
+
+// ── 원문과 대조하기 (한 열, 한 장씩, 여기서 결정을 저장한다) ─────
+function renderReview(tab, qid, idx) {
+  const q = qById(qid);
+  const wait = pendingOf(qid);
+  const back = `#${tab.id}/${qid}`;
+  const head = (pos) => `<div class="rvhead"><h2>원문과 대조하기${pos ? `<span class="pos">${pos}</span>` : ""}</h2><a class="btn" href="${esc(back)}">닫기</a></div>`;
+  const nav = wait.length > 1 ? `<div class="rvnav"><a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${Math.max(0, idx - 1)}"${idx <= 0 ? ' aria-disabled="true" style="pointer-events:none;color:var(--muted)"' : ""}>이전 문장</a>
+      <a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${idx + 1}">다음 문장</a></div>` : "";
+  if (!ok("candidates")) { $("view").innerHTML = `${head("")}<div class="paper">${partFail(S.read.candidates.error, "문장 목록")}</div>`; return; }
+  if (!wait.length || idx >= wait.length) {
+    $("view").innerHTML = `${head("")}<div class="paper done"><b>${wait.length ? "이 질문의 문장을 끝까지 봤어요." : "대조할 문장이 없어요."}</b>
+      <p>${wait.length ? `아직 안 정한 문장 ${wait.length}개는 그대로 남아 있어요.` : "새 기록에서 후보를 뽑으면 여기에 떠요."}</p>
+      <a class="btn primary" href="${esc(back)}">질문으로 돌아가기</a></div>`;
+    return;
+  }
+  const c = wait[idx];
+  const qText = q ? q.text : "찾을 수 없는 질문";
+  $("view").innerHTML = `${head(`${idx + 1} / ${wait.length}`)}
+    <div class="rvcard"><div class="rvq">질문 · ${esc(qText)}</div>
+      <p class="sent">${esc(c.text)}</p>
+      <div class="labels">${origin(c)}${decision(c)}</div></div>
+    <div class="rvsrc" id="rvsrc"><div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></div>
+    <div class="rvact"><p class="dest">남기면 「${esc(qText)}」의 내 판단에 들어가요. 원문은 바뀌지 않아요.</p>
+      <div class="acts" id="rvacts">
+        <button class="primary" data-act="confirm" disabled>내 판단으로 남기기</button><button data-act="edit" disabled>고쳐서 남기기</button>
+        <button data-act="exclude" disabled>남기지 않기</button><a class="btn" href="#${esc(tab.id)}/review/${esc(qid)}/${idx + 1}">나중에 보기</a></div>
+      <div id="rvedit" hidden><textarea id="rvtext" rows="3" style="width:100%;font:inherit;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink)">${esc(c.text)}</textarea>
+        <div class="acts" style="margin-top:8px"><button class="primary" data-act="edit-save">고친 문장으로 남기기</button><button data-act="edit-cancel">취소</button></div></div>
+      <div id="rvwhy"></div></div>${nav}`;
+  $("rvacts").onclick = e => {
+    const b = e.target.closest("[data-act]"); if (!b) return;
+    if (b.dataset.act === "edit") { $("rvedit").hidden = false; $("rvtext").focus(); return; }
+    decide(c.id, b.dataset.act);
+  };
+  $("rvedit").onclick = e => {
+    const b = e.target.closest("[data-act]"); if (!b) return;
+    if (b.dataset.act === "edit-cancel") { $("rvedit").hidden = true; return; }
+    decide(c.id, "edit", $("rvtext").value);
+  };
+  fetchRec(c.record_id).then(r => {
+    if (!$("rvsrc")) return;
+    const why = $("rvwhy");
+    const enable = () => document.querySelectorAll("#rvacts button[data-act]").forEach(b => b.disabled = false);
+    if (!r.ok) {
+      $("rvsrc").innerHTML = `<div class="srchead"><h3>근거 원문</h3></div><div class="srcwarn"><b>원문을 열지 못했어요.</b> ${esc(WHAT[r.code] || "기록을 읽는 중에 문제가 생겼어요.")}
+        근거를 확인할 수 없어 이 문장은 남길 수 없어요. ${esc(FIXHINT)}${techInfo({code: r.code, msg: r.msg})}</div>`;
+      why.innerHTML = `<p class="blocked">원문을 찾지 못해 남길 수 없어요.</p>`;
+      return;
+    }
+    const quote = c.quote;
+    const meta = `<div class="srchead"><h3>근거 원문 · ${esc(r.title)}</h3><span class="recmeta" style="margin:0">${esc(md(r.meta.created))}</span></div>`;
+    const d = splitDoc(r.body, r.title);
+    const full = docHtml(r, quote).html;
+    const tech = `<details class="tech"><summary>기술 정보</summary>만든 시각 ${esc(mdhm(r.meta.created))} · 출처 ${esc(srcLabel(r.meta.source))} · 근거 구절 ${quote.length}자</details>`;
+    if (!String(r.body).includes(quote)) {
+      $("rvsrc").innerHTML = meta + `<div class="srcwarn"><b>근거 구절이 원문에 그대로 없어요.</b> 기록이 나중에 고쳐졌을 수 있어요.
+        찾던 구절: <q>${esc(quote)}</q></div><div class="doc">${full}</div>${tech}`;
+      why.innerHTML = `<p class="blocked">근거를 원문에서 찾지 못해 남길 수 없어요.</p>`;
+      return;
+    }
+    const at = d.paras.findIndex(p => p.includes(quote));
+    let body;
+    if (at < 0) {
+      body = `<div class="srcnote">근거 구절이 문단 경계에 걸쳐 있어 위치를 강조하지 못했어요. 전체 원문에서 확인해 주세요.</div><div class="doc">${full}</div>`;
+    } else {
+      const lo = Math.max(0, at - 1), hi = Math.min(d.paras.length - 1, at + 1);
+      body = `<div class="doc">${d.paras.slice(lo, hi + 1).map((p, i) => lo + i === at ? paraHtml(p, quote) : paraHtml(p, "").replace('<p class="', '<p class="dim ')).join("")}</div>
+        <details class="fold" style="margin-top:12px"><summary>전체 원문 보기</summary><div class="doc">${full}</div></details>`;
+    }
+    $("rvsrc").innerHTML = meta + body + tech;
+    enable();
+  });
+}
+
+// 결정 저장: confirm / exclude / edit(고친 문장을 pending 으로 저장한 뒤 바로 confirm — 이력 두 줄). 저장 뒤 상태를 다시 불러온다.
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body || {})});
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { location.href = "/login"; throw new Error("login"); }
+  if (!r.ok) throw Object.assign(new Error(j.msg || "저장하지 못했어요"), {code: j.code});
+  return j;
+}
+async function decide(cid, action, text) {
+  const why = $("rvwhy");
+  document.querySelectorAll("#rvacts button, #rvedit button").forEach(b => b.disabled = true);
+  try {
+    if (action === "edit") {
+      if (!String(text || "").trim()) throw new Error("고친 문장이 비었어요.");
+      await post("/api/candidate/decide", {candidate_id: cid, action: "edit", text});
+      await post("/api/candidate/decide", {candidate_id: cid, action: "confirm"});
+    } else {
+      await post("/api/candidate/decide", {candidate_id: cid, action});
+    }
+  } catch (e) {
+    if (e.message === "login") return;
+    document.querySelectorAll("#rvacts button, #rvedit button").forEach(b => b.disabled = false);
+    if (why) why.innerHTML = `<p class="blocked">${esc(e.message)}</p>`;
+    return;
+  }
+  for (const k in recCache) delete recCache[k];
+  await load();
+  window.scrollTo(0, 0);
+}
+
+// ── 이벤트 ───────────────────────────────────────────
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-rec]");
+  if (a) { e.preventDefault(); openRec(a.dataset.rec, a.dataset.quote || ""); return; }
+  const cp = e.target.closest("[data-copy]");
+  if (cp) {
+    const done = () => { const t = cp.textContent; cp.textContent = "복사했어요"; setTimeout(() => cp.textContent = t, 1500); };
+    if (navigator.clipboard) navigator.clipboard.writeText(cp.dataset.copy).then(done, () => {});
+  }
+});
+document.addEventListener("keydown", e => {
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-rec]")) { e.preventDefault(); e.target.click(); }
+});
+$("dlg-close").onclick = () => $("dlg").close();
+window.addEventListener("hashchange", () => { if (S) { render(); window.scrollTo(0, 0); } });
+$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); };
+$("logout").onclick = async () => { try { await fetch("/logout", {method: "POST"}); } catch (e) {} location.href = "/login"; };
+load();
+</script>
+</body>
+</html>

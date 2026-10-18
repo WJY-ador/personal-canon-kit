@@ -2,7 +2,8 @@
 
 사용자 결정: AuthKit JWT 검증(sub 우선, 처음 연결 땐 userinfo 의 검증된 이메일). 개발·시험은 CANON_DEV=1 + CANON_DEV_USER.
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
-환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app) · CANON_DEV/CANON_DEV_USER(개발만)
+환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
+          · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
 """
 import functools
 import os
@@ -26,6 +27,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 import auth
 import db
+import web
 
 INSTRUCTIONS = """이 서버는 사용자의 「내 판단 노트」다. 사용자의 기록에서 판단 후보를 찾고, 사용자가 원문과 대조해 남길지 정한다.
 
@@ -185,13 +187,6 @@ def profile_set(
 
 # ── 웹 ─────────────────────────────────────────────────
 
-async def api_state(request):
-    if not DEV:
-        return JSONResponse({"error": "unauthorized", "message": "웹 로그인은 아직 없어요."}, status_code=401)
-    uid = (await run_in_threadpool(db.user_by_email, os.environ.get("CANON_DEV_USER", "dev@local")))["id"]
-    return JSONResponse(await run_in_threadpool(db.state, uid))
-
-
 async def health(request):
     try:
         ok = await run_in_threadpool(db.ping)
@@ -225,10 +220,15 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
         db.close()
 
 
+# 웹 화면·로그인. Mount("/") 가 나머지를 전부 받으므로 웹 경로는 그 앞에 둔다.
+site = web.Web(ISSUER, PUBLIC_URL, _auth_kwargs.get("token_verifier"), DEV, os.environ.get("CANON_DEV_USER", "dev@local"))
+if not DEV and not site.login_ready:
+    print("[web] AUTHKIT_WEB_CLIENT_ID·CANON_SESSION_SECRET 이 없어 웹 로그인은 503 — MCP 는 정상", flush=True)
+
 app = Starlette(
     routes=[
         Route("/health", health),
-        Route("/api/state", api_state),
+        *site.routes(),
         Mount("/", app=mcp_app),
     ],
     lifespan=lifespan,

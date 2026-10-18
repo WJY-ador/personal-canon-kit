@@ -134,6 +134,14 @@ def user_by_subject(sub, email):
         return _iso(_one(c, "SELECT * FROM users WHERE id=%s", (uid,)))
 
 
+def user_get(uid):
+    with tx() as c:
+        r = _one(c, "SELECT id,email,created FROM users WHERE id=%s", (uid,))
+    if not r:
+        raise CanonError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
+    return _iso(r)
+
+
 def user_delete(uid):
     """계정 삭제 = 그 사용자 데이터 전체 삭제(cascade)."""
     with tx() as c:

@@ -3,6 +3,7 @@
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
 2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CANON_DEV 사용자)
 3) HTTP 시험: Starlette 앱을 ASGI 로 불러 토큰 → 사용자 결정, /health, PRM, 401 을 본다
+4) 웹 시험: /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -300,12 +301,93 @@ async def test_http():
     print("OK — HTTP 인증 경로 통과")
 
 
+# ── 4) 웹 로그인·API ────────────────────────────────────
+
+async def test_web():
+    import base64, hashlib
+    from urllib.parse import parse_qs, urlparse
+    site = main.site
+    verifier = main._auth_kwargs["token_verifier"]
+    fake_jwks(verifier)
+    site.client_id, site.dev, site.dev_user = "client_test", False, ""   # 운영처럼: DEV 폴백 없이 세션만
+    exchanged = []
+
+    async def fake_token_post(data):
+        exchanged.append(data)
+        return 200, {"access_token": make_token(), "token_type": "Bearer"}
+
+    def fake_userinfo(url, headers=None, timeout=None):
+        return _Resp({"sub": "user_test_sub", "email": "tester@example.com", "email_verified": True})
+
+    real_post, auth.httpx.post = auth.httpx.post, fake_userinfo
+    real_tp, site.token_post = site.token_post, fake_token_post
+    origin = {"origin": PUBLIC}
+    try:
+        if True:   # lifespan(MCP 세션 매니저)은 한 번만 돈다 — 웹 경로는 그것 없이 라우팅된다
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+                assert (await h.get("/app")).status_code == 302, "세션 없으면 /login 으로"
+                assert (await h.get("/api/state")).status_code == 401
+                assert (await h.post("/api/candidate/decide", json={}, headers=origin)).status_code == 401
+                r = await h.get("/login")
+                assert r.status_code == 302 and "canon_login" in r.headers.get("set-cookie", ""), r.headers
+                q = parse_qs(urlparse(r.headers["location"]).query)
+                assert q["client_id"] == ["client_test"] and q["resource"] == [RESOURCE] and q["code_challenge_method"] == ["S256"], q
+                assert q["redirect_uri"] == [f"{PUBLIC}/auth/callback"] and q["scope"] == ["openid email"], q
+                state = q["state"][0]
+                # state 틀림 → 400, 교환 안 함
+                r = await h.get("/auth/callback", params={"code": "c1", "state": "wrong"})
+                assert r.status_code == 400 and not exchanged
+                r = await h.get("/auth/callback", params={"code": "c1", "state": state})
+                assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
+                assert "canon_session" in r.headers.get("set-cookie", "")
+                d = exchanged[0]
+                chal = base64.urlsafe_b64encode(hashlib.sha256(d["code_verifier"].encode()).digest()).rstrip(b"=").decode()
+                assert chal == q["code_challenge"][0], "PKCE verifier 가 쿠키의 challenge 와 맞아야"
+                assert d["grant_type"] == "authorization_code" and d["code"] == "c1" and d["resource"] == RESOURCE
+                assert (await h.get("/app")).status_code == 200
+                st = (await h.get("/api/state")).json()
+                assert st["user"]["email"] == "tester@example.com", st.get("user")
+                uid = db.user_by_email("tester@example.com")["id"]
+                assert (await h.get("/api/journal", params={"id": "r_none"})).status_code == 404
+                qq = db.question_add(uid, "웹에서 결정 저장 시험")
+                rec = db.record_add(uid, "웹 기록", "회의에서 입력 담당을 먼저 정했다.", qq["id"])
+                added, _ = db.candidates_propose(uid, rec["id"], qq["id"], [{"text": "담당 먼저", "quote": "입력 담당을 먼저 정했다"}], "ai")
+                cid = added[0]
+                j = (await h.get("/api/journal", params={"id": rec["id"]})).json()
+                assert j["meta"]["created"] and j["meta"]["source"] and j["body"].startswith("회의에서"), j
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"})
+                assert r.status_code == 403, "Origin 없으면 거절"
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers={"origin": "https://evil.example"})
+                assert r.status_code == 403
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "bogus"}, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "edit", "text": "입력 담당을 먼저 정한다"}, headers=origin)
+                assert r.status_code == 200 and r.json()["status"] == "pending" and r.json()["edited_by_user"] is True, r.text
+                r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
+                assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
+                assert [x["action"] for x in db.candidate_history(uid, cid)] == ["edit", "confirm"]
+                r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+                assert (await h.post("/logout")).status_code == 403
+                r = await h.post("/logout", headers=origin)
+                assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
+                assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
+                # 서명 위조 쿠키
+                h.cookies.set("canon_session", site.sign({"uid": uid}, 60)[:-3] + "xxx")
+                assert (await h.get("/api/state")).status_code == 401, "서명 깨진 쿠키"
+    finally:
+        auth.httpx.post, site.token_post = real_post, real_tp
+        site.dev, site.dev_user = True, "tester@example.com"
+    print("OK — 웹 로그인·API 통과")
+
+
 async def run():
     cleanup()
     try:
         await test_verifier()
         await test_tools()
         await test_http()
+        await test_web()
     finally:
         cleanup()   # 후보·질문이 있는 사용자 삭제가 cascade 로 되는지도 여기서 확인된다
         with db.tx() as c:
