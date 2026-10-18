@@ -20,6 +20,8 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+TEMPLATES_DIR = Path(__file__).parent / "templates"   # 동결 템플릿 정의(template_author.py 가 만든다)
+BACKFILL_TEMPLATE = "author@1"                         # template_slot 백필 기준 판 — 열이 생기기 전에 시드된 판은 이것뿐
 
 PROFILE_KEYS = {
     "purpose": "이 노트로 하려는 일",
@@ -193,7 +195,8 @@ def init_schema(conn=None):
       1. PR① 마이그레이션(_migrate_pr1) — 옛 테이블이 있을 때만. schema.sql 보다 **먼저** 돈다:
          새 schema.sql 의 ix_hist_cand(user_id, …) 가 옛 candidate_history(user_id 없음)에서 컬럼 오류를 낼 수 있어서.
       2. schema.sql — CREATE … IF NOT EXISTS. 새 DB 는 여기서 바로 최종형, 옛 DB 는 no-op.
-      3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림)."""
+      3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림).
+      4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다."""
     if conn is None:
         with pool().connection() as c:
             _init_schema(c)
@@ -213,6 +216,40 @@ def _init_schema(c):
         q = col("candidates", "question_id")
         if q is not None and q["is_nullable"] == "NO":
             c.execute("ALTER TABLE candidates ALTER COLUMN question_id DROP NOT NULL")
+        for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
+            if not _has_col(c, t, "template_slot"):
+                c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
+        _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
+
+
+def template_slot_of(template, object_key, field_key=None):
+    """템플릿 슬롯 문자열 — 오브젝트 `author@1:principles` · 필드 `author@1:principles.register`."""
+    return f"{template}:{object_key}" + (f".{field_key}" if field_key else "")
+
+
+def template_frozen(template):
+    """동결 템플릿 파일 templates/<key>@<version>.json — {template_key, template_version, objects:[정규화 정의]}."""
+    return json.loads((TEMPLATES_DIR / f"{template}.json").read_text(encoding="utf-8"))
+
+
+def _backfill_template_slots(c):
+    """열이 생기기 전에 시드된 정의에 슬롯을 단다. 멱등(template_slot IS NULL 만), 전 사용자 대상.
+    오브젝트: id·key 가 동결 템플릿의 같은 쌍과 둘 다 같을 때. 필드: 그 슬롯이 잡힌 오브젝트 아래 key 가 템플릿 필드 key 인 것.
+    key 는 비교만 하고 값은 남기지 않는다. 한계: 사용자가 시드 전에 id·key 를 둘 다 템플릿과 똑같이 만들었으면 템플릿으로 잡힌다.
+    반환 (오브젝트 수, 필드 수)."""
+    tpl = template_frozen(BACKFILL_TEMPLATE)
+    name = f"{tpl['template_key']}@{tpl['template_version']}"
+    n_obj = n_field = 0
+    for d in tpl["objects"]:
+        slot = template_slot_of(name, d["key"])
+        n_obj += c.execute("UPDATE object_defs SET template_slot=%s WHERE template_slot IS NULL AND id=%s AND key=%s",
+                           (slot, d["id"], d["key"])).rowcount
+        # 필드는 오브젝트 슬롯이 이 판으로 잡힌 곳 아래에서만(이번에 잡힌 것 + 시드 표시 중 필드 표시가 빠진 것)
+        n_field += c.execute("UPDATE field_defs AS f SET template_slot = %s || '.' || f.key FROM object_defs AS o "
+                             "WHERE o.user_id = f.user_id AND o.id = f.object_id AND o.id = %s AND o.template_slot = %s "
+                             "AND f.template_slot IS NULL AND f.key = ANY(%s)",
+                             (slot, d["id"], slot, [f["key"] for f in d["fields"]])).rowcount
+    return n_obj, n_field
 
 
 def _has_table(c, t):
@@ -1092,6 +1129,16 @@ def definition_apply(uid, object_id, proposal_id, expected_revision):
                   (nd["key"], nd["label"], nd["semantic_kind"], Jsonb(nd["policy"]), rev, Jsonb([snap]), uid, object_id))
         out = _def_out(c, uid, _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id)))
     return out
+
+
+def template_slot_mark(uid, object_id, slot, field_slots):
+    """템플릿 시드 전용 — template_author.seed 가 definition_apply 직후 한 번 부른다. MCP·웹 경로는 부르지 않는다.
+    definition_apply 는 template_slot 을 건드리지 않으므로 뒤의 사용자 적용이 슬롯을 지우지 못한다."""
+    with tx() as c:
+        if c.execute("UPDATE object_defs SET template_slot=%s WHERE user_id=%s AND id=%s", (slot, uid, object_id)).rowcount != 1:
+            raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+        for fk, fs in field_slots.items():
+            c.execute("UPDATE field_defs SET template_slot=%s WHERE user_id=%s AND object_id=%s AND key=%s", (fs, uid, object_id, fk))
 
 
 def definition_history(uid, object_id):

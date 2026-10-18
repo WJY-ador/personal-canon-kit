@@ -7,6 +7,9 @@
 순서: 관계 대상이 먼저 적용돼야 해서 축 → 결정 → 기준 → 숙제 → 발행 → 접근 방식.
 라벨: 아래 LABELS 한 곳에서 바꾼다(정의 데이터라 적용 뒤에도 definition_propose 로 label 만 바꿀 수 있다).
 근거: notes/raw/2026-10-18_schema-round2-astra.md §3, notes/2026-10-18_2단계-정의층-구현계획.md §A·§F.
+계보: 적용 직후 db.template_slot_mark 로 object_defs·field_defs.template_slot 에 `author@1:<key>`·`author@1:<key>.<field>` 를 단다.
+동결: v1 = templates/author@1.json(frozen_doc() 덤프). TEMPLATE·LABELS 를 바꾸면 시험이 깨진다 — 바꾸려면
+      TEMPLATE_VERSION 을 올리고 새 판 파일을 만든다(옛 판 파일은 지우지 않는다).
 """
 import json
 import os
@@ -15,6 +18,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+
+TEMPLATE_KEY = "author"
+TEMPLATE_VERSION = 1
+TEMPLATE_NAME = f"{TEMPLATE_KEY}@{TEMPLATE_VERSION}"
+FROZEN_PATH = HERE / "templates" / f"{TEMPLATE_NAME}.json"
 
 # 오브젝트 화면 라벨 — 원작자가 고르는 중. 한 줄씩 바꾸면 오브젝트 라벨과 그 오브젝트를 가리키는 필드 라벨이 같이 바뀐다.
 LABELS = {
@@ -82,6 +90,11 @@ def normalized():
     return [db.normalize_definition(d) for d in TEMPLATE]
 
 
+def frozen_doc():
+    """동결 파일 내용. 새 판 파일 만들기: json.dumps(frozen_doc(), ensure_ascii=False, indent=2) + 줄바꿈."""
+    return {"template_key": TEMPLATE_KEY, "template_version": TEMPLATE_VERSION, "objects": normalized()}
+
+
 def seed(uid, log=print):
     """멱등 시드. 반환: [(key, 'applied'|'skipped', object_id)]."""
     import db
@@ -94,6 +107,8 @@ def seed(uid, log=print):
             continue
         p = db.definition_propose(uid, None, 0, d)
         a = db.definition_apply(uid, p["object_id"], p["proposal_id"], p["base_revision"])
+        db.template_slot_mark(uid, a["id"], db.template_slot_of(TEMPLATE_NAME, d["key"]),
+                              {f["key"]: db.template_slot_of(TEMPLATE_NAME, d["key"], f["key"]) for f in p["definition"]["fields"]})
         out.append((d["key"], "applied", a["id"]))
         log(f"적용 {d['key']} → {a['id']} revision {a['revision']} · 필드 {len(a['fields'])}개")
     return out

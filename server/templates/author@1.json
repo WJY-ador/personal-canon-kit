@@ -1,0 +1,368 @@
+{
+  "template_key": "author",
+  "template_version": 1,
+  "objects": [
+    {
+      "key": "axes",
+      "label": "축",
+      "semantic_kind": "collection",
+      "policy": {},
+      "fields": [
+        {
+          "key": "keywords",
+          "label": "검색어",
+          "value_type": "text_list",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        }
+      ],
+      "id": "od_axes"
+    },
+    {
+      "key": "decision_events",
+      "label": "결정",
+      "semantic_kind": "event",
+      "policy": {},
+      "fields": [
+        {
+          "key": "happened_on",
+          "label": "결정일",
+          "value_type": "date",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "project",
+          "label": "프로젝트",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "source_url",
+          "label": "원본 위치",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "claims",
+          "label": "판단",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "multiple": true
+        }
+      ],
+      "id": "od_events"
+    },
+    {
+      "key": "principles",
+      "label": "기준",
+      "semantic_kind": "principle",
+      "policy": {
+        "promotion": {
+          "confirmed_claims_min": 2,
+          "claim_field": "evidence_claims",
+          "distinct_events_min": 2,
+          "event_field": "evidence_events",
+          "event_claim_field": "claims"
+        }
+      },
+      "fields": [
+        {
+          "key": "register",
+          "label": "레지스터",
+          "value_type": "select",
+          "required": true,
+          "options": [
+            {
+              "value": "customer",
+              "label": "고객 업무"
+            },
+            {
+              "value": "work",
+              "label": "일하는 방식"
+            }
+          ],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "maturity",
+          "label": "완성도",
+          "value_type": "select",
+          "required": false,
+          "options": [
+            {
+              "value": "seed",
+              "label": "🌱"
+            },
+            {
+              "value": "growing",
+              "label": "🌿"
+            },
+            {
+              "value": "mature",
+              "label": "🌳"
+            }
+          ],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "evidence_claims",
+          "label": "근거 판단",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "multiple": true
+        },
+        {
+          "key": "evidence_events",
+          "label": "근거 결정",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "multiple": true
+        },
+        {
+          "key": "axes",
+          "label": "관심 축",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_axes",
+          "multiple": true
+        }
+      ],
+      "id": "od_principles"
+    },
+    {
+      "key": "open_questions",
+      "label": "숙제",
+      "semantic_kind": "collection",
+      "policy": {
+        "exactly_one_reference": [
+          "subject_principle",
+          "subject_event",
+          "subject_claim"
+        ]
+      },
+      "fields": [
+        {
+          "key": "subject_principle",
+          "label": "대상 기준",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_principles",
+          "multiple": false
+        },
+        {
+          "key": "subject_event",
+          "label": "대상 결정",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "multiple": false
+        },
+        {
+          "key": "subject_claim",
+          "label": "대상 판단",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "registered_on",
+          "label": "등록일",
+          "value_type": "date",
+          "required": true,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "state",
+          "label": "해결 상태",
+          "value_type": "select",
+          "required": true,
+          "options": [
+            {
+              "value": "open",
+              "label": "열림"
+            },
+            {
+              "value": "answered",
+              "label": "답함"
+            }
+          ],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "answer",
+          "label": "답 기록",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "record",
+          "target_object_id": null,
+          "multiple": false
+        }
+      ],
+      "id": "od_open_questions"
+    },
+    {
+      "key": "publications",
+      "label": "발행",
+      "semantic_kind": "collection",
+      "policy": {},
+      "fields": [
+        {
+          "key": "channel",
+          "label": "채널",
+          "value_type": "select",
+          "required": true,
+          "options": [
+            {
+              "value": "linkedin",
+              "label": "LinkedIn"
+            },
+            {
+              "value": "threads",
+              "label": "Threads"
+            },
+            {
+              "value": "other",
+              "label": "기타"
+            }
+          ],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "published_on",
+          "label": "발행일",
+          "value_type": "date",
+          "required": true,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "url",
+          "label": "발행 URL",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "key_line",
+          "label": "핵심 한 줄",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "materials",
+          "label": "재료",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "record",
+          "target_object_id": null,
+          "multiple": true
+        },
+        {
+          "key": "axes",
+          "label": "관심 축",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_axes",
+          "multiple": true
+        }
+      ],
+      "id": "od_publications"
+    },
+    {
+      "key": "craft",
+      "label": "접근 방식",
+      "semantic_kind": "collection",
+      "policy": {},
+      "fields": [
+        {
+          "key": "project",
+          "label": "프로젝트",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "approach",
+          "label": "요지",
+          "value_type": "text",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "related_events",
+          "label": "관련 결정",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "multiple": true
+        }
+      ],
+      "id": "od_craft"
+    }
+  ]
+}
