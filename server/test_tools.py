@@ -60,10 +60,20 @@ def fake_jwks(verifier):
     verifier.jwks.fetch_data = lambda: {"keys": [JWK]}
 
 
-def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_test_sub", alg="RS256", kid="k1"):
+_DEFAULT = object()
+
+
+def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_test_sub", alg="RS256", kid="k1",
+               scope=_DEFAULT, scp=None):
     now = int(time.time())
-    claims = {"iss": iss, "aud": aud, "sub": sub, "client_id": "client_test", "scope": "openid email",
+    claims = {"iss": iss, "aud": aud, "sub": sub, "client_id": "client_test",
               "iat": now, "exp": now + exp_in, "jti": f"t{now}"}
+    if scope is _DEFAULT:
+        scope = "openid email"
+    if scope is not None:
+        claims["scope"] = scope
+    if scp is not None:
+        claims["scp"] = scp
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": kid})
 
 
@@ -99,6 +109,15 @@ async def test_verifier():
     assert await v.verify_token(make_token(key="shared-secret-shared-secret-32by", alg="HS256")) is None, "HS256 거절"
     assert await v.verify_token(make_token(kid="unknown")) is None, "모르는 kid"
     assert await v.verify_token("not-a-jwt") is None, "형식 깨짐"
+    # scope 표현: 문자열·배열·없음 (없어도 거절 안 함 — 403 은 미들웨어 몫)
+    t = await v.verify_token(make_token(scope="openid email profile"))
+    assert t.scopes == ["openid", "email", "profile"], t.scopes
+    t = await v.verify_token(make_token(scope=None, scp=["openid", "email"]))
+    assert t is not None and t.scopes == ["openid", "email"], t
+    t = await v.verify_token(make_token(scope=None, scp="openid email"))
+    assert t is not None and t.scopes == ["openid", "email"], t
+    t = await v.verify_token(make_token(scope=None))
+    assert t is not None and t.scopes == [], t
     print("OK — 인증 단위 시험 통과")
 
 
@@ -219,9 +238,12 @@ async def test_http():
 
     def fake_userinfo(url, headers=None, timeout=None):
         seen.append(url)
+        if headers["Authorization"] == f"Bearer {nomail}":
+            return _Resp({"sub": "user_nomail_sub"})
         return _Resp({"sub": "user_test_sub", "email": "tester@example.com", "email_verified": True})
 
-    real_get, auth.httpx.get = auth.httpx.get, fake_userinfo
+    nomail = make_token(sub="user_nomail_sub")
+    real_post, auth.httpx.post = auth.httpx.post, fake_userinfo
     # DEV 폴백이 쓰이면 other 의 빈 상태가 나온다 → 토큰 경로가 tester 로 가는지 구분된다
     os.environ["CANON_DEV_USER"] = "other@example.com"
     hdr = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
@@ -233,12 +255,25 @@ async def test_http():
                 assert r.status_code == 200 and r.json() == {"ok": True, "db": True}, r.text
                 prm = (await h.get("/.well-known/oauth-protected-resource/mcp")).json()
                 assert prm["resource"] == RESOURCE and prm["authorization_servers"] == [FAKE_ISSUER], prm
+                assert prm["scopes_supported"] == ["openid", "email"], prm
                 r = await h.post("/mcp", headers=hdr, json=call)
                 assert r.status_code == 401 and "resource_metadata=" in r.headers.get("www-authenticate", ""), r.headers
                 r = await h.post("/mcp", headers={**hdr, "authorization": f"Bearer {make_token(key=WRONG_KEY)}"}, json=call)
                 assert r.status_code == 401, r.status_code
                 r = await h.post("/mcp", headers={**hdr, "authorization": f"Bearer {make_token(aud='https://evil.example/mcp')}"}, json=call)
                 assert r.status_code == 401, r.status_code
+                # scope 가 없거나 email 이 빠진 토큰 → 403 insufficient_scope
+                for bad_scope in (None, "openid"):
+                    r = await h.post("/mcp", headers={**hdr, "authorization": f"Bearer {make_token(scope=bad_scope)}"}, json=call)
+                    assert r.status_code == 403 and "insufficient_scope" in r.headers.get("www-authenticate", ""), (bad_scope, r.status_code)
+                # userinfo 에 email 이 없으면 진단 꼬리표(키 이름·scope 만, 값 없음)
+                r = await h.post("/mcp", headers={**hdr, "authorization": f"Bearer {nomail}"}, json=call)
+                res = r.json()["result"]
+                msg = res["content"][0]["text"]
+                assert res.get("isError") and "AUTH-NO-EMAIL" in msg, res
+                assert "토큰 scope: ['email', 'openid']" in msg and "userinfo 키: ['sub']" in msg, msg
+                assert "user_nomail_sub" not in msg, msg
+                seen.clear()
                 tok = make_token()
                 r = await h.post("/mcp", headers={**hdr, "authorization": f"Bearer {tok}"}, json=call)
                 assert r.status_code == 200 and r.headers["content-type"].startswith("application/json"), (r.status_code, r.text[:300])
@@ -260,7 +295,7 @@ async def test_http():
                 r = await h.get("/api/state")
                 assert r.status_code == 200, r.status_code
     finally:
-        auth.httpx.get = real_get
+        auth.httpx.post = real_post
         os.environ["CANON_DEV_USER"] = "tester@example.com"
     print("OK — HTTP 인증 경로 통과")
 

@@ -3,7 +3,8 @@
 - AuthKitVerifier: MCP SDK TokenVerifier. JWKS(RS256)로 서명·iss·exp·aud 를 검사한다. 실패는 전부 None(→ 401).
   aud 는 클라이언트가 요청한 resource indicator 다. resource 없이 받은 토큰(aud = 환경 client ID)은 거절된다.
 - user_id_for: 검증된 토큰의 sub 로 사용자를 찾는다. 처음 보는 sub 면 userinfo 에서 검증된 이메일을 받아 연결한다.
-  AuthKit 액세스 토큰엔 email 클레임이 없다(공식 token-claims 문서).
+  AuthKit 액세스 토큰엔 email 클레임이 없다(공식 token-claims 문서). userinfo 의 email·email_verified 는
+  토큰에 email scope 가 있어야 나온다 → main 의 required_scopes=["openid","email"] 로 PRM 이 광고하게 한다.
 """
 import anyio.to_thread
 import httpx
@@ -15,6 +16,16 @@ from mcp.server.mcpserver.exceptions import ToolError
 import db
 
 ALGORITHMS = ["RS256"]
+
+
+def scopes_of(claims: dict) -> list[str]:
+    """scope(공백 구분 문자열)·scp(배열 또는 문자열) 둘 다 읽는다. 없으면 빈 목록 — 거절은 미들웨어(403)가 한다."""
+    out: list[str] = []
+    for k in ("scope", "scp"):
+        v = claims.get(k)
+        items = v.split() if isinstance(v, str) else v if isinstance(v, list) else []
+        out += [str(x) for x in items if str(x) and str(x) not in out]
+    return out
 
 
 class AuthKitVerifier:
@@ -42,7 +53,7 @@ class AuthKitVerifier:
         return AccessToken(
             token=token,
             client_id=str(claims.get("client_id") or ""),
-            scopes=str(claims.get("scope") or "").split(),
+            scopes=scopes_of(claims),
             expires_at=int(claims["exp"]),
             resource=self.resource_url,  # aud 검사를 통과했으니 이 서버용 토큰이다
             subject=str(claims["sub"]),
@@ -50,19 +61,31 @@ class AuthKitVerifier:
         )
 
 
+def _diag(tok: AccessToken, info: dict) -> str:
+    """진단 꼬리표. 키 이름·scope 이름만 — email·sub 값은 넣지 않는다."""
+    return f" (토큰 scope: {sorted(tok.scopes) or '없음'}, userinfo 키: {sorted(info) or '없음'})"
+
+
 def _userinfo_email(tok: AccessToken) -> str:
+    """WorkOS 문서: POST {issuer}/oauth2/userinfo, Bearer 액세스 토큰. 응답 클레임은 토큰 발급 때 받은 scope 에 따른다."""
     issuer = str((tok.claims or {}).get("iss", "")).rstrip("/")
     try:
-        r = httpx.get(f"{issuer}/oauth2/userinfo", headers={"Authorization": f"Bearer {tok.token}"}, timeout=10)
+        r = httpx.post(f"{issuer}/oauth2/userinfo", headers={"Authorization": f"Bearer {tok.token}"}, timeout=10)
         r.raise_for_status()
         info = r.json()
+        if not isinstance(info, dict):
+            raise ValueError
     except (httpx.HTTPError, ValueError):
         raise ToolError("[AUTH-USERINFO] 로그인 서버에서 이메일을 받지 못했어요. 잠시 뒤 다시 시도하거나 커넥터를 다시 연결하세요.")
     if info.get("sub") != tok.subject:
-        raise ToolError("[AUTH-INVALID] 로그인 정보가 맞지 않아요. 커넥터를 다시 연결하세요.")
-    if info.get("email_verified") is False:
-        raise ToolError("[AUTH-INVALID] 이메일 인증이 안 된 계정이에요.")
-    return str(info.get("email") or "")
+        raise ToolError("[AUTH-INVALID] 로그인 정보가 맞지 않아요. 커넥터를 다시 연결하세요." + _diag(tok, info))
+    email = str(info.get("email") or "").strip()
+    if not email:
+        raise ToolError("[AUTH-NO-EMAIL] 로그인 서버가 이메일을 주지 않았어요. 커넥터를 지우고 다시 연결해 email 권한을 허용하세요."
+                        + _diag(tok, info))
+    if info.get("email_verified") is not True:
+        raise ToolError("[AUTH-INVALID] 인증된 이메일이 아니에요." + _diag(tok, info))
+    return email
 
 
 def user_id_for(tok: AccessToken) -> str:

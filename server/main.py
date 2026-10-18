@@ -51,7 +51,7 @@ if ISSUER:
         token_verifier=auth.AuthKitVerifier(ISSUER, f"{PUBLIC_URL}/mcp"),
         # 문자열로 넘긴다. AnyHttpUrl(...) 을 밖에서 만들면 issuer 끝에 / 가 붙어 PRM authorization_servers 가 AS 메타데이터 issuer 와 어긋난다.
         auth=AuthSettings(issuer_url=ISSUER, resource_server_url=f"{PUBLIC_URL}/mcp",
-                          required_scopes=[], validate_token_resource=True),
+                          required_scopes=["openid", "email"], validate_token_resource=True),
     )
 
 mcp = MCPServer("personal-canon-kit", instructions=INSTRUCTIONS, **_auth_kwargs)
