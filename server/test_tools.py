@@ -35,6 +35,8 @@
    · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
    · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
+17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
+   · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 섹션은 보내지 않음), 일반 사용자는 그대로
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -110,9 +112,10 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + ("tk-owner@example.com", "tk-other@example.com", "tk-admin@example.com") \
     + ("tkv-admin@example.com", "<i>tkv</i>@example.com") \
     + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com", "int-names@example.com") \
+    + ("r1-admin@example.com", "r1-user@example.com") \
     + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
-# p4* = 운영 화면(개요·스키마·리포트)
+# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -3734,6 +3737,7 @@ async def run():
         await test_admin_screens()
         await test_app_account_menu()
         await test_integration_p5()
+        await test_r1_flags_off()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -4015,6 +4019,114 @@ async def test_integration_p5():
             c.execute("DELETE FROM privacy_log WHERE ticket_id=%s", (t,))   # FK·cascade 밖
     print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 트리만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
           " · 내 문의 공개 갱신순 웹=MCP · 파기 cascade · /app 관리자 데이터 0) 통과")
+
+
+# ── 17) R1 — 기능 플래그 둘 다 미설정(off) 기준선 · Q1 관리자 /app 메뉴 ─────────
+# 플래그 코드는 3단계 몫이다. 이 절은 두 env 를 지운 상태(= off, 명세 §7)에서 로그인·/admin·문의 처리·Q1 이 되는지를 고정한다.
+R1 = {"a": "r1-admin@example.com", "u": "r1-user@example.com"}
+R1_FLAGS = ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")
+R1_USER_ONLY = ('data-acct="send"', 'data-acct="mine"', 'data-acct="privacy"', 'data-acct="names"', 'data-acct="desk"',
+                'id="acct-names"', 'id="acct-desk"', 'id="desk"', 'id="desk-form"', 'id="desk-list"', "구조 이름 공유")
+R1_ADMIN_ONLY = ('id="acct-console"', '<a class="btn" href="/admin" id="acct-console">운영 콘솔</a>')
+
+
+async def test_r1_flags_off():
+    """두 플래그 미설정에서: 웹 로그인(/login → 콜백 → /app)·DEV 경로 · /admin 무세션·일반·DEV 404, 관리자 GET 화면 전부 바로(재인증 없음,
+    /admin/reauth → /admin) · 문의 처리 POST(상태·답변, 일반 사용자 404) → 소유자 「내 문의」에 반영 · Q1: 관리자 /app 계정 메뉴 = 운영 콘솔·로그아웃,
+    문의·이름 공유 메뉴·문의 섹션은 본문에 없음(서버가 안 보냄), 일반 사용자는 그대로 · 표식 0 · CSP 해시 = 보낸 본문 · API 모양은 그대로."""
+    from urllib.parse import parse_qs, urlparse
+    site = main.site
+    fake_jwks(main._auth_kwargs["token_verifier"])
+    saved = {k: os.environ.pop(k, None) for k in R1_FLAGS}
+    A = db.user_by_subject("r1a_sub", R1["a"])["id"]
+    U = db.user_by_subject("r1u_sub", R1["u"])["id"]
+    _set_role(A, "admin")
+    real = (site.dev, site.dev_user, site.client_id, site.token_post)
+    site.dev, site.dev_user, site.client_id = False, "", "client_test"
+    tok = {"sub": ""}
+
+    async def fake_token_post(data):
+        return 200, {"access_token": make_token(sub=tok["sub"]), "token_type": "Bearer"}
+    site.token_post = fake_token_post
+
+    async def login(sub):
+        """/login → /auth/callback(가짜 토큰 교환) → 302 /app. 새 세션 쿠키 값."""
+        tok["sub"] = sub
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            r = await h.get("/login")
+            st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+            r = await h.get("/auth/callback", params={"code": "c", "state": st})
+            assert r.status_code == 302 and r.headers["location"] == "/app", (sub, r.status_code, r.text[:200])
+            return r.cookies.get("crm_session")
+
+    async def req(method, path, cookie=None, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("crm_session", cookie)
+            return await h.request(method, path, headers={"origin": PUBLIC}, **kw)
+
+    def q1(r, admin):
+        """Q1 — /app 본문. 관리자 = ⚙ + 운영 콘솔·로그아웃만, 일반 = 지금 메뉴 그대로. 표식은 어느 쪽에도 남지 않는다."""
+        assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+        hs = web.inline_script_hashes(r.text)
+        assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
+        assert not re.search(r"<!--/?(user|admin)-->", r.text), "표식 0"
+        for w in ('id="setup-link"', 'id="acct-menu"', 'id="logout"'):
+            assert w in r.text, w
+        for w in R1_USER_ONLY:
+            assert (w in r.text) is not admin, (admin, w)
+        for w in R1_ADMIN_ONLY:
+            assert (w in r.text) is admin, (admin, w)
+        if admin:
+            menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
+            assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "로그아웃"], menu
+    try:
+        assert not any(k in os.environ for k in R1_FLAGS), "두 플래그 미설정"
+        # ── 로그인 — 웹(세션 쿠키) · DEV ──
+        ck_a, ck_u = await login("r1a_sub"), await login("r1u_sub")
+        assert site.unsign(ck_a)["uid"] == A and site.unsign(ck_u)["uid"] == U
+        for ck, admin in ((ck_a, True), (ck_u, False)):
+            q1(await req("GET", "/app", ck), admin)
+            st = await req("GET", "/api/state", ck)
+            assert st.status_code == 200 and (st.json()["user"].get("admin") is True) is admin, st.json()["user"]
+            assert set(st.json()["user"]) == {"email", "struct_names", "desk_hidden"} | ({"admin"} if admin else set()), "API 모양 그대로"
+            fb = await req("GET", "/api/feedback", ck)
+            assert fb.status_code == 200 and set(fb.json()) == {"tickets"}, fb.text
+        for email, admin in ((R1["u"], False), (R1["a"], True)):
+            site.dev, site.dev_user = True, email
+            q1(await req("GET", "/app"), admin)
+            assert (await req("GET", "/api/state")).json()["user"]["email"] == email
+            assert (await req("GET", "/admin")).status_code == 404, "DEV 는 관리자여도 /admin 404"
+        site.dev, site.dev_user = False, ""
+        # ── 관리자 권한 — 무세션·일반 404 · 관리자 바로(재인증 없음) ──
+        for path in INT_ADMIN_GETS:
+            for ck in (None, ck_u):
+                assert (await req("GET", path, ck)).status_code == 404, (path, ck is None)
+            r = await req("GET", path, ck_a)
+            if path == "/admin/reauth":
+                assert r.status_code == 302 and r.headers["location"] == "/admin", r.status_code
+            else:
+                assert r.status_code == 200 and "재인증" not in r.text, (path, r.status_code)
+        # ── /admin 문의 처리 — 상태·답변(일반 사용자는 404, 바뀌지 않음) ──
+        t = _tk_insert(U, text="R1 문의 R1TEXT")
+        ops = (("status", {"status": "doing"}), ("reply", {"reply": "R1 답변"}))
+        for op, form in ops:
+            assert (await req("POST", f"/admin/tickets/{t}/{op}", ck_u, data=form)).status_code == 404, op
+        assert _ticket(t)["status"] == "open" and _tk_hist(t) == [], "일반 사용자 POST 는 아무것도 안 바꾼다"
+        for op, form in ops:
+            r = await req("POST", f"/admin/tickets/{t}/{op}", ck_a, data=form)
+            assert r.status_code == 303 and r.headers["location"] == f"/admin/tickets/{t}", (op, r.status_code, r.text[:200])
+        rec = await req("GET", f"/admin/tickets/{t}", ck_a)
+        assert rec.status_code == 200 and "R1TEXT" in rec.text, rec.status_code
+        j = (await req("GET", f"/api/feedback/{t}", ck_u)).json()
+        assert j["status"] == "doing" and j["reply"] == "R1 답변" and [h["kind"] for h in j["history"]] == ["status", "reply"], j
+        assert not any(k in os.environ for k in R1_FLAGS), "시험 중에도 미설정"
+    finally:
+        site.dev, site.dev_user, site.client_id, site.token_post = real
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    print("OK — R1 플래그 off 기준선(로그인 웹·DEV · /admin 일반 404·관리자 바로·재인증 없음 · 문의 처리 · Q1 관리자 /app 메뉴) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

@@ -101,8 +101,9 @@ a.setup-gear:hover { border-color: var(--accent); color: var(--accent); }
 .acct-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; width: max-content; min-width: 13rem; max-width: calc(100vw - 2rem);
   display: flex; flex-direction: column; gap: .1rem; padding: .3rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 6px 20px color-mix(in srgb, var(--ink) 14%, transparent); }
-.acct-menu button { justify-content: space-between; width: 100%; border-color: transparent; background: transparent; font-size: .8rem; color: var(--ink); }
-.acct-menu button:hover { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.acct-menu button, .acct-menu a.btn { justify-content: space-between; width: 100%; border-color: transparent; background: transparent; font-size: .8rem; color: var(--ink); }
+.acct-menu a.btn { display: flex; align-items: center; text-decoration: none; }   /* 관리자 「운영 콘솔」 — 링크를 메뉴 버튼과 같은 모양으로 */
+.acct-menu button:hover, .acct-menu a.btn:hover { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .acct-menu .st { font-size: .72rem; color: var(--muted); font-weight: 600; }
 .acct-menu button[aria-pressed="true"] .st { color: var(--accent); }
 .acct-menu hr { border: 0; border-top: 1px solid var(--line); margin: .2rem 0; }
@@ -450,14 +451,16 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <div class="axislegend" id="legend"></div></div>
   <div class="who"><details class="acct" id="acct"><summary><span class="sr">계정 메뉴 </span><span id="who"></span><span class="caret" aria-hidden="true">▾</span></summary>
     <div class="acct-menu" id="acct-menu">
-      <button type="button" data-acct="send">문의 보내기</button>
+      <!--admin--><a class="btn" href="/admin" id="acct-console">운영 콘솔</a>
+      <hr><!--/admin-->
+      <!--user--><button type="button" data-acct="send">문의 보내기</button>
       <button type="button" data-acct="mine">내 문의</button>
       <button type="button" data-acct="privacy">개인정보 요청</button>
       <hr>
       <button type="button" data-acct="names" id="acct-names" aria-pressed="false">구조 이름 공유 <span class="st" id="acct-names-st">꺼짐</span></button>
       <p class="acct-note">안 해도 모든 기능을 써요. <a href="/privacy#privacy-1">무엇을 보나요</a></p>
       <button type="button" data-acct="desk" id="acct-desk">문의 섹션 숨기기</button>
-      <hr>
+      <hr><!--/user-->
       <button type="button" data-acct="logout" id="logout">로그아웃</button>
       <p class="acct-msg" id="acct-msg" role="status"></p>
     </div></details><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><a class="refresh setup-gear" id="setup-link" href="/admin/setup" hidden title="관리 Setup" aria-label="관리 Setup">⚙</a><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
@@ -466,7 +469,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
 <main id="view" class="wrap"></main>
-<section class="wrap desk" id="desk" aria-labelledby="desk-title"><div class="paper">
+<!--user--><section class="wrap desk" id="desk" aria-labelledby="desk-title"><div class="paper">
   <form id="desk-form" novalidate>
     <h2 class="sh" id="desk-title">문의</h2>
     <p class="hint">안 되는 것·바라는 것·궁금한 것을 운영자에게 보내요. 처리 상태는 「내 문의」에서 보여요.</p>
@@ -490,7 +493,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
       <tbody id="desk-list"></tbody></table></div>
     <p id="desk-empty" class="empty" hidden>아직 보낸 문의가 없어요.</p>
   </div>
-</div></section>
+</div></section><!--/user-->
 <footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></footer>
 <dialog id="dlg" aria-labelledby="dlg-title"><div class="dh"><div><b id="dlg-title"></b><div id="dlg-meta" class="recmeta" style="margin:2px 0 0"></div></div>
   <button class="small" id="dlg-close">닫기</button></div><div class="db" id="dlg-body"></div></dialog>
@@ -1443,8 +1446,10 @@ $("logout").onclick = async () => {
   location.href = to;
 };
 // ── 계정 메뉴 (P5) — 문의 열기 · 이름 공유 · 문의 섹션 숨김 · 로그아웃(위 핸들러) ──
+// 관리자(Q1)는 서버가 사용자 전용 구간(문의·이름 공유 메뉴, 문의 섹션)을 빼고 「운영 콘솔」을 넣어 보낸다 — 요소가 없으면 건너뛴다.
 let deskPeek = false;   // 숨긴 문의 섹션을 메뉴에서 이번 화면에만 연 상태(저장값은 그대로)
 function acctApply() {
+  if (!$("desk")) return;
   const u = S && S.user || {}, names = u.struct_names === true, hidden = u.desk_hidden === true;
   $("acct-names").setAttribute("aria-pressed", names ? "true" : "false");
   $("acct-names-st").textContent = names ? "켜짐" : "꺼짐";
@@ -1502,7 +1507,7 @@ const DESK_MAX = 4096;   // 서버 db.LIMIT_TICKET 과 같은 단위(UTF-8 바�
 const DESK_CHIP = {open: "st-wait", ack: "", doing: "flag", done: "st-mine", wontfix: "st-off"};
 const DESK_PAGE = {today: "today", question: "question", record: "record", structure: "structure", map: "map"};
 const deskBytes = s => new TextEncoder().encode(s).length;
-// 운영자 처리는 /admin/tickets(서버 렌더) — /app 은 관리자여도 「내 문의」만 본다.
+// 운영자 처리는 /admin/tickets(서버 렌더) — 관리자 /app 엔 문의 섹션이 없다(Q1, 서버가 사용자 전용 구간을 뺀다).
 function deskPage() {
   if (!S) return "other";
   const R = route();
@@ -1581,12 +1586,14 @@ async function deskSend(e) {
   $("desk-status").textContent = "보냈어요. 처리 상태는 「내 문의」에서 볼 수 있어요.";
   deskLoad();
 }
-$("desk-text").addEventListener("input", deskCount);
-$("desk-form").addEventListener("submit", deskSend);
-$("desk-list").addEventListener("click", e => { const b = e.target.closest("button[data-tk]"); if (b) deskShow(b.dataset.tk); });
+if ($("desk")) {   // 관리자 응답엔 문의 섹션이 없다(Q1)
+  $("desk-text").addEventListener("input", deskCount);
+  $("desk-form").addEventListener("submit", deskSend);
+  $("desk-list").addEventListener("click", e => { const b = e.target.closest("button[data-tk]"); if (b) deskShow(b.dataset.tk); });
+}
 // ── /문의 데스크 ──
 load();
-deskLoad();
+if ($("desk")) deskLoad();
 </script>
 </body>
 </html>

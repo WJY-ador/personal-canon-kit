@@ -868,6 +868,9 @@ class Web:
         if uid is None:
             return RedirectResponse("/", status_code=302)
         html = _fill_assets(APP_HTML.read_text(encoding="utf-8"))   # 요청마다 읽는다 — 헤더 해시와 본문이 같은 내용에서 나온다
+        # Q1: 관리자는 <!--user-->(문의·이름 공유 메뉴·문의 섹션)를, 그 밖은 <!--admin-->(운영 콘솔)를 보내지 않는다. 표식도 남기지 않는다
+        drop, keep = ("user", "admin") if getattr(request.state, "role", None) == "admin" else ("admin", "user")
+        html = re.sub(rf"<!--{drop}-->.*?<!--/{drop}-->", "", html, flags=re.S).replace(f"<!--{keep}-->", "").replace(f"<!--/{keep}-->", "")
         return _html_resp(html, headers={"cache-control": "no-store", "content-security-policy": app_csp(html)})
 
     async def root(self, request):
