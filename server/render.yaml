@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: personal-canon-kit
+    name: personal-mycrm
     runtime: python
     region: singapore
     plan: free
@@ -16,6 +16,6 @@ services:
       - key: CRM_PUBLIC_URL
         sync: false
       - key: AUTHKIT_WEB_CLIENT_ID
-        value: client_01M56STKY61NSCEJCN6141YVEQ
+        value: client_01M593TEKZ4P1CAJMEKXFE6JA8
       - key: CRM_SESSION_SECRET
-        sync: false   # 값은 대시보드에서 지금 쓰는 세션 비밀과 같은 값으로 — generateValue 를 쓰면 동기화 때 새 비밀이 생겨 전원 로그아웃
+        generateValue: true   # 새 서비스(personal-mycrm)를 만들 때 한 번 생성. 새 주소라 옛 쿠키는 어차피 안 따라온다

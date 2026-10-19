@@ -38,9 +38,9 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
 - `CRM_PUBLIC_URL` — 배포된 https 주소. MCP resource 는 이 주소 + `/mcp`, Host 허용 목록도 여기서 만든다
 - `PORT` — Render 가 넣는다 (로컬은 `CRM_PORT`, 기본 8800)
 - `AUTHKIT_WEB_CLIENT_ID` — 웹 로그인용 공개 클라이언트. AuthKit DCR(`POST {issuer}/oauth2/register`)로 2026-10-18 등록한
-  `client_01M56STKY61NSCEJCN6141YVEQ` (redirect: `https://personal-canon-kit.onrender.com/auth/callback`, `http://127.0.0.1:8800/auth/callback`,
+  `client_01M593TEKZ4P1CAJMEKXFE6JA8` (2026-10-19 새 주소로 다시 등록, 이름 「My CRM web」 · redirect: `https://personal-mycrm.onrender.com/auth/callback`, `http://127.0.0.1:8800/auth/callback`,
   `token_endpoint_auth_method=none`). 환경 client ID 는 `/oauth2/authorize` 에서 `application_not_found` — Connect 흐름은 DCR·CIMD 클라이언트만 받는다(실측).
-- `CRM_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
+- `CRM_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — 서비스를 처음 만들 때 Render 가 만든다(값이 바뀌면 전원 재로그인).
   둘 중 하나라도 없으면 웹 로그인만 503 이고 MCP 는 정상 — 자동 배포로 서버가 죽지 않게.
 - `CRM_CONTACT` — (선택) 처리방침 보조 메일. 있으면 처리방침에 메일 한 줄로 보이고, 없으면 보이지 않는다. 없어도 서버는 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나다.
 - `CRM_ADMIN_USER_IDS` — (선택, **첫 배포 1회만**) 쉼표 구분 내부 user id(`u_…`). β2 부터 관리자 판정은 DB `users.role` 이다. 이 env 는 감사 기록에 `bootstrap`·`recover` 행이 없을 때 한 번만 읽혀 그 계정을 관리자로 옮긴다(아래 「관리자」 운영 절). 그 뒤엔 바꿔도 효과 없음 — 관리자 부여·회수는 `/admin/setup`, 잠기면 `admin_cli.py grant <email>`.
