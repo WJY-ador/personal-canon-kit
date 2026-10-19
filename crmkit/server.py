@@ -10,7 +10,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import VERSION, data as D, paths, schema, store
-from .store import CanonError
+from .store import CrmError
 
 
 def _err(e):
@@ -48,14 +48,14 @@ def build_state(data):
     try:
         st["meta"] = D.load(data, "meta.json")
         st["read"]["meta"] = {"ok": True}
-    except CanonError as e:
+    except CrmError as e:
         fail("meta", e)
         return st
 
     def part(part_name, name, key, default):
         try:
             d = D.load(data, name)
-        except CanonError as e:
+        except CrmError as e:
             fail(part_name, e)
             return default
         st["read"][part_name] = {"ok": True}
@@ -80,14 +80,14 @@ def build_state(data):
         st["read"]["journal"] = {"ok": True}
     except OSError as e:
         st["journal"] = []
-        fail("journal", CanonError("JOURNAL-UNREADABLE", f"기록 폴더를 읽을 수 없습니다 ({e.__class__.__name__})",
-                                   "python3 canon.py doctor 로 확인하세요."))
+        fail("journal", CrmError("JOURNAL-UNREADABLE", f"기록 폴더를 읽을 수 없습니다 ({e.__class__.__name__})",
+                                   "python3 crm.py doctor 로 확인하세요."))
     st["sheets"] = {}
     if st["read"]["questions"]["ok"]:
         for q in st["questions"]:
             try:
                 st["sheets"][q["id"]] = dict(D.sheet_info(data, q["id"]), ok=True)
-            except CanonError as e:
+            except CrmError as e:
                 st["sheets"][q["id"]] = {"ok": False, "exists": False, "error": _err(e)}
     # 실행 상태: 파일이 없으면 "아직 실행 안 함"(정상), 있는데 못 읽으면 실패.
     rp = store.runs_path(data)
@@ -97,16 +97,16 @@ def build_state(data):
             st["runs"] = json.loads(rp.read_text(encoding="utf-8"))
             st["read"]["runs"] = {"ok": True}
         except (OSError, ValueError):
-            fail("runs", CanonError("FILE-CORRUPT", f"{rp.name} 을(를) 읽을 수 없습니다",
-                                    "python3 canon.py doctor 로 확인하세요."))
+            fail("runs", CrmError("FILE-CORRUPT", f"{rp.name} 을(를) 읽을 수 없습니다",
+                                    "python3 crm.py doctor 로 확인하세요."))
     else:
         st["read"]["runs"] = {"ok": True}
     try:
         st["next"] = D.next_action(data)
-    except CanonError as e:
+    except CrmError as e:
         st["next"] = {"kind": "blocked", "target": None,
                       "text": "읽지 못한 부분이 있어 다음 할 일을 정하지 못했어요. 그 부분부터 고쳐요.",
-                      "command": "python3 canon.py doctor", "error": _err(e)}
+                      "command": "python3 crm.py doctor", "error": _err(e)}
     st["has"] = D.availability(data)
     return st
 
@@ -140,13 +140,13 @@ def make_handler(data):
                 jid = (parse_qs(u.query).get("id") or [""])[0]
                 try:
                     r = D.get_journal(data, jid)
-                except CanonError as e:
+                except CrmError as e:
                     return self._json(404, {"code": e.code, "msg": e.message, "action": e.action})
                 return self._json(200, {"id": r["id"], "title": r["title"], "meta": r["meta"], "body": r["body"]})
             return self._json(404, {"code": "NOT-FOUND", "msg": "없는 주소입니다."})
 
         def do_POST(self):
-            self._json(405, {"code": "READ-ONLY", "msg": "대시보드는 읽기 전용입니다. 쓰기는 canon.py 명령으로 합니다."})
+            self._json(405, {"code": "READ-ONLY", "msg": "대시보드는 읽기 전용입니다. 쓰기는 crm.py 명령으로 합니다."})
 
         do_PUT = do_DELETE = do_PATCH = do_POST
 
@@ -158,6 +158,6 @@ def serve(data, port):
     try:
         httpd = ThreadingHTTPServer(("127.0.0.1", port), make_handler(Path(data)))
     except OSError:
-        raise CanonError("PORT-BUSY", f"포트 {port} 을(를) 이미 쓰고 있습니다.",
+        raise CrmError("PORT-BUSY", f"포트 {port} 을(를) 이미 쓰고 있습니다.",
                          f"이미 열린 대시보드가 있는지 보고, 아니면 --port {port + 1} 로 다시 실행하세요.")
     return httpd

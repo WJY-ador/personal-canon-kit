@@ -1,12 +1,12 @@
-"""personal-canon-kit 서버 — 원격 MCP(Streamable HTTP) + 웹 화면.
+"""My CRM 서버 — 원격 MCP(Streamable HTTP) + 웹 화면.
 
-사용자 결정: AuthKit JWT 검증(sub 우선, 처음 연결 땐 userinfo 의 검증된 이메일). 개발·시험은 CANON_DEV=1 + CANON_DEV_USER.
+사용자 결정: AuthKit JWT 검증(sub 우선, 처음 연결 땐 userinfo 의 검증된 이메일). 개발·시험은 CRM_DEV=1 + CRM_DEV_USER.
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
-환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
-          · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
-          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 첫 관리자 지정에만. 감사에 bootstrap·recover 행이 없을 때 서버 시작 1회만 읽는다(β2).
+환경변수: DATABASE_URL · CRM_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
+          · AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET(웹 로그인, web.py) · CRM_DEV/CRM_DEV_USER(개발만)
+          · CRM_ADMIN_USER_IDS(쉼표 구분 내부 user id — 첫 관리자 지정에만. 감사에 bootstrap·recover 행이 없을 때 서버 시작 1회만 읽는다(β2).
             그 뒤 관리자 = users.role — /admin/setup 에서 부여·회수, 잠기면 admin_cli.py grant)
-          · CANON_CONTACT(선택 — 처리방침의 보조 메일. 없어도 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나)
+          · CRM_CONTACT(선택 — 처리방침의 보조 메일. 없어도 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나)
 """
 import asyncio
 import contextvars
@@ -36,6 +36,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 import auth
 import db
 import web
+from envcompat import env
 
 INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. 사용자의 기록에서 판단 후보를 찾고, 사용자가 원문과 대조해 남길지 정한다.
 
@@ -51,14 +52,14 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. �
 - 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
 """
 
-DEV = os.environ.get("CANON_DEV") == "1"
-PUBLIC_URL = os.environ.get("CANON_PUBLIC_URL", "http://127.0.0.1:8800").rstrip("/")
+DEV = env("DEV") == "1"
+PUBLIC_URL = env("PUBLIC_URL", "http://127.0.0.1:8800").rstrip("/")
 ISSUER = os.environ.get("AUTHKIT_ISSUER", "").rstrip("/")
 
 if not DEV and not ISSUER:
-    raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
-if not DEV and os.environ.get("CANON_DEV_USER"):
-    raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
+    raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CRM_DEV=1).")
+if not DEV and env("DEV_USER"):
+    raise SystemExit("CRM_DEV_USER 는 CRM_DEV=1 일 때만 쓸 수 있어요.")
 db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
 USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
 
@@ -71,12 +72,12 @@ if ISSUER:
                           required_scopes=["openid", "email"], validate_token_resource=True),
     )
 
-mcp = MCPServer("personal-canon-kit", instructions=INSTRUCTIONS, **_auth_kwargs)
+mcp = MCPServer("my-crm", instructions=INSTRUCTIONS, **_auth_kwargs)
 
 
 # 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(동의·전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
-_call_uid: contextvars.ContextVar = contextvars.ContextVar("canon_call_uid", default=None)
+_call_uid: contextvars.ContextVar = contextvars.ContextVar("crm_call_uid", default=None)
 
 
 def uid_of(ctx: Context) -> str:
@@ -87,7 +88,7 @@ def uid_of(ctx: Context) -> str:
     if tok is not None:
         uid = auth.user_id_for(tok)
     elif DEV:
-        uid = db.user_by_email(os.environ.get("CANON_DEV_USER", "dev@local"))["id"]
+        uid = db.user_by_email(env("DEV_USER", "dev@local"))["id"]
     else:
         raise ToolError("[AUTH] 로그인 정보가 없어요. 커넥터를 다시 연결하세요.")
     if memo is not None:
@@ -96,9 +97,9 @@ def uid_of(ctx: Context) -> str:
 
 
 def guard(fn):
-    """CanonError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
+    """CrmError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
     쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·동의(CONSENT-REQUIRED, CONSENT_EXEMPT 는 빼고)
-    ·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고). 모든 도구(읽기 포함)를 db.usage_count 로 센다 — 정상 OK, CanonError 는 그 code,
+    ·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고). 모든 도구(읽기 포함)를 db.usage_count 로 센다 — 정상 OK, CrmError 는 그 code,
     그 밖 예외(ToolError 포함)는 EXC. uid 는 이 호출 안에서 이미 푼 것만 쓴다(못 풀었으면 '')."""
     sig = inspect.signature(fn)
     name = fn.__name__
@@ -117,7 +118,7 @@ def guard(fn):
             out = fn(*a, **k)
             code = "OK"
             return out
-        except db.CanonError as e:
+        except db.CrmError as e:
             code = e.code
             raise ToolError(f"[{e.code}] {e.message}" + (f" 다음 조치: {e.action}" if e.action else ""))
         finally:
@@ -240,9 +241,9 @@ def _json_obj(raw: str, name: str) -> dict:
     try:
         v = json.loads(raw or "{}")
     except ValueError:
-        raise db.CanonError("ARG-INVALID", f"{name} 가 JSON 이 아니에요.")
+        raise db.CrmError("ARG-INVALID", f"{name} 가 JSON 이 아니에요.")
     if not isinstance(v, dict):
-        raise db.CanonError("ARG-INVALID", f"{name} 는 JSON 객체여야 해요.")
+        raise db.CrmError("ARG-INVALID", f"{name} 는 JSON 객체여야 해요.")
     return v
 
 
@@ -463,7 +464,7 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # Mount 된 앱의 lifespan 은 돌지 않으므로 session_manager 를 여기서 돌린다.
     await run_in_threadpool(db.init_schema)
     try:   # β2 첫 관리자 지정 — 감사에 bootstrap·recover 행이 없을 때만 env 를 쓴다. 실패해도 기동은 계속(승격 없음, 다음 시작 때 다시)
-        ids = [x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip()]
+        ids = [x.strip() for x in env("ADMIN_USER_IDS", "").split(",") if x.strip()]
         n = await run_in_threadpool(db.admin_bootstrap, ids)
         if n is not None:
             print(f"[admin] 첫 관리자 지정(bootstrap) — {n}명 승격", flush=True)
@@ -503,9 +504,9 @@ async def _usage_flusher():
 
 
 # 웹 화면·로그인. Mount("/") 가 나머지를 전부 받으므로 웹 경로는 그 앞에 둔다.
-site = web.Web(ISSUER, PUBLIC_URL, _auth_kwargs.get("token_verifier"), DEV, os.environ.get("CANON_DEV_USER", "dev@local"))
+site = web.Web(ISSUER, PUBLIC_URL, _auth_kwargs.get("token_verifier"), DEV, env("DEV_USER", "dev@local"))
 if not DEV and not site.login_ready:
-    print("[web] AUTHKIT_WEB_CLIENT_ID·CANON_SESSION_SECRET 이 없어 웹 로그인은 503 — MCP 는 정상", flush=True)
+    print("[web] AUTHKIT_WEB_CLIENT_ID·CRM_SESSION_SECRET 이 없어 웹 로그인은 503 — MCP 는 정상", flush=True)
 
 app = Starlette(
     routes=[
@@ -519,5 +520,5 @@ app = Starlette(
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT") or os.environ.get("CANON_PORT") or "8800")
+    port = int(os.environ.get("PORT") or env("PORT") or "8800")
     uvicorn.run(app, host="0.0.0.0", port=port)

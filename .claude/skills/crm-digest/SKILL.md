@@ -1,9 +1,9 @@
 ---
-name: canon-digest
-description: personal-canon-kit 정리 — 기록 1편에서 판단 후보를 뽑아 질문별 한 장을 갱신하고, 사용자가 원문과 대조해 확인·제외하게 돕는다. "정리해 줘", "후보 뽑아 줘", "한 장 만들어 줘", "후보 확인하자" 때 사용.
+name: crm-digest
+description: My CRM 정리 — 기록 1편에서 판단 후보를 뽑아 질문별 한 장을 갱신하고, 사용자가 원문과 대조해 확인·제외하게 돕는다. "정리해 줘", "후보 뽑아 줘", "한 장 만들어 줘", "후보 확인하자" 때 사용.
 ---
 
-# canon-digest — 기록 → 판단 후보 → 질문별 한 장
+# crm-digest — 기록 → 판단 후보 → 질문별 한 장
 
 ## 계약
 
@@ -18,14 +18,14 @@ description: personal-canon-kit 정리 — 기록 1편에서 판단 후보를 �
 
 ## 순서
 
-1. `python3 canon.py journal` 로 기록 목록을 보여 주고 대상 기록 ID 를 사용자와 정한다.
+1. `python3 crm.py journal` 로 기록 목록을 보여 주고 대상 기록 ID 를 사용자와 정한다.
 2. 모드를 묻는다: 모델로 정리 / 내 메모(`- 판단:` 줄)만.
 3. 실행:
    ```bash
-   python3 canon.py digest --record <기록ID> --question <질문ID>             # 모델
-   python3 canon.py digest --record <기록ID> --question <질문ID> --no-model  # 내 메모만
+   python3 crm.py digest --record <기록ID> --question <질문ID>             # 모델
+   python3 crm.py digest --record <기록ID> --question <질문ID> --no-model  # 내 메모만
    ```
-4. `python3 canon.py candidates --question <질문ID>` 출력을 보여 주고, 후보마다 **원문 인용과 나란히** 묻는다:
+4. `python3 crm.py candidates --question <질문ID>` 출력을 보여 주고, 후보마다 **원문 인용과 나란히** 묻는다:
    "이건 당신 판단인가요? 확인 / 제외 / 고쳐서 확인 / 보류"
    - 확인 → `candidate confirm <ID>`
    - 제외 → `candidate exclude <ID>`

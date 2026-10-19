@@ -1,9 +1,9 @@
 ---
-name: canon-record
-description: personal-canon-kit 기록 1편 남기기 — 사용자가 말한 경험·메모를 원문 그대로 일지에 저장하고 "이게 어디에 붙나" 네 줄을 함께 채운다. "기록 남길게", "오늘 있었던 일", "메모 추가", "이 파일 기록으로" 때 사용.
+name: crm-record
+description: My CRM 기록 1편 남기기 — 사용자가 말한 경험·메모를 원문 그대로 일지에 저장하고 "이게 어디에 붙나" 네 줄을 함께 채운다. "기록 남길게", "오늘 있었던 일", "메모 추가", "이 파일 기록으로" 때 사용.
 ---
 
-# canon-record — 기록 1편
+# crm-record — 기록 1편
 
 ## 계약
 
@@ -12,7 +12,7 @@ description: personal-canon-kit 기록 1편 남기기 — 사용자가 말한 �
 | 전제 | 데이터 폴더 있음. 파일에서 가져올 땐 `consent --read` 범위 안이어야 함 |
 | 입력 | 제목 한 줄, 본문(사용자 말) 또는 동의 범위 안 파일 1개, 관련 질문 ID(선택) |
 | 읽기 | 사용자가 지목한 파일 1개만 |
-| 쓰기 | `python3 canon.py record add` → `journal/j-날짜-번호.md` 새 파일 1개. 기존 기록은 고치지 않는다 |
+| 쓰기 | `python3 crm.py record add` → `journal/j-날짜-번호.md` 새 파일 1개. 기존 기록은 고치지 않는다 |
 | 출력 | 기록 ID, 저장 위치 |
 | 완료 | 기록 ID 를 보여 주고 다음 행동(정리할지) 하나를 묻는다 |
 
@@ -20,13 +20,13 @@ description: personal-canon-kit 기록 1편 남기기 — 사용자가 말한 �
 
 1. 사용자에게 무슨 일이 있었는지 듣는다. **다듬지 않는다.** 맞춤법도 고치지 않는다 — 원문 보존.
 2. 네 줄을 함께 채운다. 사용자가 말한 것만 쓰고, 없으면 비워 둔다.
-   - 질문: 어느 질문에 붙나 (`python3 canon.py questions`)
+   - 질문: 어느 질문에 붙나 (`python3 crm.py questions`)
    - 판단: 이 일에서 **사용자가** 내린 판단 한 문장 — 네가 대신 쓰지 않는다. 물어서 나온 답은 사용자 표현 그대로
    - 다음: 다음에 할 행동 하나
    - 출처: 원문이 따로 있으면 위치
 3. 본문 끝에 네 줄을 붙여 저장:
    ```bash
-   python3 canon.py record add --title "<제목>" --question q-001 --text "<본문>
+   python3 crm.py record add --title "<제목>" --question q-001 --text "<본문>
 
    ## 이게 어디에 붙나
 
@@ -36,7 +36,7 @@ description: personal-canon-kit 기록 1편 남기기 — 사용자가 말한 �
    - 출처: <위치>"
    ```
    파일이면 `--file "<경로>"`. 그 파일에 네 줄이 없으면 빈 네 줄이 자동으로 붙는다.
-4. "지금 정리(digest)할까요?" 하나만 묻는다. 예 → `canon-digest`.
+4. "지금 정리(digest)할까요?" 하나만 묻는다. 예 → `crm-digest`.
 
 ## 빼 둘 것
 

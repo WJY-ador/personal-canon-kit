@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 
 from . import SCHEMA_VERSION, paths, schema
-from .store import CanonError, backup, lock, now, read_json, write_json_atomic, write_text_atomic
+from .store import CrmError, backup, lock, now, read_json, write_json_atomic, write_text_atomic
 
 SETUP_STEPS = [
     ("env", "환경 점검"),
@@ -29,12 +29,12 @@ SETUP_STEPS = [
 
 def require_data(data):
     if data is None:
-        raise CanonError("DATA-UNSET", "데이터 폴더가 정해지지 않았습니다.",
-                         "python3 canon.py init --data <폴더> 로 먼저 만드세요.")
+        raise CrmError("DATA-UNSET", "데이터 폴더가 정해지지 않았습니다.",
+                         "python3 crm.py init --data <폴더> 로 먼저 만드세요.")
     data = Path(data)
     if not (data / "meta.json").exists():
-        raise CanonError("DATA-MISSING", f"데이터 폴더가 아닙니다: {paths.mask_path(data)}",
-                         "경로를 확인하거나 python3 canon.py init --data <폴더> 로 만드세요.")
+        raise CrmError("DATA-MISSING", f"데이터 폴더가 아닙니다: {paths.mask_path(data)}",
+                         "경로를 확인하거나 python3 crm.py init --data <폴더> 로 만드세요.")
     return data
 
 
@@ -42,8 +42,8 @@ def load(data, name):
     d = read_json(Path(data) / name)
     errs = schema.VALIDATORS[name](d)
     if errs:
-        raise CanonError("SCHEMA-INVALID", f"{name}: " + "; ".join(errs),
-                         "python3 canon.py doctor 로 확인한 뒤 restore 로 되돌리세요.")
+        raise CrmError("SCHEMA-INVALID", f"{name}: " + "; ".join(errs),
+                         "python3 crm.py doctor 로 확인한 뒤 restore 로 되돌리세요.")
     return d
 
 
@@ -64,7 +64,7 @@ def init(data, kind="user"):
     created = []
     if kind == "sample":
         if data.exists() and any(data.iterdir()):
-            raise CanonError("DATA-EXISTS", "샘플은 빈 폴더에만 풉니다.", "다른 빈 폴더를 지정하세요.")
+            raise CrmError("DATA-EXISTS", "샘플은 빈 폴더에만 풉니다.", "다른 빈 폴더를 지정하세요.")
         shutil.copytree(paths.SAMPLE_DATA, data, dirs_exist_ok=True)
         return ["(샘플 전체)"]
     data.mkdir(parents=True, exist_ok=True)
@@ -91,7 +91,7 @@ def init(data, kind="user"):
 def mark_step(data, step, value="done"):
     keys = [k for k, _ in SETUP_STEPS]
     if step not in keys:
-        raise CanonError("ARG-INVALID", f"알 수 없는 단계: {step}", "가능한 값: " + ", ".join(keys))
+        raise CrmError("ARG-INVALID", f"알 수 없는 단계: {step}", "가능한 값: " + ", ".join(keys))
     with lock(data, f"setup {step}"):
         st = load(data, "setup-state.json")
         st.setdefault("steps", {})[step] = value
@@ -104,12 +104,12 @@ def mark_step(data, step, value="done"):
 
 def profile_set(data, key, value, status, source=""):
     if status not in schema.STATUSES:
-        raise CanonError("ARG-INVALID", f"상태는 {', '.join(schema.STATUSES)} 중 하나입니다.")
+        raise CrmError("ARG-INVALID", f"상태는 {', '.join(schema.STATUSES)} 중 하나입니다.")
     with lock(data, "profile set"):
         p = load(data, "profile.json")
         f = p["fields"].get(key)
         if f is None:
-            raise CanonError("ARG-INVALID", f"프로필에 없는 항목: {key}",
+            raise CrmError("ARG-INVALID", f"프로필에 없는 항목: {key}",
                              "가능한 항목: " + ", ".join(p["fields"]))
         if key == "daily_views":
             value = [v.strip() for v in value.split("|") if v.strip()] if isinstance(value, str) else value
@@ -157,17 +157,17 @@ def question_edit(data, qid, text):
                 x["text"], x["updated"] = text.strip(), now()
                 save(data, "questions.json", q)
                 return
-    raise CanonError("ARG-INVALID", f"질문 {qid} 이(가) 없습니다.")
+    raise CrmError("ARG-INVALID", f"질문 {qid} 이(가) 없습니다.")
 
 
 def source_add(data, label, path, model_send=False):
     p = Path(path).expanduser().resolve()
     allowed = load(data, "profile.json")["consent"]["read_paths"]
     if not any(_inside(p, Path(a)) for a in allowed):
-        raise CanonError("CONSENT-MISSING", "읽기 동의한 범위 밖의 자료입니다.",
-                         f"먼저 python3 canon.py consent --read \"{p}\" 로 동의를 남기세요.")
+        raise CrmError("CONSENT-MISSING", "읽기 동의한 범위 밖의 자료입니다.",
+                         f"먼저 python3 crm.py consent --read \"{p}\" 로 동의를 남기세요.")
     if not p.exists():
-        raise CanonError("SOURCE-MISSING", f"자료 위치가 없습니다: {paths.mask_path(p)}", "경로를 확인하세요.")
+        raise CrmError("SOURCE-MISSING", f"자료 위치가 없습니다: {paths.mask_path(p)}", "경로를 확인하세요.")
     with lock(data, "source add"):
         s = load(data, "sources.json")
         sid = next_id("s-", [x["id"] for x in s["sources"]], 3)
@@ -218,10 +218,10 @@ def list_journal(data):
 
 def get_journal(data, jid):
     if not schema.ID_RE["journal"].match(jid):
-        raise CanonError("ARG-INVALID", f"기록 ID 형식 오류: {jid}")
+        raise CrmError("ARG-INVALID", f"기록 ID 형식 오류: {jid}")
     p = Path(data) / "journal" / f"{jid}.md"
     if not p.exists():
-        raise CanonError("RECORD-MISSING", f"기록 {jid} 이(가) 없습니다.",
+        raise CrmError("RECORD-MISSING", f"기록 {jid} 이(가) 없습니다.",
                          "파일이 옮겨졌는지 journal 폴더를 확인하세요.")
     return parse_journal(p)
 
@@ -232,16 +232,16 @@ def record_add(data, title, text, question=None, source="직접 입력", from_fi
         p = Path(from_file).expanduser().resolve()
         allowed = load(data, "profile.json")["consent"]["read_paths"]
         if not any(_inside(p, Path(a)) for a in allowed):
-            raise CanonError("CONSENT-MISSING", "읽기 동의한 범위 밖의 파일입니다.",
-                             f"python3 canon.py consent --read \"{p.parent}\" 로 동의한 뒤 다시 실행하세요.")
+            raise CrmError("CONSENT-MISSING", "읽기 동의한 범위 밖의 파일입니다.",
+                             f"python3 crm.py consent --read \"{p.parent}\" 로 동의한 뒤 다시 실행하세요.")
         text = p.read_text(encoding="utf-8")
         source = f"파일:{p.name}"
     if not (text or "").strip():
-        raise CanonError("ARG-INVALID", "기록 내용이 비었습니다.")
+        raise CrmError("ARG-INVALID", "기록 내용이 비었습니다.")
     if question:
         qs = [x["id"] for x in load(data, "questions.json")["questions"]]
         if question not in qs:
-            raise CanonError("ARG-INVALID", f"질문 {question} 이(가) 없습니다.", "python3 canon.py questions 로 확인하세요.")
+            raise CrmError("ARG-INVALID", f"질문 {question} 이(가) 없습니다.", "python3 crm.py questions 로 확인하세요.")
     tail = (paths.TEMPLATES / "journal-tail.md").read_text(encoding="utf-8")
     with lock(data, "record add"):
         day = now()[:10].replace("-", "")
@@ -315,17 +315,17 @@ def candidate_set(data, cid, status=None, text=None):
                 c["updated"] = now()
                 save(data, "candidates.json", cd)
                 return c
-    raise CanonError("ARG-INVALID", f"후보 {cid} 이(가) 없습니다.", "python3 canon.py candidates 로 확인하세요.")
+    raise CrmError("ARG-INVALID", f"후보 {cid} 이(가) 없습니다.", "python3 crm.py candidates 로 확인하세요.")
 
 
 # ── 질문별 한 장 ────────────────────────────────────────
 
 def build_sheet(data, qid):
     """확정·대기 후보로 한 장을 다시 만든다. 모델을 부르지 않는다(결정적).
-    임시 파일 → 링크·ID 검사 → 교체. 이전 판은 .canon/history 에 남긴다."""
+    임시 파일 → 링크·ID 검사 → 교체. 이전 판은 .crm/history 에 남긴다."""
     qs = {x["id"]: x for x in load(data, "questions.json")["questions"]}
     if qid not in qs:
-        raise CanonError("ARG-INVALID", f"질문 {qid} 이(가) 없습니다.")
+        raise CrmError("ARG-INVALID", f"질문 {qid} 이(가) 없습니다.")
     cands = [c for c in load(data, "candidates.json")["candidates"] if c["question"] == qid]
     conf = [c for c in cands if c["status"] == "confirmed"]
     pend = [c for c in cands if c["status"] == "pending"]
@@ -335,7 +335,7 @@ def build_sheet(data, qid):
         if rid not in recs:
             try:
                 recs[rid] = get_journal(data, rid)
-            except CanonError:
+            except CrmError:
                 recs[rid] = None
     missing = [r for r, v in recs.items() if v is None]
     built = now()
@@ -356,15 +356,15 @@ def build_sheet(data, qid):
           for rid, r in sorted(recs.items())] or ["(없음)"]
     if missing:
         L += ["", f"⚠ 원문을 찾지 못한 기록: {', '.join(missing)} — 이 부분은 미완료입니다."]
-    nxt = (f"python3 canon.py candidate confirm {pend[0]['id']} (또는 exclude)" if pend
-           else "python3 canon.py record add 로 기록 1편 추가")
+    nxt = (f"python3 crm.py candidate confirm {pend[0]['id']} (또는 exclude)" if pend
+           else "python3 crm.py record add 로 기록 1편 추가")
     L += ["", "## 다음 행동", "", f"- {nxt}", ""]
     text = "\n".join(L)
 
     def check(s):
         for c in conf:
             if c["text"] not in s:
-                raise CanonError("SHEET-CHECK", f"검사 실패: 확정 판단 {c['id']} 이 한 장에 없음",
+                raise CrmError("SHEET-CHECK", f"검사 실패: 확정 판단 {c['id']} 이 한 장에 없음",
                                  "이전 한 장은 그대로입니다. issue 로 남겨 주세요.")
     out = Path(data) / "sheets" / f"{qid}.md"
     with lock(data, "sheet build"):
@@ -410,12 +410,12 @@ def propose_tabs(data, specs):
             used.append(tid)
         tabs.append({"id": tid, "label": label, "blocks": [b for b in blocks if b in schema.BLOCKS]})
     if unknown:
-        raise CanonError("BLOCK-UNKNOWN", f"카탈로그에 없는 블록: {', '.join(unknown)}",
-                         "python3 canon.py blocks 로 목록을 보고, 없는 것은 request 로 남기세요.")
+        raise CrmError("BLOCK-UNKNOWN", f"카탈로그에 없는 블록: {', '.join(unknown)}",
+                         "python3 crm.py blocks 로 목록을 보고, 없는 것은 request 로 남기세요.")
     new = dict(cur, tabs=tabs, revision=cur.get("revision", 0) + 1)
     errs = schema.tabs(new)
     if errs:
-        raise CanonError("SCHEMA-INVALID", "; ".join(errs))
+        raise CrmError("SCHEMA-INVALID", "; ".join(errs))
     write_json_atomic(pending_tabs_path(data), {"proposed": now(), "tabs": new})
     return preview(data)
 
@@ -424,7 +424,7 @@ def rename_tab(data, tid, label):
     """표시 이름만 바꾼다. 내부 ID 는 그대로라 딥링크(#t-001)와 연결이 유지된다."""
     cur = load(data, "tabs.json")
     if tid not in {t["id"] for t in cur["tabs"]}:
-        raise CanonError("ARG-INVALID", f"탭 {tid} 이(가) 없습니다.")
+        raise CrmError("ARG-INVALID", f"탭 {tid} 이(가) 없습니다.")
     new = json.loads(json.dumps(cur))
     for t in new["tabs"]:
         if t["id"] == tid:
@@ -432,7 +432,7 @@ def rename_tab(data, tid, label):
     new["revision"] = cur.get("revision", 0) + 1
     errs = schema.tabs(new)
     if errs:
-        raise CanonError("SCHEMA-INVALID", "; ".join(errs))
+        raise CrmError("SCHEMA-INVALID", "; ".join(errs))
     write_json_atomic(pending_tabs_path(data), {"proposed": now(), "tabs": new})
     return preview(data)
 
@@ -440,7 +440,7 @@ def rename_tab(data, tid, label):
 def preview(data):
     p = pending_tabs_path(data)
     if not p.exists():
-        raise CanonError("PREVIEW-NONE", "적용 대기 중인 탭 제안이 없습니다.", "python3 canon.py tabs propose 로 먼저 제안하세요.")
+        raise CrmError("PREVIEW-NONE", "적용 대기 중인 탭 제안이 없습니다.", "python3 crm.py tabs propose 로 먼저 제안하세요.")
     new = json.loads(p.read_text(encoding="utf-8"))["tabs"]
     cur = load(data, "tabs.json")
     have = availability(data)
@@ -458,13 +458,13 @@ def preview(data):
     removed = [o for o in cur["tabs"] if o["id"] not in {t["id"] for t in new["tabs"]}]
     return {"tabs": rows, "removed": removed, "requests": new.get("requests", []),
             "writes": ["tabs.json"], "model_send": "없음 — 화면 조회는 모델을 부르지 않습니다",
-            "rollback": "적용 직전 자동 백업 → python3 canon.py restore <백업ID>"}
+            "rollback": "적용 직전 자동 백업 → python3 crm.py restore <백업ID>"}
 
 
 def apply_tabs(data):
     p = pending_tabs_path(data)
     if not p.exists():
-        raise CanonError("PREVIEW-NONE", "적용할 제안이 없습니다.", "python3 canon.py tabs propose 로 먼저 제안하세요.")
+        raise CrmError("PREVIEW-NONE", "적용할 제안이 없습니다.", "python3 crm.py tabs propose 로 먼저 제안하세요.")
     new = json.loads(p.read_text(encoding="utf-8"))["tabs"]
     bid = backup(data, "before-tabs")
     with lock(data, "tabs apply"):
@@ -485,11 +485,11 @@ def availability(data):
     data = Path(data)
     try:
         q = bool(load(data, "questions.json")["questions"])
-    except CanonError:
+    except CrmError:
         q = False
     try:
         c = bool(load(data, "candidates.json")["candidates"])
-    except CanonError:
+    except CrmError:
         c = False
     return {"questions": q, "candidates": c, "journal": any((data / "journal").glob("j-*.md"))}
 
@@ -513,19 +513,19 @@ def next_action(data):
     recs = list(data.glob("journal/j-*.md"))
     if st.get("env") != "done":
         return _act("setup", "환경 점검부터 해요. 점검 결과를 읽고 다음 조치 하나를 따르면 돼요.",
-                    "python3 canon.py doctor")
+                    "python3 crm.py doctor")
     if not p["consent"].get("updated"):
         return _act("setup", "읽을 자료와 모델에 보낼 범위를 정해요. "
-                             "Claude Code 에서 「canon-setup 스킬로 설정 시작」이라고 말하면 돼요.")
+                             "Claude Code 에서 「crm-setup 스킬로 설정 시작」이라고 말하면 돼요.")
     if not qs and not recs:
         return _act("record", "질문은 나중에 정해도 돼요. 최근에 겪은 일을 한 편 적어 보세요.",
-                    'python3 canon.py record add --title "…" --text "…"')
+                    'python3 crm.py record add --title "…" --text "…"')
     if not tabs:
         return _act("tabs", "매일 볼 것(최대 3개)을 내 말로 탭 이름에 담아요.",
-                    'python3 canon.py tabs propose --tab "이름=블록,블록"')
+                    'python3 crm.py tabs propose --tab "이름=블록,블록"')
     if not recs:
         return _act("record", "기록을 한 편 적어 보세요.",
-                    'python3 canon.py record add --title "…" --text "…"')
+                    'python3 crm.py record add --title "…" --text "…"')
     used = {c["evidence"]["record"] for c in cands}
     fresh = [r for r in sorted(recs) if r.stem not in used]
     if qs and fresh and not cands:
@@ -534,23 +534,23 @@ def next_action(data):
         except (OSError, UnicodeDecodeError):
             title = "읽지 못한 기록"
         return _act("digest", f"「{title}」 기록에서 판단 후보를 뽑아요.",
-                    f"python3 canon.py digest --record {fresh[0].stem} --question {qs[0]['id']}",
+                    f"python3 crm.py digest --record {fresh[0].stem} --question {qs[0]['id']}",
                     fresh[0].stem)
     pend = [c for c in cands if c["status"] == "pending"]
     if pend:
         return _act("review", f"아직 안 정한 문장이 {len(pend)}개 있어요. 원문과 대조해 남길지 정해요.",
-                    f"python3 canon.py candidate confirm {pend[0]['id']}", pend[0]["id"])
+                    f"python3 crm.py candidate confirm {pend[0]['id']}", pend[0]["id"])
     for q in qs:
         si = sheet_info(data, q["id"])
         if any(c["question"] == q["id"] for c in cands) and (not si["exists"] or si["stale"]):
             return _act("sheet", f"「{q['text']}」 한 장 파일을 새로 만들어요.",
-                        f"python3 canon.py sheet build {q['id']}", q["id"])
+                        f"python3 crm.py sheet build {q['id']}", q["id"])
     if st.get("reopen") != "done":
         return _act("reopen", "새 터미널에서 대시보드를 다시 열어 같은 내용이 보이는지 확인해요.",
-                    "python3 canon.py serve 로 연 뒤 python3 canon.py setup done reopen")
+                    "python3 crm.py serve 로 연 뒤 python3 crm.py setup done reopen")
     if st.get("drill") != "done":
         return _act("drill", "복구 리허설을 한 번 해 봐요. 점검·복구 가이드(guides/07)를 따라 하면 돼요.",
-                    "python3 canon.py drill start")
+                    "python3 crm.py drill start")
     return _act("free", "기록을 한 편 더 쓰거나 질문·탭을 다듬어요.")
 
 

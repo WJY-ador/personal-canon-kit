@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
-"""personal-canon-kit 명령줄. 데이터에 쓰는 일은 전부 이 명령으로 한다 — 대시보드는 읽기 전용이다.
+"""My CRM 명령줄. 데이터에 쓰는 일은 전부 이 명령으로 한다 — 대시보드는 읽기 전용이다.
 
-macOS:   python3 canon.py <명령>
-Windows: py canon.py <명령>
+macOS:   python3 crm.py <명령>
+Windows: py crm.py <명령>
 """
 import argparse
 import hashlib
 import json
-import os
 import sys
 import webbrowser
 from pathlib import Path
 
-from canonkit import VERSION, checks, data as D, doctor, model, paths, schema, server, store
-from canonkit.store import CanonError
+from crmkit import VERSION, checks, data as D, doctor, model, paths, schema, server, store
+from crmkit.store import CrmError
 
 try:                                    # Windows 콘솔에서 한글이 깨지지 않게
     sys.stdout.reconfigure(encoding="utf-8")
@@ -41,10 +40,10 @@ def show_checks(rep):
 def c_init(a, data):
     target = Path(a.data).expanduser().resolve() if a.data else None
     if not target:
-        raise CanonError("ARG-INVALID", "--data <폴더> 가 필요합니다.",
-                         "예) python3 canon.py init --data ~/canon-data")
+        raise CrmError("ARG-INVALID", "--data <폴더> 가 필요합니다.",
+                         "예) python3 crm.py init --data ~/crm-data")
     if paths.PRODUCT_ROOT in [target, *target.parents]:
-        raise CanonError("DATA-INSIDE-PRODUCT", "데이터 폴더를 제품 폴더 안에 둘 수 없습니다 — 업데이트 때 덮일 수 있습니다.",
+        raise CrmError("DATA-INSIDE-PRODUCT", "데이터 폴더를 제품 폴더 안에 둘 수 없습니다 — 업데이트 때 덮일 수 있습니다.",
                          "제품 폴더 밖의 경로를 고르세요.")
     created = D.init(target, "sample" if a.sample else "user")
     if not a.no_remember:
@@ -64,13 +63,13 @@ def c_doctor(a, data):
     if a.json:
         print(json.dumps(rep, ensure_ascii=False, indent=2))
     else:
-        say(f"점검 — personal-canon-kit {VERSION}", "")
+        say(f"점검 — My CRM {VERSION}", "")
         show_checks(rep)
     env_ok = not any(r["status"] == "fail" and r["code"] in ("ENV-PY", "ENV-OS") for r in rep["results"])
     if data and (Path(data) / "setup-state.json").exists() and env_ok:
         try:
             D.mark_step(data, "env")
-        except CanonError:
+        except CrmError:
             pass
     return 0 if rep["ok"] else 1
 
@@ -126,7 +125,7 @@ def c_profile(a, data):
     if a.action == "show":
         return c_status(a, data)
     if not a.key or a.value is None:
-        raise CanonError("ARG-INVALID", "profile set <항목> <값> --status <상태>")
+        raise CrmError("ARG-INVALID", "profile set <항목> <값> --status <상태>")
     f = D.profile_set(data, a.key, a.value, a.status, a.source or "")
     if a.key == "purpose" and a.status == "confirmed":
         D.mark_step(data, "profile")
@@ -183,7 +182,7 @@ def _print_preview(pv):
         say("", "  미구현 요청 (만들지 않음): " + " / ".join(r["text"] for r in pv["requests"]))
     say("", f"  바뀌는 파일: {', '.join(pv['writes'])}", f"  모델 전송: {pv['model_send']}",
         f"  되돌리기: {pv['rollback']}", "",
-        "적용: python3 canon.py tabs apply   ·   취소: python3 canon.py tabs cancel")
+        "적용: python3 crm.py tabs apply   ·   취소: python3 crm.py tabs cancel")
 
 
 def c_tabs(a, data):
@@ -192,11 +191,11 @@ def c_tabs(a, data):
         specs = []
         for spec in a.tab or []:
             if "=" not in spec:
-                raise CanonError("ARG-INVALID", f"--tab 형식은 \"이름=블록,블록\" 입니다: {spec}")
+                raise CrmError("ARG-INVALID", f"--tab 형식은 \"이름=블록,블록\" 입니다: {spec}")
             label, blocks = spec.split("=", 1)
             specs.append((label.strip(), [b.strip() for b in blocks.split(",") if b.strip()]))
         if not specs:
-            raise CanonError("ARG-INVALID", "--tab \"이름=블록,블록\" 을 하나 이상 주세요.", "블록 목록: python3 canon.py blocks")
+            raise CrmError("ARG-INVALID", "--tab \"이름=블록,블록\" 을 하나 이상 주세요.", "블록 목록: python3 crm.py blocks")
         _print_preview(D.propose_tabs(data, specs))
     elif a.action == "rename":
         _print_preview(D.rename_tab(data, a.args[0], a.args[1]))
@@ -205,7 +204,7 @@ def c_tabs(a, data):
     elif a.action == "apply":
         bid = D.apply_tabs(data)
         D.mark_step(data, "tabs")
-        say(f"적용됨. 적용 전 상태는 백업 {bid} 에 있습니다.", "확인: python3 canon.py serve")
+        say(f"적용됨. 적용 전 상태는 백업 {bid} 에 있습니다.", "확인: python3 crm.py serve")
     elif a.action == "cancel":
         say("제안을 버렸습니다. 기존 탭은 그대로입니다." if D.cancel_tabs(data) else "대기 중인 제안이 없습니다.")
     elif a.action == "show":
@@ -216,7 +215,7 @@ def c_tabs(a, data):
 def c_record(a, data):
     D.require_data(data)
     if not a.text and not a.file:
-        raise CanonError("ARG-INVALID", "--text 또는 --file 이 필요합니다.")
+        raise CrmError("ARG-INVALID", "--text 또는 --file 이 필요합니다.")
     jid = D.record_add(data, a.title, a.text, a.question, from_file=a.file)
     D.mark_step(data, "first_record")
     say(f"기록 {jid} 저장 (원문 그대로): {Path(data) / 'journal' / (jid + '.md')}",
@@ -236,7 +235,7 @@ def c_digest(a, data):
     rec = D.get_journal(data, a.record)
     qs = {q["id"]: q for q in D.load(data, "questions.json")["questions"]}
     if a.question not in qs:
-        raise CanonError("ARG-INVALID", f"질문 {a.question} 이(가) 없습니다.",
+        raise CrmError("ARG-INVALID", f"질문 {a.question} 이(가) 없습니다.",
                          "질문이 아직 없으면 question add 로 하나 만들거나, 일지만 쌓아 두세요.")
     runs = store.read_runs(data).get("digest", {})
     store.set_run(data, "digest", state="running", started=store.now(), record=rec["id"],
@@ -252,21 +251,21 @@ def c_digest(a, data):
         else:
             prof = D.load(data, "profile.json")
             if not prof["consent"].get("model_send"):
-                raise CanonError("CONSENT-MISSING", "모델 전송에 동의하지 않았습니다.",
+                raise CrmError("CONSENT-MISSING", "모델 전송에 동의하지 않았습니다.",
                                  "동의하려면 consent --model-send yes, 아니면 --no-model 로 실행하세요.")
             say(f"모델로 보내는 것: 기록 {rec['id']} 본문 {len(rec['body'])}자 + 질문 {a.question} 문장. 그 밖의 파일은 보내지 않습니다.")
             ans = model.ask(model.DIGEST_PROMPT.format(question=qs[a.question]["text"], body=rec["body"]),
                             cwd=str(paths.sys_dir(data)))
             items = model.extract_json(ans).get("candidates", [])
             if not isinstance(items, list):
-                raise CanonError("MODEL-FORMAT", "모델 답의 candidates 가 목록이 아닙니다.", "한 번만 다시 실행하세요.")
+                raise CrmError("MODEL-FORMAT", "모델 답의 candidates 가 목록이 아닙니다.", "한 번만 다시 실행하세요.")
             origin = "ai"
         added, dropped = D.add_candidates(data, rec, a.question, items, origin)
         if items and not added and all(r != "이미 있는 후보" for _, r in dropped):
-            raise CanonError("MODEL-GROUNDING", "후보가 모두 원문 근거 검사에서 떨어졌습니다.",
+            raise CrmError("MODEL-GROUNDING", "후보가 모두 원문 근거 검사에서 떨어졌습니다.",
                              "이전 정상본은 그대로입니다. 한 번만 다시 실행하고, 반복되면 issue 로 남기세요.")
         sh = D.build_sheet(data, a.question)
-    except CanonError as e:
+    except CrmError as e:
         store.set_run(data, "digest", state="failed", finished=store.now(), error=e.message,
                       error_code=e.code, action=e.action)
         raise
@@ -343,7 +342,7 @@ def c_restore(a, data):
     say(f"복구 완료: 파일 {len(r['restored'])}개", f"복구 직전 상태 백업: {r['pre_restore_backup']}")
     if r["kept_newer"]:
         say("백업 이후 새로 생긴 파일은 지우지 않고 남겼습니다: " + ", ".join(r["kept_newer"]))
-    say("확인: python3 canon.py doctor")
+    say("확인: python3 crm.py doctor")
 
 
 def _tabs_hash(data):
@@ -360,21 +359,21 @@ def c_drill(a, data):
         store.write_json_atomic(f, {"backup": bid, "tabs_sha256": h, "started": store.now()})
         (Path(data) / "tabs.json").write_text("{ 리허설로 일부러 깨뜨린 설정", encoding="utf-8")
         say("복구 리허설 시작 — tabs.json 을 일부러 깨뜨렸습니다.", "",
-            "1) python3 canon.py doctor          → 실패 항목과 다음 조치를 읽으세요",
-            "2) python3 canon.py serve           → 화면이 깨진 상태를 어떻게 알리는지 보세요 (선택)",
-            f"3) python3 canon.py restore {bid}",
-            "4) python3 canon.py drill finish    → 같은 탭이 돌아왔는지 검사합니다")
+            "1) python3 crm.py doctor          → 실패 항목과 다음 조치를 읽으세요",
+            "2) python3 crm.py serve           → 화면이 깨진 상태를 어떻게 알리는지 보세요 (선택)",
+            f"3) python3 crm.py restore {bid}",
+            "4) python3 crm.py drill finish    → 같은 탭이 돌아왔는지 검사합니다")
     else:
         if not f.exists():
-            raise CanonError("DRILL-NONE", "진행 중인 리허설이 없습니다.", "python3 canon.py drill start")
+            raise CrmError("DRILL-NONE", "진행 중인 리허설이 없습니다.", "python3 crm.py drill start")
         st = json.loads(f.read_text(encoding="utf-8"))
         fails = [r for r in doctor.data_checks(data) if r["status"] == "fail"]
         if fails:
-            raise CanonError("DRILL-NOT-RECOVERED", f"아직 실패 {len(fails)}건: {fails[0]['msg']}",
-                             f"python3 canon.py restore {st['backup']}")
+            raise CrmError("DRILL-NOT-RECOVERED", f"아직 실패 {len(fails)}건: {fails[0]['msg']}",
+                             f"python3 crm.py restore {st['backup']}")
         if _tabs_hash(data) != st["tabs_sha256"]:
-            raise CanonError("DRILL-MISMATCH", "탭 설정이 리허설 전과 다릅니다.",
-                             f"python3 canon.py restore {st['backup']}")
+            raise CrmError("DRILL-MISMATCH", "탭 설정이 리허설 전과 다릅니다.",
+                             f"python3 crm.py restore {st['backup']}")
         f.unlink()
         D.mark_step(data, "drill")
         say("복구 리허설 통과 — 깨짐 감지 → 백업 복구 → 같은 탭 재조회까지 확인했습니다.")
@@ -399,7 +398,7 @@ def c_check(a, data):
     if a.update_manifest:
         say(f"manifest 파일 목록 갱신: {checks.update_manifest()}개")
     extra = paths.read_local_conf().get("scrub_extra", []) + \
-        [x.strip() for x in os.environ.get("CANON_SCRUB_EXTRA", "").split(",") if x.strip()]
+        [x.strip() for x in (paths.env("SCRUB_EXTRA") or "").split(",") if x.strip()]
     issues = checks.run(set(COMMANDS), extra)
     for lvl, where, msg in issues:
         say(f" {'✗' if lvl == 'fail' else '!'} {where}  {msg}")
@@ -412,8 +411,8 @@ COMMANDS = {}
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(prog="canon.py", description="personal-canon-kit — 내 기록을 내 질문·화면으로")
-    ap.add_argument("--data", help="데이터 폴더 (기본: CANON_DATA 또는 local.json)")
+    ap = argparse.ArgumentParser(prog="crm.py", description="My CRM — 내 기록을 내 질문·화면으로")
+    ap.add_argument("--data", help="데이터 폴더 (기본: CRM_DATA 또는 local.json)")
     ap.add_argument("--version", action="version", version=VERSION)
     sp = ap.add_subparsers(dest="cmd")
 
@@ -538,9 +537,17 @@ def main(argv=None):
         ap.error("candidate edit <후보ID> <새 문장>")
     data = paths.resolve_data_root(a.data) if a.cmd != "init" else None
     try:
+        # 모든 명령의 공통 진입점 — 옛 시스템 폴더를 한 번 옮긴다(init 은 --data 대상)
+        root = data or (Path(a.data).expanduser().resolve() if a.cmd == "init" and a.data else None)
+        if root:
+            try:
+                paths.migrate_sys_dir(root)
+            except OSError as e:
+                raise CrmError("SYSDIR-MOVE", f"옛 시스템 폴더를 새 이름({paths.SYS_DIR})으로 옮기지 못했습니다: {e.strerror or e}",
+                               f"다른 프로그램이 데이터 폴더를 쓰고 있으면 닫고 다시 실행하세요. 직접 옮겨도 됩니다(폴더 이름만 {paths.SYS_DIR} 로).")
         rc = a.fn(a, data)
         return rc or 0
-    except CanonError as e:
+    except CrmError as e:
         print(f"\n[오류 {e.code}] {e.message}", file=sys.stderr)
         if e.action:
             print(f"다음 조치: {e.action}", file=sys.stderr)

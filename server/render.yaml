@@ -13,9 +13,9 @@ services:
         sync: false
       - key: AUTHKIT_ISSUER
         value: https://wealthy-technology-63-staging.authkit.app
-      - key: CANON_PUBLIC_URL
+      - key: CRM_PUBLIC_URL
         sync: false
       - key: AUTHKIT_WEB_CLIENT_ID
         value: client_01M56STKY61NSCEJCN6141YVEQ
-      - key: CANON_SESSION_SECRET
-        generateValue: true
+      - key: CRM_SESSION_SECRET
+        sync: false   # 값은 대시보드에서 지금 쓰는 세션 비밀과 같은 값으로 — generateValue 를 쓰면 동기화 때 새 비밀이 생겨 전원 로그아웃

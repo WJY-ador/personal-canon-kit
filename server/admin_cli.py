@@ -25,7 +25,7 @@ def main(argv: list[str]) -> int:
             for r in rows:
                 print(f"{r['id']}\t{r['email']}\t{'차단 ' + r['blocked_at'] if r['blocked_at'] else ''}".rstrip())
             print(f"관리자 {len(rows)}명")
-    except db.CanonError as e:
+    except db.CrmError as e:
         print(f"[{e.code}] {e.message}" + (f" {e.action}" if e.action else ""), file=sys.stderr)
         return 1
     finally:

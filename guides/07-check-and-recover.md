@@ -1,12 +1,12 @@
 # 07. 점검·복구
 
 깨진 상태를 숨기지 않고, 어디서 멈췄는지·다음 조치 하나·되돌릴 수 있는지를 보여 주는 것이 목적입니다.
-Claude Code 에서 「canon-doctor 스킬로 점검해 줘」 라고 해도 같은 순서로 진행합니다.
+Claude Code 에서 「crm-doctor 스킬로 점검해 줘」 라고 해도 같은 순서로 진행합니다.
 
 ## 1. 점검
 
 ```bash
-python3 canon.py doctor
+python3 crm.py doctor
 ```
 
 | 표시 | 뜻 |
@@ -40,9 +40,9 @@ python3 canon.py doctor
 ## 3. 백업과 복구
 
 ```bash
-python3 canon.py backup --label 이름     # 지금 상태
-python3 canon.py backups                 # 목록
-python3 canon.py restore <백업ID>        # 되돌리기
+python3 crm.py backup --label 이름     # 지금 상태
+python3 crm.py backups                 # 목록
+python3 crm.py restore <백업ID>        # 되돌리기
 ```
 
 - `restore` 는 지금 상태를 먼저 `before-restore` 로 백업합니다.
@@ -53,10 +53,10 @@ python3 canon.py restore <백업ID>        # 되돌리기
 ## 4. 복구 리허설 (한 번은 해 보기)
 
 ```bash
-python3 canon.py drill start     # 탭 설정을 일부러 깨뜨림
-python3 canon.py doctor          # 실패를 읽음
-python3 canon.py restore <ID>    # drill start 가 알려 준 ID
-python3 canon.py drill finish    # 같은 탭이 돌아왔는지 검사
+python3 crm.py drill start     # 탭 설정을 일부러 깨뜨림
+python3 crm.py doctor          # 실패를 읽음
+python3 crm.py restore <ID>    # drill start 가 알려 준 ID
+python3 crm.py drill finish    # 같은 탭이 돌아왔는지 검사
 ```
 
 ## 5. 같은 실패가 반복되면
@@ -64,9 +64,9 @@ python3 canon.py drill finish    # 같은 탭이 돌아왔는지 검사
 무한 재시도하지 말고 멈춥니다.
 
 ```bash
-python3 canon.py issue add "무슨 일이 몇 번" --kind "제품 결함 후보"
-python3 canon.py diag
+python3 crm.py issue add "무슨 일이 몇 번" --kind "제품 결함 후보"
+python3 crm.py diag
 ```
 
-`diag` 는 지원용 진단 파일을 `<데이터>/.canon/diag-*.json` 에 만듭니다. 원문·질문·판단 문장·경로·토큰은 넣지 않습니다. **보내기 전에 직접 열어 확인하세요.**
+`diag` 는 지원용 진단 파일을 `<데이터>/.crm/diag-*.json` 에 만듭니다. 원문·질문·판단 문장·경로·토큰은 넣지 않습니다. **보내기 전에 직접 열어 확인하세요.**
 지원 채널·응답 시간은 아직 정해지지 않았습니다.

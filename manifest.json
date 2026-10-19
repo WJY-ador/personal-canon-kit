@@ -1,5 +1,5 @@
 {
-  "name": "personal-canon-kit",
+  "name": "personal-crm",
   "version": "0.1.0",
   "schemaVersion": 1,
   "released": "2026-10-15",
@@ -24,19 +24,19 @@
   "policies": "미정 — DECISIONS-PENDING.md",
   "files": [
     {
-      "path": ".claude/skills/canon-digest/SKILL.md",
+      "path": ".claude/skills/crm-digest/SKILL.md",
       "required": true
     },
     {
-      "path": ".claude/skills/canon-doctor/SKILL.md",
+      "path": ".claude/skills/crm-doctor/SKILL.md",
       "required": true
     },
     {
-      "path": ".claude/skills/canon-record/SKILL.md",
+      "path": ".claude/skills/crm-record/SKILL.md",
       "required": true
     },
     {
-      "path": ".claude/skills/canon-setup/SKILL.md",
+      "path": ".claude/skills/crm-setup/SKILL.md",
       "required": true
     },
     {
@@ -60,43 +60,43 @@
       "required": true
     },
     {
-      "path": "canon.py",
+      "path": "crm.py",
       "required": true
     },
     {
-      "path": "canonkit/__init__.py",
+      "path": "crmkit/__init__.py",
       "required": true
     },
     {
-      "path": "canonkit/checks.py",
+      "path": "crmkit/checks.py",
       "required": true
     },
     {
-      "path": "canonkit/data.py",
+      "path": "crmkit/data.py",
       "required": true
     },
     {
-      "path": "canonkit/doctor.py",
+      "path": "crmkit/doctor.py",
       "required": true
     },
     {
-      "path": "canonkit/model.py",
+      "path": "crmkit/model.py",
       "required": true
     },
     {
-      "path": "canonkit/paths.py",
+      "path": "crmkit/paths.py",
       "required": true
     },
     {
-      "path": "canonkit/schema.py",
+      "path": "crmkit/schema.py",
       "required": true
     },
     {
-      "path": "canonkit/server.py",
+      "path": "crmkit/server.py",
       "required": true
     },
     {
-      "path": "canonkit/store.py",
+      "path": "crmkit/store.py",
       "required": true
     },
     {

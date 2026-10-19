@@ -8,9 +8,9 @@
 cd server
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 # .env 에 DATABASE_URL (Supabase Session pooler, 5432) — gitignored
-CANON_DEV=1 CANON_DEV_USER=you@example.com .venv/bin/python main.py   # http://127.0.0.1:8800
+CRM_DEV=1 CRM_DEV_USER=you@example.com .venv/bin/python main.py   # http://127.0.0.1:8800
 .venv/bin/python test_tools.py   # Supabase 에 붙어 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제
-CANON_TEST_SCHEMA=canon_test .venv/bin/python test_tools.py   # 운영 DB 가 아직 옛 스키마일 때: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
+CRM_TEST_SCHEMA=crm_test .venv/bin/python test_tools.py   # 운영 DB 가 아직 옛 스키마일 때: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
 ```
 
 원작자 템플릿(기준·결정·숙제·발행·축·접근 방식 정의, 라벨은 파일 맨 위 `LABELS`) 넣기 — 대상 사용자가 먼저 로그인해 계정이 있어야 한다:
@@ -19,10 +19,10 @@ CANON_TEST_SCHEMA=canon_test .venv/bin/python test_tools.py   # 운영 DB 가 �
 .venv/bin/python template_author.py <email>             # definition_propose→apply 와 같은 경로, 같은 key 있으면 건너뜀
 ```
 
-Claude Code 에서 붙이기: `claude mcp add --transport http canon http://127.0.0.1:8800/mcp`
-또는 `--mcp-config` JSON `{"mcpServers":{"canon":{"type":"http","url":"http://127.0.0.1:8800/mcp"}}}`.
+Claude Code 에서 붙이기: `claude mcp add --transport http my-crm http://127.0.0.1:8800/mcp`
+또는 `--mcp-config` JSON `{"mcpServers":{"my-crm":{"type":"http","url":"http://127.0.0.1:8800/mcp"}}}`.
 
-웹 화면은 `http://127.0.0.1:8800/app`. 개발(`CANON_DEV=1`)은 로그인 없이 `CANON_DEV_USER` 로 보인다. 실제 로그인을 로컬에서 보려면
+웹 화면은 `http://127.0.0.1:8800/app`. 개발(`CRM_DEV=1`)은 로그인 없이 `CRM_DEV_USER` 로 보인다. 실제 로그인을 로컬에서 보려면
 `AUTHKIT_WEB_CLIENT_ID` 를 넣고 `/login` 으로 — 로컬 콜백 `http://127.0.0.1:8800/auth/callback` 도 등록돼 있다.
 
 ## 배포 (Render Free, singapore)
@@ -35,17 +35,17 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
 환경변수:
 - `DATABASE_URL` — Supabase Session pooler 연결 문자열 (비밀, 대시보드에서 입력)
 - `AUTHKIT_ISSUER` — `https://wealthy-technology-63-staging.authkit.app`
-- `CANON_PUBLIC_URL` — 배포된 https 주소. MCP resource 는 이 주소 + `/mcp`, Host 허용 목록도 여기서 만든다
-- `PORT` — Render 가 넣는다 (로컬은 `CANON_PORT`, 기본 8800)
+- `CRM_PUBLIC_URL` — 배포된 https 주소. MCP resource 는 이 주소 + `/mcp`, Host 허용 목록도 여기서 만든다
+- `PORT` — Render 가 넣는다 (로컬은 `CRM_PORT`, 기본 8800)
 - `AUTHKIT_WEB_CLIENT_ID` — 웹 로그인용 공개 클라이언트. AuthKit DCR(`POST {issuer}/oauth2/register`)로 2026-10-18 등록한
   `client_01M56STKY61NSCEJCN6141YVEQ` (redirect: `https://personal-canon-kit.onrender.com/auth/callback`, `http://127.0.0.1:8800/auth/callback`,
   `token_endpoint_auth_method=none`). 환경 client ID 는 `/oauth2/authorize` 에서 `application_not_found` — Connect 흐름은 DCR·CIMD 클라이언트만 받는다(실측).
-- `CANON_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
+- `CRM_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
   둘 중 하나라도 없으면 웹 로그인만 503 이고 MCP 는 정상 — 자동 배포로 서버가 죽지 않게.
-- `CANON_CONTACT` — (선택) 처리방침 보조 메일. 있으면 처리방침에 메일 한 줄로 보이고, 없으면 보이지 않는다. 없어도 서버는 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나다.
-- `CANON_ADMIN_USER_IDS` — (선택, **첫 배포 1회만**) 쉼표 구분 내부 user id(`u_…`). β2 부터 관리자 판정은 DB `users.role` 이다. 이 env 는 감사 기록에 `bootstrap`·`recover` 행이 없을 때 한 번만 읽혀 그 계정을 관리자로 옮긴다(아래 「관리자」 운영 절). 그 뒤엔 바꿔도 효과 없음 — 관리자 부여·회수는 `/admin/setup`, 잠기면 `admin_cli.py grant <email>`.
+- `CRM_CONTACT` — (선택) 처리방침 보조 메일. 있으면 처리방침에 메일 한 줄로 보이고, 없으면 보이지 않는다. 없어도 서버는 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나다.
+- `CRM_ADMIN_USER_IDS` — (선택, **첫 배포 1회만**) 쉼표 구분 내부 user id(`u_…`). β2 부터 관리자 판정은 DB `users.role` 이다. 이 env 는 감사 기록에 `bootstrap`·`recover` 행이 없을 때 한 번만 읽혀 그 계정을 관리자로 옮긴다(아래 「관리자」 운영 절). 그 뒤엔 바꿔도 효과 없음 — 관리자 부여·회수는 `/admin/setup`, 잠기면 `admin_cli.py grant <email>`.
 
-운영엔 `CANON_DEV`·`CANON_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
+운영엔 `CRM_DEV`·`CRM_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
 확인: `curl https://<주소>/health` → `{"ok":true,"db":true}` · 토큰 없이 `POST /mcp` → 401 + `WWW-Authenticate` · `GET /.well-known/oauth-protected-resource/mcp` → 200.
 웹 로그인 확인: `GET /` 시작 화면(세션 있으면 `/app`) → [로그인] = `/login` → AuthKit → `/auth/callback` → `/app` 에 이메일 표시. `GET /app` 세션 없음 → 302 `/`.
 로그아웃: `POST /logout` 이 쿠키를 지우고 `redirect: /?out=1` 을 준다. AuthKit 세션은 끝낼 엔드포인트가 없다(end_session 없음, `user_management/sessions/logout` 은 Connect 토큰의 `sid=app_consent_…` 에 안 맞아 멈춤 — 2026-10-18 실측). 대신 `/?out=1` 의 [로그인] 은 `/login?fresh=1` → authorize 에 `prompt=login` 을 붙여 로그인 폼을 강제한다(실측: 세션 있어도 폼 뜸).
@@ -57,13 +57,13 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - **게이트**: 동의 전 사용자는 MCP 쓰기 도구·웹 쓰기 API 가 거절된다(MCP `[CONSENT-REQUIRED]` + `/consent` 주소, 웹 403). 읽기·도움말·문의(`feedback_send`·「문의」)는 동의 전에도 된다. 관리자 면제 없음. `GET /app` 은 미동의면 `/consent` 로 보낸다.
 - **일일 한도**(KST 0시 기준, 관리자도 같음): 기록 50 · 후보 150 — 제출 수 기준(검증 전, 한 호출 최대 3) · 결정 300 · 제안 100 — 하루 새로 만들어 **남아 있는** 새 정의·새 항목. discard 로 지우면 다시 셀 수 있다(목적은 저장 증가 억제) · 질문 50. 넘으면 `RATE-LIMIT`. 값은 `db.py` 「일일 한도」 `DAILY_LIMITS`.
 - **usage_daily**: 도구·`/api/*` 호출 수를 (KST 날짜, 사용자, 이름, 코드)별로 메모리에 세고 5분마다 DB 에 합산한다. 요청 경로에 DB 비용이 없다. 대신 **수면·재배포 때 마지막 통상 약 5분치, DB 장애로 flush 가 연속 실패하면 그만큼 더 유실**된다(정상 종료면 종료 직전 1회 flush). 동의하지 않은 사용자·익명은 `user_id=''` 로 합쳐진다. 사용자별 집계는 flush 시점(5분 주기) 의 동의 상태로 접는다 — 동의 직전 5분 안 호출은 사용자별로 남고, 버전을 올리면 재동의 전까지 익명으로 접힌다.
-- `CANON_SESSION_SECRET` 교체 = 전원 로그아웃.
+- `CRM_SESSION_SECRET` 교체 = 전원 로그아웃.
 - **배포 직후**: 원작자가 `/consent` 를 한 번 지난다 · 지인에게 「다음 쓰기부터 동의 화면 1회」 공지 · 운영 실측 = 동의 전 MCP 쓰기 1건 거절 → `/consent` 동의 → 같은 쓰기 1건 통과.
 
 ## 운영 — 관리자·재인증·감사·웹 끊기·차단 (β2, 초안)
 
 - **관리자 = DB 역할**(`users.role='admin'`). env 로 판정하지 않는다. 화면은 `/admin/setup`(스크립트 없는 서버 렌더 + form) — 사용자 표(이메일·가입일·역할·처리방침 동의·차단·웹 끊은 시각)와 행마다 [관리자 부여|회수] [웹 로그인 끊기] [차단|해제], 감사 로그 최근 100건. 비관리자·로그인 안 함·DEV 는 404.
-- **첫 지정은 배포 때 한 번**: 서버 시작 때 감사(`admin_audit`)에 `bootstrap`·`recover` 행이 하나도 없으면 env `CANON_ADMIN_USER_IDS` 의 id 중 있는 계정을 관리자로 하고 `bootstrap` 행을 남긴다(0명이어도 남긴다). 그 뒤로 env 는 읽지 않는다 — 바꿔도 효과 없음. 대상 계정이 먼저 로그인해 있어야 승격된다.
+- **첫 지정은 배포 때 한 번**: 서버 시작 때 감사(`admin_audit`)에 `bootstrap`·`recover` 행이 하나도 없으면 env `CRM_ADMIN_USER_IDS` 의 id 중 있는 계정을 관리자로 하고 `bootstrap` 행을 남긴다(0명이어도 남긴다). 그 뒤로 env 는 읽지 않는다 — 바꿔도 효과 없음. 대상 계정이 먼저 로그인해 있어야 승격된다.
 - **잠기면(관리자 0명·자기 차단)** 원작자 Mac 에서: `DATABASE_URL=… .venv/bin/python admin_cli.py grant <email>` → 관리자 + 차단 해제 + 감사 `recover`. `admin_cli.py list` 는 관리자 목록. `.env` 는 읽지 않는다(어느 DB 인지 명령 줄에서 보이게).
 - **재인증**: `/admin` 은 최근에 다시 로그인한 세션에서만 열린다. [다시 로그인] = `/admin/reauth` → 로그인 폼 강제(`prompt=login`) → 같은 계정으로 돌아오면 세션에 재인증 시각이 붙는다. 위험 동작(부여·회수·끊기·차단·해제) 15분, 화면·감사 로그와 `/app` 문의함(전체 조회·상태·메모) 12시간. 창이 지나면 `/app` 문의함은 일반 사용자 화면처럼 보이고 상태·메모 변경은 `REAUTH-REQUIRED`. **한계**: Google 로그인은 세션이 살아 있으면 폼 없이 자동 통과할 수 있다 — 토큰에 `auth_time` 이 있으면 재인증 시작 60초 전 이후의 로그인만 인정하고, 없으면 같은 계정으로 돌아온 것만 본다. 운영 첫 로그인 때 로그 `[web] 로그인 토큰 claims 키` 에 `auth_time`·`iat` 가 있는지 확인한다(값은 남기지 않는다).
 - **웹 로그인 끊기** = 그 계정의 지금까지 웹 세션 쿠키 무효(다음 로그인부터 다시 된다). MCP 커넥터에는 영향 없음. 관리자 회수도 대상의 웹 세션을 끊는다. 마지막 관리자는 회수할 수 없다(`LAST-ADMIN`).
@@ -81,10 +81,10 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 2단계: 구조 탭 = 360(서브 필: 기준 오브젝트 · 후보 · 그 밖의 오브젝트, 카드 그리드 + 오른쪽 서랍 `#panel`). 서랍은 본문·필드·관계 대상·들어오는 관계·이력·승격 사실, 제안이 있으면 diff + [적용][제외(discard)], 기준이면 [내 판단으로 남기기][남기지 않기][되돌리기]. 라우트 `#structure/<오브젝트ID>[/<항목ID>]` · `#structure/cand/<필터>`. 오늘 탭은 질문 없는 미결정 후보를 기록별로 묶고, 지도 「쌓이는 재료」에 확정 기준을 함께 둔다.
 - 옛 설명: `app.html` 은 `web/index.html` 의 이식본. 필드명(`record_id`·`quote`·`question_id`), 문구(Claude Code·파일 전제 제거), 기본 탭 「시작」+「기록」, 시각은 브라우저 시간대.
   `web/index.html` 은 로컬 키트가 아직 쓰므로 그대로 둔다.
-- 도움말 `GET /help`(로그인 불필요, DB 안 건드림): 레포의 `guides/09-hosted-start.md`·`10-words.md` 를 서버 시작 때 읽어(`CANON_GUIDES_DIR` 가 있으면 그 폴더, 없으면 `server/../guides`) 정규식으로 HTML 로 바꾼다(제목·문단·표·굵게·목록·인라인 코드·링크, `10-words.md` 링크는 `#words`). 모든 글자를 먼저 escape(raw HTML 통과 없음), 링크는 http(s)·#앵커·상대경로만. 좁은 화면의 표는 가로 스크롤. 토큰·글꼴은 `start.html` 의 `:root` 블록을 그대로 쓴다. 세션 쿠키가 있으면 [노트로], 없으면 [로그인]. 문서가 없으면 시작 로그에 경고 + 503.
+- 도움말 `GET /help`(로그인 불필요, DB 안 건드림): 레포의 `guides/09-hosted-start.md`·`10-words.md` 를 서버 시작 때 읽어(`CRM_GUIDES_DIR` 가 있으면 그 폴더, 없으면 `server/../guides`) 정규식으로 HTML 로 바꾼다(제목·문단·표·굵게·목록·인라인 코드·링크, `10-words.md` 링크는 `#words`). 모든 글자를 먼저 escape(raw HTML 통과 없음), 링크는 http(s)·#앵커·상대경로만. 좁은 화면의 표는 가로 스크롤. 토큰·글꼴은 `start.html` 의 `:root` 블록을 그대로 쓴다. 세션 쿠키가 있으면 [노트로], 없으면 [로그인]. 문서가 없으면 시작 로그에 경고 + 503.
   문서 정본은 guides 이고 서버는 읽기만 한다. `app.html` 푸터·`start.html` 하단에 [도움말].
 - 보안 헤더(웹 HTML 응답만 — MCP·JSON·/health 제외): `nosniff`·`X-Frame-Options: DENY`·`Referrer-Policy: same-origin`·CSP `frame-ancestors 'none'; base-uri 'none'; object-src 'none'; script-src 'self'`. `/app` 은 보낼 본문의 `src` 없는 인라인 `<script>` 1개를 요청마다 sha256 해 `'sha256-…'` 를 더한다(1개가 아니면 해시 없이 `'self'` 만 + 로그 — 화면 스크립트가 막힌다). `'unsafe-inline'`·`'unsafe-eval'` 은 넣지 않는다.
-- 개인정보 처리방침 `GET /privacy`(로그인 불필요, DB 안 건드림): 정본 `guides/11-privacy.md` 를 /help 와 같은 렌더러·보안 헤더로. 권리 행사 경로는 대시보드 「문의」. 문안의 `{{CONTACT_LINE}}` 은 env `CANON_CONTACT`(선택 — 보조 메일, 레포에 적지 않는다)가 있으면 메일 한 줄로, 없으면 빈 문자열로 바꾼다. help_get 에는 안 들어간다. 문서가 없으면 503. 링크는 `start.html` 하단·`app.html` 푸터·/help 하단.
+- 개인정보 처리방침 `GET /privacy`(로그인 불필요, DB 안 건드림): 정본 `guides/11-privacy.md` 를 /help 와 같은 렌더러·보안 헤더로. 권리 행사 경로는 대시보드 「문의」. 문안의 `{{CONTACT_LINE}}` 은 env `CRM_CONTACT`(선택 — 보조 메일, 레포에 적지 않는다)가 있으면 메일 한 줄로, 없으면 빈 문자열로 바꾼다. help_get 에는 안 들어간다. 문서가 없으면 503. 링크는 `start.html` 하단·`app.html` 푸터·/help 하단.
 
 ## 경계
 - 사용자 결정: AuthKit JWT(RS256, iss·exp·aud 검증) 의 `sub` 우선. 처음 연결 땐 userinfo 의 검증된 이메일로 같은 이메일 = 한 사용자. `email` 클레임은 토큰에 없다.

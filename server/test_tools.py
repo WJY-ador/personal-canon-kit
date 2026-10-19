@@ -1,7 +1,7 @@
 """서버 시험 — Supabase(DATABASE_URL, server/.env)에 붙어 돈다. 비밀값은 출력하지 않는다.
 
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
-2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CANON_DEV 사용자)
+2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CRM_DEV 사용자)
 3) HTTP 시험: Starlette 앱을 ASGI 로 불러 토큰 → 사용자 결정, /health, PRM, 401 을 본다
 4) 웹 시험: 시작 화면 / → /login → 가짜 토큰 교환 → /auth/callback → 세션 쿠키 → /api/* · 결정 저장 · Origin 거절 · 로그아웃(다음 로그인은 prompt=login) · /help·/privacy
 5) 정의 층 시험(2단계): 정의 제안→적용·충돌·깨지는 변경 거절 · 항목 제안→적용→확정→되돌리기·이력 · 관계 검증 · 승격 · record_attach
@@ -10,7 +10,7 @@
    (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
 7) 문의 데스크(desk-0): 401·Origin 403 · 4KB+1 PAYLOAD-LIMIT(웹·MCP) · 사용자 11번째·전역 101번째 RATE-LIMIT · QUOTA-GLOBAL 면제
    · 「내 문의」에 운영자 메모·hint·남의 글 없음 · privacy → privacy_log · hint · page·tool 정규화 · MCP echo · 파기 181/179일·reopen
-   · 비DEV+CANON_CONTACT 없음·공백 → 기동 성공(선택 env) · app.html 문의 구간 esc 정적 검사
+   · 비DEV+CRM_CONTACT 없음·공백 → 기동 성공(선택 env) · app.html 문의 구간 esc 정적 검사
    · 관리자 문의함: 비관리자 응답에 admin 키 없음 · 상태/메모 API 401·403(Origin·비관리자) · 상태 전이·closed_at · 메모 2KB · 띠 숫자
 8) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
@@ -22,7 +22,7 @@
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
-운영 DB(옛 스키마)에 붙어 새 코드를 시험할 땐 CANON_TEST_SCHEMA=<이름> — 그 이름의 임시 스키마를 만들어
+운영 DB(옛 스키마)에 붙어 새 코드를 시험할 땐 CRM_TEST_SCHEMA=<이름> — 그 이름의 임시 스키마를 만들어
 최종형을 init_schema 로 깔고 그 안에서만 돈 뒤 끝에 지운다(운영 테이블은 안 건드린다). CI 는 빈 Postgres 라 안 쓴다.
 """
 import asyncio
@@ -56,10 +56,10 @@ load_env(HERE / ".env")
 assert os.environ.get("DATABASE_URL"), "DATABASE_URL 이 없어요 (server/.env)"
 FAKE_ISSUER = "https://fake.authkit.test"
 PUBLIC = "http://127.0.0.1:8800"
-os.environ["CANON_DEV"] = "1"
-os.environ["CANON_DEV_USER"] = "tester@example.com"
+os.environ["CRM_DEV"] = "1"
+os.environ["CRM_DEV_USER"] = "tester@example.com"
 os.environ["AUTHKIT_ISSUER"] = FAKE_ISSUER          # 토큰 경로를 HTTP 시험에서 실제로 태운다
-os.environ["CANON_PUBLIC_URL"] = PUBLIC
+os.environ["CRM_PUBLIC_URL"] = PUBLIC
 
 import httpx  # noqa: E402
 import psycopg  # noqa: E402
@@ -71,6 +71,7 @@ from mcp.client import Client  # noqa: E402
 
 import auth  # noqa: E402
 import db  # noqa: E402
+import envcompat  # noqa: E402
 import main  # noqa: E402
 import web  # noqa: E402
 
@@ -167,7 +168,7 @@ async def test_verifier():
 # ── 2) 도구 흐름 ───────────────────────────────────────
 
 async def test_tools():
-    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    os.environ["CRM_DEV_USER"] = "tester@example.com"
     async with Client(main.mcp) as c:
         tools = {t.name for t in (await c.list_tools()).tools}
         assert {"state_get", "record_add", "candidates_propose", "candidate_decide"} <= tools, tools
@@ -259,19 +260,19 @@ async def test_tools():
         assert not fourth["added"] and "3개까지" in fourth["dropped"][0]["why"], fourth
 
         # (f) 사용자 격리: 다른 이메일은 빈 상태, 남의 기록에 후보를 못 붙인다
-        os.environ["CANON_DEV_USER"] = "other@example.com"
+        os.environ["CRM_DEV_USER"] = "other@example.com"
         st2 = val(await c.call_tool("state_get", {}))
         assert st2["questions"] == [] and st2["journal"] == [] and st2["candidates"] == []
         other = db.user_by_email("other@example.com")["id"]
         try:
             db.candidates_propose(other, r["id"], q["id"], [{"text": "x", "quote": "입력 담당"}], "ai")
             raise AssertionError("다른 사용자의 기록에 후보가 붙었다")
-        except db.CanonError as err:
+        except db.CrmError as err:
             assert err.code == "RECORD-MISSING", err.code
         cross = await c.call_tool("candidates_propose", {"record_id": r["id"], "question_id": q["id"],
             "candidates": [{"text": "x", "quote": "입력 담당"}]})
         assert cross.is_error and "RECORD-MISSING" in cross.content[0].text, cross
-        os.environ["CANON_DEV_USER"] = "tester@example.com"
+        os.environ["CRM_DEV_USER"] = "tester@example.com"
     print("OK — 도구 흐름 통과")
     return q["id"]
 
@@ -309,7 +310,7 @@ async def test_http():
         raise RuntimeError("파기 실패 주입")
     db.tickets_purge = boom_purge
     # DEV 폴백이 쓰이면 other 의 빈 상태가 나온다 → 토큰 경로가 tester 로 가는지 구분된다
-    os.environ["CANON_DEV_USER"] = "other@example.com"
+    os.environ["CRM_DEV_USER"] = "other@example.com"
     hdr = {"content-type": "application/json", "accept": "application/json, text/event-stream"}
     call = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "state_get", "arguments": {}}}
     try:
@@ -362,7 +363,7 @@ async def test_http():
                 await limits_http(h, {**hdr, "authorization": f"Bearer {tok}"})   # 6) 절 — 세션 매니저 run() 은 한 번만 돈다
     finally:
         auth.httpx.post, db.tickets_purge = real_post, real_purge
-        os.environ["CANON_DEV_USER"] = "tester@example.com"
+        os.environ["CRM_DEV_USER"] = "tester@example.com"
     print("OK — HTTP 인증 경로 통과")
 
 
@@ -415,29 +416,29 @@ async def test_web():
                     assert word in r.text, word
                 assert 'href="/login"' in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 assert 'href="/privacy"' in r.text, "도움말 하단에 처리방침"
-                # 처리방침: 로그인 없이 200, 같은 렌더러(escape), 09·10 링크는 /help#…, {{CONTACT_LINE}} 은 env CANON_CONTACT(선택 — 없으면 메일 줄 없음)
+                # 처리방침: 로그인 없이 200, 같은 렌더러(escape), 09·10 링크는 /help#…, {{CONTACT_LINE}} 은 env CRM_CONTACT(선택 — 없으면 메일 줄 없음)
                 r = await h.get("/privacy")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
                              "제28조의8", "v1 · 2026-10-18", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
                     assert word in r.text, word
                 assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
-                real_contact, real_privacy = os.environ.get("CANON_CONTACT"), site.privacy_html
+                real_contact, real_privacy = os.environ.get("CRM_CONTACT"), site.privacy_html
                 try:
-                    os.environ["CANON_CONTACT"] = '<b>x</b> [y](javascript:alert(1))'
+                    os.environ["CRM_CONTACT"] = '<b>x</b> [y](javascript:alert(1))'
                     site.load_help(web.GUIDES_DIR)
                     r = await h.get("/privacy")
                     assert r.status_code == 200 and "&lt;b&gt;x&lt;/b&gt;" in r.text and "<b>x" not in r.text, r.text[-800:]
                     assert 'href="javascript' not in r.text.lower() and "{{CONTACT" not in r.text and "메일: " in r.text, "연락처 env 도 렌더러 escape·링크 검사를 탄다"
-                    os.environ.pop("CANON_CONTACT")
+                    os.environ.pop("CRM_CONTACT")
                     site.load_help(web.GUIDES_DIR)
                     r = await h.get("/privacy")
                     assert r.status_code == 200 and "메일: " not in r.text and "{{CONTACT" not in r.text, "연락처 env 없으면 메일 줄 없음(500 아님)"
                 finally:
                     if real_contact is None:
-                        os.environ.pop("CANON_CONTACT", None)
+                        os.environ.pop("CRM_CONTACT", None)
                     else:
-                        os.environ["CANON_CONTACT"] = real_contact
+                        os.environ["CRM_CONTACT"] = real_contact
                     site.privacy_html = real_privacy
                 # 렌더러 안전: raw HTML 은 글자로, javascript:·data:·// 링크는 글만, http(s)·#·상대경로는 링크
                 bad_md = ('# 제목 <script>alert(1)</script>\n\n<img src=x onerror=alert(1)> [x](javascript:alert(1)) [y](data:text/html,1) '
@@ -641,7 +642,7 @@ async def test_web():
 def expect(code, fn, *a, **k):
     try:
         fn(*a, **k)
-    except db.CanonError as e:
+    except db.CrmError as e:
         assert e.code == code, (code, e.code, e.message)
         return e
     raise AssertionError(f"{code} 가 나와야 하는데 통과했다: {fn.__name__}")
@@ -857,7 +858,7 @@ def test_definitions():
 
 
 async def test_definition_tools():
-    os.environ["CANON_DEV_USER"] = "def2@example.com"
+    os.environ["CRM_DEV_USER"] = "def2@example.com"
     async with Client(main.mcp) as c:
         tools = {t.name for t in (await c.list_tools()).tools}
         new = {"definitions_get", "definition_propose", "definition_apply", "item_propose", "item_decide", "record_attach"}
@@ -895,7 +896,7 @@ async def test_definition_tools():
         st = val(await c.call_tool("state_get", {}))
         nq = [x for x in st["candidates"] if x["question_id"] is None and x["status"] == "pending"]
         assert {x["record_id"] for x in nq} >= {r["id"]}, "기록별 묶음 데이터: 질문 없는 미결정 후보 + record_id"
-    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    os.environ["CRM_DEV_USER"] = "tester@example.com"
     print("OK — 정의 층 MCP 도구 통과")
 
 
@@ -1015,7 +1016,7 @@ def test_template_slot(A):
     assert _slots(B) == before_b and _slots(A) == before_a
 
     # (5) 옛 DB(열 없음)에 시드된 원작자 → init_schema 가 열을 더하고 6/25 를 백필, 다시 돌리면 0/0. 임시 스키마에서
-    name = f"canon_tslot_{secrets.token_hex(3)}"
+    name = f"crm_tslot_{secrets.token_hex(3)}"
     create_schema(name)
     try:
         with schema_conn(name) as c:
@@ -1148,7 +1149,7 @@ def test_migration():
     """옛 모양(prev_decision/prev_text 이력, records 에 출처 없음) → init_schema → 최종형·백필·멱등.
     운영 테이블은 안 건드린다 — 시험 전용 임시 스키마 3개(옛·새·실패)를 만들고 끝에 지운다."""
     tag = secrets.token_hex(3)
-    old, fresh, bad = f"canon_mig_old_{tag}", f"canon_mig_new_{tag}", f"canon_mig_bad_{tag}"
+    old, fresh, bad = f"crm_mig_old_{tag}", f"crm_mig_new_{tag}", f"crm_mig_bad_{tag}"
     try:
         for n in (old, fresh, bad):
             create_schema(n)
@@ -1432,7 +1433,7 @@ async def test_limits_sse():
 async def test_limits():
     """② 인자 길이 · ③ 전역 DB 크기 — MCP guard 와 웹 쓰기 API 가 같은 db.write_gate 를 지나는지."""
     site = main.site
-    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    os.environ["CRM_DEV_USER"] = "tester@example.com"
     site.dev, site.dev_user = True, "tester@example.com"
     uid = db.user_by_email("tester@example.com")["id"]
     origin = {"origin": PUBLIC}
@@ -1662,7 +1663,7 @@ def _today_count(uid=None):
 
 async def test_feedback():
     site = main.site
-    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    os.environ["CRM_DEV_USER"] = "tester@example.com"
     site.dev, site.dev_user = True, "tester@example.com"
     uid = db.user_by_email("tester@example.com")["id"]
     other = db.user_by_email("other@example.com")["id"]
@@ -1810,7 +1811,7 @@ async def test_feedback():
             try:
                 db.ticket_add(helpers[-1], "bug", "전역 101번째", "web")
                 raise AssertionError("전역 101번째가 저장됐다")
-            except db.CanonError as e:
+            except db.CrmError as e:
                 assert e.code == "RATE-LIMIT" and "많아" in e.message, (e.code, e.message)
             r = await mc.call_tool("feedback_send", {"kind": "bug", "text": "MCP 전역 101번째"})
             assert r.is_error and "[RATE-LIMIT]" in r.content[0].text, r.content[0].text
@@ -1827,7 +1828,7 @@ async def test_feedback():
 async def test_feedback_admin():
     """관리자 문의함: 비관리자 응답엔 admin 키 없음 · 상태/메모 API 403(비관리자)·Origin · 상태 전이와 closed_at · 메모 2KB · 띠 숫자."""
     site = main.site
-    os.environ["CANON_DEV_USER"] = "tester@example.com"
+    os.environ["CRM_DEV_USER"] = "tester@example.com"
     site.dev, site.dev_user = True, "tester@example.com"
     uid = db.user_by_email("tester@example.com")["id"]
     other = db.user_by_email("other@example.com")["id"]
@@ -1958,7 +1959,7 @@ async def test_feedback_admin():
 
 
 def test_feedback_units():
-    """ua 계열 판정 · CANON_CONTACT 선택(비DEV 에서 없어도 기동) · app.html 문의 구간의 esc 정적 검사."""
+    """ua 계열 판정 · CRM_CONTACT 선택(비DEV 에서 없어도 기동) · app.html 문의 구간의 esc 정적 검사."""
     import subprocess
     for ua, fam in (("", ""), (None, ""), ("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/130.0 Safari/537.36 Edg/130.0", "edge"),
                     ("Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0", "firefox"),
@@ -1966,13 +1967,13 @@ def test_feedback_units():
                     ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15", "safari"),
                     ("curl/8.7.1", "other")):
         assert web.ua_family(ua) == fam, (ua, fam, web.ua_family(ua))
-    # 비DEV 에서 CANON_CONTACT 는 선택 — 없음·공백만·있음 모두 import 성공
-    env = {k: v for k, v in os.environ.items() if k not in ("CANON_DEV", "CANON_DEV_USER", "CANON_CONTACT")}
+    # 비DEV 에서 CRM_CONTACT 는 선택 — 없음·공백만·있음 모두 import 성공
+    env = {k: v for k, v in os.environ.items() if k not in {n for x in ("DEV", "DEV_USER", "CONTACT") for n in envcompat.names(x)}}
     env["AUTHKIT_ISSUER"] = FAKE_ISSUER
 
     def boot(extra):
         return subprocess.run([sys.executable, "-c", "import main"], cwd=HERE, env={**env, **extra}, capture_output=True, text=True, timeout=120)
-    for extra in ({}, {"CANON_CONTACT": "   "}, {"CANON_CONTACT": "help@example.com"}):
+    for extra in ({}, {"CRM_CONTACT": "   "}, {"CRM_CONTACT": "help@example.com"}):
         r = boot(extra)
         assert r.returncode == 0, (extra, r.stderr[-400:])
     # app.html: 문의 구간의 모든 보간은 esc(…) · innerHTML 우변은 템플릿 하나(이어 붙이기 없음) · 다른 HTML 삽입 API 없음
@@ -2001,14 +2002,14 @@ def test_feedback_units():
     assert "admin_note}" not in blk and "${t." not in blk and "${c." not in blk
     assert f"const DESK_NOTE_MAX = {db.LIMIT_ADMIN_NOTE};" in html
     assert '<div class="wrap bands" id="admin-band" hidden></div>' in html, "관리자 띠 자리는 기본 숨김"
-    print("OK — 문의 단위(ua 계열·CANON_CONTACT 선택·app.html esc 정적 검사) 통과")
+    print("OK — 문의 단위(ua 계열·CRM_CONTACT 선택·app.html esc 정적 검사) 통과")
 
 
 # ── 9) α2 — 동의 게이트 · 일일 한도 · usage_daily ─────────────
 
 def _as_user(site, email):
     """MCP(DEV 사용자)와 웹(DEV 폴백)을 같은 사용자로."""
-    os.environ["CANON_DEV_USER"] = email
+    os.environ["CRM_DEV_USER"] = email
     site.dev, site.dev_user = True, email
 
 
@@ -2159,7 +2160,7 @@ async def test_consent_gate():
     finally:
         site.dev, site.dev_user = real_site
         db.TICKET_DAILY_ALL = real_all
-        os.environ["CANON_DEV_USER"] = TESTER
+        os.environ["CRM_DEV_USER"] = TESTER
     print("OK — α2 동의 게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로·Origin 403·버전 불일치 400) 통과")
 
 
@@ -2273,7 +2274,7 @@ async def test_daily_limits():
                     with db.tx() as c:
                         db._daily_gate(c, d1, kind, 1)
                     raise AssertionError(f"{kind}: 두 테이블 합을 세지 않았다")
-                except db.CanonError as e:
+                except db.CrmError as e:
                     assert e.code == "RATE-LIMIT", e.code
         finally:
             db.DAILY_LIMITS.clear()
@@ -2283,7 +2284,7 @@ async def test_daily_limits():
     finally:
         _set_role(U["records"], "user")
         site.dev, site.dev_user = True, TESTER
-        os.environ["CANON_DEV_USER"] = TESTER
+        os.environ["CRM_DEV_USER"] = TESTER
     print("OK — α2 일일 한도(기록 50·질문 50·후보 148+3/147+3·결정 300·edit_confirm 2줄 299 거절/298 통과·제안 100·관리자 같음·KST 날짜 경계·합산) 통과")
 
 
@@ -2319,7 +2320,7 @@ async def test_usage():
         rid = db.record_add(tester, "집계", "가 나 다 라")["id"]
         r = await c.call_tool("candidates_propose", {"record_id": rid, "question_id": "",
                                                      "candidates": [{"text": t, "quote": t} for t in ("가", "나", "다", "라")]})
-        assert r.is_error   # 4개 — 도구 본문의 ToolError(CanonError 아님)
+        assert r.is_error   # 4개 — 도구 본문의 ToolError(CrmError 아님)
         assert delta(s0, (today, tester, "record_add", "OK")) == 1
         assert delta(s0, (today, tester, "candidate_decide", "ARG-INVALID")) == 1
         assert delta(s0, (today, tester, "state_get", "OK")) == 1
@@ -2688,7 +2689,7 @@ async def test_beta2():
                 bar.wait()
                 try:
                     out[actor] = db.admin_act(actor, "role", target, "user")
-                except db.CanonError as e:
+                except db.CrmError as e:
                     out[actor] = e.code
             ts = [threading.Thread(target=go, args=(A, B)), threading.Thread(target=go, args=(B, A))]
             [t.start() for t in ts]
@@ -2804,7 +2805,7 @@ async def test_beta2_bootstrap():
     """bootstrap: 감사 행 없음 + env uid → admin + bootstrap 행 · 두 번째 → env 바꿔도 변화 없음 · env 비어도 행 · recover 가 있으면 안 함
     · lifespan 이 env 를 읽어 bootstrap·감사 파기를 부른다. 공유 시험 DB 엔 이전 bootstrap 행이 남으므로 임시 스키마에서."""
     tag = secrets.token_hex(3)
-    s1, s2, s3 = f"canon_b2_boot1_{tag}", f"canon_b2_boot2_{tag}", f"canon_b2_boot3_{tag}"
+    s1, s2, s3 = f"crm_b2_boot1_{tag}", f"crm_b2_boot2_{tag}", f"crm_b2_boot3_{tag}"
     try:
         for n in (s1, s2, s3):
             create_schema(n)
@@ -2836,14 +2837,14 @@ async def test_beta2_bootstrap():
             drop_schema(n)
     # lifespan 배선 — env 를 시작 때 읽어 넘긴다, 파기 2종도 부른다(실패해도 기동)
     calls = []
-    real = (db.admin_bootstrap, db.admin_audit_purge, os.environ.get("CANON_ADMIN_USER_IDS"))
+    real = (db.admin_bootstrap, db.admin_audit_purge, os.environ.get("CRM_ADMIN_USER_IDS"))
 
     def fake_boot(ids, conn=None):
         calls.append(("boot", list(ids)))
         raise RuntimeError("bootstrap 실패 주입")
     db.admin_bootstrap = fake_boot
     db.admin_audit_purge = lambda: calls.append(("purge",)) or 0
-    os.environ["CANON_ADMIN_USER_IDS"] = " u_x , u_y ,"
+    os.environ["CRM_ADMIN_USER_IDS"] = " u_x , u_y ,"
     sm = main.mcp.session_manager
 
     @asynccontextmanager
@@ -2857,9 +2858,9 @@ async def test_beta2_bootstrap():
         del sm.run
         db.admin_bootstrap, db.admin_audit_purge = real[0], real[1]
         if real[2] is None:
-            os.environ.pop("CANON_ADMIN_USER_IDS", None)
+            os.environ.pop("CRM_ADMIN_USER_IDS", None)
         else:
-            os.environ["CANON_ADMIN_USER_IDS"] = real[2]
+            os.environ["CRM_ADMIN_USER_IDS"] = real[2]
     assert calls == [("boot", ["u_x", "u_y"]), ("purge",)], calls
     print("OK — β2 bootstrap(한 번만·env 무시·빈 env 행·recover 존중·lifespan 배선·실패해도 기동) 통과")
 
@@ -2917,7 +2918,7 @@ async def run():
     print("OK — 시험 사용자 삭제(cascade)")
 
 
-# ── 임시 스키마 격리 (CANON_TEST_SCHEMA) ─────────────────
+# ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
 
 _SCHEMA_RE = re.compile(r"^[a-z_][a-z0-9_]{0,40}$")
 
@@ -2966,7 +2967,7 @@ def isolate(name):
 
 
 def main_():
-    name = os.environ.get("CANON_TEST_SCHEMA", "").strip()
+    name = (envcompat.env("TEST_SCHEMA") or "").strip()
     if not name:
         asyncio.run(run())
         return

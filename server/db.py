@@ -37,7 +37,7 @@ CAND_ACTIONS = {"confirm": "confirmed", "exclude": "excluded", "pending": "pendi
 MAX_CANDIDATES_PER_RECORD = 3
 
 
-class CanonError(Exception):
+class CrmError(Exception):
     def __init__(self, code, message, action=""):
         super().__init__(message)
         self.code, self.message, self.action = code, message, action
@@ -87,7 +87,7 @@ QUOTA_EXEMPT = frozenset({"feedback_send"})
 CONSENT_VERSIONS: dict = {}
 # 동의 안 한 사용자도 보낼 수 있어야 하는 쓰기 — 개인정보 문의. 읽기 도구·help_get·state_get·웹 GET 은 원래 게이트 밖.
 CONSENT_EXEMPT = frozenset({"feedback_send"})
-# CONSENT-REQUIRED 메시지의 /consent 주소. main 이 시작 때 CANON_PUBLIC_URL 로 채운다.
+# CONSENT-REQUIRED 메시지의 /consent 주소. main 이 시작 때 CRM_PUBLIC_URL 로 채운다.
 PUBLIC_URL = ""
 _consent_lock = threading.Lock()
 _consented: set = set()   # 통과한 uid — 다음부턴 DB 를 안 본다. 버전이 바뀌면(= 재시작·set_consent_versions) 비운다
@@ -114,7 +114,7 @@ def _nbytes(v: str) -> int:
 def check_len(name: str, v: str, lim: int):
     """② 문자열 하나의 길이. 넘으면 PAYLOAD-LIMIT(필드명·상한). check_lengths 와 MCP 도구가 아닌 db 쓰기 함수가 같이 쓴다."""
     if _nbytes(v) > lim:
-        raise CanonError("PAYLOAD-LIMIT", f"{name} 가 너무 길어요 (상한 {lim} 바이트, 지금 {_nbytes(v)} 바이트).",
+        raise CrmError("PAYLOAD-LIMIT", f"{name} 가 너무 길어요 (상한 {lim} 바이트, 지금 {_nbytes(v)} 바이트).",
                          "줄이거나 나눠서 다시 보내세요.")
 
 
@@ -178,7 +178,7 @@ def check_global_quota(uid):
         return
     if is_admin(uid() if callable(uid) else uid):   # 넘었을 때만 role 을 조회한다
         return
-    raise CanonError("QUOTA-GLOBAL", "서비스 저장 공간이 한도에 가까워 지금은 새로 쓸 수 없어요. 읽기는 그대로 돼요.",
+    raise CrmError("QUOTA-GLOBAL", "서비스 저장 공간이 한도에 가까워 지금은 새로 쓸 수 없어요. 읽기는 그대로 돼요.",
                      "운영자에게 알려 주세요.")
 
 
@@ -210,7 +210,7 @@ def require_consent(uid):
     with tx() as c:
         ok = _has_all_consents(c, uid)
     if not ok:
-        raise CanonError("CONSENT-REQUIRED", "개인정보 처리방침에 동의한 뒤 쓸 수 있어요.",
+        raise CrmError("CONSENT-REQUIRED", "개인정보 처리방침에 동의한 뒤 쓸 수 있어요.",
                          f"브라우저에서 {PUBLIC_URL}/consent 를 열어 로그인하고 동의해 주세요.")
     with _consent_lock:
         _consented.add(uid)
@@ -221,7 +221,7 @@ def has_consent(uid) -> bool:
     try:
         require_consent(uid)
         return True
-    except CanonError as e:
+    except CrmError as e:
         if e.code == "CONSENT-REQUIRED":
             return False
         raise
@@ -230,7 +230,7 @@ def has_consent(uid) -> bool:
 def consent_grant(uid, versions: dict):
     """동의 기록. versions 가 CONSENT_VERSIONS 와 정확히 같을 때만(빠지거나 다른 버전이면 ARG-INVALID). 한 트랜잭션."""
     if not isinstance(versions, dict) or {str(k): v for k, v in versions.items()} != CONSENT_VERSIONS:
-        raise CanonError("ARG-INVALID", "동의할 문서·버전이 지금 문서와 맞지 않아요.", "동의 화면을 새로 고쳐 다시 동의해 주세요.")
+        raise CrmError("ARG-INVALID", "동의할 문서·버전이 지금 문서와 맞지 않아요.", "동의 화면을 새로 고쳐 다시 동의해 주세요.")
     with tx() as c:
         for kind, ver in CONSENT_VERSIONS.items():
             c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (uid, kind, ver))
@@ -255,7 +255,7 @@ def _user_lock(c, uid):
     FOR NO KEY UPDATE: 게이트끼리는 서로 막지만(직렬화), 자식 INSERT 의 FK 검사(FOR KEY SHARE)와는 충돌하지 않는다.
     FOR UPDATE 면 record_attach(records 잠금 → item_links INSERT 가 users KEY SHARE 대기)와 candidates_propose(users 잠금 → records 잠금 대기)가 교착한다."""
     if not _one(c, "SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (uid,)):
-        raise CanonError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
+        raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
 
 
 def _daily_gate(c, uid, kind, adding=1):
@@ -267,7 +267,7 @@ def _daily_gate(c, uid, kind, adding=1):
         n += _one(c, f"SELECT count(*) AS n FROM {table} WHERE user_id=%s AND {col} >= {_KST_TODAY}", (uid,))["n"]
     lim = DAILY_LIMITS[kind]
     if n + adding > lim:
-        raise CanonError("RATE-LIMIT", f"오늘 {_DAILY_NAMES[kind]} {lim}개까지예요.", "내일(KST 0시 이후) 다시 보내 주세요.")
+        raise CrmError("RATE-LIMIT", f"오늘 {_DAILY_NAMES[kind]} {lim}개까지예요.", "내일(KST 0시 이후) 다시 보내 주세요.")
 
 
 # ── 사용 집계 usage_daily (α2) ──────────────────────────
@@ -349,7 +349,7 @@ def pool() -> ConnectionPool:
     if _pool is None:
         url = os.environ.get("DATABASE_URL")
         if not url:
-            raise CanonError("DB-CONFIG", "DATABASE_URL 이 없어요.", "서버 환경변수에 Postgres 연결 문자열을 넣으세요.")
+            raise CrmError("DB-CONFIG", "DATABASE_URL 이 없어요.", "서버 환경변수에 Postgres 연결 문자열을 넣으세요.")
         _pool = ConnectionPool(url, min_size=1, max_size=4, kwargs={"row_factory": dict_row}, open=True)
     return _pool
 
@@ -486,7 +486,7 @@ def _migrate_pr1(c):
         bad = c.execute("SELECT count(*) AS n FROM candidates WHERE NOT (quote_start >= 0 AND quote_end > quote_start "
                         "AND char_length(quote) = quote_end - quote_start)").fetchone()["n"]
         if bad:
-            raise CanonError("DB-MIGRATE", f"PR① 마이그레이션 중단: 인용 범위가 맞지 않는 후보 {bad}개 — 전체 롤백했어요.",
+            raise CrmError("DB-MIGRATE", f"PR① 마이그레이션 중단: 인용 범위가 맞지 않는 후보 {bad}개 — 전체 롤백했어요.",
                              "그 후보의 quote·quote_start·quote_end 를 먼저 확인하세요.")
         c.execute("""
             ALTER TABLE candidates
@@ -506,7 +506,7 @@ def _migrate_pr1(c):
         left = c.execute("SELECT count(*) AS n FROM candidate_history WHERE user_id IS NULL OR prev_state IS NULL "
                          "OR prev_state->>'text' IS NULL OR prev_state->>'decision' IS NULL").fetchone()["n"]
         if left:
-            raise CanonError("DB-MIGRATE", f"PR① 마이그레이션 중단: candidate_history 백필 실패 {left}행(부모 없음 또는 스냅샷 없음) — 전체 롤백했어요.")
+            raise CrmError("DB-MIGRATE", f"PR① 마이그레이션 중단: candidate_history 백필 실패 {left}행(부모 없음 또는 스냅샷 없음) — 전체 롤백했어요.")
         c.execute("""
             ALTER TABLE candidate_history
               ALTER COLUMN user_id SET NOT NULL,
@@ -581,17 +581,17 @@ def user_by_subject(sub, email):
     sub = (sub or "").strip()
     email = (email or "").strip().lower()
     if not sub:
-        raise CanonError("AUTH-INVALID", "토큰에 사용자 식별자(sub)가 없어요.")
+        raise CrmError("AUTH-INVALID", "토큰에 사용자 식별자(sub)가 없어요.")
     with tx() as c:
         r = _one(c, "SELECT * FROM users WHERE auth_subject=%s", (sub,))
         if r:
             return _iso(r)
         if not email:
-            raise CanonError("AUTH-INVALID", "처음 연결할 땐 검증된 이메일이 필요해요.")
+            raise CrmError("AUTH-INVALID", "처음 연결할 땐 검증된 이메일이 필요해요.")
         r = _one(c, "SELECT * FROM users WHERE email=%s", (email,))
         if r:
             if r["auth_subject"] and r["auth_subject"] != sub:
-                raise CanonError("AUTH-CONFLICT", "이 이메일은 다른 로그인 계정에 이미 연결돼 있어요.")
+                raise CrmError("AUTH-CONFLICT", "이 이메일은 다른 로그인 계정에 이미 연결돼 있어요.")
             c.execute("UPDATE users SET auth_subject=%s WHERE id=%s", (sub, r["id"]))
             return _iso(_one(c, "SELECT * FROM users WHERE id=%s", (r["id"],)))
         uid = new_id("u")
@@ -603,7 +603,7 @@ def user_get(uid):
     with tx() as c:
         r = _one(c, "SELECT id,email,created FROM users WHERE id=%s", (uid,))
     if not r:
-        raise CanonError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
+        raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
     return _iso(r)
 
 
@@ -630,7 +630,7 @@ def user_delete(uid):
 def question_add(uid, text):
     text = (text or "").strip()
     if not text:
-        raise CanonError("ARG-INVALID", "질문 문장이 비었어요.")
+        raise CrmError("ARG-INVALID", "질문 문장이 비었어요.")
     qid = new_id("q")
     with tx() as c:
         _daily_gate(c, uid, "questions")
@@ -647,7 +647,7 @@ def question_get(uid, qid):
     with tx() as c:
         r = _one(c, "SELECT id,text,status,created FROM questions WHERE user_id=%s AND id=%s", (uid, qid))
     if not r:
-        raise CanonError("ARG-INVALID", f"질문을 찾을 수 없어요: {qid}", "question_list 로 질문 ID 를 확인하세요.")
+        raise CrmError("ARG-INVALID", f"질문을 찾을 수 없어요: {qid}", "question_list 로 질문 ID 를 확인하세요.")
     return _iso(r)
 
 
@@ -668,9 +668,9 @@ def _eligible(r):
 
 def _check_provenance(author_kind, text_process):
     if author_kind not in AUTHOR_KINDS:
-        raise CanonError("ARG-INVALID", f"author_kind 는 {', '.join(AUTHOR_KINDS)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"author_kind 는 {', '.join(AUTHOR_KINDS)} 중 하나예요.")
     if text_process not in TEXT_PROCESSES:
-        raise CanonError("ARG-INVALID", f"text_process 는 {', '.join(TEXT_PROCESSES)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"text_process 는 {', '.join(TEXT_PROCESSES)} 중 하나예요.")
 
 
 def record_add(uid, title, body, question_id=None, source="대화에서 입력", author_kind="self", text_process="verbatim"):
@@ -679,7 +679,7 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     title = (title or "").strip()
     body = body or ""
     if not body.strip():
-        raise CanonError("ARG-INVALID", "기록 내용이 비었어요.")
+        raise CrmError("ARG-INVALID", "기록 내용이 비었어요.")
     _check_provenance(author_kind, text_process)
     if not title:
         title = body.strip().splitlines()[0][:40]
@@ -699,7 +699,7 @@ def record_get(uid, rid):
     with tx() as c:
         r = _one(c, f"SELECT {_REC_COLS} FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, rid))
     if not r:
-        raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
+        raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
     return _iso(r)
 
 
@@ -715,19 +715,19 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
     _check_provenance(author_kind, text_process)
     reason = (reason or "").strip()
     if not reason:
-        raise CanonError("ARG-INVALID", "출처를 고치는 사유가 비었어요.")
+        raise CrmError("ARG-INVALID", "출처를 고치는 사유가 비었어요.")
     check_len("reason", reason, LIMIT_TEXT)   # α1 ② — provenance_history 에 그대로 쌓인다
     with tx() as c:
         r = _one(c, "SELECT id,author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL "
                     "FOR UPDATE", (uid, rid))
         if not r:
-            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
+            raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
         if (r["author_kind"], r["text_process"]) == (author_kind, text_process):
             return _record_in(c, uid, rid)
         if _eligible(r) and not (author_kind == "self" and text_process == "verbatim"):
             n = _one(c, "SELECT count(*) AS n FROM candidates WHERE user_id=%s AND record_id=%s", (uid, rid))["n"]
             if n:
-                raise CanonError("PROVENANCE-LOCKED", f"이 기록을 근거로 한 후보가 {n}개 있어 본인 원문이 아니라고 바꿀 수 없어요.",
+                raise CrmError("PROVENANCE-LOCKED", f"이 기록을 근거로 한 후보가 {n}개 있어 본인 원문이 아니라고 바꿀 수 없어요.",
                                  "과거 오판정 정정은 별도 복구 작업으로 하세요.")
         line = {"at": now().isoformat(), "by": by, "from": {"author_kind": r["author_kind"], "text_process": r["text_process"]},
                 "author_kind": author_kind, "text_process": text_process, "reason": reason}
@@ -774,7 +774,7 @@ def candidates_propose(uid, record_id, question_id, items, origin):
     PR①: 부모 기록을 FOR UPDATE 로 잠그고 같은 트랜잭션에서 삭제·출처 적격·인용 일치·유일 출현을 본다(출처 정정과 경합 방지).
     비적격(본인 원문 아님) 기록이면 전부 버린다. 새 후보 문장의 작성 주체 wording_by: origin=ai → 'ai', self → NULL(AI 가 다듬었는지 모름)."""
     if origin not in ("ai", "self"):
-        raise CanonError("ARG-INVALID", "origin 은 ai 또는 self 예요.")
+        raise CrmError("ARG-INVALID", "origin 은 ai 또는 self 예요.")
     question_id = (question_id or "").strip() or None   # "" = 질문 없음 → NULL (화면은 기록별 묶음)
     wording_by = "ai" if origin == "ai" else None
     added, dropped = [], []
@@ -783,7 +783,7 @@ def candidates_propose(uid, record_id, question_id, items, origin):
         rec = _one(c, "SELECT id,body,author_kind,text_process,deleted_at FROM records "
                       "WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
         if not rec:
-            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
+            raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
         if question_id:
             question_get(uid, question_id)   # 기록 확인 뒤(남의 기록이면 RECORD-MISSING 이 먼저)
         if not _eligible(rec):
@@ -829,7 +829,7 @@ def candidate_get(uid, cid):
     with tx() as c:
         r = _one(c, f"SELECT {_CAND_COLS} FROM candidates WHERE user_id=%s AND id=%s", (uid, cid))
     if not r:
-        raise CanonError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
+        raise CrmError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
     return _iso(r)
 
 
@@ -856,7 +856,7 @@ def _cand_snapshot(r):
 def _cand_lock(c, uid, cid):
     r = _one(c, "SELECT * FROM candidates WHERE user_id=%s AND id=%s FOR UPDATE", (uid, cid))
     if not r:
-        raise CanonError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
+        raise CrmError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
     return r
 
 
@@ -876,9 +876,9 @@ def candidate_decide(uid, cid, action, text=None, expected_revision=None, wordin
     expected_revision: 주면(웹) 지금 revision 과 다를 때 CONFLICT. None 이면(MCP 도구) 검사 안 함.
     문장 수정은 wording_approved=false, wording_by=인자(웹 편집 = self, MCP edit = 모름 NULL). 승인(wording_approved=true)은 이번 범위 밖."""
     if action not in ("confirm", "exclude", "pending", "edit", "edit_confirm"):
-        raise CanonError("ARG-INVALID", "action 은 confirm·exclude·pending·edit 중 하나예요.")
+        raise CrmError("ARG-INVALID", "action 은 confirm·exclude·pending·edit 중 하나예요.")
     if wording_by not in (None, "self", "ai"):
-        raise CanonError("ARG-INVALID", "wording_by 는 self 또는 ai 예요.")
+        raise CrmError("ARG-INVALID", "wording_by 는 self 또는 ai 예요.")
     with tx() as c:
         _daily_gate(c, uid, "decisions", 2 if action == "edit_confirm" else 1)   # edit_confirm 은 이력 2줄
         r = _cand_lock(c, uid, cid)
@@ -887,7 +887,7 @@ def candidate_decide(uid, cid, action, text=None, expected_revision=None, wordin
         if action in ("edit", "edit_confirm"):
             new = (text or "").strip()
             if not new:
-                raise CanonError("ARG-INVALID", "고친 문장이 비었어요.")
+                raise CrmError("ARG-INVALID", "고친 문장이 비었어요.")
             if new != r["text"]:
                 r = _cand_bump(c, uid, r, "edit",
                                "text=%s, edited_by_user=true, decision='pending', wording_by=%s, wording_approved=false",
@@ -913,14 +913,14 @@ def candidate_restore(uid, cid, history_id, expected_revision=None):
         try:
             hid = int(history_id)
         except (TypeError, ValueError):
-            raise CanonError("ARG-INVALID", "history_id 는 숫자예요.")
+            raise CrmError("ARG-INVALID", "history_id 는 숫자예요.")
         h = _one(c, "SELECT id,prev_revision,prev_state FROM candidate_history WHERE user_id=%s AND candidate_id=%s AND id=%s",
                  (uid, cid, hid))
         if not h:
-            raise CanonError("ARG-INVALID", f"이 후보의 이력을 찾을 수 없어요: {history_id}")
+            raise CrmError("ARG-INVALID", f"이 후보의 이력을 찾을 수 없어요: {history_id}")
         st = h["prev_state"]
         if st.get("decision") not in ("pending", "confirmed", "excluded") or not st.get("text"):
-            raise CanonError("ARG-INVALID", "이 이력은 되돌릴 수 있는 모양이 아니에요.")
+            raise CrmError("ARG-INVALID", "이 이력은 되돌릴 수 있는 모양이 아니에요.")
         if st.get("schema_version") == 2:
             _cand_bump(c, uid, r, "restore",
                        "text=%s, decision=%s, wording_by=%s, wording_approved=false, edited_by_user=%s, question_id=%s",
@@ -957,13 +957,13 @@ def profile(uid):
 
 def profile_set(uid, key, value, status, source=""):
     if key not in PROFILE_KEYS:
-        raise CanonError("ARG-INVALID", f"프로필에 없는 항목: {key}", "가능한 항목: " + ", ".join(PROFILE_KEYS))
+        raise CrmError("ARG-INVALID", f"프로필에 없는 항목: {key}", "가능한 항목: " + ", ".join(PROFILE_KEYS))
     if status not in STATUSES:
-        raise CanonError("ARG-INVALID", f"상태는 {', '.join(STATUSES)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"상태는 {', '.join(STATUSES)} 중 하나예요.")
     if key == "daily_views":
         value = [v.strip() for v in (value.split("|") if isinstance(value, str) else value) if str(v).strip()]
         if len(value) > 3:
-            raise CanonError("ARG-INVALID", "매일 볼 것은 최대 3개예요.")
+            raise CrmError("ARG-INVALID", "매일 볼 것은 최대 3개예요.")
     with tx() as c:
         c.execute("INSERT INTO profile (user_id,key,value,status,source,updated) VALUES (%s,%s,%s,%s,%s,now()) "
                   "ON CONFLICT (user_id,key) DO UPDATE SET value=excluded.value,status=excluded.status,source=excluded.source,updated=now()",
@@ -1002,15 +1002,15 @@ CONFLICT_ACT = "definitions_get·state_get 으로 지금 revision 을 다시 보
 
 
 def _conflict(what=""):
-    return CanonError("CONFLICT", CONFLICT_MSG + (f" ({what})" if what else ""), CONFLICT_ACT)
+    return CrmError("CONFLICT", CONFLICT_MSG + (f" ({what})" if what else ""), CONFLICT_ACT)
 
 
 def _bad_def(msg, action=""):
-    return CanonError("DEF-INVALID", msg, action)
+    return CrmError("DEF-INVALID", msg, action)
 
 
 def _bad_link(msg, action=""):
-    return CanonError("LINK-INVALID", msg, action)
+    return CrmError("LINK-INVALID", msg, action)
 
 
 # ── 정의 정규화·검증 (DB 없이 — 시드 --dry-run 도 같은 함수) ──
@@ -1280,7 +1280,7 @@ def definition_propose(uid, object_id, expected_revision, definition):
             oid = object_id
             row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, oid))
             if not row:
-                raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
+                raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
             if row["revision"] != expected_revision:
                 raise _conflict(f"지금 revision {row['revision']}")
             if row["archived_at"]:
@@ -1299,7 +1299,7 @@ def definition_apply(uid, object_id, proposal_id, expected_revision):
     with tx() as c:
         row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, object_id))
         if not row:
-            raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+            raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
         if row["revision"] != expected_revision:
             raise _conflict(f"지금 revision {row['revision']}")
         if not row["draft_id"] or row["draft_id"] != proposal_id or row["draft_base_revision"] != row["revision"]:
@@ -1332,7 +1332,7 @@ def template_slot_mark(uid, object_id, slot, field_slots):
     definition_apply 는 template_slot 을 건드리지 않으므로 뒤의 사용자 적용이 슬롯을 지우지 못한다."""
     with tx() as c:
         if c.execute("UPDATE object_defs SET template_slot=%s WHERE user_id=%s AND id=%s", (slot, uid, object_id)).rowcount != 1:
-            raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+            raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
         for fk, fs in field_slots.items():
             c.execute("UPDATE field_defs SET template_slot=%s WHERE user_id=%s AND object_id=%s AND key=%s", (fs, uid, object_id, fk))
 
@@ -1341,7 +1341,7 @@ def definition_history(uid, object_id):
     with tx() as c:
         r = _one(c, "SELECT history FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id))
     if not r:
-        raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
+        raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
     return r["history"]
 
 
@@ -1447,7 +1447,7 @@ def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unatta
     with tx() as c:
         rec = _one(c, "SELECT id,notes FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
         if not rec:
-            raise CanonError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
+            raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
         if attach_to is not None:
             links, seen = [], set()
             for ln in attach_to:
@@ -1502,7 +1502,7 @@ _ITEM_COLS = ("id,object_id,schema_revision,code,title,body,data,decision,revisi
 def _object_row(c, uid, oid, applied=True):
     r = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, oid))
     if not r or (applied and (r["revision"] == 0 or r["archived_at"])):
-        raise CanonError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
+        raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {oid}", "definitions_get 으로 ID 를 확인하세요.")
     return r
 
 
@@ -1521,10 +1521,10 @@ def _code_taken(c, uid, oid, code, item_id):
 def item_propose(uid, object_id, schema_revision, item_id, expected_revision, code, title, body, data, links):
     """항목 제안 → draft. 신규는 revision 0 행을 만든다(일반 조회에서 빠짐). 적용은 item_decide(apply)."""
     if not isinstance(data, dict):
-        raise CanonError("ARG-INVALID", "data 는 JSON 객체예요.")
+        raise CrmError("ARG-INVALID", "data 는 JSON 객체예요.")
     title = (title or "").strip()
     if not title:
-        raise CanonError("ARG-INVALID", "제목(title)이 비었어요.")
+        raise CrmError("ARG-INVALID", "제목(title)이 비었어요.")
     body = body or ""
     code = (code or "").strip() or None
     with tx() as c:
@@ -1536,22 +1536,22 @@ def item_propose(uid, object_id, schema_revision, item_id, expected_revision, co
         nlinks = _norm_links(c, uid, fields, links)
         dp, lp = _item_problems(fields, od["policy"], data, nlinks, strict=True)
         if dp:
-            raise CanonError("ARG-INVALID", "항목 값이 정의와 맞지 않아요 — " + " · ".join(dp), "definitions_get 으로 필드를 확인하세요.")
+            raise CrmError("ARG-INVALID", "항목 값이 정의와 맞지 않아요 — " + " · ".join(dp), "definitions_get 으로 필드를 확인하세요.")
         if lp:
             raise _bad_link("관계가 정의와 맞지 않아요 — " + " · ".join(lp))
         if item_id:
             row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
             if not row:
-                raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+                raise CrmError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
             if row["object_id"] != object_id:
-                raise CanonError("ARG-INVALID", "항목의 오브젝트가 달라요.")
+                raise CrmError("ARG-INVALID", "항목의 오브젝트가 달라요.")
             if row["revision"] != expected_revision:
                 raise _conflict(f"지금 revision {row['revision']}")
             if row["archived_at"]:
-                raise CanonError("ARG-INVALID", "보관된 항목이에요. 먼저 되돌리세요(restore).")
+                raise CrmError("ARG-INVALID", "보관된 항목이에요. 먼저 되돌리세요(restore).")
             if row["code"] is not None:
                 if code is not None and code != row["code"]:
-                    raise CanonError("ARG-INVALID", f"코드는 적용 뒤 바꿀 수 없어요(지금 {row['code']}).")
+                    raise CrmError("ARG-INVALID", f"코드는 적용 뒤 바꿀 수 없어요(지금 {row['code']}).")
                 code = row["code"]
         else:
             if expected_revision != 0:
@@ -1561,7 +1561,7 @@ def item_propose(uid, object_id, schema_revision, item_id, expected_revision, co
             c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,decision) VALUES (%s,%s,%s,%s,%s)",
                       (uid, item_id, object_id, od["revision"], "pending" if od["semantic_kind"] == "principle" else None))
         if code and _code_taken(c, uid, object_id, code, item_id):
-            raise CanonError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요. 코드는 다시 쓰지 않아요(보관 포함).")
+            raise CrmError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요. 코드는 다시 쓰지 않아요(보관 포함).")
         pid = new_id("ip")
         draft = {"schema_revision": od["revision"], "code": code, "title": title, "body": body, "data": data,
                  "links": [{k: ln[k] for k in ("field_key", "target_kind", "target_id")} for ln in nlinks],
@@ -1602,7 +1602,7 @@ def promotion_status(uid, item_id):
     with tx() as c:
         row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
         if not row:
-            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+            raise CrmError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
         od = _object_row(c, uid, row["object_id"], applied=False)
         return _promotion(c, uid, od["policy"], _links_by_item(c, uid, [item_id]).get(item_id, []))
 
@@ -1646,7 +1646,7 @@ def item_get(uid, item_id):
     with tx() as c:
         row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
         if not row:
-            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+            raise CrmError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
         od = _object_row(c, uid, row["object_id"], applied=False)
         out = _item_out(c, uid, row, _links_by_item(c, uid, [item_id]).get(item_id, []), od)
         out["object"] = {"id": od["id"], "key": od["key"], "label": od["label"], "semantic_kind": od["semantic_kind"], "revision": od["revision"]}
@@ -1684,13 +1684,13 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
     discard 는 제안(draft)만 버린다 — 새 항목 제안(revision 0)이면 행 삭제, 아니면 draft_* 만 비움. 이력·revision 변화 없음.
     모든 변경은 이력 한 줄 + revision+1. 같은 결정 반복은 no-op. confirm 은 승격 조건을 거절 사유로 쓰지 않고 결과에 사실로 싣는다."""
     if action not in ITEM_ACTIONS:
-        raise CanonError("ARG-INVALID", f"action 은 {', '.join(ITEM_ACTIONS)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"action 은 {', '.join(ITEM_ACTIONS)} 중 하나예요.")
     promotion = None
     with tx() as c:
         _daily_gate(c, uid, "decisions")
         row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
         if not row:
-            raise CanonError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
+            raise CrmError("ARG-INVALID", f"항목을 찾을 수 없어요: {item_id}")
         if row["revision"] != expected_revision:
             raise _conflict(f"지금 revision {row['revision']}")
         od = _object_row(c, uid, row["object_id"], applied=False)
@@ -1710,11 +1710,11 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
             fields = _fields(c, uid, od["id"])
             try:
                 nl = _norm_links(c, uid, fields, links)
-            except CanonError as e:
+            except CrmError as e:
                 raise _bad_link(e.message + " — 연결 대상이 그사이 보관·삭제됐을 수 있어요.", e.action)
             dp, lp = _item_problems(fields, od["policy"], data, nl, strict=False)
             if dp:
-                raise CanonError("ARG-INVALID", "지금 정의와 맞지 않아요 — " + " · ".join(dp), "새로 제안하세요(item_propose).")
+                raise CrmError("ARG-INVALID", "지금 정의와 맞지 않아요 — " + " · ".join(dp), "새로 제안하세요(item_propose).")
             if lp:
                 raise _bad_link("지금 정의와 맞지 않아요 — " + " · ".join(lp), "새로 제안하세요(item_propose).")
             return nl
@@ -1733,22 +1733,22 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
             nl = revalidate(dr["data"], dr["links"])
             code = row["code"] if row["code"] is not None else dr.get("code")
             if code and _code_taken(c, uid, row["object_id"], code, item_id):
-                raise CanonError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요.")
+                raise CrmError("ARG-INVALID", f"코드 {code} 는 이미 쓴 코드예요.")
             try:   # 위 검사와 이 UPDATE 사이에 다른 곳이 같은 코드를 쓰면 UNIQUE 가 막는다 — savepoint 로 잡아 CONFLICT 로
                 with c.transaction():
                     bump("apply", "code=%s, title=%s, body=%s, data=%s, schema_revision=%s, draft_doc=NULL, draft_id=NULL, draft_base_revision=NULL",
                          (code, dr["title"], dr["body"], Jsonb(dr["data"]), od["revision"]),
                          {"proposal_id": proposal_id, "created": row["revision"] == 0})
             except pg_errors.UniqueViolation:
-                raise CanonError("CONFLICT", f"같은 코드({code})가 방금 다른 곳에서 쓰였어요. 다른 코드로 다시 제안하세요.",
+                raise CrmError("CONFLICT", f"같은 코드({code})가 방금 다른 곳에서 쓰였어요. 다른 코드로 다시 제안하세요.",
                                  "state_get 으로 지금 코드를 확인하고 item_propose 로 다시 제안하세요.")
             _replace_item_links(c, uid, item_id, row["object_id"], nl)
         elif action in ITEM_DECISIONS:
             if kind != "principle":
-                raise CanonError("ARG-INVALID", "내 판단으로 남기기·남기지 않기·되돌리기는 기준(principle) 항목만 해요.",
+                raise CrmError("ARG-INVALID", "내 판단으로 남기기·남기지 않기·되돌리기는 기준(principle) 항목만 해요.",
                                  "다른 항목은 apply·archive·restore 만 있어요.")
             if row["revision"] == 0:
-                raise CanonError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 먼저 적용(apply)하세요.")
+                raise CrmError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 먼저 적용(apply)하세요.")
             target = ITEM_DECISIONS[action]
             if target != row["decision"]:
                 bump(action, "decision=%s", (target,))
@@ -1756,18 +1756,18 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
                 promotion = _promotion(c, uid, od["policy"], cur_links)
         elif action == "archive":
             if row["revision"] == 0:
-                raise CanonError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 버리려면 discard 에 proposal_id 를 주세요.")
+                raise CrmError("ARG-INVALID", "아직 적용하지 않은 제안이에요. 버리려면 discard 에 proposal_id 를 주세요.")
             if row["archived_at"] is None:
                 bump("archive", "archived_at=now()", ())
         else:   # restore
             if history_id is None:
-                raise CanonError("ARG-INVALID", "restore 는 history_id 가 필요해요.")
+                raise CrmError("ARG-INVALID", "restore 는 history_id 가 필요해요.")
             h = _one(c, "SELECT id,prev_revision,prev_state FROM item_history WHERE user_id=%s AND item_id=%s AND id=%s",
                      (uid, item_id, int(history_id)))
             if not h:
-                raise CanonError("ARG-INVALID", f"이 항목의 이력을 찾을 수 없어요: {history_id}")
+                raise CrmError("ARG-INVALID", f"이 항목의 이력을 찾을 수 없어요: {history_id}")
             if h["prev_revision"] == 0:
-                raise CanonError("ARG-INVALID", "처음 적용하기 전 상태로는 되돌릴 수 없어요. 보관(archive)하세요.")
+                raise CrmError("ARG-INVALID", "처음 적용하기 전 상태로는 되돌릴 수 없어요. 보관(archive)하세요.")
             st = h["prev_state"]
             nl = revalidate(st.get("data") or {}, st.get("links") or [])
             dec = st.get("decision") if kind == "principle" else None
@@ -1809,22 +1809,22 @@ def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
     kind=privacy 면 같은 트랜잭션에서 privacy_log(kind=other, via=form, received=KST 오늘) 1행 — 10일 시계는 여기서 시작한다.
     길이(PAYLOAD-LIMIT)는 호출 전에 write_gate 가 본다."""
     if kind not in TICKET_KINDS:
-        raise CanonError("ARG-INVALID", f"문의 종류는 {', '.join(TICKET_KINDS)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"문의 종류는 {', '.join(TICKET_KINDS)} 중 하나예요.")
     if via not in ("web", "mcp"):
-        raise CanonError("ARG-INVALID", "via 는 web·mcp 중 하나예요.")
+        raise CrmError("ARG-INVALID", "via 는 web·mcp 중 하나예요.")
     text = text if isinstance(text, str) else ""
     if not text.strip():
-        raise CanonError("ARG-INVALID", "문의 글이 비었어요.")
+        raise CrmError("ARG-INVALID", "문의 글이 비었어요.")
     page = page if page in TICKET_PAGES else "other"
     hint = "privacy?" if kind != "privacy" and _PRIVACY_HINT.search(text) else ""
     tid = new_id("tk")
     with tx() as c:
         n_me = _one(c, f"SELECT count(*) AS n FROM tickets WHERE user_id=%s AND created >= {_KST_TODAY}", (uid,))["n"]
         if n_me >= TICKET_DAILY_USER:
-            raise CanonError("RATE-LIMIT", f"오늘 문의는 {TICKET_DAILY_USER}건까지예요.", "내일 다시 보내 주세요.")
+            raise CrmError("RATE-LIMIT", f"오늘 문의는 {TICKET_DAILY_USER}건까지예요.", "내일 다시 보내 주세요.")
         n_all = _one(c, f"SELECT count(*) AS n FROM tickets WHERE created >= {_KST_TODAY}")["n"]
         if n_all >= TICKET_DAILY_ALL:
-            raise CanonError("RATE-LIMIT", "오늘은 문의가 많아 더 받을 수 없어요.", "내일 다시 보내 주세요.")
+            raise CrmError("RATE-LIMIT", "오늘은 문의가 많아 더 받을 수 없어요.", "내일 다시 보내 주세요.")
         c.execute("INSERT INTO tickets (id,user_id,kind,text,via,page,tool,ua_family,hint) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                   (tid, uid, kind, text, via, page, tool or "", ua_family or "", hint))
         if kind == "privacy":
@@ -1868,7 +1868,7 @@ def tickets_all(limit=TICKET_ADMIN_LIST):
 def _ticket_admin_row(c, tid):
     r = _one(c, _TICKET_ADMIN_COLS + "WHERE t.id=%s", (tid,))
     if not r:
-        raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
     return _iso(r)
 
 
@@ -1878,12 +1878,12 @@ def ticket_set_status(tid, status):
     kind=privacy 면 같은 트랜잭션에서 privacy_log(ticket_id) — 종결: notified=KST 오늘(없을 때만)·result done→done/wontfix→refused,
     다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다."""
     if status not in TICKET_STATUSES:
-        raise CanonError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
+        raise CrmError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
     with tx() as c:
         r = _one(c, "UPDATE tickets SET status=%s, updated=now(), closed_at = CASE WHEN %s IN ('done','wontfix') "
                     "THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=%s RETURNING kind", (status, status, str(tid)))
         if not r:
-            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+            raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
         if r["kind"] == "privacy":
             if status in ("done", "wontfix"):
                 c.execute("UPDATE privacy_log SET notified = COALESCE(notified, (now() AT TIME ZONE 'Asia/Seoul')::date), result=%s "
@@ -1896,12 +1896,12 @@ def ticket_set_status(tid, status):
 def ticket_set_note(tid, note):
     """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신."""
     if not isinstance(note, str):
-        raise CanonError("ARG-INVALID", "메모는 문자열이에요.")
+        raise CrmError("ARG-INVALID", "메모는 문자열이에요.")
     check_len("admin_note", note, LIMIT_ADMIN_NOTE)
     with tx() as c:
         n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s", (note, str(tid))).rowcount
         if not n:
-            raise CanonError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+            raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
         return _ticket_admin_row(c, str(tid))
 
 
@@ -1914,7 +1914,7 @@ def tickets_purge():
 
 
 # ── 관리자 · 세션 끊기 · 차단 (β2) ──────────────────────
-# 진실 = users.role. 첫 지정은 서버 시작 때 한 번(admin_bootstrap, env CANON_ADMIN_USER_IDS), 잠기면 admin_cli.py grant(admin_recover).
+# 진실 = users.role. 첫 지정은 서버 시작 때 한 번(admin_bootstrap, env CRM_ADMIN_USER_IDS), 잠기면 admin_cli.py grant(admin_recover).
 # 관리자 변경은 전부 한 트랜잭션: pg_advisory_xact_lock(ADMIN_LOCK) → 실행자 재조회 → 대상 FOR UPDATE → 규칙 → 변경 → 감사 INSERT.
 # 감사(admin_audit)는 FK 없음 · detail 은 열거 키만 · 1년 뒤 파기(bootstrap·recover 행은 남긴다 — 지우면 다음 시작 때 env 를 다시 읽는다).
 
@@ -1942,7 +1942,7 @@ def check_token_user(row, iat):
     토큰에 iat 가 없으면 revoked 검사는 건너뛰고 로그 1줄(프로세스 최초 1회) — 차단은 그대로 동작."""
     global _iat_missing_logged
     if row.get("blocked_at"):
-        raise CanonError("AUTH-BLOCKED", "이 계정은 지금 쓸 수 없어요.", "운영자에게 문의해 주세요.")
+        raise CrmError("AUTH-BLOCKED", "이 계정은 지금 쓸 수 없어요.", "운영자에게 문의해 주세요.")
     rb = row.get("mcp_revoked_before")
     if not rb:
         return
@@ -1953,7 +1953,7 @@ def check_token_user(row, iat):
         return
     rb = rb if isinstance(rb, _dt.datetime) else _dt.datetime.fromisoformat(str(rb))
     if not isinstance(iat, (int, float)) or isinstance(iat, bool) or iat < rb.timestamp():
-        raise CanonError("AUTH-REVOKED", "이 연결은 끊겼어요.", "커넥터를 다시 연결해 주세요.")
+        raise CrmError("AUTH-REVOKED", "이 연결은 끊겼어요.", "커넥터를 다시 연결해 주세요.")
 
 
 def admin_bootstrap(ids, conn=None):
@@ -1983,7 +1983,7 @@ def admin_recover(email):
         c.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
         t = _one(c, "SELECT id,role,blocked_at FROM users WHERE email=%s FOR UPDATE", (email,))
         if not t:
-            raise CanonError("NOT-FOUND", "그 이메일의 계정이 없어요.", "그 사람이 먼저 한 번 로그인해야 계정이 생겨요.")
+            raise CrmError("NOT-FOUND", "그 이메일의 계정이 없어요.", "그 사람이 먼저 한 번 로그인해야 계정이 생겨요.")
         c.execute("UPDATE users SET role='admin', blocked_at=NULL WHERE id=%s", (t["id"],))
         _audit(c, "recover", None, t["id"], {"from": t["role"], "to": "admin", "unblocked": t["blocked_at"] is not None})
         return {"id": t["id"], "email": email}
@@ -2002,15 +2002,15 @@ def admin_act(actor_id, op, target_id, role=None):
     해제 = blocked_at 만 NULL(revoked_before 는 그대로 — 차단 전 쿠키·토큰은 살아나지 않는다).
     회수·해제는 대상이 이미 그 상태면 무동작(감사 없음). 반환 {"changed": bool}."""
     if op not in ("role", "signout", "block", "unblock") or (op == "role" and role not in ("admin", "user")):
-        raise CanonError("ARG-INVALID", "동작이 틀렸어요.")
+        raise CrmError("ARG-INVALID", "동작이 틀렸어요.")
     with tx() as c:
         c.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
         a = _one(c, "SELECT role,blocked_at FROM users WHERE id=%s", (actor_id,))
         if not a or a["role"] != "admin" or a["blocked_at"] is not None:
-            raise CanonError("FORBIDDEN", "관리자만 할 수 있어요.")
+            raise CrmError("FORBIDDEN", "관리자만 할 수 있어요.")
         t = _one(c, "SELECT id,role,blocked_at FROM users WHERE id=%s FOR UPDATE", (str(target_id),))
         if not t:
-            raise CanonError("NOT-FOUND", "그 계정을 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+            raise CrmError("NOT-FOUND", "그 계정을 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
         tid = t["id"]
         if op == "role" and role == "admin":
             if t["role"] == "admin":
@@ -2021,7 +2021,7 @@ def admin_act(actor_id, op, target_id, role=None):
             if t["role"] != "admin":
                 return {"changed": False}
             if _one(c, "SELECT count(*) AS n FROM users WHERE role='admin'")["n"] <= 1:
-                raise CanonError("LAST-ADMIN", "마지막 관리자는 회수할 수 없어요.", "다른 사람에게 먼저 관리자를 부여하세요.")
+                raise CrmError("LAST-ADMIN", "마지막 관리자는 회수할 수 없어요.", "다른 사람에게 먼저 관리자를 부여하세요.")
             c.execute("UPDATE users SET role='user', web_revoked_before=now() WHERE id=%s", (tid,))
             _audit(c, "role_revoke", actor_id, tid, {"from": "admin", "to": "user"})
         elif op == "signout":

@@ -18,11 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from canonkit import server  # noqa: E402
+from crmkit import paths, server  # noqa: E402
 
 FAKE = str(ROOT / "tests" / "fake_claude.py")
 # 화면에 나오면 안 되는 내부 ID·명령어 (next.text 는 화면에 그대로 쓰인다)
-SCREEN_LEAK = re.compile(r"c-\d{4}|q-\d{3}|j-\d{8}|t-\d{3}|canon\.py")
+SCREEN_LEAK = re.compile(r"c-\d{4}|q-\d{3}|j-\d{8}|t-\d{3}|crm\.py")
 
 
 def snapshot(d):
@@ -33,7 +33,7 @@ def snapshot(d):
 class Flow(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = Path(tempfile.mkdtemp(prefix="canon test "))
+        cls.tmp = Path(tempfile.mkdtemp(prefix="crm test "))
         cls.data = cls.tmp / "내 데이터 폴더"
         cls.notes = cls.tmp / "메모 폴더"
         cls.notes.mkdir()
@@ -47,9 +47,10 @@ class Flow(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def run_cli(self, *args, ok=True, env=None):
-        e = dict(os.environ, CANON_CLAUDE=FAKE, **(env or {}))
-        e.pop("CANON_DATA", None)
-        r = subprocess.run([sys.executable, str(ROOT / "canon.py"), "--data", str(self.data), *args],
+        e = dict(os.environ, CRM_CLAUDE=FAKE, **(env or {}))
+        for n in paths.env_names("DATA"):
+            e.pop(n, None)
+        r = subprocess.run([sys.executable, str(ROOT / "crm.py"), "--data", str(self.data), *args],
                            capture_output=True, text=True, encoding="utf-8", env=e)
         if ok and r.returncode != 0:
             self.fail(f"{args} 실패 rc={r.returncode}\n{r.stdout}\n{r.stderr}")
@@ -137,7 +138,7 @@ class Flow(unittest.TestCase):
             r = c("digest", "--record", jid, "--question", "q-001", ok=False, env={"FAKE_MODE": mode})
             self.assertIn(code, r.stderr)
             self.assertEqual(good, (self.data / "sheets" / "q-001.md").read_bytes())
-            runs = json.loads((self.data / ".canon" / "runs.json").read_text(encoding="utf-8"))
+            runs = json.loads((self.data / ".crm" / "runs.json").read_text(encoding="utf-8"))
             self.assertEqual(runs["digest"]["state"], "failed")
             self.assertTrue(runs["digest"]["last_success"])
 
@@ -172,7 +173,7 @@ class Flow(unittest.TestCase):
 
         # 복구 리허설: 깨뜨림 → doctor 실패 → restore → 같은 탭
         r = c("drill", "start")
-        bid = json.loads((self.data / ".canon" / "drill.json").read_text(encoding="utf-8"))["backup"]
+        bid = json.loads((self.data / ".crm" / "drill.json").read_text(encoding="utf-8"))["backup"]
         # 깨진 탭 설정은 「못 읽음」으로 따로 내려가고, 나머지는 정상으로 읽힌다 (빈 값으로 숨기지 않음)
         st = server.build_state(self.data)
         self.assertFalse(st["read"]["tabs"]["ok"])
@@ -200,7 +201,7 @@ class Flow(unittest.TestCase):
         self.assertNotIn(str(self.tmp), r.stdout.split("저장:")[0])
 
     def test_next_action_shape_and_cli(self):
-        from canonkit import data as D
+        from crmkit import data as D
         d = self.tmp / "다음 행동 시험"
         shutil.copytree(ROOT / "sample-data", d)
         act = D.next_action(d)
@@ -217,11 +218,11 @@ class Flow(unittest.TestCase):
         self.assertEqual((act["kind"], act["target"]), ("review", "c-0002"))
         self.assertIsNone(SCREEN_LEAK.search(act["text"]))
         self.assertIn("candidate confirm c-0002", act["command"])
-        r = subprocess.run([sys.executable, str(ROOT / "canon.py"), "--data", str(d), "next"],
+        r = subprocess.run([sys.executable, str(ROOT / "crm.py"), "--data", str(d), "next"],
                            capture_output=True, text=True, encoding="utf-8")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("아직 안 정한 문장이 2개", r.stdout)
-        self.assertIn("→ python3 canon.py candidate confirm c-0002", r.stdout)
+        self.assertIn("→ python3 crm.py candidate confirm c-0002", r.stdout)
         # 깨진 후보 파일: 그 부분만 못 읽음, 질문은 정상, 0개로 위장하지 않음
         (d / "candidates.json").write_text("{ 깨짐", encoding="utf-8")
         before = snapshot(d)
@@ -232,11 +233,11 @@ class Flow(unittest.TestCase):
         self.assertEqual(before, snapshot(d), "build_state 가 파일을 바꿈")
 
     def test_lock_blocks_second_writer(self):
-        from canonkit import store
+        from crmkit import store
         d = self.tmp / "잠금 시험"
         d.mkdir()
         with store.lock(d, "첫 작업"):
-            with self.assertRaises(store.CanonError) as cm:
+            with self.assertRaises(store.CrmError) as cm:
                 with store.lock(d, "둘째 작업"):
                     pass
             self.assertEqual(cm.exception.code, "RUN-LOCKED")
@@ -244,17 +245,49 @@ class Flow(unittest.TestCase):
             pass
 
     def test_atomic_write_keeps_old_on_failed_check(self):
-        from canonkit import store
+        from crmkit import store
         f = self.tmp / "원자 시험.json"
         store.write_json_atomic(f, {"schemaVersion": 1, "tabs": []})
         old = f.read_text(encoding="utf-8")
-        with self.assertRaises(store.CanonError):
+        with self.assertRaises(store.CrmError):
             store.write_json_atomic(f, {"tabs": []}, validate=lambda d: ["schemaVersion 이 없습니다"])
         self.assertEqual(old, f.read_text(encoding="utf-8"))
         self.assertEqual([p.name for p in self.tmp.glob(".원자 시험.json.tmp-*")], [])
 
+    def test_old_sys_dir_moved_once(self):
+        """이름 변경 호환: 옛 시스템 폴더만 있는 데이터 폴더 → 첫 실행 때 새 이름으로 옮겨지고 백업·이력이 보인다."""
+        d = self.tmp / "옛 시스템 폴더 시험"
+
+        def cli(*args):
+            e = dict(os.environ, CRM_CLAUDE=FAKE)
+            for n in paths.env_names("DATA"):
+                e.pop(n, None)
+            r = subprocess.run([sys.executable, str(ROOT / "crm.py"), "--data", str(d), *args],
+                               capture_output=True, text=True, encoding="utf-8", env=e)
+            self.assertEqual(r.returncode, 0, f"{args}\n{r.stdout}\n{r.stderr}")
+            return r
+
+        subprocess.run([sys.executable, str(ROOT / "crm.py"), "init", "--data", str(d), "--sample", "--no-remember"],
+                       capture_output=True, text=True, encoding="utf-8", check=True)
+        cli("backup", "--label", "old")
+        cli("candidate", "confirm", "c-0002")          # 한 장 이전 판 → history
+        new, old = d / paths.SYS_DIR, d / paths.OLD_SYS_DIR
+        bid = [p.name for p in (new / "backups").iterdir()][0]
+        hist = sorted(p.name for p in (new / "history" / "sheets").iterdir())
+        self.assertTrue(hist)
+        new.rename(old)                                  # 이름 변경 전 판이 만든 데이터 폴더 흉내
+
+        r = cli("backups")
+        self.assertIn("시스템 폴더를 옮겼어요", r.stderr)
+        self.assertIn(bid, r.stdout)
+        self.assertFalse(old.exists())
+        self.assertEqual(hist, sorted(p.name for p in (new / "history" / "sheets").iterdir()))
+        r = cli("backups")                               # 두 번째는 옮기지 않는다
+        self.assertNotIn("시스템 폴더를 옮겼어요", r.stderr)
+        self.assertIn(bid, r.stdout)
+
     def test_sample_data_is_valid_and_marked(self):
-        from canonkit import paths, schema
+        from crmkit import paths, schema
         for name in paths.SETTINGS:
             d = json.loads((ROOT / "sample-data" / name).read_text(encoding="utf-8"))
             self.assertEqual(schema.VALIDATORS[name](d), [], name)

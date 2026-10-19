@@ -1,15 +1,15 @@
 ---
-name: canon-doctor
-description: personal-canon-kit 점검·복구 — doctor 결과를 읽고 다음 조치 하나씩, 백업 복구, 복구 리허설, 반복 실패 시 마스킹 진단과 issue 기록. "안 돼", "깨졌어", "오류 나", "점검해 줘", "복구", "업데이트 전 점검" 때 사용.
+name: crm-doctor
+description: My CRM 점검·복구 — doctor 결과를 읽고 다음 조치 하나씩, 백업 복구, 복구 리허설, 반복 실패 시 마스킹 진단과 issue 기록. "안 돼", "깨졌어", "오류 나", "점검해 줘", "복구", "업데이트 전 점검" 때 사용.
 ---
 
-# canon-doctor — 점검·복구
+# crm-doctor — 점검·복구
 
 ## 계약
 
 | 항목 | 내용 |
 |---|---|
-| 입력 | 증상(사용자 말), `python3 canon.py doctor` 출력 |
+| 입력 | 증상(사용자 말), `python3 crm.py doctor` 출력 |
 | 읽기 | `doctor`·`backups`·`status` 출력. 사용자 기록 원문은 열지 않는다 |
 | 쓰기 | 사용자가 승인한 `restore`·`backup`·`issue add` 만 |
 | 출력 | 실패 항목, 분류(사용자 조치/환경 미지원/재설치·롤백/제품 결함 후보), 다음 조치 1개, 복구 결과 |
@@ -17,11 +17,11 @@ description: personal-canon-kit 점검·복구 — doctor 결과를 읽고 다�
 
 ## 순서
 
-1. `python3 canon.py doctor` 실행. 출력의 ✗·! 줄과 맨 아래 "다음 조치"를 그대로 보여 준다.
+1. `python3 crm.py doctor` 실행. 출력의 ✗·! 줄과 맨 아래 "다음 조치"를 그대로 보여 준다.
 2. **한 번에 조치 하나.** 하고 나서 `doctor` 다시. 여러 조치를 한꺼번에 하지 않는다.
-3. 손상·스키마 오류면 `python3 canon.py backups` 를 보여 주고, 어느 백업으로 돌아갈지 **사용자가 고르게** 한 뒤 `restore <ID>`.
+3. 손상·스키마 오류면 `python3 crm.py backups` 를 보여 주고, 어느 백업으로 돌아갈지 **사용자가 고르게** 한 뒤 `restore <ID>`.
    restore 는 지금 상태를 먼저 백업하고, 백업 뒤 새 기록은 지우지 않는다는 점을 말한다.
-4. 복구 뒤 같은 화면을 다시 연다 — `python3 canon.py serve` 또는 `status`.
+4. 복구 뒤 같은 화면을 다시 연다 — `python3 crm.py serve` 또는 `status`.
 5. 첫 설정 중이면 복구 리허설을 제안: `drill start` → `doctor` → `restore` → `drill finish`.
 
 ## 멈춤 규칙
@@ -29,8 +29,8 @@ description: personal-canon-kit 점검·복구 — doctor 결과를 읽고 다�
 - 같은 오류로 조치가 두 번 실패하면 **멈춘다.** 무한 재시도하지 않는다.
 - 멈출 때:
   ```bash
-  python3 canon.py issue add "<증상과 시도한 조치>" --kind "<분류>"
-  python3 canon.py diag
+  python3 crm.py issue add "<증상과 시도한 조치>" --kind "<분류>"
+  python3 crm.py diag
   ```
   진단 파일을 사용자가 직접 열어 확인한 뒤 보낼지 정하게 한다. 진단에는 원문·판단 문장·경로·토큰이 없다.
 
