@@ -16,6 +16,9 @@
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
 9) α2: 동의 버전(guides 머리글)·게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로) · 일일 한도(기록·질문·후보·결정·제안)
    · usage_daily(메모리만·flush 합산/접기/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
+10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 ra(콜백 같은 uid·auth_time·창 12h/15m·미래) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
+   · 부여·회수·LAST-ADMIN·동시 회수 · 차단/해제(웹·MCP AUTH-BLOCKED/REVOKED) · 웹 끊기는 MCP 무관 · /app 관리자 경로 창
+   · CSP·스크립트 0·이스케이프 · admin_cli grant · 감사 파기 · bootstrap(임시 스키마)·lifespan 배선
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -75,7 +78,9 @@ LIM_KINDS = ("records", "candidates", "decisions", "proposals", "questions")   #
 LIM_EMAIL = {k: f"lim-{k}@example.com" for k in LIM_KINDS}
 TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com",
                "core1@example.com", "core2@example.com", "noconsent@example.com") + tuple(f"desk{i}@example.com" for i in range(11)) \
-    + tuple(LIM_EMAIL.values())   # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도
+    + tuple(LIM_EMAIL.values()) \
+    + ("b2a@example.com", "b2b@example.com", "b2c@example.com", "b2m@example.com", "<b>esc</b>@example.com")
+# desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -91,7 +96,7 @@ _DEFAULT = object()
 
 
 def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_test_sub", alg="RS256", kid="k1",
-               scope=_DEFAULT, scp=None, sid=None):
+               scope=_DEFAULT, scp=None, sid=None, extra=None):
     now = int(time.time())
     claims = {"iss": iss, "aud": aud, "sub": sub, "client_id": "client_test",
               "iat": now, "exp": now + exp_in, "jti": f"t{now}"}
@@ -103,14 +108,23 @@ def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_tes
         claims["scp"] = scp
     if sid is not None:
         claims["sid"] = sid
+    claims.update(extra or {})   # β2: auth_time 등
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": kid})
 
 
 def cleanup():
     with db.tx() as c:
         ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
+        # β2 감사는 FK·user_id 열이 없다 — 시험 사용자가 실행자·대상인 행을 따로 지운다
+        c.execute("DELETE FROM admin_audit WHERE actor_id = ANY(%s) OR target_id = ANY(%s)", (ids, ids))
     for uid in ids:
         db.user_delete(uid)
+
+
+def _set_role(uid, role):
+    """β2: 관리자 = users.role. 시험이 관리자 여부를 바꾸는 한 곳(감사 없이 직접)."""
+    with db.tx() as c:
+        c.execute("UPDATE users SET role=%s WHERE id=%s", (role, uid))
 
 
 def val(res):
@@ -550,7 +564,7 @@ async def test_web():
                 r = await h.get("/")
                 assert r.status_code == 200 and "로그인" in r.text, "로그아웃 뒤 시작 화면"
                 # 서명 위조 쿠키
-                h.cookies.set("canon_session", site.sign({"uid": uid}, 60)[:-3] + "xxx")
+                h.cookies.set("canon_session", site.session_value(uid)[:-3] + "xxx")
                 assert (await h.get("/api/state")).status_code == 401, "서명 깨진 쿠키"
                 # 반사 XSS: 쿼리·토큰 서버 응답·예외 문구는 escape 해서 글자로만 보인다
                 xss = "<script>alert(1)</script>"
@@ -1071,6 +1085,7 @@ CREATE TABLE candidate_history (
 CREATE INDEX ix_hist_cand ON candidate_history (candidate_id, id);
 """
 CORE_TABLES = ("records", "candidates", "candidate_history")
+B2_TABLES = ("users", "admin_audit")   # β2: users 새 열(role·blocked_at·web/mcp_revoked_before)·admin_audit
 
 
 def _seed_old(c, bad_quote=False):
@@ -1091,17 +1106,17 @@ def _seed_old(c, bad_quote=False):
     c.commit()
 
 
-def _shape(c):
-    """세 테이블의 컬럼·제약·인덱스(스키마 이름 뺀 정의). 순서는 안 본다."""
+def _shape(c, tables=CORE_TABLES):
+    """테이블(기본 세 개)의 컬럼·제약·인덱스(스키마 이름 뺀 정의). 순서는 안 본다."""
     cols = {(r["table_name"], r["column_name"], r["data_type"], r["is_nullable"], r["column_default"]) for r in c.execute(
         "SELECT table_name,column_name,data_type,is_nullable,column_default FROM information_schema.columns "
-        "WHERE table_schema=current_schema() AND table_name = ANY(%s)", (list(CORE_TABLES),)).fetchall()}
+        "WHERE table_schema=current_schema() AND table_name = ANY(%s)", (list(tables),)).fetchall()}
     cons = {(r["t"], r["conname"], r["d"]) for r in c.execute(
         "SELECT conrelid::regclass::text AS t, conname, pg_get_constraintdef(oid) AS d FROM pg_constraint "
-        "WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text = ANY(%s)", (list(CORE_TABLES),)).fetchall()}
+        "WHERE connamespace = current_schema()::regnamespace AND conrelid::regclass::text = ANY(%s)", (list(tables),)).fetchall()}
     idx = {(r["tablename"], r["indexname"], r["indexdef"].replace(f"{r['schemaname']}.", "")) for r in c.execute(
         "SELECT schemaname,tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema() AND tablename = ANY(%s)",
-        (list(CORE_TABLES),)).fetchall()}
+        (list(tables),)).fetchall()}
     return cols, cons, idx
 
 
@@ -1141,6 +1156,7 @@ def test_migration():
         with schema_conn(fresh) as c:
             db.init_schema(c)
             new_shape = _shape(c)
+            new_b2 = _shape(c, B2_TABLES)
         # (2) 옛 모양 → 마이그레이션
         with schema_conn(old) as c:
             c.execute(OLD_DDL)
@@ -1149,9 +1165,14 @@ def test_migration():
             before = _data(c)
             c.commit()   # 운영처럼 유휴 연결에서 시작(init_schema 트랜잭션이 최상위가 되게)
             assert not db._has_table(c, "usage_daily"), "옛 DB 엔 usage_daily 가 없다"
+            assert not db._has_table(c, "admin_audit") and not db._has_col(c, "users", "role"), "옛 DB 엔 β2 열·감사가 없다"
             db.init_schema(c)
             c.commit()
             assert db._has_table(c, "usage_daily"), "α2: init_schema 가 옛 DB 에 usage_daily 를 만든다"
+            got_b2 = _shape(c, B2_TABLES)
+            assert got_b2 == new_b2, ("β2: 옛 users·admin_audit ≠ 새 설치", got_b2[0] ^ new_b2[0], got_b2[1] ^ new_b2[1], got_b2[2] ^ new_b2[2])
+            assert {r["id"]: r["role"] for r in c.execute("SELECT id,role FROM users").fetchall()} == {"u_m1": "user", "u_m2": "user"}, \
+                "β2: 기존 사용자 role 은 user 로 채워진다"
             got = _shape(c)
             assert got == new_shape, ("마이그레이션 결과 ≠ 새 설치", got[0] ^ new_shape[0], got[1] ^ new_shape[1], got[2] ^ new_shape[2])
             cols = {t: [r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns "
@@ -1177,6 +1198,7 @@ def test_migration():
             db.init_schema(c)
             c.commit()
             assert _shape(c) == got and _data(c) == after, "두 번째 init_schema 가 뭔가 바꿨다"
+            assert _shape(c, B2_TABLES) == got_b2, "β2: 두 번째 init_schema 가 users·admin_audit 를 바꿨다"
             c.commit()
             # (4) 새 쓰기 제약: 다른 사용자 소유로 이력을 못 단다(복합 FK), action 은 restore 까지
             try:
@@ -1414,7 +1436,7 @@ async def test_limits():
     site.dev, site.dev_user = True, "tester@example.com"
     uid = db.user_by_email("tester@example.com")["id"]
     origin = {"origin": PUBLIC}
-    real_measure, real_admins = db._measure_db_size, db.ADMIN_USER_IDS
+    real_measure = db._measure_db_size
     # 도구 분류: 쓰기 표에 없는 도구는 읽기 — 새 쓰기 도구가 게이트를 비켜 가지 않게 고정
     async with Client(main.mcp) as c:
         names = {t.name for t in (await c.list_tools()).tools}
@@ -1485,12 +1507,12 @@ async def test_limits():
             assert (await h.get("/api/state")).status_code == 200
             assert (await h.get("/api/journal", params={"id": rid})).status_code == 200
             # 관리자는 쓴다
-            db.ADMIN_USER_IDS = frozenset({uid})
+            _set_role(uid, "admin")
             r = await c.call_tool("record_add", {"text": "관리자 기록"})
             assert not r.is_error, r.content[0].text
             r = await h.post("/api/candidate/decide", json={"candidate_id": cid, "action": "confirm"}, headers=origin)
             assert r.status_code == 200 and r.json()["status"] == "confirmed", r.text
-            db.ADMIN_USER_IDS = frozenset({"u_someone_else"})
+            _set_role(uid, "user")
             r = await c.call_tool("record_add", {"text": "다른 사람만 관리자"})
             assert r.is_error and "[QUOTA-GLOBAL]" in r.content[0].text, r.content[0].text
             # 경계: 정확히 400MB 는 허용
@@ -1512,7 +1534,8 @@ async def test_limits():
                 assert not (await c.call_tool("question_add", {"text": f"캐시 {i}"})).is_error
             assert calls == [1], calls
     finally:
-        db._measure_db_size, db.ADMIN_USER_IDS = real_measure, real_admins
+        db._measure_db_size = real_measure
+        _set_role(uid, "user")
         db.quota_cache_reset()
     print("OK — 인자 길이·전역 DB 크기 상한 통과")
 
@@ -1809,7 +1832,6 @@ async def test_feedback_admin():
     uid = db.user_by_email("tester@example.com")["id"]
     other = db.user_by_email("other@example.com")["id"]
     origin = {"origin": PUBLIC}
-    real_admins = db.ADMIN_USER_IDS
     # 하루 한도(test_feedback 가 채움)를 피해 직접 넣는다
     xss = '<img src=x onerror=alert(1)> 관리자만 볼 글'
     ids = {k: db.new_id("tk") for k in ("bug", "privacy")}
@@ -1831,7 +1853,7 @@ async def test_feedback_admin():
     try:
         async with Client(main.mcp) as mc, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
             # 비관리자: 키 자체가 없다 · 자기 글만 · 쓰기 403
-            db.ADMIN_USER_IDS = frozenset({"u_someone_else"})
+            _set_role(uid, "user")
             st = (await h.get("/api/state")).json()
             assert "admin_tickets" not in st and "user" in st, list(st)
             r = await h.get("/api/feedback")
@@ -1849,8 +1871,10 @@ async def test_feedback_admin():
                 assert (await h.post("/api/feedback/status", json={"id": ids["bug"], "status": "ack"}, headers=origin)).status_code == 401
             finally:
                 site.dev, site.dev_user = True, "tester@example.com"
-            # 관리자
-            db.ADMIN_USER_IDS = frozenset({uid})
+            # 관리자 — β2: role=admin + 재인증(ra) 쿠키 세션. DEV 폴백엔 ra 가 없어 관리자 경로가 닫힌다
+            _set_role(uid, "admin")
+            site.dev, site.dev_user = False, ""
+            h.cookies.set("canon_session", site.session_value(uid, int(time.time()) - 3600))
             # Origin 없음·다름 → 403 ORIGIN (관리자여도)
             for hd in ({}, {"origin": "https://evil.example"}):
                 for url in ("/api/feedback/status", "/api/feedback/note"):
@@ -1920,16 +1944,13 @@ async def test_feedback_admin():
             assert r.status_code == 404 and r.json()["code"] == "NOT-FOUND", r.text
             # 글쓴이(비관리자)는 바뀐 상태만 보고 메모는 못 본다
             await h.post("/api/feedback/status", json={"id": ids["bug"], "status": "doing"}, headers=origin)
-            site.dev_user = "other@example.com"
-            try:
-                r = await h.get("/api/feedback")
-                mine = {t["id"]: t for t in r.json()["tickets"]}
-                assert "admin" not in r.json() and mine[ids["bug"]]["status"] == "doing" and "admin_note" not in mine[ids["bug"]], r.json()
-                assert note not in r.text, "메모는 사용자에게 안 보인다"
-            finally:
-                site.dev_user = "tester@example.com"
+            h.cookies.set("canon_session", site.session_value(other))
+            r = await h.get("/api/feedback")
+            mine = {t["id"]: t for t in r.json()["tickets"]}
+            assert "admin" not in r.json() and mine[ids["bug"]]["status"] == "doing" and "admin_note" not in mine[ids["bug"]], r.json()
+            assert note not in r.text, "메모는 사용자에게 안 보인다"
     finally:
-        db.ADMIN_USER_IDS = real_admins
+        _set_role(uid, "user")
         site.dev, site.dev_user = True, "tester@example.com"
         with db.tx() as c:
             c.execute("DELETE FROM privacy_log WHERE ticket_id=%s", (ids["privacy"],))   # FK·cascade 밖
@@ -2106,7 +2127,7 @@ async def test_consent_gate():
             assert r.status_code == 401, r.status_code
 
             # B5: MCP 거절 → 브라우저 로그인(세션 쿠키) → /app 이 /consent 로 → 동의 → MCP 다음 호출 통과
-            h.cookies.set("canon_session", site.sign({"uid": nc}, 600))
+            h.cookies.set("canon_session", site.session_value(nc))
             r = await h.get("/app")
             assert r.status_code == 302 and r.headers["location"] == "/consent"
             r = await h.post("/api/consent", data={"privacy": "v1"})   # Origin 없음
@@ -2151,12 +2172,11 @@ async def test_daily_limits():
     """일일 한도 — 종류마다 전용 사용자(앞 시험이 쌓은 행과 섞이지 않게). 경계 = 상한까지 통과, 하나 더면 RATE-LIMIT."""
     site = main.site
     U = {k: db.user_by_email(LIM_EMAIL[k])["id"] for k in LIM_KINDS}
-    real_admins = db.ADMIN_USER_IDS
     assert db.DAILY_LIMITS == {"records": 50, "candidates": 150, "decisions": 300, "proposals": 100, "questions": 50}
     try:
         # 기록 50 — 관리자도 같다
         u = U["records"]
-        db.ADMIN_USER_IDS = frozenset({u})
+        _set_role(u, "admin")
         for i in range(49):
             db.record_add(u, f"한도 {i}", f"기록 {i}")
         r50 = db.record_add(u, "한도 50", "50번째 기록")
@@ -2171,7 +2191,7 @@ async def test_daily_limits():
         _bulk("UPDATE records SET created = created - interval '1 day' WHERE user_id=%s AND id=%s", (u, r50["id"]))
         db.record_add(u, "어제로 옮긴 뒤", "다시 50번째")
         expect("RATE-LIMIT", db.record_add, u, "다시 51", "다시 51번째")
-        db.ADMIN_USER_IDS = real_admins
+        _set_role(u, "user")
 
         # 질문 50
         u = U["questions"]
@@ -2261,7 +2281,7 @@ async def test_daily_limits():
         # 사용자 행이 없으면 AUTH-INVALID
         expect("AUTH-INVALID", db.record_add, "u_no_such_user", "t", "b")
     finally:
-        db.ADMIN_USER_IDS = real_admins
+        _set_role(U["records"], "user")
         site.dev, site.dev_user = True, TESTER
         os.environ["CANON_DEV_USER"] = TESTER
     print("OK — α2 일일 한도(기록 50·질문 50·후보 148+3/147+3·결정 300·edit_confirm 2줄 299 거절/298 통과·제안 100·관리자 같음·KST 날짜 경계·합산) 통과")
@@ -2461,6 +2481,389 @@ def test_alpha2_delete_lock():
     print("OK — α2 삭제 잠금(flush 가 잠금 잡은 동안 user_delete 블록·삭제 uid 행 0·메모리 키 0) 통과")
 
 
+# ── 10) β2 — 관리자 역할 · 재인증 · 감사 · 웹 끊기 · 차단 · Setup ─────────
+
+B2 = {k: f"b2{k}@example.com" for k in ("a", "b", "c", "m")}   # a·b = 관리자 후보, c = 사용자, m = MCP(차단 시험)
+B2_XSS = "<b>esc</b>@example.com"
+
+
+def _audit_rows(target=None, action=None):
+    with db.tx() as c:
+        return c.execute("SELECT action,actor_id,target_id,detail,at FROM admin_audit WHERE (%s::text IS NULL OR target_id=%s) "
+                         "AND (%s::text IS NULL OR action=%s) ORDER BY id", (target, target, action, action)).fetchall()
+
+
+def _urow(uid):
+    with db.tx() as c:
+        return c.execute("SELECT role,blocked_at,web_revoked_before,mcp_revoked_before FROM users WHERE id=%s", (uid,)).fetchone()
+
+
+def _sql(sql, args=()):
+    with db.tx() as c:
+        c.execute(sql, args)
+
+
+def _tok(sub, iat="now"):
+    """auth.user_id_for 에 넣을 검증 끝난 토큰 모양. iat=None 이면 iat 클레임 없음."""
+    from mcp.server.auth.provider import AccessToken
+    now = int(time.time())
+    claims = {"sub": sub, "iss": FAKE_ISSUER, "aud": RESOURCE, "exp": now + 600}
+    if iat is not None:
+        claims["iat"] = now if iat == "now" else iat
+    return AccessToken(token="t", client_id="client_test", scopes=["openid", "email"], expires_at=now + 600,
+                       resource=RESOURCE, subject=sub, claims=claims)
+
+
+async def test_beta2():
+    """β2: /admin 404(무세션·비관리자·DEV) · 재인증(ra) 흐름·창 · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류) · 부여·회수·LAST-ADMIN·동시 회수
+    · 차단/해제(웹·MCP) · 웹 끊기는 MCP 무관 · /app 관리자 경로 창 · CSP·이스케이프 · CLI · 감사 파기 · lifespan 배선."""
+    import datetime
+    import threading
+    from urllib.parse import parse_qs, urlparse
+    import admin_cli
+    _is_int = web._is_int
+    site = main.site
+    verifier = main._auth_kwargs["token_verifier"]
+    fake_jwks(verifier)
+    A = db.user_by_subject("b2a_sub", B2["a"])["id"]
+    B = db.user_by_subject("b2b_sub", B2["b"])["id"]
+    C = db.user_by_subject("b2c_sub", B2["c"])["id"]
+    M = db.user_by_subject("b2m_sub", B2["m"])["id"]
+    X = db.user_by_email(B2_XSS)["id"]
+    for u in (A, B, C, M, X):
+        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
+    with db.tx() as c:   # 시험 밖 관리자(이전 실행·bootstrap)는 잠깐 내린다 — LAST-ADMIN·동시 회수는 전역 관리자 수를 본다
+        others = [r["id"] for r in c.execute("SELECT id FROM users WHERE role='admin' AND NOT (email = ANY(%s))",
+                                             (list(TEST_EMAILS),)).fetchall()]
+        c.execute("UPDATE users SET role='user' WHERE id = ANY(%s)", (others,))
+    _set_role(A, "admin")
+    real = (site.dev, site.dev_user, site.client_id, site.token_post, db.session_user)
+    site.dev, site.dev_user, site.client_id = False, "", "client_test"
+    now = lambda: int(time.time())   # noqa: E731
+    ck = lambda uid, ra=None, iat=None: site.sign({"uid": uid, "iat": now() if iat is None else iat,   # noqa: E731
+                                                   **({} if ra is None else {"ra": ra})}, 600)
+
+    async def call(method, path, cookie=None, origin=True, data=None):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("canon_session", cookie)
+            return await h.request(method, path, headers={"origin": PUBLIC} if origin else {}, data=data)
+
+    tok_next = {"sub": "b2a_sub", "extra": None}
+
+    async def fake_token_post(data):
+        return 200, {"access_token": make_token(sub=tok_next["sub"], extra=tok_next["extra"]), "token_type": "Bearer"}
+    site.token_post = fake_token_post
+
+    async def login(cookie, reauth, sub, extra=None):
+        """쿠키 세션으로 /login(?fresh=1&reauth=1) → 콜백. (콜백 응답, 새 세션 쿠키 내용)."""
+        tok_next.update(sub=sub, extra=extra)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("canon_session", cookie)
+            r = await h.get("/login", params={"fresh": "1", "reauth": "1"} if reauth else {})
+            q = parse_qs(urlparse(r.headers["location"]).query)
+            if reauth:
+                assert q.get("prompt") == ["login"], q
+            r = await h.get("/auth/callback", params={"code": "c", "state": q["state"][0]})
+            return r, site.unsign(r.cookies.get("canon_session"))
+
+    posts = (("/admin/role", {"uid": C, "role": "admin"}), ("/admin/signout", {"uid": C}), ("/admin/block", {"uid": C}),
+             ("/admin/unblock", {"uid": C}))
+    try:
+        # ── 404: 무세션 · 비관리자 · DEV ──
+        for cookie in (None, ck(C, now()), ck(C)):
+            for path in ("/admin", "/admin/setup", "/admin/reauth"):
+                r = await call("GET", path, cookie)
+                assert r.status_code == 404 and "<" not in r.text, (path, r.status_code, r.text[:80])
+            for path, data in posts:
+                r = await call("POST", path, cookie, data=data)
+                assert r.status_code == 404, (path, r.status_code)
+        site.dev, site.dev_user = True, B2["a"]   # DEV: 관리자 dev_user 여도, ra 쿠키가 있어도 404
+        try:
+            for cookie in (None, ck(A, now())):
+                for path in ("/admin", "/admin/setup", "/admin/reauth"):
+                    assert (await call("GET", path, cookie)).status_code == 404, ("DEV", path)
+                for path, data in posts:
+                    assert (await call("POST", path, cookie, data=data)).status_code == 404, ("DEV", path)
+        finally:
+            site.dev, site.dev_user = False, ""
+        assert _urow(C)["role"] == "user" and not _audit_rows(C), "404 경로는 아무것도 안 바꾼다"
+
+        # ── 재인증 ──
+        r = await call("GET", "/admin", ck(A))
+        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (r.status_code, r.headers.get("location"))
+        r = await call("GET", "/admin/setup", ck(A))
+        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth"
+        r = await call("GET", "/admin/reauth", ck(A))
+        assert r.status_code == 302 and r.headers["location"] == "/login?fresh=1&reauth=1", r.headers.get("location")
+        t0 = now()
+        r, s = await login(ck(A), True, "b2a_sub")   # 같은 uid → ra
+        assert r.status_code == 302 and r.headers["location"] == "/admin" and s["uid"] == A and _is_int(s.get("ra")), (r.headers, s)
+        assert t0 <= s["ra"] <= now(), s
+        r, s = await login(ck(A), True, "b2c_sub")   # 콜백 uid 다름 → 일반 로그인(ra 없음)
+        assert s["uid"] == C and "ra" not in s and r.headers["location"] == "/admin", s
+        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 61 - 60})   # auth_time < t0 − 60 → ra 없음
+        assert s["uid"] == A and "ra" not in s, s
+        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 30})        # auth_time ≥ t0 − 60 → ra
+        assert s["uid"] == A and _is_int(s.get("ra")), s
+        r, s = await login(ck(A, now()), False, "b2a_sub")   # 일반 로그인 — 이전 ra 도 버린다
+        assert r.headers["location"] == "/app" and s["uid"] == A and "ra" not in s, (r.headers, s)
+        r, s = await login(None, True, "b2a_sub")   # 세션 없이 reauth=1 → r 없음 → 일반 로그인
+        assert r.headers["location"] == "/app" and "ra" not in s, s
+        # 창: view 12h · 위험 15m · 미래 거절
+        assert (await call("GET", "/admin/setup", ck(A, now() - 13 * 3600))).headers.get("location") == "/admin/reauth", "ra 13h → view 거절"
+        assert (await call("GET", "/admin/setup", ck(A, now() + 60))).headers.get("location") == "/admin/reauth", "ra 미래 → 거절"
+        assert (await call("GET", "/admin/setup", ck(A, now() - 16 * 60))).status_code == 200, "ra 16m → view 는 통과"
+        r = await call("POST", "/admin/role", ck(A, now() - 16 * 60), data={"uid": C, "role": "admin"})
+        assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text and 'href="/admin/reauth"' in r.text, (r.status_code, r.text[:200])
+        assert _urow(C)["role"] == "user", "ra 16m → role 거절"
+        assert web.reauth_ok(now() - 14 * 60, "role.grant") and not web.reauth_ok(now() - 16 * 60, "role.grant")
+        assert web.reauth_ok(now() - 11 * 3600, "admin.view") and not web.reauth_ok(now() - 13 * 3600, "ticket.read_all")
+        assert not web.reauth_ok(None, "admin.view") and not web.reauth_ok(str(now()), "admin.view") and not web.reauth_ok(True, "admin.view")
+        assert not web.reauth_ok(now() + 5, "admin.view") and web.reauth_ok(now(), "user.block")
+
+        # ── 쿠키 v2 ──
+        assert (await call("GET", "/api/state", site.sign({"uid": A}, 600))).status_code == 401, "옛 쿠키(iat 없음) 무효"
+        assert (await call("GET", "/api/state", ck(A, iat=now() + 30))).status_code == 401, "iat 미래 무효"
+        assert (await call("GET", "/api/state", site.sign({"uid": A, "iat": str(now())}, 600))).status_code == 401, "iat 정수 아님"
+        assert (await call("GET", "/api/state", ck("u_no_such_user"))).status_code == 401, "사용자 없음"
+        _sql("UPDATE users SET web_revoked_before = now() - interval '100 seconds' WHERE id=%s", (C,))
+        assert (await call("GET", "/api/state", ck(C, iat=now() - 200))).status_code == 401, "끊은 시각 전 iat 무효"
+        assert (await call("GET", "/api/state", ck(C, iat=now() - 50))).status_code == 200, "끊은 시각 뒤 iat 유효"
+        _sql("UPDATE users SET blocked_at = now() WHERE id=%s", (C,))
+        assert (await call("GET", "/api/state", ck(C))).status_code == 401, "차단 사용자 쿠키 무효"
+        _sql("UPDATE users SET blocked_at = NULL, web_revoked_before = NULL WHERE id=%s", (C,))
+
+        def boom(uid):
+            raise RuntimeError("DB 오류 주입")
+        db.session_user = boom
+        try:
+            assert (await call("GET", "/api/state", ck(C))).status_code == 401, "DB 오류 → 세션 없음"
+            assert (await call("GET", "/admin/setup", ck(A, now()))).status_code == 404, "DB 오류 → /admin 도 세션 없음"
+        finally:
+            db.session_user = real[4]
+        assert (await call("GET", "/api/state", ck(C))).status_code == 200
+
+        # ── 권한: 부여·회수·감사 ──
+        fresh = lambda: ck(A, now())   # noqa: E731
+        for hd_origin in (False,):
+            r = await call("POST", "/admin/role", fresh(), origin=hd_origin, data={"uid": C, "role": "admin"})
+            assert r.status_code == 403 and "ORIGIN" in r.text, (r.status_code, r.text[:200])
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("canon_session", fresh())
+            r = await h.post("/admin/role", headers={"origin": "https://evil.example"}, data={"uid": C, "role": "admin"})
+            assert r.status_code == 403 and "ORIGIN" in r.text, r.status_code
+            r = await h.post("/admin/role", headers={"origin": PUBLIC}, json={"uid": C, "role": "admin"})
+            assert r.status_code == 400 and "ARG-INVALID" in r.text, "form 만"
+            r = await h.post("/admin/role", headers={"origin": PUBLIC}, data={"uid": C, "role": "root"})
+            assert r.status_code == 400, "role 은 admin·user 만"
+        assert _urow(C)["role"] == "user" and not _audit_rows(C), "Origin 없음/다름·틀린 form → 변화 없음"
+        c_cookie_old = ck(C, iat=now() - 5)
+        r = await call("POST", "/admin/role", fresh(), data={"uid": C, "role": "admin"})
+        assert r.status_code == 303 and r.headers["location"] == "/admin/setup", (r.status_code, r.text[:200])
+        g = _audit_rows(C, "role_grant")
+        assert _urow(C)["role"] == "admin" and len(g) == 1 and g[0]["actor_id"] == A and g[0]["detail"] == {"from": "user", "to": "admin"}, g
+        assert (await call("POST", "/admin/role", fresh(), data={"uid": C, "role": "admin"})).status_code == 303
+        assert len(_audit_rows(C)) == 1, "이미 admin 부여 → 무동작(감사 없음)"
+        assert (await call("GET", "/api/state", c_cookie_old)).status_code == 200
+        r = await call("POST", "/admin/role", fresh(), data={"uid": C, "role": "user"})
+        rv = _audit_rows(C, "role_revoke")
+        assert r.status_code == 303 and _urow(C)["role"] == "user" and len(rv) == 1 and rv[0]["detail"] == {"from": "admin", "to": "user"}, rv
+        assert _urow(C)["web_revoked_before"] is not None and (await call("GET", "/api/state", c_cookie_old)).status_code == 401, "회수 대상 기존 쿠키 무효"
+        # 마지막 관리자 회수 거절(자기 자신)
+        r = await call("POST", "/admin/role", fresh(), data={"uid": A, "role": "user"})
+        assert r.status_code == 409 and "LAST-ADMIN" in r.text and _urow(A)["role"] == "admin", (r.status_code, r.text[:200])
+        e = expect("LAST-ADMIN", db.admin_act, A, "role", A, "user")
+        assert e.code == "LAST-ADMIN" and not _audit_rows(A, "role_revoke")
+        r = await call("POST", "/admin/role", fresh(), data={"uid": "u_nope", "role": "admin"})
+        assert r.status_code == 404 and "NOT-FOUND" in r.text
+        expect("FORBIDDEN", db.admin_act, C, "role", C, "admin")   # 실행자 재조회 — 비관리자는 트랜잭션 안에서도 거절
+        # 동시 회수 2건(A→B, B→A) → 관리자 0명이 되지 않는다
+        for i in range(5):
+            _sql("UPDATE users SET role='admin' WHERE id = ANY(%s)", ([A, B],))
+            bar, out = threading.Barrier(2), {}
+
+            def go(actor, target):
+                bar.wait()
+                try:
+                    out[actor] = db.admin_act(actor, "role", target, "user")
+                except db.CanonError as e:
+                    out[actor] = e.code
+            ts = [threading.Thread(target=go, args=(A, B)), threading.Thread(target=go, args=(B, A))]
+            [t.start() for t in ts]
+            [t.join(10) for t in ts]
+            with db.tx() as c:
+                n = c.execute("SELECT count(*) AS n FROM users WHERE role='admin'").fetchone()["n"]
+            assert n == 1 and sorted(map(str, out.values())) == ["FORBIDDEN", "{'changed': True}"], (i, n, out)
+        _sql("UPDATE users SET role = CASE WHEN id=%s THEN 'admin' ELSE 'user' END WHERE id = ANY(%s)", (A, [A, B]))
+        time.sleep(1.1)   # 동시 회수에서 A 가 회수됐으면 web_revoked_before 가 방금 — 같은 초에 만든 쿠키는 무효(닫는 쪽)
+
+        # ── 차단·해제·웹 끊기 (웹 + MCP) ──
+        m_cookie = ck(M, iat=now() - 5)
+        old_tok = _tok("b2m_sub", now() - 5)
+        assert auth.user_id_for(old_tok) == M and (await call("GET", "/api/state", m_cookie)).status_code == 200
+        r = await call("POST", "/admin/block", fresh(), data={"uid": M})
+        u = _urow(M)
+        assert r.status_code == 303 and u["blocked_at"] and u["web_revoked_before"] and u["mcp_revoked_before"], (r.status_code, u)
+        assert [a["action"] for a in _audit_rows(M)] == ["block"]
+        assert (await call("GET", "/api/state", m_cookie)).status_code == 401, "차단 → 웹 쿠키 거절"
+        for t in (old_tok, _tok("b2m_sub"), _tok("b2m_sub", None)):
+            expect("AUTH-BLOCKED", auth.user_id_for, t)   # iat 과거·지금·없음 모두 차단
+        r, s = await login(None, False, "b2m_sub")
+        assert r.status_code == 502 and s is None, "차단 계정은 웹 로그인도 안 된다"
+        time.sleep(1.1)   # 새 토큰 iat(정수 초)가 mcp_revoked_before 뒤가 되게
+        r = await call("POST", "/admin/unblock", fresh(), data={"uid": M})
+        u = _urow(M)
+        assert r.status_code == 303 and u["blocked_at"] is None and u["mcp_revoked_before"] and u["web_revoked_before"], u
+        e = expect("AUTH-REVOKED", auth.user_id_for, old_tok)
+        assert "커넥터를 다시 연결" in e.action, e.action
+        assert auth.user_id_for(_tok("b2m_sub")) == M, "해제 뒤 새 토큰(iat 이후) 통과"
+        assert auth.user_id_for(_tok("b2m_sub", None)) == M, "iat 없는 토큰은 revoked 검사 건너뜀(차단 아님)"
+        assert (await call("GET", "/api/state", m_cookie)).status_code == 401, "해제해도 차단 전 쿠키는 안 살아난다"
+        assert (await call("POST", "/admin/unblock", fresh(), data={"uid": M})).status_code == 303
+        assert [a["action"] for a in _audit_rows(M)] == ["block", "unblock"], "이미 해제면 무동작"
+        m_cookie = ck(M)
+        assert (await call("GET", "/api/state", m_cookie)).status_code == 200
+        mrb = _urow(M)["mcp_revoked_before"]
+        time.sleep(1.1)
+        r = await call("POST", "/admin/signout", fresh(), data={"uid": M})
+        assert r.status_code == 303 and (await call("GET", "/api/state", m_cookie)).status_code == 401, "웹 끊기 → 쿠키 거절"
+        assert _urow(M)["mcp_revoked_before"] == mrb and auth.user_id_for(_tok("b2m_sub", now() - 1)) == M, "웹 끊기는 MCP 무관"
+        assert [a["action"] for a in _audit_rows(M)] == ["block", "unblock", "web_signout"]
+        assert all(a["actor_id"] == A and set(a["detail"]) <= {"from", "to"} for a in _audit_rows(M))
+        # 마지막 관리자 차단은 허용(복구는 CLI)
+        assert db.admin_act(A, "block", A) == {"changed": True} and _urow(A)["blocked_at"] is not None
+        assert (await call("GET", "/admin/setup", ck(A, now()))).status_code == 404, "차단된 관리자 → 세션 없음"
+        assert not db.is_admin(A)
+        time.sleep(1.1)   # 복구 뒤 새 쿠키 iat(정수 초)가 자기 차단 때의 web_revoked_before 뒤가 되게
+
+        # ── CLI ──
+        assert admin_cli.main(["grant"]) == 2 and admin_cli.main([]) == 2 and admin_cli.main(["grant", "nobody-b2@example.com"]) == 1
+        assert admin_cli.main(["grant", "  B2A@example.com "]) == 0   # 소문자 정규화
+        u = _urow(A)
+        rc = _audit_rows(A, "recover")
+        assert u["role"] == "admin" and u["blocked_at"] is None and len(rc) == 1 and rc[0]["actor_id"] is None, (u, rc)
+        assert rc[0]["detail"] == {"from": "admin", "to": "admin", "unblocked": True}, rc
+        assert admin_cli.main(["list"]) == 0 and A in {r["id"] for r in db.admins()}
+
+        # ── /app 관리자 경로 — ticket.* 창 ──
+        for cookie in (ck(A), ck(A, now() - 13 * 3600)):
+            st = (await call("GET", "/api/state", cookie)).json()
+            assert "admin_tickets" not in st and "user" in st, list(st)
+            r = await call("GET", "/api/feedback", cookie)
+            assert r.status_code == 200 and set(r.json()) == {"tickets"}, list(r.json())
+            for path, body in (("/api/feedback/status", {"id": "tk_nope", "status": "ack"}), ("/api/feedback/note", {"id": "tk_nope", "admin_note": "x"})):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+                    h.cookies.set("canon_session", cookie)
+                    r = await h.post(path, json=body, headers={"origin": PUBLIC})
+                assert r.status_code == 403 and r.json()["code"] == "REAUTH-REQUIRED", (path, r.text)
+        cookie = ck(A, now() - 3600)
+        st = (await call("GET", "/api/state", cookie)).json()
+        assert "admin_tickets" in st, list(st)
+        j = (await call("GET", "/api/feedback", cookie)).json()
+        assert j.get("admin") is True and "admin_tickets" in j, list(j)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("canon_session", cookie)
+            r = await h.post("/api/feedback/status", json={"id": "tk_nope", "status": "ack"}, headers={"origin": PUBLIC})
+            assert r.status_code == 404 and r.json()["code"] == "NOT-FOUND", r.text   # 창 안 → 게이트 통과
+            h.cookies.set("canon_session", ck(C, now()))
+            r = await h.post("/api/feedback/status", json={"id": "tk_nope", "status": "ack"}, headers={"origin": PUBLIC})
+            assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN", "비관리자는 ra 가 있어도 FORBIDDEN"
+
+        # ── /admin/setup: CSP · 스크립트 0 · 이스케이프 · 감사 표 ──
+        r = await call("GET", "/admin/setup", ck(A, now()))
+        assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+        assert "script-src 'self'" in r.headers["content-security-policy"] and "unsafe-inline" not in r.headers["content-security-policy"]
+        assert "<script" not in r.text.lower() and not re.search(r"\son[a-z]+\s*=", r.text, re.I), "스크립트·이벤트 속성 0"
+        assert "&lt;b&gt;esc&lt;/b&gt;@example.com" in r.text and "<b>esc" not in r.text, "이메일 이스케이프"
+        for word in (B2["m"], "관리자 부여", "관리자 회수", "웹 로그인 끊기", "차단", 'action="/admin/role"', 'action="/admin/block"',
+                     'name="uid"', "재인증", 'href="/admin/reauth"', "감사 로그", "복구(CLI)", "웹 로그인 끊기"):
+            assert word in r.text, word
+        db.admin_act(A, "signout", X)
+        db.user_delete(X)   # 지워진 계정 → 감사 표엔 id 앞 8자
+        r = await call("GET", "/admin/setup", ck(A, now()))
+        assert X[:8] in r.text and B2_XSS not in r.text, "삭제된 계정은 id 앞 8자"
+        _sql("DELETE FROM admin_audit WHERE target_id=%s", (X,))
+
+        # ── 감사 파기: 366일 전 삭제, 364일 유지, bootstrap·recover 는 유지 ──
+        _sql("INSERT INTO admin_audit (at,action,actor_id,target_id) VALUES (now() - interval '366 days','role_grant',%s,%s),"
+             "(now() - interval '364 days','role_revoke',%s,%s),(now() - interval '400 days','bootstrap',NULL,%s),"
+             "(now() - interval '400 days','recover',NULL,%s)", (A, C, A, C, C, C))
+        assert db.admin_audit_purge() >= 1
+        left = {(a["action"], (a["at"] < datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=300))) for a in _audit_rows(C)}
+        assert ("role_grant", True) not in left and {("role_revoke", True), ("bootstrap", True), ("recover", True)} <= left, left
+    finally:
+        site.dev, site.dev_user, site.client_id, site.token_post, db.session_user = real
+        site.dev, site.dev_user = True, TESTER
+        _sql("UPDATE users SET role='admin' WHERE id = ANY(%s)", (others,))
+    print("OK — β2 /admin 404·재인증 흐름·창(12h·15m·미래)·쿠키 v2·끊기·차단/해제(웹·MCP)·부여/회수·LAST-ADMIN·동시 회수·CLI·/app 창·CSP·이스케이프·감사 파기 통과")
+
+
+async def test_beta2_bootstrap():
+    """bootstrap: 감사 행 없음 + env uid → admin + bootstrap 행 · 두 번째 → env 바꿔도 변화 없음 · env 비어도 행 · recover 가 있으면 안 함
+    · lifespan 이 env 를 읽어 bootstrap·감사 파기를 부른다. 공유 시험 DB 엔 이전 bootstrap 행이 남으므로 임시 스키마에서."""
+    tag = secrets.token_hex(3)
+    s1, s2, s3 = f"canon_b2_boot1_{tag}", f"canon_b2_boot2_{tag}", f"canon_b2_boot3_{tag}"
+    try:
+        for n in (s1, s2, s3):
+            create_schema(n)
+        with schema_conn(s1) as c:
+            db.init_schema(c)
+            c.execute("INSERT INTO users (id,email) VALUES ('u_b1','b1@x.test'),('u_b2','b2@x.test')")
+            c.commit()
+            assert db.admin_bootstrap(["u_b1", "u_nope", " "], conn=c) == 1
+            roles = {r["id"]: r["role"] for r in c.execute("SELECT id,role FROM users").fetchall()}
+            rows = c.execute("SELECT action,actor_id,target_id,detail FROM admin_audit").fetchall()
+            assert roles == {"u_b1": "admin", "u_b2": "user"} and rows == [{"action": "bootstrap", "actor_id": None, "target_id": None,
+                                                                            "detail": {"listed": 2, "promoted": 1}}], (roles, rows)
+            assert db.admin_bootstrap(["u_b2"], conn=c) is None, "두 번째 시작 — env 바꿔도 변화 없음"
+            assert c.execute("SELECT role FROM users WHERE id='u_b2'").fetchone()["role"] == "user"
+            assert c.execute("SELECT count(*) AS n FROM admin_audit").fetchone()["n"] == 1
+        with schema_conn(s2) as c:
+            db.init_schema(c)
+            c.commit()
+            assert db.admin_bootstrap([], conn=c) == 0
+            assert [r["action"] for r in c.execute("SELECT action FROM admin_audit").fetchall()] == ["bootstrap"], "env 비어도 행"
+        with schema_conn(s3) as c:
+            db.init_schema(c)
+            c.execute("INSERT INTO users (id,email) VALUES ('u_b3','b3@x.test')")
+            c.execute("INSERT INTO admin_audit (action,target_id) VALUES ('recover','u_b3')")
+            c.commit()
+            assert db.admin_bootstrap(["u_b3"], conn=c) is None, "recover 행이 있으면 초기화 끝"
+    finally:
+        for n in (s1, s2, s3):
+            drop_schema(n)
+    # lifespan 배선 — env 를 시작 때 읽어 넘긴다, 파기 2종도 부른다(실패해도 기동)
+    calls = []
+    real = (db.admin_bootstrap, db.admin_audit_purge, os.environ.get("CANON_ADMIN_USER_IDS"))
+
+    def fake_boot(ids, conn=None):
+        calls.append(("boot", list(ids)))
+        raise RuntimeError("bootstrap 실패 주입")
+    db.admin_bootstrap = fake_boot
+    db.admin_audit_purge = lambda: calls.append(("purge",)) or 0
+    os.environ["CANON_ADMIN_USER_IDS"] = " u_x , u_y ,"
+    sm = main.mcp.session_manager
+
+    @asynccontextmanager
+    async def fake_run():   # 세션 매니저 run() 은 인스턴스당 한 번 — test_http 가 이미 썼다
+        yield
+    sm.run = fake_run
+    try:
+        async with main.lifespan(main.app):
+            pass
+    finally:
+        del sm.run
+        db.admin_bootstrap, db.admin_audit_purge = real[0], real[1]
+        if real[2] is None:
+            os.environ.pop("CANON_ADMIN_USER_IDS", None)
+        else:
+            os.environ["CANON_ADMIN_USER_IDS"] = real[2]
+    assert calls == [("boot", ["u_x", "u_y"]), ("purge",)], calls
+    print("OK — β2 bootstrap(한 번만·env 무시·빈 env 행·recover 존중·lifespan 배선·실패해도 기동) 통과")
+
+
 def consent_setup():
     """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
     for email in TEST_EMAILS:
@@ -2469,6 +2872,7 @@ def consent_setup():
 
 
 async def run():
+    db.init_schema()   # 서버 시작과 같은 멱등 마이그레이션 — 시험 DB 가 직전 코드의 스키마여도 새 열·admin_audit 를 깐다(cleanup 이 쓴다)
     cleanup()
     consent_setup()
     try:
@@ -2494,6 +2898,8 @@ async def run():
         await test_usage()
         test_alpha2_delete()
         test_alpha2_delete_lock()
+        await test_beta2()
+        await test_beta2_bootstrap()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -2503,6 +2909,8 @@ async def run():
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
                     for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets",
                               "agreements", "usage_daily")}
+            rest["admin_audit"] = c.execute("SELECT count(*) AS n FROM admin_audit WHERE actor_id = ANY(%s) OR target_id = ANY(%s)",
+                                            (ids, ids)).fetchone()["n"]
         db.close()
     assert left == 0, left
     assert not any(rest.values()), rest

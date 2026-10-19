@@ -78,8 +78,7 @@ WRITE_LIMITS = {
 # 대신 문의 한도(사용자 하루 10건·전역 100건, ticket_add)가 건다.
 QUOTA_EXEMPT = frozenset({"feedback_send"})
 
-# 관리자 내부 user id — ③ 전역 DB 크기 거절에서만 예외. main 이 시작 때 env CANON_ADMIN_USER_IDS 로 한 번 채운다.
-ADMIN_USER_IDS: frozenset = frozenset()
+# 관리자 = users.role='admin'(β2). ③ 전역 DB 크기 거절의 예외 판정도 is_admin(DB 조회)이다. env 는 첫 지정(admin_bootstrap)에만 쓴다.
 
 # ── 동의 게이트 (α2) ───────────────────────────────────
 # 처리방침(·약관)에 동의하지 않은 사용자의 쓰기를 막는다. MCP guard·웹 쓰기 API 가 부르는 write_gate 안에서.
@@ -177,7 +176,7 @@ def check_global_quota(uid):
     n = db_size_cached()
     if n is None or n <= DB_QUOTA_BYTES:
         return
-    if (uid() if callable(uid) else uid) in ADMIN_USER_IDS:
+    if is_admin(uid() if callable(uid) else uid):   # 넘었을 때만 role 을 조회한다
         return
     raise CanonError("QUOTA-GLOBAL", "서비스 저장 공간이 한도에 가까워 지금은 새로 쓸 수 없어요. 읽기는 그대로 돼요.",
                      "운영자에게 알려 주세요.")
@@ -391,10 +390,17 @@ def _init_schema(c):
         q = col("candidates", "question_id")
         if q is not None and q["is_nullable"] == "NO":
             c.execute("ALTER TABLE candidates ALTER COLUMN question_id DROP NOT NULL")
+        for n, ddl in _USERS_B2_COLS:   # β2 — 옛 users 에 역할·차단·끊기 열. schema.sql 최종형과 같은 모양(CHECK 이름 users_role_check)
+            if not _has_col(c, "users", n):
+                c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
         for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
+
+
+_USERS_B2_COLS = (("role", "text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))"), ("blocked_at", "timestamptz"),
+                  ("web_revoked_before", "timestamptz"), ("mcp_revoked_before", "timestamptz"))
 
 
 def template_slot_of(template, object_key, field_key=None):
@@ -1782,7 +1788,7 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
 # ── 문의 데스크 (desk-0) ────────────────────────────────
 # 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
 # 사용자는 「내 문의」에서 처리 상태만 본다(답변 본문 없음). 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
-# 관리자(ADMIN_USER_IDS)는 웹 「문의함」에서 전체 문의·메모를 보고 상태·메모를 바꾼다. 감사 테이블은 β — 지금은 tickets.updated 만 갱신한다.
+# 관리자(users.role='admin', β2)는 웹 「문의함」에서 전체 문의·메모를 보고 상태·메모를 바꾼다(재인증 12시간 안). 문의 변경은 감사 동작이 아니다 — tickets.updated 만 갱신한다.
 
 TICKET_KINDS = ("bug", "request", "question", "privacy")
 TICKET_STATUSES = ("open", "ack", "doing", "done", "wontfix")
@@ -1835,8 +1841,11 @@ def tickets_mine(uid, limit=50):
 
 
 def is_admin(uid) -> bool:
-    """관리자 = env CANON_ADMIN_USER_IDS 의 내부 user id(main 이 시작 때 채운다)."""
-    return bool(uid) and uid in ADMIN_USER_IDS
+    """관리자 = users.role='admin' 이고 차단 아님(β2). PK 조회 1건."""
+    if not uid:
+        return False
+    with tx() as c:
+        return _one(c, "SELECT 1 AS x FROM users WHERE id=%s AND role='admin' AND blocked_at IS NULL", (uid,)) is not None
 
 
 def tickets_admin_counts():
@@ -1902,6 +1911,157 @@ def tickets_purge():
     with tx() as c:
         c.execute("SET LOCAL statement_timeout = '5s'")
         return c.execute("DELETE FROM tickets WHERE closed_at < now() - make_interval(days => %s)", (TICKET_KEEP_DAYS,)).rowcount
+
+
+# ── 관리자 · 세션 끊기 · 차단 (β2) ──────────────────────
+# 진실 = users.role. 첫 지정은 서버 시작 때 한 번(admin_bootstrap, env CANON_ADMIN_USER_IDS), 잠기면 admin_cli.py grant(admin_recover).
+# 관리자 변경은 전부 한 트랜잭션: pg_advisory_xact_lock(ADMIN_LOCK) → 실행자 재조회 → 대상 FOR UPDATE → 규칙 → 변경 → 감사 INSERT.
+# 감사(admin_audit)는 FK 없음 · detail 은 열거 키만 · 1년 뒤 파기(bootstrap·recover 행은 남긴다 — 지우면 다음 시작 때 env 를 다시 읽는다).
+
+ADMIN_LOCK = 0x63616E6F6E0B32       # 관리자 변경·bootstrap·복구를 직렬화하는 advisory lock 키(상수)
+AUDIT_KEEP_DAYS = 365
+AUDIT_LIST = 100                    # /admin/setup 감사 로그 최근 건수
+ADMIN_ACTIONS = ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock")
+_iat_missing_logged = False
+
+
+def _audit(c, action, actor_id, target_id, detail=None):
+    c.execute("INSERT INTO admin_audit (action,actor_id,target_id,detail) VALUES (%s,%s,%s,%s)",
+              (action, actor_id, target_id, Jsonb(detail or {})))
+
+
+def session_user(uid):
+    """웹 세션 검사용 users 행(PK 1건) — {id, role, blocked_at, web_revoked_before}, datetime 그대로. 없으면 None."""
+    with tx() as c:
+        return _one(c, "SELECT id,role,blocked_at,web_revoked_before FROM users WHERE id=%s", (uid,))
+
+
+def check_token_user(row, iat):
+    """MCP·웹 로그인 토큰의 사용자 검사(auth.user_id_for 한 곳). row 는 user_by_subject 결과(_iso 문자열).
+    차단이면 AUTH-BLOCKED. mcp_revoked_before 가 있고 토큰 iat 가 그보다 앞이면 AUTH-REVOKED.
+    토큰에 iat 가 없으면 revoked 검사는 건너뛰고 로그 1줄(프로세스 최초 1회) — 차단은 그대로 동작."""
+    global _iat_missing_logged
+    if row.get("blocked_at"):
+        raise CanonError("AUTH-BLOCKED", "이 계정은 지금 쓸 수 없어요.", "운영자에게 문의해 주세요.")
+    rb = row.get("mcp_revoked_before")
+    if not rb:
+        return
+    if iat is None:
+        if not _iat_missing_logged:
+            _iat_missing_logged = True
+            print("[auth] 토큰에 iat 가 없어 mcp_revoked_before 검사를 건너뛰었어요(차단 검사는 그대로)", flush=True)
+        return
+    rb = rb if isinstance(rb, _dt.datetime) else _dt.datetime.fromisoformat(str(rb))
+    if not isinstance(iat, (int, float)) or isinstance(iat, bool) or iat < rb.timestamp():
+        raise CanonError("AUTH-REVOKED", "이 연결은 끊겼어요.", "커넥터를 다시 연결해 주세요.")
+
+
+def admin_bootstrap(ids, conn=None):
+    """첫 관리자 지정 — 감사에 bootstrap·recover 행이 하나도 없을 때만. ids 중 users 에 있는 것을 admin 으로 + bootstrap 행 1개
+    (승격 0명이어도 남긴다 = 초기화 완료 표시). 이미 초기화됐으면 None, 아니면 승격 수. 동시 실행은 ADMIN_LOCK 으로 직렬화.
+    conn 을 주면 그 연결에서(시험: 임시 스키마)."""
+    ids = sorted({str(x).strip() for x in (ids or ()) if str(x).strip()})
+
+    def run(c):
+        with c.transaction():
+            c.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
+            if _one(c, "SELECT 1 AS x FROM admin_audit WHERE action IN ('bootstrap','recover') LIMIT 1"):
+                return None
+            n = c.execute("UPDATE users SET role='admin' WHERE id = ANY(%s) AND role <> 'admin'", (ids,)).rowcount
+            _audit(c, "bootstrap", None, None, {"listed": len(ids), "promoted": n})
+            return n
+    if conn is not None:
+        return run(conn)
+    with pool().connection() as c:
+        return run(c)
+
+
+def admin_recover(email):
+    """복구(admin_cli.py grant) — 이메일(소문자) 사용자를 admin 으로, 차단 해제, 감사 recover. 웹 서버 없이 부른다."""
+    email = (email or "").strip().lower()
+    with tx() as c:
+        c.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
+        t = _one(c, "SELECT id,role,blocked_at FROM users WHERE email=%s FOR UPDATE", (email,))
+        if not t:
+            raise CanonError("NOT-FOUND", "그 이메일의 계정이 없어요.", "그 사람이 먼저 한 번 로그인해야 계정이 생겨요.")
+        c.execute("UPDATE users SET role='admin', blocked_at=NULL WHERE id=%s", (t["id"],))
+        _audit(c, "recover", None, t["id"], {"from": t["role"], "to": "admin", "unblocked": t["blocked_at"] is not None})
+        return {"id": t["id"], "email": email}
+
+
+def admins():
+    """role=admin 목록(차단 여부 포함). admin_cli.py list."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, "SELECT id,email,created,blocked_at FROM users WHERE role='admin' ORDER BY created")]
+
+
+def admin_act(actor_id, op, target_id, role=None):
+    """/admin POST 한 건 — 한 트랜잭션. op: role(role=admin|user)·signout·block·unblock. 재인증 창은 호출하는 쪽(요청 단계)이 본다.
+    규칙: 부여 = 이미 admin 이면 무동작 · 회수 = role=admin 이 1명뿐이면 LAST-ADMIN, 회수하면 대상 웹 세션도 끊는다 ·
+    끊기 = web_revoked_before · 차단 = blocked_at·web·mcp revoked_before 모두 now()(마지막 관리자도 허용 — 복구는 CLI) ·
+    해제 = blocked_at 만 NULL(revoked_before 는 그대로 — 차단 전 쿠키·토큰은 살아나지 않는다).
+    회수·해제는 대상이 이미 그 상태면 무동작(감사 없음). 반환 {"changed": bool}."""
+    if op not in ("role", "signout", "block", "unblock") or (op == "role" and role not in ("admin", "user")):
+        raise CanonError("ARG-INVALID", "동작이 틀렸어요.")
+    with tx() as c:
+        c.execute("SELECT pg_advisory_xact_lock(%s)", (ADMIN_LOCK,))
+        a = _one(c, "SELECT role,blocked_at FROM users WHERE id=%s", (actor_id,))
+        if not a or a["role"] != "admin" or a["blocked_at"] is not None:
+            raise CanonError("FORBIDDEN", "관리자만 할 수 있어요.")
+        t = _one(c, "SELECT id,role,blocked_at FROM users WHERE id=%s FOR UPDATE", (str(target_id),))
+        if not t:
+            raise CanonError("NOT-FOUND", "그 계정을 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+        tid = t["id"]
+        if op == "role" and role == "admin":
+            if t["role"] == "admin":
+                return {"changed": False}
+            c.execute("UPDATE users SET role='admin' WHERE id=%s", (tid,))
+            _audit(c, "role_grant", actor_id, tid, {"from": t["role"], "to": "admin"})
+        elif op == "role":
+            if t["role"] != "admin":
+                return {"changed": False}
+            if _one(c, "SELECT count(*) AS n FROM users WHERE role='admin'")["n"] <= 1:
+                raise CanonError("LAST-ADMIN", "마지막 관리자는 회수할 수 없어요.", "다른 사람에게 먼저 관리자를 부여하세요.")
+            c.execute("UPDATE users SET role='user', web_revoked_before=now() WHERE id=%s", (tid,))
+            _audit(c, "role_revoke", actor_id, tid, {"from": "admin", "to": "user"})
+        elif op == "signout":
+            c.execute("UPDATE users SET web_revoked_before=now() WHERE id=%s", (tid,))
+            _audit(c, "web_signout", actor_id, tid)
+        elif op == "block":
+            c.execute("UPDATE users SET blocked_at=now(), web_revoked_before=now(), mcp_revoked_before=now() WHERE id=%s", (tid,))
+            _audit(c, "block", actor_id, tid)
+        else:
+            if t["blocked_at"] is None:
+                return {"changed": False}
+            c.execute("UPDATE users SET blocked_at=NULL WHERE id=%s", (tid,))
+            _audit(c, "unblock", actor_id, tid)
+        return {"changed": True}
+
+
+def admin_users():
+    """/admin/setup 사용자 표 — 이메일·가입일·역할·현재 처리방침 버전 동의 여부(버전이 없으면 None)·차단·웹 끊은 시각. datetime 그대로."""
+    ver = CONSENT_VERSIONS.get("privacy")
+    with tx() as c:
+        return _all(c, "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before,"
+                       "CASE WHEN %s::text IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id "
+                       "AND g.kind='privacy' AND g.version=%s) END AS consented FROM users u ORDER BY u.created, u.id", (ver, ver))
+
+
+def admin_audit_list(limit=AUDIT_LIST):
+    """감사 로그 최근 limit 건 — 실행자·대상 이메일(지워진 계정이면 NULL, 화면이 id 앞 8자를 보인다)."""
+    with tx() as c:
+        return _all(c, "SELECT a.id,a.at,a.action,a.actor_id,a.target_id,ua.email AS actor_email,ut.email AS target_email "
+                       "FROM admin_audit a LEFT JOIN users ua ON ua.id=a.actor_id LEFT JOIN users ut ON ut.id=a.target_id "
+                       "ORDER BY a.at DESC, a.id DESC LIMIT %s", (limit,))
+
+
+def admin_audit_purge():
+    """1년(AUDIT_KEEP_DAYS) 지난 감사 행을 지운다. 서버 시작 때 1회(main.lifespan, tickets_purge 와 같은 자리).
+    bootstrap·recover 행은 남긴다 — 초기화 완료 표시라 지우면 다음 시작 때 env 로 다시 승격한다. 지운 건수."""
+    with tx() as c:
+        c.execute("SET LOCAL statement_timeout = '5s'")
+        return c.execute("DELETE FROM admin_audit WHERE at < now() - make_interval(days => %s) "
+                         "AND action NOT IN ('bootstrap','recover')", (AUDIT_KEEP_DAYS,)).rowcount
 
 
 # ── 상태 한 벌 (화면과 도구가 같은 것을 본다) ─────────────

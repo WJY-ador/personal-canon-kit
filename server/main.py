@@ -4,7 +4,8 @@
 모델 호출은 없다 — 후보 추출은 사용자의 대화(ChatGPT·Claude)가 하고, 서버는 근거 검사·저장만 한다.
 환경변수: DATABASE_URL · CANON_PUBLIC_URL(예 https://xxx.onrender.com) · AUTHKIT_ISSUER(예 https://xxx.authkit.app)
           · AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET(웹 로그인, web.py) · CANON_DEV/CANON_DEV_USER(개발만)
-          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 전역 DB 크기 거절 QUOTA-GLOBAL 예외 + 웹 「문의함」·새 문의 띠·문의 상태/메모 변경)
+          · CANON_ADMIN_USER_IDS(쉼표 구분 내부 user id — 첫 관리자 지정에만. 감사에 bootstrap·recover 행이 없을 때 서버 시작 1회만 읽는다(β2).
+            그 뒤 관리자 = users.role — /admin/setup 에서 부여·회수, 잠기면 admin_cli.py grant)
           · CANON_CONTACT(선택 — 처리방침의 보조 메일. 없어도 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나)
 """
 import asyncio
@@ -58,8 +59,6 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CANON_DEV=1).")
 if not DEV and os.environ.get("CANON_DEV_USER"):
     raise SystemExit("CANON_DEV_USER 는 CANON_DEV=1 일 때만 쓸 수 있어요.")
-# 시작 때 한 번 읽는다. 비어 있으면 예외 없음.
-db.ADMIN_USER_IDS = frozenset(x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip())
 db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
 USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
 
@@ -463,12 +462,25 @@ mcp_app = mcp.streamable_http_app(stateless_http=True, json_response=True, trans
 async def lifespan(app: Starlette) -> AsyncIterator[None]:
     # Mount 된 앱의 lifespan 은 돌지 않으므로 session_manager 를 여기서 돌린다.
     await run_in_threadpool(db.init_schema)
+    try:   # β2 첫 관리자 지정 — 감사에 bootstrap·recover 행이 없을 때만 env 를 쓴다. 실패해도 기동은 계속(승격 없음, 다음 시작 때 다시)
+        ids = [x.strip() for x in os.environ.get("CANON_ADMIN_USER_IDS", "").split(",") if x.strip()]
+        n = await run_in_threadpool(db.admin_bootstrap, ids)
+        if n is not None:
+            print(f"[admin] 첫 관리자 지정(bootstrap) — {n}명 승격", flush=True)
+    except Exception as e:
+        print(f"[admin] bootstrap 실패 — 기동은 계속: {type(e).__name__}", flush=True)
     try:   # 종결 180일 지난 문의 파기 — 실패해도 기동은 계속한다(다음 시작 때 다시)
         n = await run_in_threadpool(db.tickets_purge)
         if n:
             print(f"[desk] 종결 {db.TICKET_KEEP_DAYS}일 지난 문의 {n}건 파기", flush=True)
     except Exception as e:
         print(f"[desk] 문의 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
+    try:   # β2 감사 1년 지난 행 파기 — 같은 자리·같은 방식
+        n = await run_in_threadpool(db.admin_audit_purge)
+        if n:
+            print(f"[admin] {db.AUDIT_KEEP_DAYS}일 지난 감사 {n}건 파기", flush=True)
+    except Exception as e:
+        print(f"[admin] 감사 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
     flusher = asyncio.create_task(_usage_flusher())
     try:
         async with mcp.session_manager.run():

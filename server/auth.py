@@ -89,11 +89,15 @@ def _userinfo_email(tok: AccessToken) -> str:
 
 
 def user_id_for(tok: AccessToken) -> str:
-    """sub 로 먼저 찾고, 모르는 sub 면 userinfo 의 이메일로 연결·생성. CanonError 는 호출부 guard 가 ToolError 로 바꾼다."""
+    """sub 로 먼저 찾고, 모르는 sub 면 userinfo 의 이메일로 연결·생성. CanonError 는 호출부 guard 가 ToolError 로 바꾼다.
+    β2: uid 를 정한 뒤 그 행으로 차단(AUTH-BLOCKED)·MCP 끊기(토큰 iat < mcp_revoked_before → AUTH-REVOKED)를 본다(db.check_token_user).
+    웹 로그인 콜백도 이 함수를 지난다 — 차단 계정은 웹 로그인도 안 된다. 웹 로그인 끊기(web_revoked_before)는 여기서 보지 않는다."""
     sub = tok.subject or ""
     try:
-        return db.user_by_subject(sub, "")["id"]
+        row = db.user_by_subject(sub, "")
     except db.CanonError as e:
         if e.code != "AUTH-INVALID" or not sub:
             raise
-    return db.user_by_subject(sub, _userinfo_email(tok))["id"]
+        row = db.user_by_subject(sub, _userinfo_email(tok))
+    db.check_token_user(row, (tok.claims or {}).get("iat"))
+    return row["id"]

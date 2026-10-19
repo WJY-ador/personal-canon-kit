@@ -5,7 +5,12 @@ CREATE TABLE IF NOT EXISTS users (
   id            text PRIMARY KEY,                 -- u_...
   email         text NOT NULL UNIQUE,             -- 소문자 정규화. 매직링크·Google 같은 이메일이면 같은 행
   auth_subject  text UNIQUE,                      -- AuthKit sub (External ID)
-  created       timestamptz NOT NULL DEFAULT now()
+  created       timestamptz NOT NULL DEFAULT now(),
+  -- β2(2026-10-19): 관리자 = role. 옛 DB 는 db._init_schema 가 ADD COLUMN IF NOT EXISTS 로 더한다(같은 모양).
+  role               text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
+  blocked_at         timestamptz,                 -- 차단(웹·MCP 둘 다 거절). 해제 = NULL
+  web_revoked_before timestamptz,                 -- 이 시각 전에 발급한 웹 세션 쿠키(iat) 무효
+  mcp_revoked_before timestamptz                  -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
 );
 
 CREATE TABLE IF NOT EXISTS agreements (
@@ -276,3 +281,15 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   n        integer NOT NULL,
   PRIMARY KEY (day, user_id, name, code)
 );
+
+-- β2 관리자 감사(2026-10-19). FK 없음 — 계정이 지워져도 남는다. detail 은 열거 키만(이메일·자유 텍스트 없음).
+-- 1년(db.AUDIT_KEEP_DAYS) 지난 행은 서버 시작 때 파기(db.admin_audit_purge). bootstrap·recover 행은 파기하지 않는다 — 초기화 완료 표시라 지우면 env 를 다시 읽는다.
+CREATE TABLE IF NOT EXISTS admin_audit (
+  id         bigserial PRIMARY KEY,
+  at         timestamptz NOT NULL DEFAULT now(),
+  actor_id   text,                                -- 실행자 user id. bootstrap·recover(CLI) 는 NULL
+  action     text NOT NULL CHECK (action IN ('bootstrap','recover','role_grant','role_revoke','web_signout','block','unblock')),
+  target_id  text,
+  detail     jsonb NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_admin_audit_at ON admin_audit (at DESC);
