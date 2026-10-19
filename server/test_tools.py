@@ -46,6 +46,8 @@
 20) Q2(PR #20 5단계): template_std == 동결 파일 · 신규 시드(on)/안 함(off) · 시드 실패 주입 → 로그인 성공·seed_pending·재시도·정의 생기면 중단
    · 동시 재시도 1회 · 기존 사용자(표식 없음) 쓰기 0 · 편입 적용(누락·일치·확장·새 id) · 재검증(revision·대상 상태·이미 편입)·참조 의존·충돌·확인 없음
    · 잠금 표(거절·허용, propose·apply, 플래그 off 에서도, select 선택지) · 일일 한도·template_slot 백필 제외 · init_schema 2회 멱등
+21) Q3 축소(PR #20 6단계): 출처(SOURCES off 기록만·on 찾거나 만들기·사용자별·FK·옛 기록 미확인·본인만·MCP 인자) · 분류 역할(이관·멱등·시드·
+   늦은 축·record_attach 역할 경유·CLASSIFY-OFF) · 확정 재검사 4사유·review(웹=MCP)·해제 · external 거절·정정 허용 · init_schema 2회 멱등
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -124,10 +126,11 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com", "int-names@example.com") \
     + ("r1-admin@example.com", "r1-user@example.com") \
     + tuple(f"r3{k}@example.com" for k in ("none", "match", "conf", "edge", "orig")) \
+    + tuple(f"q3{k}@example.com" for k in ("src", "srcb", "role", "nor", "refu", "late", "rev", "mcp")) \
     + tuple(f"q2{k}@example.com" for k in ("off", "seed", "dev", "fail", "stop", "race", "old", "inc", "dep", "conf", "lock", "opt", "web")) \
     + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
-# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1, r3* = R3 표준 미리보기·선택, q2* = Q2 시드·편입·잠금
+# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1, r3* = R3 표준 미리보기·선택, q2* = Q2 시드·편입·잠금, q3* = Q3 출처·역할·재검사
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -838,6 +841,10 @@ def test_definitions():
     # record_attach: attach_to·axes 저장, notes, 다른 사용자 item 거절
     tp = db.item_propose(A, t["id"], 1, None, 0, "H", "관심 축 H", "", {"keywords": ["판단"]}, [])
     topic = db.item_decide(A, tp["item_id"], 0, tp["proposal_id"], "apply")
+    # 분류(axes)는 역할 매핑 대상 오브젝트의 항목만(§5) — A 의 축 오브젝트 key 는 topics 라 이관 규칙(key axes)에 안 잡힌다
+    expect("CLASSIFY-OFF", db.record_attach, A, ra["id"], None, [topic["id"]])
+    with db.tx() as c:   # 시험 재료: 분류 대상 = topics (역할 매핑이 정본 — key 와 무관)
+        c.execute("INSERT INTO user_roles (user_id,role,object_id) VALUES (%s,'classify',%s)", (A, t["id"]))
     out = db.record_attach(A, ra["id"], [{"field_key": "attach_to", "target_kind": "item", "target_id": I},
                                          {"field_key": "attach_to", "target_kind": "candidate", "target_id": c3}],
                            [topic["id"]], "다음 글 재료", "새 축 후보: 위임")
@@ -1262,8 +1269,10 @@ def test_migration():
                 c.rollback()
         # (5) 운영 꼴 행이 머지 뒤 첫 결정·이력·복원·근거 검사에서 사는지 — 실제 db 함수로
         with pool_on(old):
-            d = db.candidate_decide("u_m1", "c_m1", "confirm")
-            assert d["status"] == "confirmed" and d["revision"] == 2 and d["wording_by"] is None, d
+            e = expect("CANDIDATE-REVIEW", db.candidate_decide, "u_m1", "c_m1", "confirm")   # §6: 옛 기록 = unknown → 확정 불가
+            assert e.message == contract.REVIEW_MSG["author_unknown"] and db.candidate_get("u_m1", "c_m1")["review"] == "author_unknown"
+            d = db.candidate_decide("u_m1", "c_m1", "exclude")   # 다른 결정은 된다
+            assert d["status"] == "excluded" and d["revision"] == 2 and d["wording_by"] is None, d
             hist = db.candidate_history("u_m1", "c_m1")
             assert [h["prev_revision"] for h in hist] == [None, None, None, 1], hist
             assert hist[0]["prev_text"] == "옛 문장" and hist[0]["prev_status"] == "pending", hist[0]
@@ -1314,7 +1323,8 @@ def test_core_pr1():
     expect("ARG-INVALID", db.record_add, A, "", "본문", None, "x", "nobody", "verbatim")
     # 비적격 기록(unknown·external·rewritten)엔 후보가 하나도 안 붙는다
     un = db.record_add(A, "출처 미상", "남이 정리한 문장이다. 둘째 문장이다.", None, "가져옴", "unknown", "unknown")
-    ext = db.record_add(A, "외부", "남이 정리한 문장이다.", None, "가져옴", "external", "verbatim")
+    ext = db.record_add(A, "외부", "남이 정리한 문장이다.", None, "가져옴", "self", "verbatim")   # external 직접 입력은 SCOPE-SELF-ONLY(§6)
+    ext = db.record_provenance_set(A, ext["id"], "external", "verbatim", "남의 글이었음")       # 후보 없는 기록의 external 정정은 된다
     rw = db.record_add(A, "다듬은 글", "남이 정리한 문장이다.", None, "가져옴", "self", "rewritten")
     for rec in (un, ext, rw):
         added, dropped = db.candidates_propose(A, rec["id"], "", [{"text": "가", "quote": "남이 정리한 문장이다"},
@@ -3754,6 +3764,7 @@ async def run():
         test_r2_contract()
         await test_r3_std()
         await test_q2_std()
+        await test_q3()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3762,7 +3773,8 @@ async def run():
             left = c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchone()["n"]
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
                     for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets",
-                              "agreements", "usage_daily", "optional_consents", "optional_consent_log", "std_marks", "std_choices")}
+                              "agreements", "usage_daily", "optional_consents", "optional_consent_log", "std_marks", "std_choices",
+                              "sources", "user_roles")}
             rest["admin_audit"] = c.execute("SELECT count(*) AS n FROM admin_audit WHERE actor_id = ANY(%s) OR target_id = ANY(%s)",
                                             (ids, ids)).fetchone()["n"]
         db.close()
@@ -4804,6 +4816,10 @@ async def test_q2_std():
         r = _q2_rows(U["stop"])
         assert r["marks"][0]["state"] == "seed_pending" and [o["key"] for o in r["objects"]] == ["notes"] and r["choices"] == []
         assert all(o["structure"] == "missing" for o in db.std_preview(U["stop"])["objects"])
+        with _q2_flag(True):   # 시드를 멈춘 계정의 첫 편입 → 표식을 adopting 으로 올린다(§12)
+            db.std_choose(U["stop"], "axes", "incorporated", True, None)
+        assert _q2_rows(U["stop"])["marks"] == [{"version": "std@1", "state": "adopting"}]
+        assert db.std_status(U["stop"])["objects"]["axes"] == "incorporated"
         # 동시 재시도 두 요청 → 시드 1회(users 행 잠금 → 표식 재확인)
         calls = []
 
@@ -5071,6 +5087,247 @@ async def test_q2_std():
     print("OK — Q2 표준(template_std 동결 · 시드 on/off·user_by_email · 실패 주입 → 로그인 성공·seed_pending·재시도·정의 생기면 중단·off 재시도 없음"
           " · 동시 1회 · 기존 사용자 쓰기 0 · 편입 누락·일치·확장·새 id · 재검증 revision·대상 상태·이미 편입 · 참조 의존·충돌·초안·확인 없음·off"
           " · 잠금 거절 8·허용 5·apply 재검증·플래그 off · select 선택지 · 한도·백필 제외 · init_schema 2회) 통과")
+
+
+# ── 21) Q3 축소 — 출처 · 분류 역할 · 확정 재검사 · 수집 범위 ─────────
+Q3 = {k: f"q3{k}@example.com" for k in ("src", "srcb", "role", "nor", "refu", "late", "rev", "mcp")}
+# src·srcb = 출처(A·B) · role = 역할 이관(axes 있음) · nor = 축 없음 · refu = 표준 축 거절해도 역할 유지 · late = 이관 뒤에 축 생성
+# rev = 확정 재검사·review·수집 범위 · mcp = MCP record_add 출처 인자
+
+
+@contextmanager
+def _q3_sources(on):
+    prev = os.environ.pop("CRM_FEATURE_SOURCES", None)
+    if on:
+        os.environ["CRM_FEATURE_SOURCES"] = "on"
+    try:
+        yield
+    finally:
+        os.environ.pop("CRM_FEATURE_SOURCES", None)
+        if prev is not None:
+            os.environ["CRM_FEATURE_SOURCES"] = prev
+
+
+def _q3_role(uid):
+    with db.tx() as c:
+        r = c.execute("SELECT object_id, at FROM user_roles WHERE user_id=%s AND role='classify'", (uid,)).fetchone()
+    return dict(r) if r else None
+
+
+async def test_q3():
+    """출처: off 면 기록만(source_linked=false)·on 이면 찾거나 만들기·kind 기본·검사 · 다른 사용자 출처 연결은 FK 거절 · 옛 기록 미확인
+    · 노출(/api/state 본인만, MCP state 엔 목록 없음) · MCP record_add 출처 인자 · 역할 이관(axes 있음·없음·초안·표준 거절·멱등)
+    · 시드 = 표준 축 · 이관 뒤 만든 축(즉시 적용) · record_attach 역할 경유·대상 없음 CLASSIFY-OFF·항목→항목 axes 필드는 역할 무관
+    · 확정 재검사 4사유·다른 action 허용·edit_confirm 롤백·확정 판단 불변·review 표시·정정 뒤 해제 · external 거절·정정 허용·PROVENANCE-LOCKED
+    · init_schema 옛 DB 2회 멱등."""
+    site = main.site
+    saved = {k: os.environ.pop(k, None) for k in ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")}
+    real_site = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    U = {k: db.user_by_email(e)["id"] for k, e in Q3.items() if k not in ("mcp",)}
+
+    async def get_state(uid):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            r = await h.get("/api/state")
+            assert r.status_code == 200, r.text
+            return r.json()
+
+    def nrec(uid):
+        with db.tx() as c:
+            return c.execute("SELECT count(*) AS n FROM records WHERE user_id=%s", (uid,)).fetchone()["n"]
+    try:
+        # ── 출처 ──
+        A, B = U["src"], U["srcb"]
+        old = db.record_add(A, "옛 기록", "출처 없이 남긴 글이다.", None, "회의 메모")
+        assert (old["source"], old["source_id"], old["source_linked"]) == ("회의 메모", None, None), old
+        ref = {"kind": "file", "name": "업무일지 Q3SRC", "location": "drive/Q3LOC.md"}
+        off = db.record_add(A, "off", "출처 기능 꺼짐.", None, "대화에서 입력", source_ref=ref)
+        assert (off["source_id"], off["source_linked"]) == (None, False) and db.sources(A) == [], "off = 기록만, 출처 행 0"
+        db.record_add(A, "off2", "검사도 안 한다.", source_ref={"kind": "bogus"})   # off 면 출처 인자를 쓰지 않는다
+        with _q3_sources(True):
+            r1 = db.record_add(A, "on1", "첫 글.", source_ref=ref)
+            r2 = db.record_add(A, "on2", "둘째 글.", source_ref=dict(ref))
+            r3 = db.record_add(A, "on3", "다른 위치.", source_ref={**ref, "location": "drive/other.md"})
+            r4 = db.record_add(A, "on4", "종류 없음.", source_ref={"name": "메모장 Q3SRC"})
+            assert r1["source_linked"] and r1["source_id"] == r2["source_id"] != r3["source_id"], (r1, r2, r3)
+            for bad, code in (({**ref, "name": "  "}, "ARG-INVALID"), ({**ref, "kind": "pdf"}, "ARG-INVALID"),
+                              ({**ref, "name": "가" * 400}, "PAYLOAD-LIMIT"), ("file", "ARG-INVALID")):
+                n0 = nrec(A)
+                expect(code, db.record_add, A, "x", "본문", source_ref=bad)
+                assert nrec(A) == n0, "거절이면 기록도 안 남는다"
+            rb = db.record_add(B, "b", "B 의 글.", source_ref=ref)
+        srcs = db.sources(A)
+        shape = set(contract.EXAMPLES["full"]["sources"][0])
+        assert all(set(s) == shape for s in srcs) and [s["id"] for s in srcs] == [r1["source_id"], r3["source_id"], r4["source_id"]]
+        assert next(s for s in srcs if s["id"] == r4["source_id"])["kind"] == "other" and srcs[0]["location"] == "drive/Q3LOC.md"
+        assert rb["source_id"] not in [s["id"] for s in srcs], "같은 (kind,name,location) 이어도 사용자마다 따로"
+        assert db.source_counts(A) == {"by_source": {r1["source_id"]: 2, r3["source_id"]: 1, r4["source_id"]: 1}, "unconfirmed": 3}
+        try:   # 다른 사용자 출처를 가리킬 수 없다(복합 FK)
+            with db.tx() as c:
+                c.execute("UPDATE records SET source_id=%s WHERE user_id=%s AND id=%s", (r1["source_id"], B, rb["id"]))
+            raise AssertionError("다른 사용자 출처에 연결됐다")
+        except psycopg.errors.ForeignKeyViolation:
+            pass
+        assert db.sources(A) == srcs, "off 로 돌아가도 이미 있는 출처는 읽힌다"
+        assert next(j for j in db.records(A) if j["id"] == old["id"])["source_id"] is None, "옛 기록 = 출처 미확인(NULL)"
+        st = await get_state(A)
+        assert st["sources"] == srcs and st["source_counts"] == db.source_counts(A)
+        assert {j["id"]: j["source_id"] for j in st["journal"]}[r2["id"]] == r1["source_id"]
+        stb = await get_state(B)
+        assert [s["id"] for s in stb["sources"]] == [rb["source_id"]] and not any(s["id"] in json.dumps(stb) for s in srcs), "본인 출처만"
+        assert "sources" not in db.state(A) and "source_counts" not in db.state(A), "MCP state_get 엔 목록 없음(본인 웹만)"
+        # MCP record_add 출처 인자 — off 면 note, on 이면 연결
+        prev_dev = os.environ.get("CRM_DEV_USER")
+        os.environ["CRM_DEV_USER"] = Q3["mcp"]
+        try:
+            async with Client(main.mcp) as c:
+                a = {"text": "MCP 로 남긴 글.", "source_name": "회의록 Q3MCP", "source_kind": "file", "source_location": "notes/m.md"}
+                r = val(await c.call_tool("record_add", a))
+                assert (r["source_id"], r["source_linked"]) == (None, False) and "꺼져" in r["note"], r
+                assert set(val(await c.call_tool("record_add", {"text": "출처 인자 없음."}))) == {"id", "title", "created"}
+                with _q3_sources(True):
+                    r = val(await c.call_tool("record_add", a))
+                    assert r["source_linked"] is True and r["source_id"] and "note" not in r, r
+                    bad = await c.call_tool("record_add", {**a, "source_kind": "pdf"})
+                    assert bad.is_error, bad
+        finally:
+            os.environ["CRM_DEV_USER"] = prev_dev
+        U["mcp"] = db.user_by_email(Q3["mcp"])["id"]
+        assert [s["name"] for s in db.sources(U["mcp"])] == ["회의록 Q3MCP"]
+
+        # ── 분류 역할 ──
+        R = U["role"]
+        rax = _r3_def(R, "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+        rbk = _r3_def(R, "books", "책", "collection", [])
+        _r3_def(U["refu"], "axes", "축", "event", [])   # 표준과 모양이 달라도·거절해도 역할은 key 로
+        with _q2_flag(True):
+            db.std_choose(U["refu"], "axes", "refused")
+        db.definition_propose(U["nor"], None, 0, {"key": "axes", "label": "초안", "semantic_kind": "collection", "fields": []})   # 초안만
+        db.init_schema()
+        assert _q3_role(R)["object_id"] == rax["id"] and _q3_role(U["refu"]) is not None and _q3_role(U["nor"]) is None
+        before = (_q3_role(R), _q3_role(U["refu"]))
+        db.init_schema()
+        assert (_q3_role(R), _q3_role(U["refu"])) == before, "이관 멱등 — at 도 그대로"
+        with db.tx() as c:
+            assert db._migrate_classify_roles(c) == 0
+        assert db.classify_target(U["refu"]) == _q3_role(U["refu"])["object_id"]
+        # record_attach: 역할 대상 항목만 · 대상 없으면 CLASSIFY-OFF(다른 칸은 됨) · 저장 키 axes 그대로
+        it_ax = db.item_decide(R, (p := db.item_propose(R, rax["id"], 1, None, 0, "AX", "축 하나", "", {}, []))["item_id"], 0,
+                               p["proposal_id"], "apply")
+        it_bk = db.item_decide(R, (p := db.item_propose(R, rbk["id"], 1, None, 0, "BK", "책 하나", "", {}, []))["item_id"], 0,
+                               p["proposal_id"], "apply")
+        rr = db.record_add(R, "분류할 글", "분류할 글이다.")
+        out = db.record_attach(R, rr["id"], axes=[it_ax["id"]])
+        assert [(l["field_key"], l["target_id"]) for l in out["links"]] == [("axes", it_ax["id"])]
+        e = expect("LINK-INVALID", db.record_attach, R, rr["id"], None, [it_bk["id"]])
+        assert "분류 대상" in e.message
+        nr = db.record_add(U["nor"], "축 없음", "분류할 데가 없다.")
+        e = expect("CLASSIFY-OFF", db.record_attach, U["nor"], nr["id"], None, [])
+        assert e.message == contract.CLASSIFY_OFF_MSG
+        assert db.record_attach(U["nor"], nr["id"], use_at="쓸 자리")["notes"]["use_at"] == "쓸 자리", "분류만 꺼진다"
+        # 이관 뒤에 축을 만든 사용자 — 다음 재시작을 기다리지 않고 같은 규칙으로 잡힌다
+        lax = _r3_def(U["late"], "axes", "축", "collection", [])
+        assert _q3_role(U["late"]) is None
+        lit = db.item_decide(U["late"], (p := db.item_propose(U["late"], lax["id"], 1, None, 0, "L", "축", "", {}, []))["item_id"], 0,
+                             p["proposal_id"], "apply")
+        lr = db.record_add(U["late"], "글", "늦게 만든 축.")
+        assert db.record_attach(U["late"], lr["id"], axes=[lit["id"]])["links"] and _q3_role(U["late"])["object_id"] == lax["id"]
+        # 항목 → 항목의 axes 참조 필드는 역할을 안 본다 — 기준의 axes 필드가 책 항목을 가리켜도 된다
+        rpr = _r3_def(R, "principles", "기준", "principle", [
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": rbk["id"], "multiple": True}])
+        ip = db.item_propose(R, rpr["id"], 1, None, 0, "P", "기준", "", {}, [{"field_key": "axes", "target_kind": "item", "target_id": it_bk["id"]}])
+        assert db.item_decide(R, ip["item_id"], 0, ip["proposal_id"], "apply")["revision"] == 1
+        # 신규 시드 = 표준 축이 분류 대상
+        assert _q3_role(db.user_by_email("q2seed@example.com")["id"])["object_id"] == "od_axes"
+
+        # ── 확정 재검사 · review · 수집 범위 ──
+        V = U["rev"]
+        n0 = nrec(V)
+        e = expect("SCOPE-SELF-ONLY", db.record_add, V, "남의 글", "남이 쓴 글이다.", None, "가져옴", "external", "verbatim")
+        assert e.message == contract.SCOPE_MSG and nrec(V) == n0
+        assert db.record_add(V, "미상", "누가 썼는지 모른다.", None, "가져옴", "unknown", "unknown")["author_kind"] == "unknown"
+        cand = {}
+        for why in ("ok", "author_unknown", "external", "processed", "deleted", "keep"):
+            rec = db.record_add(V, why, f"{why} 기록의 원문 문장이다.")
+            (cid,), _ = db.candidates_propose(V, rec["id"], "", [{"text": f"{why} 판단", "quote": f"{why} 기록의 원문 문장이다"}], "ai")
+            cand[why] = (rec["id"], cid)
+        assert db.candidate_decide(V, cand["keep"][1], "confirm")["status"] == "confirmed"
+        fix = {"author_unknown": "author_kind='unknown'", "external": "author_kind='external'", "processed": "text_process='rewritten'",
+               "deleted": "deleted_at=now()", "keep": "author_kind='unknown'"}
+        with db.tx() as c:   # 시험 재료: 후보가 붙은 뒤 근거가 비적격이 된 옛 데이터(정정 API 는 PROVENANCE-LOCKED 로 막는다)
+            for why, sql in fix.items():
+                c.execute(f"UPDATE records SET {sql} WHERE user_id=%s AND id=%s", (V, cand[why][0]))
+        for why in ("author_unknown", "external", "processed", "deleted"):
+            rid, cid = cand[why]
+            before = db.candidate_get(V, cid)
+            assert before["review"] == why, (why, before)
+            e = expect("CANDIDATE-REVIEW", db.candidate_decide, V, cid, "confirm")
+            assert (e.message, e.action) == (contract.REVIEW_MSG[why], contract.REVIEW_ACT[why])
+            expect("CANDIDATE-REVIEW", db.candidate_decide, V, cid, "edit_confirm", "고친 문장")
+            assert db.candidate_get(V, cid) == before, "거절 = 아무것도 안 바뀜(edit_confirm 의 edit 도 롤백)"
+            assert (before["record_id"], before["quote"]) == (rid, f"{why} 기록의 원문 문장이다"), "근거 표시 보존"
+            assert db.candidate_decide(V, cid, "edit", "고친 판단")["text"] == "고친 판단"
+            assert db.candidate_decide(V, cid, "exclude")["status"] == "excluded"
+            assert db.candidate_decide(V, cid, "pending")["review"] == why
+        kept = db.candidate_get(V, cand["keep"][1])
+        assert (kept["status"], kept["review"]) == ("confirmed", None), "이미 확정한 판단은 그대로(재검토 표시 없음)"
+        assert db.candidate_decide(V, cand["keep"][1], "confirm")["status"] == "confirmed", "같은 결정 반복은 no-op — 재검사 안 함"
+        listed = {x["id"]: x["review"] for x in db.candidates(V)}
+        assert cand["deleted"][1] not in listed, "삭제 기록의 후보는 목록에 없다"
+        assert {why: listed[cand[why][1]] for why in ("ok", "author_unknown", "external", "processed")} == {
+            "ok": None, "author_unknown": "author_unknown", "external": "external", "processed": "processed"}
+        st = await get_state(V)
+        assert {x["id"]: x["review"] for x in st["candidates"]} == listed and \
+            {x["id"]: x["review"] for x in db.state(V)["candidates"]} == listed, "웹·MCP state 둘 다"
+        # 해제 = 근거 기록이 적격으로 정정될 때뿐(메타데이터가 실제로 틀렸던 경우)
+        db.record_provenance_set(V, cand["author_unknown"][0], "self", "verbatim", "작성자 확인함")
+        assert db.candidate_get(V, cand["author_unknown"][1])["review"] is None
+        assert db.candidate_decide(V, cand["author_unknown"][1], "confirm")["status"] == "confirmed"
+        # 수집 범위: external 로의 정정은 된다(후보 없는 기록) · 후보 있는 적격 기록 → 비적격은 PROVENANCE-LOCKED 그대로
+        lone = db.record_add(V, "혼자", "후보 없는 글이다.")
+        assert db.record_provenance_set(V, lone["id"], "external", "verbatim", "남의 글이었음")["author_kind"] == "external"
+        expect("PROVENANCE-LOCKED", db.record_provenance_set, V, cand["ok"][0], "external", "verbatim", "남의 글?")
+
+        # ── init_schema: 옛 DB(출처·역할 없음) → 2회 멱등, 이관 ──
+        name = f"q3_{secrets.token_hex(3)}"
+        create_schema(name)
+        try:
+            with schema_conn(name) as c:
+                db.init_schema(c)
+                c.execute("ALTER TABLE records DROP CONSTRAINT fk_records_source")
+                c.execute("ALTER TABLE records DROP COLUMN source_id")
+                c.execute("DROP TABLE sources, user_roles")
+                c.execute("INSERT INTO users (id,email) VALUES ('u_q3','q3@x.test')")
+                c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES ('u_q3','od_a','axes','축','collection',1)")
+                c.execute("INSERT INTO records (id,user_id,title,body,source) VALUES ('r_q3','u_q3','t','b','옛 문자열')")
+                c.commit()
+                shape = lambda: c.execute(   # noqa: E731
+                    "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND table_name IN ('records','sources','user_roles') ORDER BY 1, 2").fetchall()
+                db.init_schema(c)
+                c.commit()
+                first, roles = shape(), c.execute("SELECT * FROM user_roles").fetchall()
+                assert {(r["table_name"], r["column_name"]) for r in first} >= {("records", "source_id"), ("sources", "location"),
+                                                                                 ("user_roles", "object_id")}
+                assert [(r["user_id"], r["object_id"]) for r in roles] == [("u_q3", "od_a")]
+                assert c.execute("SELECT source, source_id FROM records WHERE id='r_q3'").fetchone() == {"source": "옛 문자열", "source_id": None}
+                db.init_schema(c)
+                c.commit()
+                assert shape() == first and c.execute("SELECT * FROM user_roles").fetchall() == roles, "두 번째 init_schema 가 바꿨다"
+                assert db._has_constraint(c, "records", "fk_records_source")
+                c.rollback()
+        finally:
+            drop_schema(name)
+    finally:
+        site.dev, site.dev_user = real_site
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    print("OK — Q3 축소(출처 off 기록만·on 찾거나 만들기·검사·사용자별·FK·옛 기록 미확인·본인만·MCP 인자 · 역할 이관·초안 제외·거절 유지·멱등"
+          "·시드 표준 축·늦은 축·record_attach 역할 경유·CLASSIFY-OFF·항목 필드 무관 · 확정 재검사 4사유·edit_confirm 롤백·다른 결정 허용"
+          "·확정 불변·review 웹=MCP·정정 해제 · external 거절·정정 허용·PROVENANCE-LOCKED · init_schema 2회) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

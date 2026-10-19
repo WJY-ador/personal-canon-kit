@@ -364,6 +364,8 @@ def init_schema(conn=None):
       3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림).
       4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다.
          std_id(PR #20) — 같은 두 테이블에 ADD COLUMN IF NOT EXISTS 만(값은 시드·편입이 채운다, 백필 없음). std_marks·std_choices 는 2 에서.
+         records.source_id + fk_records_source(PR #20 출처) — 열·제약이 없을 때만. 옛 기록은 NULL(출처 미확인), 자동 연결 없음.
+         분류 역할 이관(_migrate_classify_roles) — 매번, 역할 없는 사용자만.
       5. 1회성 — schema_marks 표식이 없을 때만(INSERT … ON CONFLICT DO NOTHING RETURNING): 처리방침 v2 전환 usage_daily 전체 삭제."""
     if conn is None:
         with pool().connection() as c:
@@ -399,6 +401,11 @@ def _init_schema(c):
         for t in ("object_defs", "field_defs"):   # PR #20 표준 식별자 — 열만. 옛 행은 NULL(표준 아님) 그대로
             if not _has_col(c, t, "std_id"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS std_id text")
+        if not _has_col(c, "records", "source_id"):   # PR #20 출처 — sources 테이블은 schema.sql 이 먼저 만든다
+            c.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS source_id text")
+        if not _has_constraint(c, "records", "fk_records_source"):
+            c.execute("ALTER TABLE records ADD CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)")
+        _migrate_classify_roles(c)
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
         # 처리방침 v2 전환 — v2 시행 전에 모은 이용 기록(usage_daily)을 1회 전부 지운다. 표식이 있으면 건너뛴다.
         if _one(c, "INSERT INTO schema_marks (key) VALUES (%s) ON CONFLICT (key) DO NOTHING RETURNING key", (USAGE_RESET_MARK,)):
@@ -444,6 +451,17 @@ def _backfill_template_slots(c):
                              "AND f.template_slot IS NULL AND f.key = ANY(%s)",
                              (slot, d["id"], slot, [f["key"] for f in d["fields"]])).rowcount
     return n_obj, n_field
+
+
+def _has_constraint(c, t, name):
+    return c.execute("SELECT 1 FROM pg_constraint WHERE conrelid = %s::regclass AND conname = %s", (t, name)).fetchone() is not None
+
+
+def _migrate_classify_roles(c):
+    """분류 역할 이관(§5) — key='axes' 인 적용·미보관 오브젝트를 classify 대상으로. 표준 편입 여부와 무관.
+    역할이 이미 있는 사용자는 건드리지 않는다(ON CONFLICT DO NOTHING) — 결정적·멱등. 반환 새로 잡은 사용자 수."""
+    return c.execute("INSERT INTO user_roles (user_id, role, object_id) SELECT user_id, 'classify', id FROM object_defs "
+                     "WHERE key='axes' AND revision > 0 AND archived_at IS NULL ON CONFLICT (user_id, role) DO NOTHING").rowcount
 
 
 def _has_table(c, t):
@@ -693,7 +711,7 @@ AUTHOR_KINDS = ("self", "external", "unknown")
 TEXT_PROCESSES = ("verbatim", "structured", "rewritten", "generated", "unknown")
 _ELIGIBLE_SQL = "r.author_kind='self' AND r.text_process='verbatim' AND r.deleted_at IS NULL"
 INELIGIBLE_WHY = "이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요"
-_REC_COLS = "id,title,body,source,question_id,author_kind,text_process,created"
+_REC_COLS = "id,title,body,source,source_id,question_id,author_kind,text_process,created"   # source = 옛 문자열(보존), source_id = 출처 연결
 
 
 def _eligible(r):
@@ -707,14 +725,52 @@ def _check_provenance(author_kind, text_process):
         raise CrmError("ARG-INVALID", f"text_process 는 {', '.join(TEXT_PROCESSES)} 중 하나예요.")
 
 
-def record_add(uid, title, body, question_id=None, source="대화에서 입력", author_kind="self", text_process="verbatim"):
+SOURCE_KINDS = ("file", "url", "chat", "other")   # 출처 종류(§4). 계약 예제는 file·url
+
+
+def _source_norm(ref):
+    """출처 인자 {kind?, name, location?} → (kind, name, location). kind 없으면 other, location 없으면 ''."""
+    if not isinstance(ref, dict):
+        raise CrmError("ARG-INVALID", "출처는 {kind, name, location} 이에요.")
+    kind = (ref.get("kind") or "other").strip()
+    name = (ref.get("name") or "").strip()
+    loc = (ref.get("location") or "").strip()
+    if kind not in SOURCE_KINDS:
+        raise CrmError("ARG-INVALID", f"출처 kind 는 {', '.join(SOURCE_KINDS)} 중 하나예요.")
+    if not name:
+        raise CrmError("ARG-INVALID", "출처 이름(name)이 비었어요.")
+    check_len("source_name", name, LIMIT_TEXT)
+    check_len("source_location", loc, LIMIT_TEXT)
+    return kind, name, loc
+
+
+def _source_find_or_create(c, uid, kind, name, loc):
+    """같은 사용자의 같은 (kind, name, location) 출처 id — 없으면 만든다. 호출자가 users 행을 잠근 뒤(_daily_gate)."""
+    q = "SELECT id FROM sources WHERE user_id=%s AND kind=%s AND name=%s AND location=%s"
+    r = _one(c, q, (uid, kind, name, loc))
+    if r:
+        return r["id"]
+    c.execute("INSERT INTO sources (user_id,id,kind,name,location) VALUES (%s,%s,%s,%s,%s) ON CONFLICT (user_id,kind,name,location) DO NOTHING",
+              (uid, new_id("s"), kind, name, loc))
+    return _one(c, q, (uid, kind, name, loc))["id"]
+
+
+def record_add(uid, title, body, question_id=None, source="대화에서 입력", author_kind="self", text_process="verbatim", source_ref=None):
     """body 는 받은 그대로 저장한다. 공백도 안 다듬는다.
-    출처 기본값 self·verbatim = MCP record_add(사용자가 대화에서 직접 준 말). 확인 못 한 출처는 호출자가 unknown 으로 넘긴다."""
+    출처 기본값 self·verbatim = MCP record_add(사용자가 대화에서 직접 준 말). 확인 못 한 출처는 호출자가 unknown 으로 넘긴다.
+    수집 범위(§6): author_kind='external'(남이 쓴 글)은 SCOPE-SELF-ONLY. 메타데이터 검사일 뿐 — 실제 작성자는 검증하지 않는다.
+    source = 옛 출처 문자열(그대로 저장). source_ref = 출처 연결 {kind, name, location}(§4): SOURCES=on 이면 같은 사용자의 같은 출처를
+    찾거나 만들어 source_id 로 잇는다. off 면 연결하지 않고(기록은 저장) 결과의 source_linked=false 로 알린다. 인자가 없으면 source_linked=None."""
     title = (title or "").strip()
     body = body or ""
     if not body.strip():
         raise CrmError("ARG-INVALID", "기록 내용이 비었어요.")
     _check_provenance(author_kind, text_process)
+    if author_kind == "external":
+        raise _scope_self()
+    ref = None
+    if source_ref is not None and contract.sources_on():
+        ref = _source_norm(source_ref)
     if not title:
         title = body.strip().splitlines()[0][:40]
     if question_id:
@@ -722,11 +778,14 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     rid = new_id("r")
     hist = [{"at": now().isoformat(), "by": "tool", "author_kind": author_kind, "text_process": text_process}]
     with tx() as c:
-        _daily_gate(c, uid, "records")
-        c.execute("INSERT INTO records (id,user_id,title,body,source,question_id,author_kind,text_process,provenance_history) "
-                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                  (rid, uid, title, body, source, question_id or None, author_kind, text_process, Jsonb(hist)))
-        return _iso(_one(c, f"SELECT {_REC_COLS} FROM records WHERE id=%s", (rid,)))
+        _daily_gate(c, uid, "records")   # users 행 잠금 — 출처 찾거나 만들기도 이 사용자 안에서 직렬화
+        sid = _source_find_or_create(c, uid, *ref) if ref else None
+        c.execute("INSERT INTO records (id,user_id,title,body,source,source_id,question_id,author_kind,text_process,provenance_history) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (rid, uid, title, body, source, sid, question_id or None, author_kind, text_process, Jsonb(hist)))
+        out = _iso(_one(c, f"SELECT {_REC_COLS} FROM records WHERE id=%s", (rid,)))
+    out["source_linked"] = None if source_ref is None else sid is not None
+    return out
 
 
 def record_get(uid, rid):
@@ -773,13 +832,27 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
 def records(uid, limit=50):
     out = []
     with tx() as c:
-        rows = _all(c, "SELECT id,title,body,source,question_id,author_kind,text_process,notes,created FROM records "
+        rows = _all(c, "SELECT id,title,body,source,source_id,question_id,author_kind,text_process,notes,created FROM records "
                        "WHERE user_id=%s AND deleted_at IS NULL ORDER BY created DESC LIMIT %s", (uid, limit))
     for r in rows:
         d = _iso(r)
         d["excerpt"] = _excerpt(d.pop("body"))
         out.append(d)
     return out
+
+
+def sources(uid):
+    """출처 목록 — 계약 모양 {id, kind, name, location}, 만든 순. 플래그와 무관하게 읽힌다."""
+    with tx() as c:
+        return [dict(r) for r in _all(c, "SELECT id,kind,name,location FROM sources WHERE user_id=%s ORDER BY created, id", (uid,))]
+
+
+def source_counts(uid):
+    """출처별 기록 수(삭제 안 된 기록) — {by_source: {source_id: n}, unconfirmed: 출처 미확인(source_id NULL) 수}."""
+    with tx() as c:
+        rows = _all(c, "SELECT source_id, count(*) AS n FROM records WHERE user_id=%s AND deleted_at IS NULL GROUP BY source_id", (uid,))
+    return {"by_source": {r["source_id"]: r["n"] for r in rows if r["source_id"]},
+            "unconfirmed": next((r["n"] for r in rows if r["source_id"] is None), 0)}
 
 
 def _excerpt(body, n=60):
@@ -859,16 +932,32 @@ _CAND_COLS = ("id,question_id,record_id,text,quote,quote_start,quote_end,origin,
               "revision,wording_by,wording_approved,created,updated")
 
 
+def _with_review(c, uid, rows):
+    """후보마다 review = 근거 기록의 재검토 사유 코드(contract.review_reason) — 미확정(pending·excluded)이고 근거가 비적격일 때만,
+    그 밖은 None(§6). 후보·quote·기록 연결은 그대로 둔다 — 바뀌는 건 확정 가능 여부뿐."""
+    ids = list({r["record_id"] for r in rows})
+    recs = {x["id"]: x for x in _all(c, "SELECT id,author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id = ANY(%s)",
+                                       (uid, ids))} if ids else {}
+    out = []
+    for r in rows:
+        d = _iso(r)
+        rec = recs.get(r["record_id"])
+        d["review"] = None if d["status"] == "confirmed" or rec is None else contract.review_reason(rec)
+        out.append(d)
+    return out
+
+
 def candidate_get(uid, cid):
     with tx() as c:
         r = _one(c, f"SELECT {_CAND_COLS} FROM candidates WHERE user_id=%s AND id=%s", (uid, cid))
-    if not r:
-        raise CrmError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
-    return _iso(r)
+        if not r:
+            raise CrmError("ARG-INVALID", f"후보를 찾을 수 없어요: {cid}")
+        return _with_review(c, uid, [r])[0]
 
 
 def candidates(uid, question_id=None, status=None):
-    """status 인자는 도구 계약 이름. 내부 컬럼은 decision. 지워진 기록의 후보는 빠진다."""
+    """status 인자는 도구 계약 이름. 내부 컬럼은 decision. 지워진 기록의 후보는 빠진다(그래서 review=deleted 는 목록에 안 나온다).
+    후보마다 review(재검토 사유 코드 또는 None)."""
     sql = (f"SELECT {_CAND_COLS} FROM candidates c WHERE c.user_id=%s "
            "AND EXISTS (SELECT 1 FROM records r WHERE r.user_id=c.user_id AND r.id=c.record_id AND r.deleted_at IS NULL)")
     args = [uid]
@@ -878,7 +967,7 @@ def candidates(uid, question_id=None, status=None):
         sql += " AND c.decision=%s"; args.append(status)
     sql += " ORDER BY c.created, c.quote_start, c.id"
     with tx() as c:
-        return [_iso(r) for r in _all(c, sql, args)]
+        return _with_review(c, uid, _all(c, sql, args))
 
 
 def _cand_snapshot(r):
@@ -903,12 +992,23 @@ def _cand_bump(c, uid, r, action, sets, args):
     return _cand_lock(c, uid, r["id"])
 
 
+def _confirm_check(c, uid, r):
+    """확정 시 재검사(§6) — 근거 기록을 _eligible 전체 조건으로 다시 본다(FOR SHARE: 출처 정정 FOR UPDATE 와 직렬화).
+    비적격이면 CANDIDATE-REVIEW(사유별 문구). 결정이 confirmed 로 바뀔 때만 부른다 — 이미 확정된 판단은 건드리지 않는다."""
+    rec = _one(c, "SELECT author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id=%s FOR SHARE", (uid, r["record_id"]))
+    why = contract.review_reason(rec) if rec else "deleted"
+    if why:
+        raise _cand_review(why)
+
+
 def candidate_decide(uid, cid, action, text=None, expected_revision=None, wording_by=None):
     """confirm / exclude / pending(확정 취소) / edit / edit_confirm(웹 전용). 바꾸기 전 상태를 이력에 남기고 revision+1.
     같은 결정 반복은 no-op(revision 그대로). 확정된 문장을 고치면 pending 으로 돌아간다(새 문장 확정은 별도 결정).
     edit_confirm 은 edit → confirm 을 한 트랜잭션으로 한다(이력 두 줄, revision +2). 같은 문장 + 이미 confirmed 면 no-op.
     expected_revision: 주면(웹) 지금 revision 과 다를 때 CONFLICT. None 이면(MCP 도구) 검사 안 함.
-    문장 수정은 wording_approved=false, wording_by=인자(웹 편집 = self, MCP edit = 모름 NULL). 승인(wording_approved=true)은 이번 범위 밖."""
+    문장 수정은 wording_approved=false, wording_by=인자(웹 편집 = self, MCP edit = 모름 NULL). 승인(wording_approved=true)은 이번 범위 밖.
+    확정으로 바뀔 때(confirm·edit_confirm)만 근거 기록 재검사(_confirm_check) — 비적격이면 CANDIDATE-REVIEW, edit_confirm 은 edit 까지 롤백.
+    exclude·pending·edit 은 근거와 무관하게 된다."""
     if action not in ("confirm", "exclude", "pending", "edit", "edit_confirm"):
         raise CrmError("ARG-INVALID", "action 은 confirm·exclude·pending·edit 중 하나예요.")
     if wording_by not in (None, "self", "ai"):
@@ -927,10 +1027,13 @@ def candidate_decide(uid, cid, action, text=None, expected_revision=None, wordin
                                "text=%s, edited_by_user=true, decision='pending', wording_by=%s, wording_approved=false",
                                (new, wording_by))
             if action == "edit_confirm" and r["decision"] != "confirmed":
+                _confirm_check(c, uid, r)
                 r = _cand_bump(c, uid, r, "confirm", "decision='confirmed'", ())
         else:
             target = CAND_ACTIONS[action]
             if target != r["decision"]:
+                if target == "confirmed":
+                    _confirm_check(c, uid, r)
                 _cand_bump(c, uid, r, action, "decision=%s", (target,))
     return candidate_get(uid, cid)
 
@@ -1626,13 +1729,16 @@ def _std_choice_set(c, uid, std_key, state, def_id, def_revision, confirmed):
 # ── 신규 계정 시드 (§2) — 사용자 생성 트랜잭션 안. 기존 사용자(표식 없음)는 자동 시드·분류하지 않는다 ──
 
 def _std_seed(c, uid):
-    """정의 3개(명세 순 — 참조 대상이 먼저) + std_choices 3행(seeded) + 표식 state='seeded'. 호출자가 savepoint 로 감싼다."""
+    """정의 3개(명세 순 — 참조 대상이 먼저) + std_choices 3행(seeded) + 분류 역할(표준 축) + 표식 state='seeded'. 호출자가 savepoint 로 감싼다."""
     tids = {}
     for sd in std_doc()["objects"]:
         oid = _std_free_id(c, uid, sd["id"])
         _std_insert_def(c, uid, sd, oid, tids)
         tids[sd["id"]] = oid
         _std_choice_set(c, uid, sd["key"], "seeded", oid, 1, False)
+        if sd["key"] == "axes":   # 분류 역할(§5) — 신규 시드는 표준 축이 classify 대상
+            c.execute("INSERT INTO user_roles (user_id,role,object_id) VALUES (%s,'classify',%s) ON CONFLICT (user_id,role) DO NOTHING",
+                      (uid, oid))
     c.execute("UPDATE std_marks SET state='seeded', at=now() WHERE user_id=%s AND version=%s", (uid, contract.STD_VERSION))
 
 
@@ -1720,7 +1826,7 @@ def _std_incorporate(c, uid, std_key, expected_revision):
     다시 돌린다. 재검증: 대응 오브젝트 revision 이 expected_revision 과 다르면 CONFLICT · 이미 seeded·incorporated 면 CONFLICT ·
     구조 충돌이면 DEF-INVALID · 참조 대상이 편입(또는 seeded) 전이면 DEF-INVALID — 하나라도 걸리면 아무것도 쓰지 않는다.
     통과: 누락 = 표준 정의를 새로 넣는다(명세 id 를 이미 쓰면 새 id) · 일치·확장 = 오브젝트와 표준 필드에 std_id(revision 은 그대로 —
-    정의 내용이 바뀌지 않는다). 그리고 std_choices=incorporated(confirmed_meaning=true) · 표식이 없으면 std_marks(adopting)."""
+    정의 내용이 바뀌지 않는다). 그리고 std_choices=incorporated(confirmed_meaning=true) · 표식이 없거나 seed_pending 이면 adopting."""
     _, objs, rows, target_ids = _std_assess(c, uid, lock=True)
     o = next(x for x in objs if x["std_key"] == std_key)
     row = rows[std_key]
@@ -1746,8 +1852,9 @@ def _std_incorporate(c, uid, std_key, expected_revision):
         c.execute("UPDATE field_defs SET std_id = %s || '.' || key WHERE user_id=%s AND object_id=%s AND archived_at IS NULL "
                   "AND key = ANY(%s)", (contract.std_id_of(std_key), uid, oid, [f["key"] for f in sd["fields"]]))
     _std_choice_set(c, uid, std_key, "incorporated", oid, rev, True)
-    c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,%s,'adopting') ON CONFLICT (user_id,version) DO NOTHING",
-              (uid, contract.STD_VERSION))
+    # 표식 없음 → adopting 생성 · seed_pending(시드를 멈춘 계정) → adopting 으로 올림(§12) · seeded·adopting 은 그대로
+    c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,%s,'adopting') ON CONFLICT (user_id,version) "
+              "DO UPDATE SET state='adopting', at=now() WHERE std_marks.state='seed_pending'", (uid, contract.STD_VERSION))
     return {"std_key": std_key, "state": "incorporated", "def_id": oid, "def_revision": rev, "std": _std_state(c, uid)}
 
 
@@ -1847,8 +1954,28 @@ def record_links(uid, record_ids=None):
         return [{"record_id": r["record_id"], **_link_out(r)} for r in _all(c, sql + " ORDER BY id", args)]
 
 
+def _classify_target(c, uid):
+    """분류 역할(§5) 대상 오브젝트 id 또는 None. 역할이 없으면 이관 규칙(_migrate_classify_roles: key='axes' 인 적용·미보관 오브젝트)을
+    이 사용자에게 지금 적용해 본다 — 배포 사이에 축을 만든 사용자도 다음 재시작을 기다리지 않는다. 같은 규칙이라 결과가 같다."""
+    r = _one(c, "SELECT object_id FROM user_roles WHERE user_id=%s AND role='classify'", (uid,))
+    if r:
+        return r["object_id"]
+    r = _one(c, "INSERT INTO user_roles (user_id, role, object_id) SELECT user_id, 'classify', id FROM object_defs "
+                "WHERE user_id=%s AND key='axes' AND revision > 0 AND archived_at IS NULL ON CONFLICT (user_id, role) DO NOTHING "
+                "RETURNING object_id", (uid,))
+    return r["object_id"] if r else None
+
+
+def classify_target(uid):
+    """분류 대상 오브젝트 id 또는 None(읽기 — 이관 규칙을 쓰지 않는다)."""
+    with tx() as c:
+        r = _one(c, "SELECT object_id FROM user_roles WHERE user_id=%s AND role='classify'", (uid,))
+    return r["object_id"] if r else None
+
+
 def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unattached=None):
-    """「이게 어디에 붙나」 네 줄. 항목 → links(attach_to: 기준·결정 항목 또는 후보) · 관심 축 → links(axes: 모음 항목)
+    """「이게 어디에 붙나」 네 줄. 항목 → links(attach_to: 기준·결정 항목 또는 후보) · 분류 → links(field_key='axes': 분류 대상 오브젝트 항목,
+    대상은 역할 매핑 — 없으면 CLASSIFY-OFF, 나머지 칸은 그대로 쓸 수 있다. 저장 키 axes 는 이관 없이 그대로)
     · 쓸 자리·아직 안 붙는 것 → records.notes. None 인 인자는 그대로 두고, 값이 오면(빈 목록·빈 문자열 포함) 바꾼다. 원문은 안 바뀐다."""
     with tx() as c:
         rec = _one(c, "SELECT id,notes FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
@@ -1876,14 +2003,17 @@ def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unatta
             for ln in links:
                 _insert_link(c, uid, ln, source_record=record_id)
         if axes is not None:
+            target = _classify_target(c, uid)
+            if target is None:
+                raise CrmError(contract.CLASSIFY_OFF, contract.CLASSIFY_OFF_MSG, contract.CLASSIFY_OFF_ACT)
             ids = []
             for tid in axes:
                 tid = str(tid or "")
                 t = _resolve_target(c, uid, "item", tid)
                 if not t:
-                    raise _bad_link(f"관심 축 항목을 찾을 수 없어요: {tid}")
-                if t["semantic_kind"] != "collection":
-                    raise _bad_link("관심 축은 모음(collection) 종류 항목만이에요.")
+                    raise _bad_link(f"분류 항목을 찾을 수 없어요: {tid}")
+                if t["object_id"] != target:
+                    raise _bad_link("분류 대상 오브젝트의 항목만 연결할 수 있어요.", "state_get 의 분류 대상 오브젝트 항목 ID 를 쓰세요.")
                 if tid not in ids:
                     ids.append(tid)
             c.execute("DELETE FROM item_links WHERE user_id=%s AND source_record_id=%s AND field_key='axes'", (uid, record_id))

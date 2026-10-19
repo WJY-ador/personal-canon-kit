@@ -1025,8 +1025,10 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me, flags, std = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid), db.std_status(uid)))
+        st, me, flags, std, srcs, cnt = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid),
+                                                                         db.std_status(uid), db.sources(uid), db.source_counts(uid)))
         st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
+        st["sources"], st["source_counts"] = srcs, cnt   # PR #20 출처(계약 모양 {id,kind,name,location}) · 출처별 기록 수 — 본인만, /app 전용
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True

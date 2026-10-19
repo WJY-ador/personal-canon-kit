@@ -33,6 +33,20 @@ CREATE TABLE IF NOT EXISTS questions (
   UNIQUE (user_id, id)                            -- 복합 FK 대상
 );
 
+-- 출처(PR #20 §4, 2026-10-19). 사용자별. 같은 (kind, name, location) 은 한 행 — record_add 가 찾거나 만든다(SOURCES=on 일 때만).
+-- 옛 records.source 문자열과 별개다(그 문자열은 보존·표시만, 자동 연결 없음 — §12). records 보다 먼저 만든다(records 의 FK 대상).
+CREATE TABLE IF NOT EXISTS sources (
+  user_id   text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id        text NOT NULL,                        -- s_...
+  kind      text NOT NULL,
+  name      text NOT NULL,
+  location  text NOT NULL DEFAULT '',             -- 없으면 '' — UNIQUE 가 NULL 을 서로 다르게 보지 않게
+  created   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, kind, name, location),
+  CONSTRAINT ck_sources_kind CHECK (kind IN ('file','url','chat','other'))
+);
+
 CREATE TABLE IF NOT EXISTS records (
   id          text PRIMARY KEY,                   -- r_...
   user_id     text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -47,7 +61,9 @@ CREATE TABLE IF NOT EXISTS records (
   author_kind        text  NOT NULL DEFAULT 'unknown',
   text_process       text  NOT NULL DEFAULT 'unknown',
   provenance_history jsonb NOT NULL DEFAULT '[]',  -- 생성·정정마다 {at, by, author_kind, text_process[, from, reason]}
+  source_id          text,                        -- PR #20 출처 연결. NULL = 출처 미확인(옛 기록 전부). 옛 DB 는 init_schema 가 더한다
   UNIQUE (user_id, id),
+  CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),   -- 같은 사용자 출처만
   FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id),  -- Lookup
   CONSTRAINT ck_records_author_kind CHECK (author_kind IN ('self','external','unknown')),
   CONSTRAINT ck_records_text_process CHECK (text_process IN ('verbatim','structured','rewritten','generated','unknown')),
@@ -365,4 +381,16 @@ CREATE TABLE IF NOT EXISTS std_choices (
   at                 timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, std_key),
   CONSTRAINT ck_std_choices_def CHECK ((def_id IS NULL) = (def_revision IS NULL))
+);
+
+-- 분류 역할(PR #20 §5). 사용자별 역할 하나당 오브젝트 1개. 이번 역할은 classify 뿐 — 기록 → 항목 링크(field_key='axes')의 대상 오브젝트.
+-- 이관: init_schema 가 key='axes' 인 적용·미보관 오브젝트를 대상으로 잡는다(매번, 없는 사용자만 — 멱등). 신규 시드는 표준 축.
+-- 오브젝트가 지워지면(계정 삭제 때 user_delete 가 object_defs 를 먼저 지운다) 같이 지운다.
+CREATE TABLE IF NOT EXISTS user_roles (
+  user_id    text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role       text NOT NULL CHECK (role IN ('classify')),
+  object_id  text NOT NULL,
+  at         timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, role),
+  FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE
 );

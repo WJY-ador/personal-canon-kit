@@ -269,6 +269,11 @@ FEATURE_OFF = "FEATURE-OFF"
 FEATURE_OFF_MSG = {"STANDARD": "표준 정의 선택은 아직 열리지 않았어요.", "SOURCES": "출처 기능은 아직 열리지 않았어요."}
 FEATURE_OFF_ACT = "운영자가 기능을 켠 뒤 다시 하세요. 읽기(미리보기·목록)는 지금도 돼요."
 
+# 분류 대상 없음(6단계 추가 — §8 신규 3종 밖). 분류(기록 → 항목 axes 링크)만 꺼지고 나머지는 그대로(§5)
+CLASSIFY_OFF = "CLASSIFY-OFF"
+CLASSIFY_OFF_MSG = "분류 대상 오브젝트가 없어 기록을 분류할 수 없어요."
+CLASSIFY_OFF_ACT = "관심 축(key axes) 오브젝트가 생기면 분류할 수 있어요. 다른 칸(붙는 곳·쓸 자리·메모)은 지금도 남길 수 있어요."
+
 
 # ── 고정 예제 입력 — 가짜 사용자 둘. 사용자가 정한 문자열은 전부 표식(ULBL·PLBL·SRC 등)을 달아 누출 시험이 찾게 한다 ──
 
