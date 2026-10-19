@@ -23,8 +23,8 @@
 11) 운영 경계(admin_db): 정적(/admin·관리자 문의 핸들러는 db 조회를 직접 안 부름 · admin_db SQL 은 ALLOW 리터럴만 · SELECT * 0 ·
    본문 열 0 · text·admin_note 는 문의 상세만 · label·options 는 이름 공유 분기만) · ALLOW 키별 행 키 = cols · 조회자·미구현 키 거절
    · 표식(금지 열 값이 /admin·/api 관리자 응답에 없음, 문의 상세엔 있음)
-12) 선택 동의·처리방침 v3: 옛 버전 동의자도 쓰기 통과 · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효
-   · /privacy v3(처리 근거 표) · 옛 사용량 삭제 표식 멱등(임시 스키마)
+12) 선택 동의·처리방침 v4: 옛 버전 동의자도 쓰기 통과 · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효
+   · /privacy v4(처리 근거 표·출처·표준 편입·작성자 표시·계정 메뉴 문의) · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
 13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·옛 ra 쿠키 통과·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
@@ -469,7 +469,7 @@ async def test_web():
                 r = await h.get("/privacy")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
-                             "제28조의8", "v3 · 2026-10-19", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
+                             "제28조의8", "v4 · 2026-10-20", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
                     assert word in r.text, word
                 assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 real_contact, real_privacy = os.environ.get("CRM_CONTACT"), site.privacy_html
@@ -2080,9 +2080,9 @@ def _agreements(uid):
 
 
 def test_consent_versions():
-    """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v2."""
+    """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v4."""
     import tempfile
-    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v3", db.CONSENT_VERSIONS
+    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v4", db.CONSENT_VERSIONS
     assert web.read_consent_versions(web.GUIDES_DIR, dev=False) == db.CONSENT_VERSIONS
     with tempfile.TemporaryDirectory() as t:
         d = Path(t)
@@ -2122,7 +2122,7 @@ def test_consent_versions():
         (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v3 · 2027-01-01` 시행.\n", encoding="utf-8")
         (d / "12-terms.md").write_text("# 약관\n\n`v2 · 2027-01-01`\n", encoding="utf-8")
         assert web.read_consent_versions(d, dev=False) == {"privacy": "v3", "terms": "v2"}, "terms 문서가 생기면 자동으로 둘"
-    print("OK — α2 처리방침 버전(guides 머리글 v3·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동) 통과")
+    print("OK — α2 처리방침 버전(guides 머리글 v4·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동) 통과")
 
 
 async def test_consent_gate():
@@ -3067,7 +3067,7 @@ async def test_admin_boundary():
     print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세·레코드 페이지에만 원문·메모 · ALLOW 행 키 = cols) 통과")
 
 
-# ── 12) 선택 동의 · 처리방침 v3 · 옛 사용량 삭제 ──────────
+# ── 12) 선택 동의 · 처리방침 v4 · 옛 사용량 삭제 ──────────
 OC = {k: f"oc{k}@example.com" for k in ("1", "2", "3", "4")}   # 1 = 옛 버전(v1) 동의 행 · 3 = 왕복 · 4 = 실패 주입·동시
 
 
@@ -3081,13 +3081,13 @@ def _optional_rows(uid):
 async def test_optional_consent():
     """옛 버전 동의 행만 있는 사용자도 쓰기·/app 통과 · 계정 메뉴 경로(/api/optional-consent)로 켜기 · 실패 주입 → 행 0
     · /api/optional-consent 401·403·400 · 켜기/끄기 왕복과 로그 · 같은 상태 무동작 · 미동의자도 끔 · 동시 두 요청 → 행 1개
-    · 옛 버전 동의는 무효 · /privacy v3 처리 근거 표(비로그인) · 사용량 삭제 표식 멱등."""
+    · 옛 버전 동의는 무효 · /privacy v4 처리 근거 표·출처·표준 편입·작성자 표시·계정 메뉴 문의(비로그인) · 사용량 삭제 표식 멱등."""
     import threading
     site = main.site
     U = {k: db.user_by_subject(f"oc{k}_sub", e)["id"] for k, e in OC.items()}
     with db.tx() as c:
         c.execute("DELETE FROM agreements WHERE user_id = ANY(%s)", (list(U.values()),))
-    assert db.CONSENT_VERSIONS.get("privacy") == "v3" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (db.CONSENT_VERSIONS, db.OPTIONAL_VERSIONS)
+    assert db.CONSENT_VERSIONS.get("privacy") == "v4" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (db.CONSENT_VERSIONS, db.OPTIONAL_VERSIONS)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     origin = {"origin": PUBLIC}
@@ -3176,18 +3176,20 @@ async def test_optional_consent():
         assert db.optional_consent_set(U["4"], "struct_names", True)["changed"] is True and db.optional_consent_ok(U["4"], "struct_names")
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "names", True)
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "struct_names", 1)
-        # /privacy v3 — 로그인 없이 · 처리 근거 표(제15조①4호 계약 이행 · ⑥ 정당한 이익 · ① 선택 동의)
+        # /privacy v4 — 로그인 없이 · 처리 근거 표(제15조①4호 계약 이행 · ⑥ 정당한 이익 · ① 선택 동의)
         async with client() as h:
             r = await h.get("/privacy")
-        for word in ("v3 · 2026-10-19", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
+        for word in ("v4 · 2026-10-20", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
                      "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"',
                      "처리 근거", "제15조 제1항 제4호", "제15조 제1항 제6호", "제15조 제1항 제1호",
-                     "로그인 전 요청의 이용 기록은 사용자와 연결하지 않습니다"):
+                     "로그인 전 요청의 이용 기록은 사용자와 연결하지 않습니다",
+                     "출처(종류·이름·위치)", "표준 편입", "작성자 표시만 검사", "계정 메뉴 「문의 보내기」"):
             assert word in r.text, word
         basis = r.text[r.text.index("처리 근거"):r.text.index('id="privacy-2"')]
         assert "<table>" in basis and basis.count("<tr>") == 4, basis
         assert r.status_code == 200 and "지금은 모으지 않습니다" not in r.text and "v1 · 2026-10-18" not in r.text
-        assert "v2 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
+        assert "v2 · 2026-10-19" not in r.text and "v3 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
+        assert "로그인한 뒤 「문의」에서" not in r.text, "문의 경로는 계정 메뉴 「문의 보내기」"
     finally:
         site.dev, site.dev_user = real
     # 사용량 삭제 표식 — 임시 스키마: 새 DB 는 표식만 · 두 번째 init 은 안 지움 · 표식 없는 옛 DB 는 1회 전부 삭제
@@ -3212,7 +3214,7 @@ async def test_optional_consent():
     finally:
         drop_schema(name)
     print("OK — 선택 동의(옛 버전 행도 통과·계정 메뉴로만 켬·실패 주입 행 0·왕복 로그 2·무동작·미동의자 끄기·동시 1행·옛 버전 무효)"
-          "·/privacy v2·사용량 삭제 표식 멱등 통과")
+          "·/privacy v4·사용량 삭제 표식 멱등 통과")
 
 
 # ── 13) 문의 완결 (P3) ──────────────────────────────────
