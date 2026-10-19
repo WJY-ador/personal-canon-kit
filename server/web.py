@@ -48,6 +48,7 @@ PRIVACY_FILE = "11-privacy.md"
 # 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
 CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
 CONSENT_LABELS = {"privacy": ("개인정보 처리방침", "/privacy"), "terms": ("이용약관", "/terms")}
+OPTIONAL_CONSENT_HREF = "/privacy#privacy-1"   # 「구조 이름 공유」 설명 — 처리방침 1절(처리 목적) 안
 _VERSION_RE = re.compile(r"^`v(\d+) · ")   # 줄 머리 고정 — 본문 중간의 예시(`v9`)는 머리글이 아니다
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
@@ -685,14 +686,17 @@ class Web:
             f'<p><label><input type="checkbox" name="{_esc(kind)}" value="{_esc(ver)}" required> '
             f'<a href="{CONSENT_LABELS[kind][1]}">{CONSENT_LABELS[kind][0]}</a>({_esc(ver)})에 동의합니다.</label></p>'
             for kind, ver in db.CONSENT_VERSIONS.items())
-        body = f'<form method="post" action="/api/consent">{rows}<p><button type="submit">동의하고 시작</button></p></form>'
+        opt = ('<p><label><input type="checkbox" name="optional" value="struct_names"> (선택) 「구조 이름 공유」에 동의합니다.</label><br>'
+               f'<small>안 해도 모든 기능을 써요. <a href="{OPTIONAL_CONSENT_HREF}">무엇을 보나요</a></small></p>')
+        body = f'<form method="post" action="/api/consent">{rows}{opt}<p><button type="submit">동의하고 시작</button></p></form>'
         resp = _page("시작하기 전에 동의해 주세요", body)
         resp.headers["cache-control"] = "no-store"
         return resp
 
     async def api_consent(self, request):
-        """동의 기록. 세션(401) → Origin(403) → form 또는 JSON {kind: version} → db.consent_grant
-        → 302 /app(form) 또는 {ok, redirect}(JSON). 문서·버전이 맞지 않으면 400 ARG-INVALID. write_gate 를 지나지 않는다(동의 전 사용자가 부른다)."""
+        """동의 기록. 세션(401) → Origin(403) → form 또는 JSON {kind: version, optional?: [선택 동의 kind]} → db.consent_grant
+        (필수·선택 한 트랜잭션) → 302 /app(form) 또는 {ok, redirect}(JSON). 문서·버전이 맞지 않으면 400 ARG-INVALID.
+        form 의 선택 체크는 optional=<kind>(체크한 것만 온다). write_gate 를 지나지 않는다(동의 전 사용자가 부른다)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -703,18 +707,41 @@ class Web:
             if is_json:
                 body = await request.json()
                 assert isinstance(body, dict)
+                optional = body.pop("optional", [])
             else:
-                body = dict(parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True))
+                pairs = parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True)
+                optional = [v for k, v in pairs if k == "optional"]
+                body = dict((k, v) for k, v in pairs if k != "optional")
+            assert isinstance(optional, list) and all(isinstance(v, str) for v in optional)
             assert all(isinstance(v, str) for v in body.values())
         except Exception:
             return JSONResponse({"code": "ARG-INVALID", "msg": "동의할 문서·버전이 필요해요."}, status_code=400)
         try:
-            await run_in_threadpool(db.consent_grant, uid, body)
+            await run_in_threadpool(db.consent_grant, uid, body, optional)
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         if is_json:
             return JSONResponse({"ok": True, "redirect": "/app"})
         return RedirectResponse("/app", status_code=302)
+
+    async def api_optional_consent(self, request):
+        """선택 동의 켜기/끄기. 세션(401) → Origin(403) → JSON {kind, on(bool)} → db.optional_consent_set(한 트랜잭션·로그).
+        동의 게이트 밖(미동의자도 끌 수 있다). 같은 상태로 다시 보내면 changed=false(로그 없음)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict) and isinstance(body.get("kind"), str) and isinstance(body.get("on"), bool)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(kind 문자열·on true/false)이 필요해요."}, status_code=400)
+        try:
+            out = await run_in_threadpool(db.optional_consent_set, uid, body["kind"], body["on"])
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
 
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
@@ -1117,6 +1144,7 @@ class Web:
             Route("/api/feedback/status", u("web:feedback_status", self.api_feedback_status), methods=["POST"]),
             Route("/api/feedback/note", u("web:feedback_note", self.api_feedback_note), methods=["POST"]),
             Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
+            Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
             Route("/admin", self.admin_index),
             Route("/admin/reauth", self.admin_reauth),
             Route("/admin/setup", self.admin_setup),

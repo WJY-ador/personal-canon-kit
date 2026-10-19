@@ -293,3 +293,30 @@ CREATE TABLE IF NOT EXISTS admin_audit (
   detail     jsonb NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS ix_admin_audit_at ON admin_audit (at DESC);
+
+-- 선택 동의(2026-10-19, 운영 콘솔). 처리방침 게이트(agreements) 밖 — 동의하지 않아도 모든 기능을 쓴다.
+-- 현재 상태 1행(PK user_id·kind) + 이력(로그). 변경은 db.optional_consent_set 한 곳(FOR UPDATE → 상태 → 로그, 한 트랜잭션).
+-- 유효 동의 = state='granted' AND version = 현재 상수(db.OPTIONAL_VERSIONS). version 은 공유 범위 문서 버전(처리방침 머리글과 별개).
+CREATE TABLE IF NOT EXISTS optional_consents (
+  user_id    text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind       text NOT NULL CHECK (kind IN ('struct_names')),
+  version    text NOT NULL,
+  state      text NOT NULL CHECK (state IN ('granted','withdrawn')),
+  changed_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, kind)
+);
+CREATE TABLE IF NOT EXISTS optional_consent_log (
+  id       bigserial PRIMARY KEY,
+  user_id  text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind     text NOT NULL CHECK (kind IN ('struct_names')),
+  version  text NOT NULL,
+  action   text NOT NULL CHECK (action IN ('grant','withdraw')),
+  at       timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ix_optional_consent_log_user ON optional_consent_log (user_id, at);
+
+-- 1회성 마이그레이션 표식(2026-10-19). key 가 있으면 그 마이그레이션은 이미 했다 — init_schema 가 INSERT … ON CONFLICT DO NOTHING 으로 판정.
+CREATE TABLE IF NOT EXISTS schema_marks (
+  key  text PRIMARY KEY,
+  at   timestamptz NOT NULL DEFAULT now()
+);

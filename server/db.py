@@ -92,6 +92,12 @@ PUBLIC_URL = ""
 _consent_lock = threading.Lock()
 _consented: set = set()   # 통과한 uid — 다음부턴 DB 를 안 본다. 버전이 바뀌면(= 재시작·set_consent_versions) 비운다
 
+# ── 선택 동의 (운영 콘솔) ───────────────────────────────
+# 게이트 밖 — 동의하지 않아도 모든 기능을 쓴다. 지금은 「구조 이름 공유」 하나: 운영자 조회에 현재 이름(오브젝트·필드·선택지)을 보인다.
+# 버전 = 공유 범위 문서 버전(처리방침 머리글과 별개). 범위가 바뀌면 상수를 올린다 → 옛 버전 동의는 유효하지 않다.
+STRUCT_NAMES_VERSION = "s1"
+OPTIONAL_VERSIONS = {"struct_names": STRUCT_NAMES_VERSION}
+
 # ── 일일 한도 (α2) ─────────────────────────────────────
 # 계정 하나가 하루(KST 0시 기준, _KST_TODAY)에 쓸 수 있는 양. 각 쓰기 함수의 기존 트랜잭션 안 맨 앞에서 users 행을 잠그고 센다.
 # 관리자도 같다(QUOTA-GLOBAL 만 관리자 예외).
@@ -227,15 +233,64 @@ def has_consent(uid) -> bool:
         raise
 
 
-def consent_grant(uid, versions: dict):
-    """동의 기록. versions 가 CONSENT_VERSIONS 와 정확히 같을 때만(빠지거나 다른 버전이면 ARG-INVALID). 한 트랜잭션."""
+def consent_grant(uid, versions: dict, optional=()):
+    """동의 기록. versions 가 CONSENT_VERSIONS 와 정확히 같을 때만(빠지거나 다른 버전이면 ARG-INVALID).
+    optional = 같이 켤 선택 동의 kind 목록(체크한 것만). 필수·선택을 한 트랜잭션으로 — 선택 저장이 실패하면 필수도 롤백."""
     if not isinstance(versions, dict) or {str(k): v for k, v in versions.items()} != CONSENT_VERSIONS:
         raise CrmError("ARG-INVALID", "동의할 문서·버전이 지금 문서와 맞지 않아요.", "동의 화면을 새로 고쳐 다시 동의해 주세요.")
+    optional = list(optional or ())
+    if any(k not in OPTIONAL_VERSIONS for k in optional):
+        raise CrmError("ARG-INVALID", "그런 선택 동의는 없어요.")
     with tx() as c:
         for kind, ver in CONSENT_VERSIONS.items():
             c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (uid, kind, ver))
+        for kind in optional:
+            _optional_apply(c, uid, kind, True)
     with _consent_lock:
         _consented.add(uid)
+
+
+def _optional_apply(c, uid, kind, on):
+    """선택 동의 변경 한 건 — 호출하는 쪽의 트랜잭션 안에서. 현재 행 FOR UPDATE(없고 켜기면 INSERT … ON CONFLICT 뒤 다시 잠금)
+    → 상태 변경 → 로그 1행. 이미 그 상태면 무동작(로그 없음): 켜기 = granted·현재 버전, 끄기 = 행 없음·withdrawn.
+    반환 True = 바뀜."""
+    ver = OPTIONAL_VERSIONS[kind]
+    sel = "SELECT state,version FROM optional_consents WHERE user_id=%s AND kind=%s FOR UPDATE"
+    r = _one(c, sel, (uid, kind))
+    if r is None:
+        if not on:
+            return False
+        if _one(c, "INSERT INTO optional_consents (user_id,kind,version,state) VALUES (%s,%s,%s,'granted') "
+                    "ON CONFLICT (user_id,kind) DO NOTHING RETURNING 1 AS x", (uid, kind, ver)) is None:
+            r = _one(c, sel, (uid, kind))   # 동시 요청이 먼저 넣었다 — 그 행을 잠그고 같은 규칙으로
+        else:
+            c.execute("INSERT INTO optional_consent_log (user_id,kind,version,action) VALUES (%s,%s,%s,'grant')", (uid, kind, ver))
+            return True
+    if on and r["state"] == "granted" and r["version"] == ver:
+        return False
+    if not on and r["state"] == "withdrawn":
+        return False
+    c.execute("UPDATE optional_consents SET state=%s, version=%s, changed_at=now() WHERE user_id=%s AND kind=%s",
+              ("granted" if on else "withdrawn", ver, uid, kind))
+    c.execute("INSERT INTO optional_consent_log (user_id,kind,version,action) VALUES (%s,%s,%s,%s)",
+              (uid, kind, ver, "grant" if on else "withdraw"))
+    return True
+
+
+def optional_consent_set(uid, kind, on):
+    """선택 동의 켜기/끄기 — 한 트랜잭션. 동의 게이트 밖(미동의자도 끌 수 있다). 반환 {kind, on(유효 동의), changed}."""
+    if kind not in OPTIONAL_VERSIONS or not isinstance(on, bool):
+        raise CrmError("ARG-INVALID", f"선택 동의는 {', '.join(OPTIONAL_VERSIONS)} 중 하나, on 은 true·false 예요.")
+    with tx() as c:
+        changed = _optional_apply(c, uid, kind, on)
+    return {"kind": kind, "on": on, "changed": changed}
+
+
+def optional_consent_ok(uid, kind) -> bool:
+    """유효 동의 = state='granted' AND version = 현재 상수."""
+    with tx() as c:
+        return _one(c, "SELECT 1 AS x FROM optional_consents WHERE user_id=%s AND kind=%s AND state='granted' AND version=%s",
+                    (uid, kind, OPTIONAL_VERSIONS.get(kind))) is not None
 
 
 def write_gate(op: str, args: dict, uid, quota: bool = True):
@@ -370,7 +425,8 @@ def init_schema(conn=None):
          새 schema.sql 의 ix_hist_cand(user_id, …) 가 옛 candidate_history(user_id 없음)에서 컬럼 오류를 낼 수 있어서.
       2. schema.sql — CREATE … IF NOT EXISTS. 새 DB 는 여기서 바로 최종형, 옛 DB 는 no-op.
       3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림).
-      4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다."""
+      4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다.
+      5. 1회성 — schema_marks 표식이 없을 때만(INSERT … ON CONFLICT DO NOTHING RETURNING): 처리방침 v2 전환 usage_daily 전체 삭제."""
     if conn is None:
         with pool().connection() as c:
             _init_schema(c)
@@ -397,6 +453,12 @@ def _init_schema(c):
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
+        # 처리방침 v2 전환 — v2 시행 전에 모은 이용 기록(usage_daily)을 1회 전부 지운다. 표식이 있으면 건너뛴다.
+        if _one(c, "INSERT INTO schema_marks (key) VALUES (%s) ON CONFLICT (key) DO NOTHING RETURNING key", (USAGE_RESET_MARK,)):
+            c.execute("DELETE FROM usage_daily")
+
+
+USAGE_RESET_MARK = "usage_daily_reset_privacy_v2"   # schema_marks 키 — 옛 사용량 1회 삭제
 
 
 _USERS_B2_COLS = (("role", "text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))"), ("blocked_at", "timestamptz"),
