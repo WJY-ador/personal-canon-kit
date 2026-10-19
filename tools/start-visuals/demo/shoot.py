@@ -1,7 +1,7 @@
 """데모 촬영 — 로컬 DEV 서버(127.0.0.1 만) + 샘플 시드로 실제 app.html 장면 4개를 찍는다. 합성은 encode.sh.
 
 실행(원작자 Mac, 수동): 시스템 python3 (playwright 필요). 서버·시드는 server 의 파이썬(venv)으로 띄운다.
-    DATABASE_URL=postgresql://localhost/crm_test python3 shoot.py --server-python ../../../server/.venv/bin/python --work /tmp/demo
+    DATABASE_URL=postgresql://localhost/crm_test python3 shoot.py --work /tmp/demo   # 서버 파이썬 기본 = server/.venv/bin/python(--server-python 은 상대경로도 된다)
     ./encode.sh /tmp/demo/light light && ./encode.sh /tmp/demo/dark dark
 테마: 라이트·다크 둘 다 같은 시나리오로 찍는다(--theme 로 한 벌만). 다크는 localStorage["crm-theme"]="dark" 를 미리 넣어
      theme.js 가 <html data-theme="dark"> 를 붙인 상태 — 시작 화면이 어두울 때 데모 창만 하얗게 뜨지 않게.
@@ -134,6 +134,8 @@ def main():
     ap.add_argument("--work", required=True, help="장면 PNG 를 둘 폴더(레포 밖). 테마별 하위 폴더 light/·dark/ 에 쓴다")
     ap.add_argument("--theme", choices=["light", "dark", "both"], default="both")
     a = ap.parse_args()
+    # 서버는 cwd=server/ 에서 뜬다 — 상대경로는 지금 폴더 기준 절대경로로 바꾼다(심볼릭 링크는 풀지 않는다: venv python 이 링크다)
+    a.server_python = os.path.abspath(a.server_python)
     base = guard()
     for theme in (["light", "dark"] if a.theme == "both" else [a.theme]):
         work = Path(a.work) / theme

@@ -71,6 +71,10 @@ def main():
     import db
     db.init_schema()
     uid = db.user_by_email(DEMO_USER)["id"]
+    # 동의 게이트(α2) — 촬영 서버(DEV)와 같은 규칙으로 guides 머리글에서 버전을 읽어 촬영 사용자를 동의시킨다(안 하면 /app 이 /consent 로 간다)
+    import web
+    db.set_consent_versions(web.read_consent_versions(web.GUIDES_DIR, dev=True))
+    db.consent_grant(uid, dict(db.CONSENT_VERSIONS))
     q = db.question_add(uid, QUESTION)
     r1 = db.record_add(uid, REC1_TITLE, REC1_BODY, q["id"], source=REC1_SOURCE)
     r2 = db.record_add(uid, REC2_TITLE, REC2_BODY, q["id"], source=REC2_SOURCE)

@@ -9,8 +9,8 @@ cd server
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 # .env 에 DATABASE_URL (Supabase Session pooler, 5432) — gitignored
 CRM_DEV=1 CRM_DEV_USER=you@example.com .venv/bin/python main.py   # http://127.0.0.1:8800
-.venv/bin/python test_tools.py   # Supabase 에 붙어 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제
-CRM_TEST_SCHEMA=crm_test .venv/bin/python test_tools.py   # 운영 DB 가 아직 옛 스키마일 때: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
+DATABASE_URL=postgresql://localhost/crm_test .venv/bin/python test_tools.py   # 로컬 Postgres 에서 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제. 로컬 아닌 호스트면 시작 전에 멈춘다
+CRM_TEST_ALLOW_REMOTE=1 CRM_TEST_SCHEMA=crm_test .venv/bin/python test_tools.py   # 원격(server/.env) DB 가 아직 옛 스키마일 때만: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
 ```
 
 원작자 템플릿(기준·결정·숙제·발행·축·접근 방식 정의, 라벨은 파일 맨 위 `LABELS`) 넣기 — 대상 사용자가 먼저 로그인해 계정이 있어야 한다:
@@ -65,11 +65,19 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - **관리자 = DB 역할**(`users.role='admin'`). env 로 판정하지 않는다. 화면은 `/admin/setup`(스크립트 없는 서버 렌더 + form) — 사용자 표(이메일·가입일·역할·처리방침 동의·차단·웹 끊은 시각)와 행마다 [관리자 부여|회수] [웹 로그인 끊기] [차단|해제], 감사 로그 최근 100건. 비관리자·로그인 안 함·DEV 는 404.
 - **첫 지정은 배포 때 한 번**: 서버 시작 때 감사(`admin_audit`)에 `bootstrap`·`recover` 행이 하나도 없으면 env `CRM_ADMIN_USER_IDS` 의 id 중 있는 계정을 관리자로 하고 `bootstrap` 행을 남긴다(0명이어도 남긴다). 그 뒤로 env 는 읽지 않는다 — 바꿔도 효과 없음. 대상 계정이 먼저 로그인해 있어야 승격된다.
 - **잠기면(관리자 0명·자기 차단)** 원작자 Mac 에서: `DATABASE_URL=… .venv/bin/python admin_cli.py grant <email>` → 관리자 + 차단 해제 + 감사 `recover`. `admin_cli.py list` 는 관리자 목록. `.env` 는 읽지 않는다(어느 DB 인지 명령 줄에서 보이게).
-- **재인증**: `/admin` 은 최근에 다시 로그인한 세션에서만 열린다. [다시 로그인] = `/admin/reauth` → 로그인 폼 강제(`prompt=login`) → 같은 계정으로 돌아오면 세션에 재인증 시각이 붙는다. 위험 동작(부여·회수·끊기·차단·해제) 15분, 화면·감사 로그와 `/app` 문의함(전체 조회·상태·메모) 12시간. 창이 지나면 `/app` 문의함은 일반 사용자 화면처럼 보이고 상태·메모 변경은 `REAUTH-REQUIRED`. **한계**: Google 로그인은 세션이 살아 있으면 폼 없이 자동 통과할 수 있다 — 토큰에 `auth_time` 이 있으면 재인증 시작 60초 전 이후의 로그인만 인정하고, 없으면 같은 계정으로 돌아온 것만 본다. 운영 첫 로그인 때 로그 `[web] 로그인 토큰 claims 키` 에 `auth_time`·`iat` 가 있는지 확인한다(값은 남기지 않는다).
+- **재인증**: `/admin` 은 최근에 다시 로그인한 세션에서만 열린다. [다시 로그인] = `/admin/reauth` → 로그인 폼 강제(`prompt=login`) → 같은 계정으로 돌아오면 세션에 재인증 시각이 붙는다. 위험 동작(부여·회수·끊기·차단·해제) 15분, /admin 화면 열람과 문의 처리(상태·답변·메모·재분류) 12시간. 창이 지나면 열람은 `/admin/reauth` 로 보내고 문의 처리는 `REAUTH-REQUIRED`. **한계**: Google 로그인은 세션이 살아 있으면 폼 없이 자동 통과할 수 있다 — 토큰에 `auth_time` 이 있으면 재인증 시작 60초 전 이후의 로그인만 인정하고, 없으면 같은 계정으로 돌아온 것만 본다. 운영 첫 로그인 때 로그 `[web] 로그인 토큰 claims 키` 에 `auth_time`·`iat` 가 있는지 확인한다(값은 남기지 않는다).
 - **웹 로그인 끊기** = 그 계정의 지금까지 웹 세션 쿠키 무효(다음 로그인부터 다시 된다). MCP 커넥터에는 영향 없음. 관리자 회수도 대상의 웹 세션을 끊는다. 마지막 관리자는 회수할 수 없다(`LAST-ADMIN`).
 - **차단** = 웹 세션·웹 로그인·MCP 호출 모두 거절(`AUTH-BLOCKED`). 마지막 관리자 차단(자기 자신 포함)도 허용 — 복구는 CLI. **해제** 뒤 차단 전 웹 쿠키·MCP 토큰은 살아나지 않는다 — 사용자는 웹에 다시 로그인하고 MCP 커넥터를 한 번 다시 연결한다(옛 토큰은 `AUTH-REVOKED`). 토큰에 `iat` 가 없으면 MCP 끊기 검사는 건너뛰고 로그 1줄(차단 검사는 그대로).
 - **감사** `admin_audit`: 첫 지정·복구·부여·회수·웹 끊기·차단·해제. 실행자·대상 id 와 열거 키만(이메일·자유 텍스트 없음), 계정이 지워져도 남는다(화면엔 id 앞 8자). 1년 지난 행은 서버 시작 때 파기 — 단 `bootstrap`·`recover` 행은 남긴다(지우면 다음 시작 때 env 로 다시 승격한다).
 - **배포 직후 전원 1회 재로그인** — 세션 쿠키 형식이 바뀌어(v2: 발급 시각·재인증 시각) 옛 쿠키는 무효다. 원작자는 재로그인 → `/admin/reauth` → `/admin/setup` 이 열리는지 확인.
+
+## 운영 — 운영 콘솔 (/admin)
+
+- 화면(전부 서버 렌더 + form, 스크립트 0, no-store): `/admin` 개요(상태 띠·사용자 표·미연결 사용량·오류 14일·정의 분포) · `/admin/schema`(서비스 표준 구조 = 템플릿 author@1 + 코어 질문·기록·후보·문의, 사용자별 구조 트리) · `/admin/reports`(데이터셋 사용자·사용량·구조·문의, 묶기 ≤2·필터·기간 ≤180일, 행 ≤200, 정의 = GET 쿼리스트링) · `/admin/tickets`(리스트) · `/admin/tickets/<id>`(레코드: 원문·Path·공개 답변·내부 메모·재분류·이력) · `/admin/setup`. `/app` 에는 관리자에게만 ⚙ 링크 하나.
+- **운영 경계** `admin_db.py`: 운영 화면의 DB 읽기는 허용표 `ALLOW` 의 키로만 한다(고정 SQL·허용 열·조회자·동의 조건). 기록 본문·질문 글·탭 이름·정의 이력은 읽지 않는다. 문의 원문·내부 메모는 레코드 페이지에서만. 정적 시험과 표식 시험이 지킨다.
+- **이름 공유(선택 동의 `struct_names`)**: 동의한 사용자의 오브젝트·필드·선택지 **현재 이름**만 `/admin/schema` 트리에 보인다(리포트엔 없음). 비동의자는 `tpl:<key>`·`u<n>`·`f<n>`(순번은 표시용, URL 은 불투명 id). 철회하면 다음 조회부터 빠진다. 저장은 `optional_consents`(현재 상태 1행) + `optional_consent_log`. 처리방침 동의 게이트와 별개.
+- **문의 처리**: 상태 전이·답변·메모·재분류는 변경과 `ticket_history`(공개/내부) 사건을 한 트랜잭션으로. 사용자에겐 공개 사건과 답변만(웹 「내 문의」 상세·MCP `ticket_list_mine`·`ticket_get_mine`). privacy 로 재분류하면 기한 기산점 = 최초 접수일(이미 지났으면 즉시 「기한 초과」), privacy 에서 빼면 사유 필수·`privacy_log` 는 남김. 종결 180일 뒤 파기는 서버 시작 때 + 실행 중 매일(문의 이력도 cascade).
+- **처리방침 v2**(`guides/11-privacy.md`): 구조 분석 목적·이름 공유 선택 동의·이용 기록 사실대로. v2 를 처음 띄우는 `init_schema` 가 그 전 `usage_daily` 를 **한 번** 지운다(`schema_marks` 표식). 배포 직후 전원 다음 쓰기 때 v2 재동의.
 
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
@@ -92,7 +100,7 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 도구: state_get · question_add · question_list · record_add · record_get · candidates_propose · candidate_decide · candidate_list · profile_set.
   2단계(정의 층) 5+1: definitions_get · definition_propose · definition_apply · item_propose · item_decide + record_attach(「어디에 붙나」: 기준·결정·후보 연결, 관심 축, 쓸 자리·아직 안 붙는 것). 동적 내용은 JSON 문자열(`definition_json`·`data_json`).
   도움말 help_get(`topic`: start·words·all, 기본 words) — `/help` 와 같은 guides 원문을 `{topic, text}` 로. INSTRUCTIONS 끝 줄: 해당 topic 하나만 읽고, 같은 대화에서 다시 부르지 않고, 문서에 없으면 "문서에서 확인되지 않아요" + 가장 가까운 절, 제품 밖 질문엔 적용 안 함. 
-  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」). 관리자(`users.role=admin`, 재인증 12시간 안 — 아니면 비관리자 응답과 같은 모양)면 `GET /api/feedback` 이 전체 문의 최근 100건(이메일·메모 포함)과 `admin_tickets`(open·privacy_open)를, `GET /api/state` 도 `admin_tickets` 를 준다(비관리자 응답엔 키 없음, MCP state_get 에도 없음). `POST /api/feedback/status {id, status}` · `POST /api/feedback/note {id, admin_note ≤2KB}` 는 관리자만(세션·Origin, 아니면 403) — 종결이면 `closed_at`, 다시 열면 NULL, `updated` 갱신(감사 테이블은 β). 도구는 모두 17개.
+  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」, 관리자도 본인 것만) · `GET /api/feedback/<id>`(본인 문의 상세: 글·공개 답변·공개 이력). 내 문의 읽기 ticket_list_mine · ticket_get_mine(공개 이력만, 최근 공개 갱신순). 운영자 처리는 /admin 아래(위 「운영 콘솔」). 도구는 모두 19개.
   이미 붙여 둔 Claude 커넥터는 새 도구(help_get 등)를 보려면 커넥터를 다시 연결하거나 새 대화를 연다.
   웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
   `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
