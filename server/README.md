@@ -78,7 +78,7 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - **운영 경계** `admin_db.py`: 운영 화면의 DB 읽기는 허용표 `ALLOW` 의 키로만 한다(고정 SQL·허용 열·조회자·동의 조건). 기록 본문·질문 글·탭 이름·정의 이력은 읽지 않는다. 문의 원문·내부 메모는 레코드 페이지에서만. 정적 시험과 표식 시험이 지킨다.
 - **이름 공유(선택 동의 `struct_names`)**: 동의한 사용자의 오브젝트·필드·선택지 **현재 이름**만 `/admin/schema` 트리에 보인다(리포트엔 없음). 비동의자는 `tpl:<key>`·`u<n>`·`f<n>`(순번은 표시용, URL 은 불투명 id). 철회하면 다음 조회부터 빠진다. 저장은 `optional_consents`(현재 상태 1행) + `optional_consent_log`. 처리방침 동의 게이트와 별개.
 - **문의 처리**: 상태 전이·답변·메모·재분류는 변경과 `ticket_history`(공개/내부) 사건을 한 트랜잭션으로. 사용자에겐 공개 사건과 답변만(웹 「내 문의」 상세·MCP `ticket_list_mine`·`ticket_get_mine`). privacy 로 재분류하면 기한 기산점 = 최초 접수일(이미 지났으면 즉시 「기한 초과」), privacy 에서 빼면 사유 필수·`privacy_log` 는 남김. 종결 180일 뒤 파기는 서버 시작 때 + 실행 중 매일(문의 이력도 cascade).
-- **처리방침 v2**(`guides/11-privacy.md`): 구조 분석 목적·이름 공유 선택 동의·이용 기록 사실대로. v2 를 처음 띄우는 `init_schema` 가 그 전 `usage_daily` 를 **한 번** 지운다(`schema_marks` 표식). 배포 직후 전원 다음 쓰기 때 v2 재동의.
+- **처리방침 v2**(`guides/11-privacy.md`): 구조 분석 목적·이름 공유 선택 동의·이용 기록 사실대로. v2 를 처음 띄우는 `init_schema` 가 그 전 `usage_daily` 를 **한 번** 지운다(`schema_marks` 표식). v3 에서 필수 동의 게이트를 없앴다(위 「처리방침」 절).
 
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
