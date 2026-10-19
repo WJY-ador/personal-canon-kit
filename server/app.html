@@ -83,6 +83,10 @@ button.refresh { border: 1px solid var(--line); background: var(--card); border-
   font-size: .72rem; color: var(--muted); font-weight: 500; }
 button.refresh:hover { border-color: var(--accent); color: var(--accent); }
 button.theme-toggle { min-width: 28px; justify-content: center; font-size: .82rem; }
+a.setup-gear { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; border: 1px solid var(--line); background: var(--card); border-radius: 6px; padding: .15rem .5rem;
+  font-size: .9rem; color: var(--muted); font-weight: 500; text-decoration: none; line-height: 1.25; }
+a.setup-gear[hidden] { display: none; }
+a.setup-gear:hover { border-color: var(--accent); color: var(--accent); }
 
 /* 탭(종이 위 탭) · 서브 필 */
 nav.tabs { border-bottom: 1px solid var(--line); }
@@ -426,7 +430,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
   <h1 id="date"></h1><span class="sub">대시보드 — 여기서는 보기와 결정만</span>
   <div class="axiswrap"><div class="axistop" id="axistop"><span class="speclabel">오늘</span><div class="specbox"><div class="spectrum" id="spectrum" role="img"></div><div class="speckey" id="speckey"></div></div></div>
     <div class="axislegend" id="legend"></div></div>
-  <div class="who"><span id="who"></span><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><button class="refresh" id="logout">로그아웃</button><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
+  <div class="who"><span id="who"></span><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><a class="refresh setup-gear" id="setup-link" href="/admin/setup" hidden title="관리 Setup" aria-label="관리 Setup">⚙</a><button class="refresh" id="logout">로그아웃</button><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
 </div></header>
 <div class="wrap bands" id="admin-band" hidden></div>
 <nav class="tabs" id="nav" aria-label="내 탭"></nav>
@@ -599,6 +603,7 @@ function render() {
     return `<a href="#${esc(t.id)}" class="tab${on ? " on" : ""}${t.maplink ? " maplink" : ""}"${on ? ' aria-current="page"' : ""}>${esc(t.label)}${n ? `<span class="n">${n}</span>` : ""}</a>`;
   }).join("")}</div>`;
   $("who").textContent = S.user && S.user.email ? S.user.email : "";
+  $("setup-link").hidden = !(S.user && S.user.admin);
   mast(tabs);
   subnav("");
   $("foot").textContent = `기록·질문·후보 추가는 연결한 AI 대화에서 해요. 여기서는 후보를 고쳐 남기거나, 남길지 정해요. 원문은 바뀌지 않아요.${loadedAt ? ` 불러온 시각 ${loadedAt}.` : ""}`;

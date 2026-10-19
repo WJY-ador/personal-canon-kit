@@ -1857,6 +1857,7 @@ async def test_feedback_admin():
             _set_role(uid, "user")
             st = (await h.get("/api/state")).json()
             assert "admin_tickets" not in st and "user" in st, list(st)
+            assert "admin" not in st["user"], "비관리자 user 에 admin 키 자체가 없다(⚙ 링크)"
             r = await h.get("/api/feedback")
             j = r.json()
             assert r.status_code == 200 and set(j) == {"tickets"}, list(j)
@@ -1883,6 +1884,8 @@ async def test_feedback_admin():
                     assert r.status_code == 403 and r.json()["code"] == "ORIGIN", (url, hd, r.text)
             st = (await h.get("/api/state")).json()
             assert st["admin_tickets"] == counts() and st["admin_tickets"]["privacy_open"] >= 1, st.get("admin_tickets")
+            assert st["user"]["admin"] is True, st["user"]
+            assert "admin" not in db.state(uid).get("user", {}), "MCP state_get(db.state)에는 admin 없음"
             assert "admin_tickets" not in db.state(uid), "MCP state_get(db.state)에는 없다"
             sv = await mc.call_tool("state_get", {})
             assert "admin_tickets" not in val(sv), "MCP state_get 에 관리자 키 없음"
@@ -2002,6 +2005,11 @@ def test_feedback_units():
     assert "admin_note}" not in blk and "${t." not in blk and "${c." not in blk
     assert f"const DESK_NOTE_MAX = {db.LIMIT_ADMIN_NOTE};" in html
     assert '<div class="wrap bands" id="admin-band" hidden></div>' in html, "관리자 띠 자리는 기본 숨김"
+    # ⚙ Setup 링크: 기본 hidden · /admin/setup · 인라인 이벤트 속성 0(CSP) · 상태가 admin 일 때만 hidden 해제
+    gear = re.search(r'<a\b[^>]*\bid="setup-link"[^>]*>', html)
+    assert gear and re.search(r"\shidden(\s|>)", gear.group(0)) and 'href="/admin/setup"' in gear.group(0), gear
+    assert not re.search(r"\son[a-z]+\s*=", html, re.I), "app.html 인라인 이벤트 속성 0"
+    assert '$("setup-link").hidden = !(S.user && S.user.admin);' in html
     print("OK — 문의 단위(ua 계열·CRM_CONTACT 선택·app.html esc 정적 검사) 통과")
 
 
@@ -2752,6 +2760,7 @@ async def test_beta2():
         for cookie in (ck(A), ck(A, now() - 13 * 3600)):
             st = (await call("GET", "/api/state", cookie)).json()
             assert "admin_tickets" not in st and "user" in st, list(st)
+            assert st["user"].get("admin") is True, "재인증 창 밖(ra 없음·13시간 전)이어도 ⚙ 링크용 admin 은 있다"
             r = await call("GET", "/api/feedback", cookie)
             assert r.status_code == 200 and set(r.json()) == {"tickets"}, list(r.json())
             for path, body in (("/api/feedback/status", {"id": "tk_nope", "status": "ack"}), ("/api/feedback/note", {"id": "tk_nope", "admin_note": "x"})):
@@ -2761,7 +2770,8 @@ async def test_beta2():
                 assert r.status_code == 403 and r.json()["code"] == "REAUTH-REQUIRED", (path, r.text)
         cookie = ck(A, now() - 3600)
         st = (await call("GET", "/api/state", cookie)).json()
-        assert "admin_tickets" in st, list(st)
+        assert "admin_tickets" in st and st["user"]["admin"] is True, list(st)
+        assert "admin" not in (await call("GET", "/api/state", ck(C, now()))).json()["user"], "비관리자는 ra 가 있어도 admin 키 없음"
         j = (await call("GET", "/api/feedback", cookie)).json()
         assert j.get("admin") is True and "admin_tickets" in j, list(j)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:

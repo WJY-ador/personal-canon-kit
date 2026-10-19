@@ -812,6 +812,8 @@ class Web:
             return err
         st, me = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid)))
         st["user"] = {"email": me["email"]}
+        if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
+            st["user"]["admin"] = True
         if self._ticket_admin(request, "ticket.read_all"):   # 관리자 + 재인증 12시간 안만 키가 있다 — 아니면 비관리자와 같은 모양. MCP state_get 에는 넣지 않는다
             st["admin_tickets"] = await run_in_threadpool(db.tickets_admin_counts)
         return JSONResponse(st, headers={"cache-control": "no-store"})
