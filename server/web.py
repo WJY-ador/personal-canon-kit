@@ -27,7 +27,7 @@ from starlette.routing import Route
 
 import auth
 import db
-from envcompat import env
+from envnames import env
 
 SESSION_COOKIE = "crm_session"
 FLOW_COOKIE = "crm_login"

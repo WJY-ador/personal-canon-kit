@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from crmkit import paths, server  # noqa: E402
+from crmkit import server  # noqa: E402
 
 FAKE = str(ROOT / "tests" / "fake_claude.py")
 # 화면에 나오면 안 되는 내부 ID·명령어 (next.text 는 화면에 그대로 쓰인다)
@@ -48,8 +48,7 @@ class Flow(unittest.TestCase):
 
     def run_cli(self, *args, ok=True, env=None):
         e = dict(os.environ, CRM_CLAUDE=FAKE, **(env or {}))
-        for n in paths.env_names("DATA"):
-            e.pop(n, None)
+        e.pop("CRM_DATA", None)
         r = subprocess.run([sys.executable, str(ROOT / "crm.py"), "--data", str(self.data), *args],
                            capture_output=True, text=True, encoding="utf-8", env=e)
         if ok and r.returncode != 0:
@@ -253,38 +252,6 @@ class Flow(unittest.TestCase):
             store.write_json_atomic(f, {"tabs": []}, validate=lambda d: ["schemaVersion 이 없습니다"])
         self.assertEqual(old, f.read_text(encoding="utf-8"))
         self.assertEqual([p.name for p in self.tmp.glob(".원자 시험.json.tmp-*")], [])
-
-    def test_old_sys_dir_moved_once(self):
-        """이름 변경 호환: 옛 시스템 폴더만 있는 데이터 폴더 → 첫 실행 때 새 이름으로 옮겨지고 백업·이력이 보인다."""
-        d = self.tmp / "옛 시스템 폴더 시험"
-
-        def cli(*args):
-            e = dict(os.environ, CRM_CLAUDE=FAKE)
-            for n in paths.env_names("DATA"):
-                e.pop(n, None)
-            r = subprocess.run([sys.executable, str(ROOT / "crm.py"), "--data", str(d), *args],
-                               capture_output=True, text=True, encoding="utf-8", env=e)
-            self.assertEqual(r.returncode, 0, f"{args}\n{r.stdout}\n{r.stderr}")
-            return r
-
-        subprocess.run([sys.executable, str(ROOT / "crm.py"), "init", "--data", str(d), "--sample", "--no-remember"],
-                       capture_output=True, text=True, encoding="utf-8", check=True)
-        cli("backup", "--label", "old")
-        cli("candidate", "confirm", "c-0002")          # 한 장 이전 판 → history
-        new, old = d / paths.SYS_DIR, d / paths.OLD_SYS_DIR
-        bid = [p.name for p in (new / "backups").iterdir()][0]
-        hist = sorted(p.name for p in (new / "history" / "sheets").iterdir())
-        self.assertTrue(hist)
-        new.rename(old)                                  # 이름 변경 전 판이 만든 데이터 폴더 흉내
-
-        r = cli("backups")
-        self.assertIn("시스템 폴더를 옮겼어요", r.stderr)
-        self.assertIn(bid, r.stdout)
-        self.assertFalse(old.exists())
-        self.assertEqual(hist, sorted(p.name for p in (new / "history" / "sheets").iterdir()))
-        r = cli("backups")                               # 두 번째는 옮기지 않는다
-        self.assertNotIn("시스템 폴더를 옮겼어요", r.stderr)
-        self.assertIn(bid, r.stdout)
 
     def test_sample_data_is_valid_and_marked(self):
         from crmkit import paths, schema

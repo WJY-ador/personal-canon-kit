@@ -537,14 +537,6 @@ def main(argv=None):
         ap.error("candidate edit <후보ID> <새 문장>")
     data = paths.resolve_data_root(a.data) if a.cmd != "init" else None
     try:
-        # 모든 명령의 공통 진입점 — 옛 시스템 폴더를 한 번 옮긴다(init 은 --data 대상)
-        root = data or (Path(a.data).expanduser().resolve() if a.cmd == "init" and a.data else None)
-        if root:
-            try:
-                paths.migrate_sys_dir(root)
-            except OSError as e:
-                raise CrmError("SYSDIR-MOVE", f"옛 시스템 폴더를 새 이름({paths.SYS_DIR})으로 옮기지 못했습니다: {e.strerror or e}",
-                               f"다른 프로그램이 데이터 폴더를 쓰고 있으면 닫고 다시 실행하세요. 직접 옮겨도 됩니다(폴더 이름만 {paths.SYS_DIR} 로).")
         rc = a.fn(a, data)
         return rc or 0
     except CrmError as e:
