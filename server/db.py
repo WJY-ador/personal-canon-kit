@@ -1848,35 +1848,12 @@ def is_admin(uid) -> bool:
         return _one(c, "SELECT 1 AS x FROM users WHERE id=%s AND role='admin' AND blocked_at IS NULL", (uid,)) is not None
 
 
-def tickets_admin_counts():
-    """관리자 띠. open = 아직 확인 안 한 문의(status open) · privacy_open = 종결 안 된 개인정보 요청(10일 시계가 도는 것)."""
-    with tx() as c:
-        return dict(_one(c, "SELECT count(*) FILTER (WHERE status='open') AS open, "
-                            "count(*) FILTER (WHERE kind='privacy' AND status NOT IN ('done','wontfix')) AS privacy_open FROM tickets"))
-
-
-_TICKET_ADMIN_COLS = ("SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.hint,t.admin_note,"
-                      "t.created,t.updated,t.closed_at,u.email FROM tickets t JOIN users u ON u.id=t.user_id ")
-
-
-def tickets_all(limit=TICKET_ADMIN_LIST):
-    """관리자 「문의함」 — 전체 사용자 문의 최근 100건. 이메일·admin_note·hint 포함. 호출하는 쪽이 관리자인지 먼저 본다."""
-    with tx() as c:
-        return [_iso(r) for r in _all(c, _TICKET_ADMIN_COLS + "ORDER BY t.created DESC LIMIT %s", (limit,))]
-
-
-def _ticket_admin_row(c, tid):
-    r = _one(c, _TICKET_ADMIN_COLS + "WHERE t.id=%s", (tid,))
-    if not r:
-        raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
-    return _iso(r)
-
-
 def ticket_set_status(tid, status):
     """관리자 상태 변경. 다섯 상태 사이 어느 쪽으로든 옮긴다. 종결(done·wontfix)이면 closed_at = 처음 종결한 때(종결끼리 옮겨도 유지),
     다시 열면 NULL(파기 대상에서 빠진다). updated 갱신. 감사 테이블은 β.
     kind=privacy 면 같은 트랜잭션에서 privacy_log(ticket_id) — 종결: notified=KST 오늘(없을 때만)·result done→done/wontfix→refused,
-    다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다."""
+    다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다.
+    반환 {id} — 바뀐 상세는 admin_db.ticket_detail 이 읽는다(운영 경계)."""
     if status not in TICKET_STATUSES:
         raise CrmError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
     with tx() as c:
@@ -1890,11 +1867,11 @@ def ticket_set_status(tid, status):
                           "WHERE ticket_id=%s", ("done" if status == "done" else "refused", str(tid)))
             else:
                 c.execute("UPDATE privacy_log SET result=NULL WHERE ticket_id=%s", (str(tid),))
-        return _ticket_admin_row(c, str(tid))
+        return {"id": str(tid)}
 
 
 def ticket_set_note(tid, note):
-    """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신."""
+    """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신. 반환 {id} — 상세는 admin_db.ticket_detail."""
     if not isinstance(note, str):
         raise CrmError("ARG-INVALID", "메모는 문자열이에요.")
     check_len("admin_note", note, LIMIT_ADMIN_NOTE)
@@ -1902,7 +1879,7 @@ def ticket_set_note(tid, note):
         n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s", (note, str(tid))).rowcount
         if not n:
             raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
-        return _ticket_admin_row(c, str(tid))
+        return {"id": str(tid)}
 
 
 def tickets_purge():
@@ -2036,23 +2013,6 @@ def admin_act(actor_id, op, target_id, role=None):
             c.execute("UPDATE users SET blocked_at=NULL WHERE id=%s", (tid,))
             _audit(c, "unblock", actor_id, tid)
         return {"changed": True}
-
-
-def admin_users():
-    """/admin/setup 사용자 표 — 이메일·가입일·역할·현재 처리방침 버전 동의 여부(버전이 없으면 None)·차단·웹 끊은 시각. datetime 그대로."""
-    ver = CONSENT_VERSIONS.get("privacy")
-    with tx() as c:
-        return _all(c, "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before,"
-                       "CASE WHEN %s::text IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id "
-                       "AND g.kind='privacy' AND g.version=%s) END AS consented FROM users u ORDER BY u.created, u.id", (ver, ver))
-
-
-def admin_audit_list(limit=AUDIT_LIST):
-    """감사 로그 최근 limit 건 — 실행자·대상 이메일(지워진 계정이면 NULL, 화면이 id 앞 8자를 보인다)."""
-    with tx() as c:
-        return _all(c, "SELECT a.id,a.at,a.action,a.actor_id,a.target_id,ua.email AS actor_email,ut.email AS target_email "
-                       "FROM admin_audit a LEFT JOIN users ua ON ua.id=a.actor_id LEFT JOIN users ut ON ut.id=a.target_id "
-                       "ORDER BY a.at DESC, a.id DESC LIMIT %s", (limit,))
 
 
 def admin_audit_purge():

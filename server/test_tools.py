@@ -19,6 +19,9 @@
 10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 ra(콜백 같은 uid·auth_time·창 12h/15m·미래) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
    · 부여·회수·LAST-ADMIN·동시 회수 · 차단/해제(웹·MCP AUTH-BLOCKED/REVOKED) · 웹 끊기는 MCP 무관 · /app 관리자 경로 창
    · CSP·스크립트 0·이스케이프 · admin_cli grant · 감사 파기 · bootstrap(임시 스키마)·lifespan 배선
+11) 운영 경계(admin_db): 정적(/admin·관리자 문의 핸들러는 db 조회를 직접 안 부름 · admin_db SQL 은 ALLOW 리터럴만 · SELECT * 0 ·
+   본문 열 0 · text·admin_note 는 문의 상세만 · label·options 는 이름 공유 분기만) · ALLOW 키별 행 키 = cols · 조회자·미구현 키 거절
+   · 표식(금지 열 값이 /admin·/api 관리자 응답에 없음, 문의 상세엔 있음)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -80,8 +83,9 @@ LIM_EMAIL = {k: f"lim-{k}@example.com" for k in LIM_KINDS}
 TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "def2@example.com",
                "core1@example.com", "core2@example.com", "noconsent@example.com") + tuple(f"desk{i}@example.com" for i in range(11)) \
     + tuple(LIM_EMAIL.values()) \
-    + ("b2a@example.com", "b2b@example.com", "b2c@example.com", "b2m@example.com", "<b>esc</b>@example.com")
-# desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단
+    + ("b2a@example.com", "b2b@example.com", "b2c@example.com", "b2m@example.com", "<b>esc</b>@example.com") \
+    + ("adb-admin@example.com", "adb-user@example.com")
+# desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -2875,6 +2879,144 @@ async def test_beta2_bootstrap():
     print("OK — β2 bootstrap(한 번만·env 무시·빈 env 행·recover 존중·lifespan 배선·실패해도 기동) 통과")
 
 
+# ── 11) 운영 경계 (admin_db) ───────────────────────────
+# 운영 화면·운영 POST 의 DB 접근은 admin_db 한 모듈. 「본문」은 운영 경로에서 SELECT 하지 않는다.
+# 표식 시험이 도는 관리자 응답 — 새 /admin 페이지·리포트는 여기에 더한다(P4). (method, path, form/json)
+ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
+ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback")
+ADB_ALLOWED_DB = {"CrmError", "CONSENT_VERSIONS"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외·상수만, 조회 함수 없음
+ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value|questions|records|"
+                           r"candidates|tabs|items)\b", re.I)
+ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
+ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
+ADB_TEXT_KEYS = ("tickets.detail", "tickets.legacy_inbox")   # legacy_inbox = /app 문의함 이행용, P5 에서 키와 함께 뺀다
+
+
+def _web_admin_block():
+    """web.py 에서 관리자 문의 쓰기(_admin_write)부터 routes 전까지 — /admin 핸들러 전부와 /api/feedback/status·note."""
+    src = (HERE / "web.py").read_text(encoding="utf-8")
+    i, j = src.index("    async def _admin_write("), src.index("    def routes(self)")
+    return src, src[i:j]
+
+
+def test_admin_boundary_static():
+    """정적: /admin 핸들러가 db 조회를 직접 안 부름 · admin_db 의 SQL 은 ALLOW 리터럴뿐 · SELECT * 0 · 본문 열 0 ·
+    text·admin_note 는 tickets.detail 만 · label·options 는 이름 공유(consent=struct_names) 키만 · 옮긴 함수는 db 에 없다."""
+    import ast
+    import admin_db
+    src, blk = _web_admin_block()
+    used = set(re.findall(r"\bdb\.(\w+)", blk))
+    assert used <= ADB_ALLOWED_DB, f"/admin 핸들러가 db 를 직접 부른다: {sorted(used - ADB_ALLOWED_DB)}"
+    assert "admin_db." in blk
+    for name in ("admin_users", "admin_audit_list", "tickets_admin_counts", "tickets_all", "admin_act", "ticket_set_status", "ticket_set_note"):
+        assert f"db.{name}(" not in src and f"db.{name})" not in src and f"db.{name}," not in src, f"web.py 가 db.{name} 을 직접 부른다"
+    for name in ("admin_users", "admin_audit_list", "tickets_admin_counts", "tickets_all", "_TICKET_ADMIN_COLS", "_ticket_admin_row"):
+        assert not hasattr(db, name), f"db.{name} 이 남았다 — 운영 조회는 admin_db 로"
+    asrc = (HERE / "admin_db.py").read_text(encoding="utf-8")
+    assert not re.search(r"SELECT\s+(\w+\.)?\*", asrc, re.I), "admin_db 에 SELECT *"
+    tree = ast.parse(asrc)
+    assert not any(isinstance(n, ast.JoinedStr) for n in ast.walk(tree)), "admin_db 에 f-string — SQL 보간 금지"
+    assert not any(isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Mod, ast.Add)) and isinstance(n.left, ast.Constant)
+                   and isinstance(n.left.value, str) for n in ast.walk(tree)), "admin_db 에 문자열 % · + 조립"
+    sqls = {k: v["sql"] for k, v in admin_db.ALLOW.items() if v["sql"]}
+    lits = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and re.search(r"\b(SELECT|INSERT|UPDATE|DELETE)\b", n.value)]
+    assert lits and set(lits) <= set(sqls.values()), "ALLOW 밖 SQL 리터럴이 있다"
+    for k, v in admin_db.ALLOW.items():
+        assert v["viewer"] == admin_db.VIEWER_ADMIN and v["consent"] in (None, "struct_names") and v["cols"], k
+        sql = v["sql"]
+        if not sql:
+            continue
+        assert not ADB_BODY_COLS.search(sql), (k, ADB_BODY_COLS.search(sql).group(0))
+        if k not in ADB_TEXT_KEYS:
+            assert not ADB_TEXT_COLS.search(sql), (k, "text·admin_note 는 문의 상세만")
+        if v["consent"] != "struct_names":
+            assert not ADB_NAME_COLS.search(sql), (k, "label·options 는 이름 공유 분기만")
+    assert ADB_TEXT_COLS.search(sqls["tickets.detail"]), "상세는 원문을 읽는다"
+    # 조회자·미구현 키 거절
+    expect("FORBIDDEN", admin_db.users, "user")
+    expect("FORBIDDEN", admin_db.ticket_counts, None)
+    expect("FORBIDDEN", admin_db.ticket_status, "user", "tk_x", "ack")
+    expect("ARG-INVALID", admin_db._rows, "schema.names", "admin")
+    expect("ARG-INVALID", admin_db._rows, "users; DROP TABLE users", "admin")
+    print("OK — 운영 경계 정적(핸들러 db 조회 0 · ALLOW 리터럴만 · SELECT * 0 · 본문 열 0 · text/label 분기 · 조회자 거절) 통과")
+
+
+async def test_admin_boundary():
+    """표식: 다른 사용자의 금지 열(items 제목·본문·data, 기록, 질문, 탭, history, 비동의 label·options)에 표식을 넣고
+    관리자 응답 전부에 표식이 없는지. 허용 응답(문의 상세)에는 원문·메모가 있는지. ALLOW 키별 행 키 = cols(응답 키 스냅샷)."""
+    import admin_db
+    from psycopg.types.json import Jsonb
+    site = main.site
+    mark = "MARKF" + secrets.token_hex(4)        # 금지 열 표식 — 어떤 관리자 응답에도 없어야 한다
+    tmark, nmark = "MARKT" + secrets.token_hex(4), "MARKN" + secrets.token_hex(4)   # 문의 원문·메모 — 상세에만
+    A = db.user_by_subject("adb_admin_sub", ADB["admin"])["id"]
+    U = db.user_by_subject("adb_user_sub", ADB["user"])["id"]
+    for u in (A, U):
+        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
+    _set_role(A, "admin")
+    with db.tx() as c:
+        c.execute("INSERT INTO questions (id,user_id,text) VALUES ('q_adb',%s,%s)", (U, mark + "-q"))
+        c.execute("INSERT INTO records (id,user_id,title,body) VALUES ('r_adb',%s,%s,%s)", (U, mark + "-rt", mark + "-rb"))
+        c.execute("INSERT INTO tabs (user_id,doc) VALUES (%s,%s)", (U, Jsonb({"tabs": [{"name": mark + "-tab"}]})))
+        c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision,history) VALUES (%s,'od_adb','adb',%s,'collection',1,%s)",
+                  (U, mark + "-ol", Jsonb([{"label": mark + "-hist"}])))
+        c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,'od_adb','f1',%s,'select',%s)",
+                  (U, mark + "-fl", Jsonb([{"value": "v", "label": mark + "-opt"}])))
+        c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,body,data,revision) "
+                  "VALUES (%s,'i_adb','od_adb',1,%s,%s,%s,1)", (U, mark + "-it", mark + "-ib", Jsonb({"f1": mark + "-data"})))
+    t = {"id": "tk_adb" + secrets.token_hex(3)}   # SQL 로 — desk 시험이 전역 하루 한도를 채워 둔다
+    with db.tx() as c:
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via,admin_note) VALUES (%s,%s,'bug',%s,'web',%s)", (t["id"], U, tmark, nmark))
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    cookie = site.session_value(A, ra=int(time.time()))
+    seen = []
+
+    async def call(method, path, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", cookie)
+            r = await h.request(method, path, headers={"origin": PUBLIC}, **kw)
+        seen.append((method, path, r.status_code))
+        return r, r.text + json.dumps(dict(r.headers), ensure_ascii=False)
+    try:
+        for path in ADMIN_GETS:
+            r, out = await call("GET", path)
+            assert r.status_code in (200, 302), (path, r.status_code)
+            assert mark not in out, f"{path} 응답에 금지 열 값"
+        r, out = await call("GET", "/admin/setup")
+        assert r.status_code == 200 and ADB["user"] in out and tmark not in out and nmark not in out, "Setup 엔 이메일만, 문의 원문 없음"
+        r, out = await call("GET", "/api/state")
+        assert r.status_code == 200 and "admin_tickets" in r.json() and tmark not in out, "관리자 띠는 숫자만"
+        # 허용 응답 — 문의 상세(상태·메모 POST 의 응답, admin_db.ticket_detail)
+        r, out = await call("POST", "/api/feedback/status", json={"id": t["id"], "status": "ack"})
+        assert r.status_code == 200 and r.json()["text"] == tmark and r.json()["admin_note"] == nmark and mark not in out, r.text[:200]
+        r, out = await call("POST", "/api/feedback/note", json={"id": t["id"], "admin_note": nmark})
+        assert r.status_code == 200 and r.json()["text"] == tmark and mark not in out, r.text[:200]
+        d = admin_db.ticket_detail("admin", t["id"])
+        # 대조 — 표식은 본인 화면에선 보인다(심은 값이 실제로 읽히는 자리에 있다는 증거)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(U))
+            own = (await h.get("/api/state")).text
+        for suffix in ("-q", "-rt", "-tab", "-ol", "-fl", "-opt", "-it", "-ib"):
+            assert mark + suffix in own, f"대조 실패 — 본인 state 에 {suffix} 표식이 없다"
+        assert d["text"] == tmark and d["admin_note"] == nmark and d["email"] == ADB["user"], d
+        # 응답 키 스냅샷 — ALLOW 키별 행 키 = cols(/admin 은 HTML 이라 키는 함수 반환으로 본다)
+        await call("POST", "/admin/signout", data={"uid": U})   # 감사 행 1개 이상
+        snap = {"setup.users": admin_db.users("admin"), "audit.list": admin_db.audit("admin"),
+                "tickets.counts": [admin_db.ticket_counts("admin")], "tickets.detail": [admin_db.ticket_detail("admin", t["id"])],
+                "tickets.legacy_inbox": admin_db.tickets_legacy_inbox("admin")}
+        assert set(snap) == {k for k, v in admin_db.ALLOW.items() if v["sql"]}, "ALLOW 키가 늘면 스냅샷도 늘린다"
+        for k, rows in snap.items():
+            assert rows, k
+            for row in rows:
+                assert tuple(row) == admin_db.ALLOW[k]["cols"], (k, tuple(row))
+                assert mark not in json.dumps(row, default=str, ensure_ascii=False), k
+    finally:
+        site.dev, site.dev_user = real
+    print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세에만 원문·메모 · ALLOW 행 키 = cols) 통과")
+
+
 def consent_setup():
     """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
     for email in TEST_EMAILS:
@@ -2911,6 +3053,8 @@ async def run():
         test_alpha2_delete_lock()
         await test_beta2()
         await test_beta2_bootstrap()
+        test_admin_boundary_static()
+        await test_admin_boundary()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]

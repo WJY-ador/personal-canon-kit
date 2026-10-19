@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+import admin_db
 import auth
 import db
 from envnames import env
@@ -815,7 +816,7 @@ class Web:
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
         if self._ticket_admin(request, "ticket.read_all"):   # 관리자 + 재인증 12시간 안만 키가 있다 — 아니면 비관리자와 같은 모양. MCP state_get 에는 넣지 않는다
-            st["admin_tickets"] = await run_in_threadpool(db.tickets_admin_counts)
+            st["admin_tickets"] = await run_in_threadpool(admin_db.ticket_counts, request.state.role)
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
     async def api_journal(self, request):
@@ -908,7 +909,8 @@ class Web:
             return err
         if request.method == "GET":
             if self._ticket_admin(request, "ticket.read_all"):   # 재인증 창 밖이면 비관리자 응답과 같은 모양
-                out, counts = await run_in_threadpool(lambda: (db.tickets_all(), db.tickets_admin_counts()))
+                role = request.state.role
+                out, counts = await run_in_threadpool(lambda: (admin_db.tickets_legacy_inbox(role), admin_db.ticket_counts(role)))
                 return JSONResponse({"tickets": out, "admin": True, "admin_tickets": counts}, headers={"cache-control": "no-store"})
             out = await run_in_threadpool(db.tickets_mine, uid)
             return JSONResponse({"tickets": out}, headers={"cache-control": "no-store"})
@@ -934,7 +936,7 @@ class Web:
 
     async def _admin_write(self, request, fields, fn):
         """관리자 문의 쓰기 공통 — 세션(401) → Origin(403) → 관리자(403 FORBIDDEN) → 재인증 ticket.update 창(403 REAUTH-REQUIRED)
-        → JSON 본문 문자열 필드 → fn(...). 문의 변경은 감사 동작이 아니다 — tickets.updated 만 바뀐다."""
+        → JSON 본문 문자열 필드 → fn(role, ...)(admin_db). 문의 변경은 감사 동작이 아니다 — tickets.updated 만 바뀐다."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -953,18 +955,18 @@ class Web:
         except Exception:
             return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
         try:
-            out = await run_in_threadpool(fn, *args)
+            out = await run_in_threadpool(fn, request.state.role, *args)
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
         return JSONResponse(out)
 
     async def api_feedback_status(self, request):
-        """관리자 — 문의 상태 바꾸기 {id, status}. 종결이면 closed_at, 다시 열면 NULL(db.ticket_set_status)."""
-        return await self._admin_write(request, ("id", "status"), db.ticket_set_status)
+        """관리자 — 문의 상태 바꾸기 {id, status}. 종결이면 closed_at, 다시 열면 NULL(admin_db.ticket_status)."""
+        return await self._admin_write(request, ("id", "status"), admin_db.ticket_status)
 
     async def api_feedback_note(self, request):
         """관리자 — 운영자 메모 {id, admin_note}(2KB 바이트). 사용자에게 안 보인다."""
-        return await self._admin_write(request, ("id", "admin_note"), db.ticket_set_note)
+        return await self._admin_write(request, ("id", "admin_note"), admin_db.ticket_note)
 
     # ── /admin (β2) ────────────────────────────────────
     # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 재인증 창은 REAUTH_WINDOWS(동작 기준).
@@ -996,7 +998,8 @@ class Web:
         ra = request.state.ra
         if not reauth_ok(ra, "admin.view"):
             return RedirectResponse("/admin/reauth", status_code=302)
-        users, audit = await run_in_threadpool(lambda: (db.admin_users(), db.admin_audit_list()))
+        role = request.state.role
+        users, audit = await run_in_threadpool(lambda: (admin_db.users(role), admin_db.audit(role)))
         now = time.time()
         risky = REAUTH_WINDOWS["role.grant"] - (now - ra)
         view = REAUTH_WINDOWS["admin.view"] - (now - ra)
@@ -1037,7 +1040,7 @@ class Web:
                 f'<h2>사용자 {len(users)}명</h2><div class="tbl"><table><thead><tr><th>이메일</th><th>가입일</th><th>역할</th>'
                 f'<th>처리방침{" " + _esc(ver) if ver else ""}</th><th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
-                f'<h2>감사 로그 최근 {db.AUDIT_LIST}건</h2><div class="tbl"><table><thead><tr><th>시각</th><th>실행자</th><th>동작</th>'
+                f'<h2>감사 로그 최근 {admin_db.AUDIT_LIST}건</h2><div class="tbl"><table><thead><tr><th>시각</th><th>실행자</th><th>동작</th>'
                 f'<th>대상</th></tr></thead><tbody>{arows or "<tr><td colspan=4 class=muted>없음</td></tr>"}</tbody></table></div>')
         return _admin_page("관리 — Setup", body)
 
@@ -1057,7 +1060,7 @@ class Web:
 
     async def _admin_post(self, request, op: str):
         """/admin POST 공통 — 관리자 세션(아니면 404) → Origin 정확히 일치(403) → form(400) → 재인증 창(403 REAUTH-REQUIRED)
-        → db.admin_act(한 트랜잭션) → 303 /admin/setup."""
+        → admin_db.act(한 트랜잭션·감사) → 303 /admin/setup."""
         uid = await self._admin_who(request)
         if uid is None:
             return _not_found()
@@ -1074,7 +1077,7 @@ class Web:
             return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 이 동작은 15분 안에 다시 로그인한 '
                                '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403)
         try:
-            await run_in_threadpool(db.admin_act, uid, op, form["uid"], role)
+            await run_in_threadpool(admin_db.act, uid, op, form["uid"], role)
         except db.CrmError as e:
             status = {"NOT-FOUND": 404, "FORBIDDEN": 403, "LAST-ADMIN": 409}.get(e.code, 400)
             return _admin_page("처리하지 못했어요", f"<h1>처리하지 못했어요</h1><p>{_esc(e.code)} — {_esc(e.message)}</p>"
