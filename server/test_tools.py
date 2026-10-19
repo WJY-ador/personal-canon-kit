@@ -3785,6 +3785,7 @@ async def run():
         await test_q2_std()
         await test_q3()
         await test_q5_admin()
+        await test_q45_user()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -5523,6 +5524,158 @@ async def test_q5_admin():
         site.dev, site.dev_user = real
     print("OK — 22a Q5 운영자 화면(SVG 결정성·예제·본인 응답 · 일반 사용자 404 · 목록 n·N·M·표준 코드 · 비동의·철회 상세 이름·key·값·출처·id 0"
           "(HTML·SVG·aria·URL·302·404) · 동의 label 보임·key 0·철회 뒤 0 · 위조 id 404 · 무결성 3종 ≠ 검사 불가 · N:1·N:N · 고립·표준 정의 보호) 통과")
+
+
+# ── 22b) Q4·Q5 사용자 화면 — 기록 출처·재검토 · 구조 정의 · 편입 미리보기·확인 대화창 ─────────
+Q45 = {k: f"q45{k}@example.com" for k in ("a", "b")}   # a = 화면 주인 · b = 다른 사용자(이름 누출 표식 Q45B…)
+
+
+async def test_q45_user():
+    """app.html 정적(「구조 정의」 보기·편입 대화창 마크업·체크 게이트·출처 미확인·재검토 문구·인라인 스크립트 1개·on* 0·그래프 없음)
+    · /api/state structure == contract.respond(self)(기대값은 SQL 로 읽은 std_marks·std_choices + db.definitions + db.sources)
+    · 편입 전후 locked·origin 변화 · MCP state(db.state)엔 structure 없음 · 다른 사용자 이름 0(/api/state·/api/std/preview)
+    · 출처 있는 기록·없는 기록·재검토 후보가 화면 입력에 있다 · 관리자 /app 에도 편입 대화창(사용자·관리자 구간 밖).
+    시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
+    site = main.site
+    saved = {k: os.environ.pop(k, None) for k in ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")}
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    emails = list(Q45.values())
+
+    def wipe():
+        with db.tx() as c:
+            ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (emails,)).fetchall()]
+        for i in ids:
+            db.user_delete(i)
+
+    async def get(path, uid):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            r = await h.get(path)
+            assert r.status_code == 200, (path, r.status_code, r.text[:200])
+            return r
+
+    async def choose(uid, body):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            return await h.post("/api/std/choose", json=body, headers={"origin": PUBLIC})
+
+    def expected(uid):
+        """web.py 와 다른 경로 — std_marks·std_choices 를 SQL 로 직접 읽는다."""
+        with db.tx() as c:
+            m = c.execute("SELECT version,state FROM std_marks WHERE user_id=%s AND version=%s", (uid, contract.STD_VERSION)).fetchone()
+            ch = {r["std_key"]: r["state"] for r in c.execute("SELECT std_key,state FROM std_choices WHERE user_id=%s", (uid,)).fetchall()}
+        return contract.respond({"definitions": db.definitions(uid), "std_marks": dict(m) if m else None, "std_choices": ch,
+                                 "sources": db.sources(uid)}, "self")
+
+    wipe()
+    try:
+        # ── app.html 정적 ──
+        html = (HERE / "app.html").read_text(encoding="utf-8")
+        assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
+        assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
+        assert '"구조 정의"' in html and "/defs" in html and 'if (a === "defs") return renderDefs(tab);' in html, "구조 정의 보기·라우트"
+        assert "S.structure" in html and "/api/std/preview" in html and "/api/std/choose" in html
+        i = html.index('<dialog id="std-dlg"')
+        dlg = html[i:html.index("</dialog>", i)]
+        for w in ('id="std-dlg-ok"', 'type="checkbox"', 'id="std-dlg-go" disabled', 'id="std-dlg-lock"', 'id="std-dlg-oktext"',
+                  'id="std-dlg-cancel"'):
+            assert w in dlg, w
+        for mark in ("<!--user-->", "<!--admin-->"):   # 관리자 /app 도 구조 탭을 쓴다 — 대화창은 두 구간 표식 밖
+            for a in [m.start() for m in re.finditer(re.escape(mark), html)]:
+                b = html.index(mark.replace("<!--", "<!--/"), a)
+                assert not (a < i < b), ("편입 대화창이 구간 안", mark)
+        for w in ('같은 뜻으로 쓴다', 'confirmed_meaning = true', 'expected_revision = o.object ? o.object.revision : null',
+                  '$("std-dlg-go").disabled = !$("std-dlg-ok").checked', '"FEATURE-OFF":', '"DEF-INVALID":', '"CONFLICT":',
+                  "표준 정의 보호", "출처 미확인", "source_counts", "확정 전 재검토", "S.sources"):
+            assert w in html, w
+        for code in contract.LOCKED_CHANGES:   # 잠금 영향 문구 — 서버 코드 전부
+            assert re.search(rf"\b{code}: \"", html), code
+        for code in contract.REVIEW_REASONS:
+            assert re.search(rf"\b{code}: \"", html), code
+        fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
+        assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
+        assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
+        assert "structure_svg" not in html and "renderGraph" not in html, "그래프 전환은 이번에 없다"
+
+        # ── 사용자 A(기존 사용자형 — 표식 없음) · B(다른 사용자) ──
+        A = db.user_by_subject("q45a_sub", Q45["a"])["id"]
+        B = db.user_by_subject("q45b_sub", Q45["b"])["id"]
+        _r3_def(A, "axes", "내 관심축 Q45A01", "collection", [{"key": "keywords", "label": "단어 Q45A02", "value_type": "text_list"},
+                                                                    {"key": "memo", "label": "메모 Q45A03", "value_type": "text"}])
+        _r3_def(A, "principles", "내 원칙 Q45A04", "collection", [{"key": "axes", "label": "축", "value_type": "text"}])   # 충돌
+        _r3_def(B, "axes", "남의 축 Q45B01", "collection", [{"key": "keywords", "label": "남의 단어 Q45B02", "value_type": "text_list"}])
+        os.environ["CRM_FEATURE_SOURCES"] = "on"
+        try:
+            ra = db.record_add(A, "출처 있는 글", "출처가 있는 원문 문장이다.", source_ref={"kind": "file", "name": "업무일지 Q45A05",
+                                                                                   "location": "drive/q45a.md"})
+            db.record_add(B, "남의 글", "남의 원문.", source_ref={"kind": "url", "name": "남의 출처 Q45B03", "location": "https://q45b.example"})
+        finally:
+            os.environ.pop("CRM_FEATURE_SOURCES", None)
+        rn = db.record_add(A, "출처 없는 글", "출처가 없는 원문 문장이다.")
+        rv = db.record_add(A, "비적격 글", "재검토할 원문 문장이다.")
+        (cid,), _ = db.candidates_propose(A, rv["id"], "", [{"text": "재검토 판단", "quote": "재검토할 원문 문장이다"}], "ai")
+        with db.tx() as c:   # 후보가 붙은 뒤 근거가 비적격이 된 옛 데이터(정정 API 는 PROVENANCE-LOCKED)
+            c.execute("UPDATE records SET author_kind='unknown' WHERE user_id=%s AND id=%s", (A, rv["id"]))
+
+        st = (await get("/api/state", A)).json()
+        assert st["structure"] == expected(A), "structure = contract.respond(self)"
+        assert st["structure"]["viewer"] == "self" and st["structure"]["std"] == st["std"]
+        by = {o["key"]: o for o in st["structure"]["objects"]}
+        assert by["axes"]["origin"] == "custom" and by["axes"]["locked"] is False and by["axes"]["std_name"] is None, "편입 전"
+        js = {j["id"]: j for j in st["journal"]}
+        assert js[ra["id"]]["source_id"] and js[rn["id"]]["source_id"] is None, "출처 있는 기록·없는(출처 미확인) 기록"
+        assert [x["name"] for x in st["sources"]] == ["업무일지 Q45A05"] and st["source_counts"] == {
+            "by_source": {js[ra["id"]]["source_id"]: 1}, "unconfirmed": 2}
+        assert next(c for c in st["candidates"] if c["id"] == cid)["review"] == "author_unknown"
+        assert "structure" not in db.state(A), "MCP state_get 에는 structure 없음"
+        pv = (await get("/api/std/preview", A)).json()
+        for body in (json.dumps(st, ensure_ascii=False), json.dumps(pv, ensure_ascii=False)):
+            assert "Q45B" not in body, "다른 사용자 이름 0"
+        pb = _r3_by(pv)
+        assert pb["axes"]["can_incorporate"] and pb["axes"]["structure"] == "extend"
+        assert not pb["principles"]["can_incorporate"] and pb["principles"]["structure"] == "conflict"
+
+        # 편입(화면과 같은 본문) → structure 가 locked·standard 로 바뀐다
+        os.environ["CRM_FEATURE_STANDARD"] = "on"
+        r = await choose(A, {"std_key": "axes", "state": "incorporated", "confirmed_meaning": True,
+                             "expected_revision": pb["axes"]["object"]["revision"]})
+        assert r.status_code == 200 and r.json()["state"] == "incorporated", r.text
+        r = await choose(A, {"std_key": "principles", "state": "incorporated", "confirmed_meaning": True,
+                             "expected_revision": pb["principles"]["object"]["revision"]})
+        assert r.status_code == 400 and r.json()["code"] == "DEF-INVALID", r.text
+        r = await choose(A, {"std_key": "decision_events", "state": "deferred"})
+        assert r.status_code == 200, r.text
+        st = (await get("/api/state", A)).json()
+        assert st["structure"] == expected(A)
+        by = {o["key"]: o for o in st["structure"]["objects"]}
+        assert (by["axes"]["origin"], by["axes"]["locked"], by["axes"]["std_name"]) == ("standard", True, contract.std_name("std:axes")), by["axes"]
+        fo = {f["key"]: f for f in by["axes"]["fields"]}
+        assert fo["keywords"]["locked"] is True and (fo["memo"]["origin"], fo["memo"]["locked"]) == ("custom", False), "사용자 필드는 custom"
+        assert st["structure"]["std"]["objects"] == {"axes": "incorporated", "decision_events": "deferred", "principles": "none"}
+        assert "Q45B" not in json.dumps(st, ensure_ascii=False) + json.dumps((await get("/api/std/preview", A)).json(), ensure_ascii=False)
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+
+        # /app — 일반·관리자 모두 편입 대화창·구조 정의 보기 코드가 있다(CSP 해시 = 보낸 본문)
+        for admin in (False, True):
+            _set_role(A, "admin" if admin else "user")
+            r = await get("/app", A)
+            hs = web.inline_script_hashes(r.text)
+            assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"]
+            assert r.text.count('<dialog id="std-dlg"') == 1 and "renderDefs" in r.text, admin
+            assert ('id="desk-dlg"' in r.text) is not admin, "Q1b·Q1 분기 유지"
+        _set_role(A, "user")
+    finally:
+        site.dev, site.dev_user = real
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        wipe()
+    with db.tx() as c:
+        assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
+    print("OK — Q4·Q5 사용자 화면(app.html 정적·structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
+          "·출처 미확인·재검토·관리자 /app 대화창) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
