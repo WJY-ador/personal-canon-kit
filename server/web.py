@@ -444,8 +444,7 @@ def _usage(name: str, handler):
 # ra 는 /admin/reauth → /login?fresh=1&reauth=1 → 콜백(같은 uid)에서만 생긴다. 일반 로그인 쿠키엔 없다.
 REAUTH_WINDOWS = {
     "admin.view": 12 * 3600,        # /admin 화면·감사 로그
-    "ticket.read_all": 12 * 3600,   # /app 문의함 전체 조회(GET /api/state 의 admin_tickets · GET /api/feedback 전체)
-    "ticket.update": 12 * 3600,     # 문의 처리 — /admin/tickets/<id>/* POST · /app 문의 상태·메모(POST /api/feedback/status·note)
+    "ticket.update": 12 * 3600,     # 문의 처리 — /admin/tickets/<id>/* POST
     "role.grant": 15 * 60,
     "role.revoke": 15 * 60,
     "user.web_signout": 15 * 60,
@@ -629,10 +628,6 @@ class Web:
         if uid is not None:
             request.state.uid = uid
         return uid
-
-    def _ticket_admin(self, request, action: str) -> bool:
-        """/app 관리자 경로 — uid_of 가 둔 role 이 admin 이고 ticket.* 재인증 창 안일 때만."""
-        return getattr(request.state, "role", None) == "admin" and reauth_ok(getattr(request.state, "ra", None), action)
 
     def same_origin(self, request) -> bool:
         return request.headers.get("origin", "") in self.origins
@@ -869,8 +864,6 @@ class Web:
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
-        if self._ticket_admin(request, "ticket.read_all"):   # 관리자 + 재인증 12시간 안만 키가 있다 — 아니면 비관리자와 같은 모양. MCP state_get 에는 넣지 않는다
-            st["admin_tickets"] = await run_in_threadpool(admin_db.ticket_counts, request.state.role)
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
     async def api_journal(self, request):
@@ -956,16 +949,12 @@ class Web:
         return JSONResponse(out)
 
     async def api_feedback(self, request):
-        """문의(desk-0). GET = 「내 문의」(본인 글·상태, 운영자 메모 없음) — 관리자면 「문의함」(전체 최근 100건·이메일·메모 + admin_tickets)
+        """문의(desk-0). GET = 「내 문의」(본인 글·상태·답변 유무·공개 갱신, 운영자 메모 없음) — 관리자도 같다(운영은 /admin/tickets)
         · POST {kind, text, page} = 접수. POST 는 세션 + Origin. 길이는 write_gate(전역 DB 크기는 면제 — QUOTA_EXEMPT), 하루 한도는 db.ticket_add."""
         uid, err = await self._need(request)
         if err:
             return err
         if request.method == "GET":
-            if self._ticket_admin(request, "ticket.read_all"):   # 재인증 창 밖이면 비관리자 응답과 같은 모양
-                role = request.state.role
-                out, counts = await run_in_threadpool(lambda: (admin_db.tickets_legacy_inbox(role), admin_db.ticket_counts(role)))
-                return JSONResponse({"tickets": out, "admin": True, "admin_tickets": counts}, headers={"cache-control": "no-store"})
             out = await run_in_threadpool(db.tickets_mine, uid)
             return JSONResponse({"tickets": out}, headers={"cache-control": "no-store"})
         if not self.same_origin(request):
@@ -998,40 +987,6 @@ class Web:
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message}, status_code=404 if e.code == "NOT-FOUND" else 400)
         return JSONResponse(out, headers={"cache-control": "no-store"})
-
-    async def _admin_write(self, request, fields, fn):
-        """관리자 문의 쓰기 공통 — 세션(401) → Origin(403) → 관리자(403 FORBIDDEN) → 재인증 ticket.update 창(403 REAUTH-REQUIRED)
-        → JSON 본문 문자열 필드 → fn(role, 실행자, ...)(admin_db). 문의 변경은 감사(admin_audit) 동작이 아니다 — ticket_history 에 사건이 남는다."""
-        uid, err = await self._need(request)
-        if err:
-            return err
-        if not self.same_origin(request):
-            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
-        if getattr(request.state, "role", None) != "admin":
-            return JSONResponse({"code": "FORBIDDEN", "msg": "운영자만 할 수 있어요."}, status_code=403)
-        if not self._ticket_admin(request, "ticket.update"):
-            return JSONResponse({"code": "REAUTH-REQUIRED", "msg": "다시 로그인한 뒤 할 수 있어요.", "action": "/admin/reauth"},
-                                status_code=403)
-        try:
-            body = await request.json()
-            assert isinstance(body, dict)
-            args = [body.get(f) for f in fields]
-            assert all(isinstance(a, str) for a in args)
-        except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
-        try:
-            out = await run_in_threadpool(fn, request.state.role, uid, *args)
-        except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
-        return JSONResponse(out)
-
-    async def api_feedback_status(self, request):
-        """관리자 — 문의 상태 바꾸기 {id, status}. 종결이면 closed_at, 다시 열면 NULL(admin_db.ticket_status)."""
-        return await self._admin_write(request, ("id", "status"), admin_db.ticket_status)
-
-    async def api_feedback_note(self, request):
-        """관리자 — 운영자 메모 {id, admin_note}(2KB 바이트). 사용자에게 안 보인다."""
-        return await self._admin_write(request, ("id", "admin_note"), admin_db.ticket_note)
 
     # ── /admin (β2) ────────────────────────────────────
     # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 재인증 창은 REAUTH_WINDOWS(동작 기준).
@@ -1367,8 +1322,6 @@ class Web:
             Route("/api/item", u("web:item", self.api_item)),
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
-            Route("/api/feedback/status", u("web:feedback_status", self.api_feedback_status), methods=["POST"]),
-            Route("/api/feedback/note", u("web:feedback_note", self.api_feedback_note), methods=["POST"]),
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
             Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),

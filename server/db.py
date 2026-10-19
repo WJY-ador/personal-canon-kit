@@ -1874,8 +1874,9 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
 
 # ── 문의 데스크 (desk-0) ────────────────────────────────
 # 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
-# 사용자는 「내 문의」에서 처리 상태만 본다(답변 본문 없음). 운영자 메모(admin_note)·hint 는 사용자 응답에 없다.
-# 관리자(users.role='admin', β2)는 웹 「문의함」에서 전체 문의·메모를 보고 상태·메모를 바꾼다(재인증 12시간 안). 문의 변경은 감사 동작이 아니다 — tickets.updated 만 갱신한다.
+# 사용자는 「내 문의」에서 상태·공개 답변·공개 이력을 본다(ticket_get_mine). 운영자 메모(admin_note)·hint·내부 이력은 사용자 응답에 없다.
+# 관리자(users.role='admin', β2)는 /admin/tickets 에서 문의를 처리한다(재인증 12시간 안, admin_db 경유). 문의 변경은 감사(admin_audit)가 아니라
+# ticket_history 사건으로 남는다.
 
 TICKET_KINDS = ("bug", "request", "question", "privacy")
 TICKET_STATUSES = ("open", "ack", "doing", "done", "wontfix")
@@ -1883,7 +1884,6 @@ TICKET_PAGES = ("today", "question", "record", "structure", "map", "review", "st
 TICKET_DAILY_USER = 10             # 사용자 하루(KST) 10건
 TICKET_DAILY_ALL = 100             # 전역 하루(KST) 100건
 TICKET_KEEP_DAYS = 180             # 종결 뒤 보관 일수
-TICKET_ADMIN_LIST = 100            # 관리자 「문의함」 최근 건수
 LIMIT_ADMIN_NOTE = 2 * KB          # 운영자 메모(바이트)
 NOTICE = "이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요."
 # 오분류된 개인정보 요청을 SQL 한 줄로 거르는 표식. kind 가 privacy 가 아닐 때만 단다.

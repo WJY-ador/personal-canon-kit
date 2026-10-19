@@ -4,7 +4,7 @@
 - 읽기는 허용표 ALLOW 의 키로만 한다. 키 = 데이터셋/조회, 값 = 고정 SQL · 허용 열 · 조회자 조건 · 동의 조건.
   사용자 입력은 열 이름이 아니라 이 열거 키로만 받는다. SQL 은 리터럴 + 바인드 파라미터 — 열·테이블 이름을 보간하지 않는다.
 - 「본문」(items.title·body·data, 기록 원문, questions.text, tabs.doc, object_defs.history, 후보 문장)은 조회하지 않는다.
-- tickets.text·admin_note 는 문의 상세 조회(tickets.detail)에서만 읽는다. 예외는 이행용 tickets.legacy_inbox 하나(P5 에서 삭제).
+- tickets.text·admin_note 는 문의 상세 조회(tickets.detail)에서만 읽는다.
   object_defs.label·field_defs.label·field_defs.options 는 이름 공유 분기(consent=struct_names)에서만 읽는다.
 - 별표(전체 열) 조회 금지. 시험(test_tools 「11) 운영 경계」)이 이 파일과 ALLOW 를 정적으로 검사한다.
 쓰기는 db 의 트랜잭션 함수를 얇게 감싼다(규칙·감사는 db 에 있다).
@@ -57,14 +57,6 @@ ALLOW = {
         "cols": ("id", "at", "actor_id", "actor_email", "visibility", "kind", "from_val", "to_val", "reason"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
-    # 이행용(P5 삭제) — /app 관리자 「문의함」(GET /api/feedback 관리자 분기) 최근 100건. 원문·메모를 그리는 옛 화면이라 text·admin_note 를 읽는다.
-    "tickets.legacy_inbox": {
-        "sql": "SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.hint,t.admin_note,"
-               "t.created,t.updated,t.closed_at,u.email FROM tickets t JOIN users u ON u.id=t.user_id ORDER BY t.created DESC LIMIT %s",
-        "cols": ("id", "kind", "text", "status", "via", "page", "tool", "hint", "admin_note", "created", "updated", "closed_at",
-                 "email"),
-        "viewer": VIEWER_ADMIN, "consent": None,
-    },
     # 이름 공유 분기 — 현재 이름(label·options)만. 선택 동의(P2)·/admin/schema(P4)에서 쿼리를 단다. 지금은 선언만(실행 불가).
     "schema.names": {
         "sql": None,
@@ -74,7 +66,6 @@ ALLOW = {
 }
 
 AUDIT_LIST = db.AUDIT_LIST
-TICKET_LEGACY_LIST = db.TICKET_ADMIN_LIST   # /app 관리자 「문의함」 최근 건수(이행용, P5 삭제)
 
 
 def _check(key, role):
@@ -116,11 +107,6 @@ def audit(role, limit=AUDIT_LIST):
 def ticket_counts(role):
     """관리자 띠 숫자 {open, privacy_open}."""
     return dict(_row("tickets.counts", role))
-
-
-def tickets_legacy_inbox(role, limit=TICKET_LEGACY_LIST):
-    """이행용(P5 삭제) — /app 관리자 「문의함」 전체 사용자 문의 최근 limit 건(원문·메모·이메일 포함)."""
-    return [db._iso(r) for r in _rows("tickets.legacy_inbox", role, (limit,))]
 
 
 def ticket_detail(role, tid):
