@@ -452,6 +452,9 @@ def _init_schema(c):
         for n, ddl in _TICKETS_P3_COLS:   # P3 — 옛 tickets 에 답변·공개 갱신 열. schema.sql 최종형과 같은 모양
             if not _has_col(c, "tickets", n):
                 c.execute(f"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS {n} {ddl}")
+        for n, ddl in _USERS_P5_COLS:   # P5 — 옛 users 에 문의 섹션 숨김 열. schema.sql 최종형과 같은 모양
+            if not _has_col(c, "users", n):
+                c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
         for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
@@ -464,6 +467,7 @@ def _init_schema(c):
 _TICKETS_P3_COLS = (("reply", "text CHECK (octet_length(reply) <= 4096)"), ("reply_at", "timestamptz"),
                     ("public_updated", "timestamptz"))
 USAGE_RESET_MARK = "usage_daily_reset_privacy_v2"   # schema_marks 키 — 옛 사용량 1회 삭제
+_USERS_P5_COLS = (("desk_hidden", "boolean NOT NULL DEFAULT false"),)
 
 
 _USERS_B2_COLS = (("role", "text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))"), ("blocked_at", "timestamptz"),
@@ -672,6 +676,22 @@ def user_get(uid):
     if not r:
         raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
     return _iso(r)
+
+
+def desk_hidden_set(uid, hidden):
+    """/app 문의 섹션 숨김 저장(계정 메뉴). 동의 게이트 밖. 반환 {hidden}."""
+    if not isinstance(hidden, bool):
+        raise CrmError("ARG-INVALID", "hidden 은 true·false 예요.")
+    with tx() as c:
+        c.execute("UPDATE users SET desk_hidden=%s WHERE id=%s", (hidden, uid))
+    return {"hidden": hidden}
+
+
+def app_user_flags(uid) -> dict:
+    """/api/state 의 user 에 붙는 /app 전용 값 — 이름 공유 유효 동의(optional_consent_ok)·문의 섹션 숨김. MCP state_get 에는 넣지 않는다."""
+    with tx() as c:
+        r = _one(c, "SELECT desk_hidden FROM users WHERE id=%s", (uid,))
+    return {"struct_names": optional_consent_ok(uid, "struct_names"), "desk_hidden": bool(r and r["desk_hidden"])}
 
 
 def user_delete(uid):
