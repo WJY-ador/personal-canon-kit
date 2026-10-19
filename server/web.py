@@ -5,7 +5,7 @@
 웹 사용자 = MCP 사용자(같은 sub). 클라이언트는 AuthKit DCR 로 한 번 등록한 공개 클라이언트(AUTHKIT_WEB_CLIENT_ID).
 
 상태는 서버 메모리에 두지 않는다(Render Free 는 유휴 때 죽는다). PKCE verifier·state 는 10분짜리 서명 쿠키, 세션은 7일 서명 쿠키.
-세션 쿠키 v2(β2): {uid, iat, ra?} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. ra = 마지막 재인증 시각.
+세션 쿠키 v2(β2): {uid, iat, exp} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. 옛 쿠키에 남은 ra 키는 읽지 않는다.
 환경변수: AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
 """
 import base64
@@ -28,7 +28,9 @@ from starlette.routing import Route
 
 import admin_db
 import auth
+import contract
 import db
+import structure_svg
 from envnames import env
 
 SESSION_COOKIE = "crm_session"
@@ -46,10 +48,8 @@ _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md":
 # 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
 # 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CRM_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
-# 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
+# 처리방침(·약관) 버전 — 첫 20줄 머리글 `vN · 날짜` 에서 뽑아 db.CONSENT_VERSIONS 에(/privacy·화면 표시용, 쓰기 게이트 없음). terms 는 파일이 있을 때만.
 CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
-CONSENT_LABELS = {"privacy": ("개인정보 처리방침", "/privacy"), "terms": ("이용약관", "/terms")}
-OPTIONAL_CONSENT_HREF = "/privacy#privacy-1"   # 「구조 이름 공유」 설명 — 처리방침 1절(처리 목적) 안
 _VERSION_RE = re.compile(r"^`v(\d+) · ")   # 줄 머리 고정 — 본문 중간의 예시(`v9`)는 머리글이 아니다
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
@@ -103,7 +103,7 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# 웹 HTML 응답(/, /app, /help, /privacy, /consent, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
+# 웹 HTML 응답(/, /app, /help, /privacy, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
 # script-src 'self' — 외부(self) theme.js 만. /app 은 응답 본문의 인라인 스크립트 1개 해시를 더한다(app_csp).
 # 'unsafe-inline'·'unsafe-eval' 은 어떤 경우에도 넣지 않는다. style-src·default-src 는 아직 없다(인라인 style).
 CSP_BASE = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; script-src 'self'"
@@ -151,11 +151,6 @@ def ua_family(ua: str | None) -> str:
         if mark in ua:
             return fam
     return "other"
-
-
-def _write_status(e) -> int:
-    """웹 쓰기 API 의 CrmError → HTTP 상태. 동의 필요는 403, 나머지는 400(기존 그대로)."""
-    return 403 if e.code == "CONSENT-REQUIRED" else 400
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -439,33 +434,13 @@ def _usage(name: str, handler):
     return run
 
 
-# ── 재인증 창 (β2) ─────────────────────────────────────
-# 경로가 아니라 동작에 붙인다. 세션 쿠키의 ra(마지막 재인증 시각, 정수 초)로 0 ≤ now − ra ≤ 창 일 때만 통과.
-# ra 는 /admin/reauth → /login?fresh=1&reauth=1 → 콜백(같은 uid)에서만 생긴다. 일반 로그인 쿠키엔 없다.
-REAUTH_WINDOWS = {
-    "admin.view": 12 * 3600,        # /admin 화면·감사 로그
-    "ticket.update": 12 * 3600,     # 문의 처리 — /admin/tickets/<id>/* POST
-    "role.grant": 15 * 60,
-    "role.revoke": 15 * 60,
-    "user.web_signout": 15 * 60,
-    "user.block": 15 * 60,
-    "user.unblock": 15 * 60,
-}
-AUTH_TIME_SKEW = 60                 # 콜백 토큰 auth_time 은 재인증 시작(t0) − 60초 이후여야 ra 를 준다
+# ── /admin form 상한 (β2) ─────────────────────────────
 TICKET_FORM_MAX = 16 * 1024         # /admin/tickets POST — 답변 4KB(UTF-8 바이트)를 퍼센트 인코딩하면 최대 3배라 따로 둔다
 ADMIN_FORM_MAX = 4 * 1024           # /admin POST form 본문 상한(바이트) — BodyLimit(/mcp·/api/*) 밖이라 핸들러가 직접 센다
 
 
 def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
-
-
-def reauth_ok(ra, action: str, now: float | None = None) -> bool:
-    """ra(정수 초)가 그 동작의 창 안인지. ra 없음·정수 아님·미래·창 밖이면 False(닫는 쪽)."""
-    if not _is_int(ra):
-        return False
-    d = (time.time() if now is None else now) - ra
-    return 0 <= d <= REAUTH_WINDOWS[action]
 
 
 def _not_found() -> Response:
@@ -509,10 +484,20 @@ form.rq label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:#6
 select,input{font:inherit;font-size:13px;padding:3px 6px;border:1px solid #CFC4B7;border-radius:5px;background:#fff;color:#2B2824}
 ul.tree{list-style:none;padding:0;margin:0}ul.tree>li{margin:0 0 10px;padding:8px 10px;border:1px solid #E4DCD2;border-radius:8px;background:#fff}
 ul.tree ul{margin:6px 0 0;padding-left:18px}ul.tree ul li{margin:2px 0}.nm{font-family:ui-monospace,Menlo,monospace;font-weight:600}
-.lbl{color:#186A4B}.note{font-size:12px;color:#6B635A}.note.warn{color:#B4462F;font-weight:600}"""
+.lbl{color:#186A4B}.note{font-size:12px;color:#6B635A}.note.warn{color:#B4462F;font-weight:600}
+.dmo{background:#fff;border:1px solid #E4DCD2;border-radius:8px;padding:8px}.dmo svg{display:block;width:100%;height:auto;max-width:760px;margin:0 auto}
+.dmo a{text-decoration:none}.dmo a:hover circle,.dmo a:focus-visible circle{stroke-width:3}.dmo a:hover line,.dmo a:hover path{stroke-width:2.4}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:#6B635A;margin:8px 0}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid;vertical-align:-1px;margin-right:4px}
+.legend .o-core{background:var(--dmo-core-bg);border-color:var(--dmo-core-line)}.legend .o-standard{background:var(--dmo-standard-bg);border-color:var(--dmo-standard-line)}
+.legend .o-template{background:var(--dmo-template-bg);border-color:var(--dmo-template-line)}.legend .o-custom{background:var(--dmo-custom-bg);border-color:var(--dmo-custom-line)}
+ul.tree li:target,tr:target td{background:#FFF5E8}ul.tree>li:target{border-color:#B4462F;box-shadow:0 0 0 1px #B4462F}
+.err{color:#9A3520;font-weight:600}td.long{white-space:normal;word-break:break-word}.tag.lock{background:#DCEBE3;color:#186A4B}
+@media (max-width:600px){.wrap{padding:16px 12px 40px}th,td{padding:5px 6px}}"""
+_ADMIN_CSS += structure_svg.tokens_css(dark_media=False)   # DMO 그래프 토큰(--dmo-*) — 운영 화면은 밝게 고정(OS 미추종, 스크립트 0 이라 토글 없음)
 
 # 공통 상단 메뉴(P4) — (현재 표시 키, 경로, 글자). 문의 화면은 P3·P4 문의 몫(없으면 404).
-ADMIN_MENU = (("overview", "/admin", "개요"), ("schema", "/admin/schema", "스키마"), ("reports", "/admin/reports", "리포트"),
+ADMIN_MENU = (("overview", "/admin", "개요"), ("users", "/admin/users", "사용자"), ("schema", "/admin/schema", "스키마"), ("reports", "/admin/reports", "리포트"),
               ("tickets", "/admin/tickets", "문의"), ("setup", "/admin/setup", "Setup"))
 
 
@@ -531,11 +516,6 @@ def _admin_page(title: str, body: str, status: int = 200, cur: str = "") -> HTML
 
 def _kst(d) -> str:
     return d.astimezone(db.KST).strftime("%Y-%m-%d %H:%M") if d else ""
-
-
-def _left(sec: float) -> str:
-    sec = int(sec)
-    return f"{sec // 3600}시간 {sec % 3600 // 60}분" if sec >= 3600 else f"{max(sec, 0) // 60}분"
 
 
 # ── /admin 개요·스키마·리포트 (P4) — 화면 조립. DB 접근은 admin_db 만 ─────────────
@@ -604,14 +584,6 @@ def template_schema() -> dict:
     return json.loads(template_author.FROZEN_PATH.read_text(encoding="utf-8"))
 
 
-def _slot_key(slot: str | None) -> str | None:
-    """템플릿 계보 슬롯 `author@1:<obj>` · `author@1:<obj>.<field>` → 표시 key(<obj> 또는 <field>). 읽기만 한다."""
-    if not slot or ":" not in slot:
-        return None
-    rest = slot.split(":", 1)[1]
-    return rest.split(".", 1)[1] if "." in rest else rest
-
-
 def _yn_mark(v) -> str:
     return "예" if v else ""
 
@@ -667,13 +639,13 @@ def render_report_table(out: dict) -> str:
 
 
 def render_measure_notes(ds: str) -> str:
-    """지표 정의 표 — 출처·기준 시각·결측·집계식."""
+    """지표 정의 표 — 산출 근거·기준 시각·결측·집계식."""
     spec = admin_db.report_spec(ds)
     rows = [f'<tr><td>{_esc(m["label"])}</td><td>{_esc(m["src"])}</td><td>{_esc(m["time"])}</td><td>{_esc(m["missing"])}</td>'
             f'<td>{_esc(m["agg"])}</td></tr>' for m in spec["measures"].values()]
     t = spec["time"] or "지금 상태(기간 없음)"
     return (f'<h2>지표 정의</h2><p class="note">기간 기준: {_esc(t)}</p>'
-            + _table(["<th>측정</th><th>출처</th><th>기준 시각</th><th>결측</th><th>집계식</th>"], rows))
+            + _table(["<th>측정</th><th>산출 근거</th><th>기준 시각</th><th>결측</th><th>집계식</th>"], rows))
 
 
 def render_report_form(ds: str, spec: dict, q: dict, out: dict) -> str:
@@ -733,52 +705,128 @@ def render_standard() -> str:
             f'<h3>코어 표준 오브젝트</h3><ul class="tree">{"".join(core)}</ul>')
 
 
-def render_user_tree(email: str, opaque: str, rows: list, onames: list, fnames: list) -> str:
-    """사용자 한 명의 트리. 표시 이름: 템플릿 유래 tpl:<key>(계보 슬롯), 사용자 것 u<n>((created_at, id) 순, 보관 포함)·
-    오브젝트 안 f<n>((position, key) 순). onames·fnames 가 비면(유효 동의 없음) 이름을 보이지 않는다."""
-    objs, byref = [], {}
-    for r in rows:
-        o = byref.get(r["object_ref"])
-        if o is None:
-            o = byref[r["object_ref"]] = {**r, "fields": []}
-            objs.append(o)
-        if r["value_type"] is not None:
-            o["fields"].append(r)
-    n = 0
-    for o in objs:
-        k = _slot_key(o["object_slot"])
-        if k:
-            o["disp"] = f"tpl:{k}"
-        else:
-            n += 1
-            o["disp"] = f"u{n}"
-    olabel = {r["object_ref"]: r["label"] for r in onames}
-    flabel = {(r["object_ref"], r["field_ref"]): (r["label"], r["option_labels"]) for r in fnames}
-    named = bool(onames)
+# ── /admin/users 운영자 사용자 뷰(PR #20 Q5) — 구조 글자는 전부 contract.respond(…, admin_*) 출력에서 온다 ──
+# 이름 = 이름 공유 유효 동의자의 현재 label(admin_consent) · 그 밖엔 자리표(「오브젝트 1」·「필드 a」)와 편입된 표준명뿐.
+# key·선택지 값·출처 name·location·사용자 id 는 계약 출력에 없어 화면에도 없다. 그래프 = structure_svg.render(같은 응답).
+UV_INTEGRITY = {"REF-DANGLING": "없는 대상 참조", "REF-MISMATCH": "대상 정의 불일치", "MD-ORPHAN": "M-D 위반"}
+UV_WHY = {"target_def": "관계 정의의 대상 오브젝트가 없다(보관됨)", "target": "대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다",
+          "kind": "실제 도착 종류가 정의와 다르다", "object": "도착 항목의 오브젝트가 정의의 대상과 다르다",
+          "candidate": "근거 기록이 지워진 후보", "no_def": "정의 밖 연결 — 보관된 필드·오브젝트에서 출발",
+          "any_item": "대상 오브젝트를 정하지 않은 항목 필드 — 오브젝트 일치를 볼 수 없다"}
+UV_LOCK = f'<span class="tag lock">{_esc(structure_svg.LOCK_TEXT)}</span>'
+
+
+def uv_build(v: dict, onames=(), fnames=()) -> tuple[dict, dict]:
+    """사용자 뷰 원행 → (계약 응답, 관계별 연결·무결성). 유효 동의(names)면 admin_consent, 아니면 admin_noconsent.
+    이름은 이름 분기 행(동의를 같은 문장에서 다시 본다)에서만 온다 — 두 조회 사이에 철회되면 label 이 None 으로 남아 보이지 않는다."""
+    inp = admin_db.contract_input(v, onames, fnames)
+    viewer = "admin_consent" if v["names"] else "admin_noconsent"
+    return contract.respond(inp, viewer), admin_db.link_stats(v, inp)
+
+
+def _uv_std(std: dict) -> str:
+    """표준 상태 — 코드만. 표식 없으면 version·state 는 —."""
+    objs = " · ".join(f"{k} {v}" for k, v in std["objects"].items())
+    return f'{_esc(std["version"] or "—")} {_esc(std["state"] or "—")} · {_esc(objs)}'
+
+
+def _uv_name(d: dict) -> str:
+    """오브젝트·필드 한 칸 — 자리표 + 편입된 표준명 + (동의면) 현재 label. 동적 글자는 _esc."""
+    out = f'<span class="nm">{_esc(d["ref"])}</span>'
+    if d.get("std_name"):
+        out += f' <span class="tag">표준 {_esc(d["std_name"])}</span>'
+    if d.get("label") is not None:
+        out += f' <span class="lbl">「{_esc(d["label"])}」</span>'
+    return out
+
+
+def _uv_where(resp: dict, rel, why: str = "") -> str:
+    if rel is None:
+        return "코어 후보" if why == "candidate" else "관계 밖"
+    r = resp["relations"][rel]
+    return f'관계 {rel + 1}({_esc(r["from"])}.{_esc(r["field"])})'
+
+
+def _uv_target(resp: dict, st: dict, i: int) -> str:
+    r = resp["relations"][i]
+    if r["to"] in structure_svg.CORE_TEXT:
+        return f'코어 {_esc(structure_svg.CORE_TEXT[r["to"]])}'
+    if r["to"] is not None:
+        o = next(x for x in resp["objects"] if x["ref"] == r["to"])
+        return _uv_name({k: o.get(k) for k in ("ref", "std_name", "label")})
+    gone = any(e["rel"] == i and e["why"] == "target_def" for e in st["errors"])
+    return '<span class="err">대상 정의 없음</span>' if gone else '<span class="muted">항목(오브젝트 미지정)</span>'
+
+
+def render_userview(u: dict, opaque: str, named: bool, resp: dict, st: dict, tickets: list) -> str:
+    """상세 본문 — 계정 요약 → DMO 그래프 → 관계별 집계 → 무결성 → 표준 상태 → 구조 트리 → 문의 요약."""
+    rels, cnt = resp["relations"], resp["counts"]
+    err_n = [sum(e["n"] for e in st["errors"] if e["rel"] == i) for i in range(len(rels))]
+    unc_n = [sum(e["n"] for e in st["unchecked"] if e["rel"] == i) for i in range(len(rels))]
+    m = sum(1 for n in st["linked"] if n)
+    summary = (f'<dl class="meta"><dt>이메일</dt><dd>{_esc(u["email"])}</dd><dt>가입일</dt><dd>{_esc(_kst(u["created"])[:10])}</dd>'
+               f'<dt>역할</dt><dd>{"관리자" if u["role"] == "admin" else "사용자"}{" · 차단" if u["blocked_at"] else ""}</dd>'
+               f'<dt>구조 이름 공유</dt><dd>{"동의 — 현재 이름을 함께 보여요" if named else "동의 없음 — 자리표와 편입된 표준명만 보여요"}</dd>'
+               f'<dt>불투명 id</dt><dd>{_esc(opaque)}</dd>'
+               f'<dt>구조</dt><dd>오브젝트 {_esc(cnt["objects"])} · 필드 {_esc(cnt["fields"])} · 관계 {_esc(cnt["relations"])} · '
+               f'그중 연결 있음 {_esc(m)} · 출처 {_esc(cnt["sources"])}</dd></dl>')
+    legend = ('<div class="legend">' + "".join(f'<span><i class="o-{k}"></i>{_esc(v)}</span>' for k, v in structure_svg.ORIGIN_TEXT.items())
+              + f'<span>점선 고리 = {_esc(structure_svg.LOCK_TEXT)}</span>'
+              + '<span>선 = 관계(화살표 없음) · 세 갈래 = 여러(N) · 두 줄 = 하나(1) · 참조를 가진 쪽이 N</span></div>')
+    rrows = []
+    for i, r in enumerate(rels):
+        o = next(x for x in resp["objects"] if x["ref"] == r["from"])
+        f = next(x for x in o["fields"] if x["ref"] == r["field"])
+        rrows.append(f'<tr id="{structure_svg.rel_anchor(i)}"><td class="num">{i + 1}</td>'
+                     f'<td><a href="#{structure_svg.node_anchor(resp["objects"].index(o))}">{_uv_name(o)}</a></td><td>{_uv_name(f)}</td>'
+                     f'<td>{_uv_target(resp, st, i)}</td><td>{_esc(r["cardinality"])}</td>'
+                     f'<td>{_esc(structure_svg.ORIGIN_TEXT.get(r["origin"], r["origin"]))}</td>'
+                     f'<td>{UV_LOCK if r["locked"] else ""}</td>'
+                     f'<td class="num">{_esc(st["linked"][i])}</td>'
+                     f'<td class="num">{f"<span class=err>{err_n[i]}</span>" if err_n[i] else "0"}</td><td class="num">{_esc(unc_n[i])}</td></tr>')
+    erows = []
+    for code, lab in UV_INTEGRITY.items():
+        es = [e for e in st["errors"] if e["code"] == code]
+        tot = sum(e["n"] for e in es)
+        where = " · ".join(f'{_uv_where(resp, e["rel"], e["why"])} {_esc(e["n"])}건 — {_esc(UV_WHY[e["why"]])}' for e in es)
+        erows.append(f'<tr><td>{_esc(code)}</td><td>{_esc(lab)}</td><td class="num">{f"<span class=err>{tot}</span>" if tot else "0"}</td>'
+                     f'<td class="long">{where or "—"}</td></tr>')
+    un = st["unchecked"]
+    where = " · ".join(f'{_uv_where(resp, e["rel"], e["why"])} {_esc(e["n"])}건 — {_esc(UV_WHY[e["why"]])}' for e in un)
+    erows.append(f'<tr><td>{_esc(admin_db.UNCHECKED)}</td><td>검사 불가(정상으로 세지 않음)</td><td class="num">{_esc(sum(e["n"] for e in un))}</td>'
+                 f'<td class="long">{where or "—"}</td></tr>')
+    std = resp["std"]
+    std_t = _table(['<th>표준 오브젝트</th><th>상태</th>'],
+                   [f'<tr><td class="nm">{_esc(k)}</td><td>{_esc(v)}</td></tr>' for k, v in std["objects"].items()])
     items = []
-    for o in objs:
-        fl, m = [], 0
-        for f in o["fields"]:
-            k = _slot_key(f["field_slot"])
-            if not k:
-                m += 1
-            tk = f["target_kind"]
-            target = (byref[f["target_ref"]]["disp"] if f["target_ref"] in byref else CORE_LABEL["items"]) if tk == "item" \
-                else TARGET_LABEL.get(tk, "")
-            lab, opts = flabel.get((o["object_ref"], f["field_ref"]), (None, None))
-            fl.append(_field_li(f"tpl:{k}" if k else f"f{m}", f["value_type"], f["required"], f["multiple"], target, lab, opts,
-                                f["field_archived"] is not None))
-        lab = olabel.get(o["object_ref"])
-        items.append(f'<li><span class="nm">{_esc(o["disp"])}</span> <span class="tag">{_esc(o["semantic_kind"])}</span>'
-                     f'{" <span class=tag>보관</span>" if o["object_archived"] is not None else ""}'
-                     f'{f" <span class=lbl>「{_esc(lab)}」</span>" if lab is not None else ""}'
-                     f'<ul>{"".join(fl) or "<li class=muted>필드 없음</li>"}</ul></li>')
-    state = ("유효 동의 — 현재 이름(오브젝트·필드·선택지)을 함께 보여요" if named
-             else "유효 동의 없음 — 이름 없이 구조만 보여요")
-    return (f'<h1>구조 — {_esc(email)}</h1><p class="note">불투명 id {_esc(opaque)} · 이름 공유: {_esc(state)} · '
-            f'tpl:&lt;key&gt; = 템플릿 유래, u&lt;n&gt;·f&lt;n&gt; = 사용자 것(순번은 표시용)</p>'
-            f'<p><a href="/admin/schema">← 스키마</a></p>'
-            f'<ul class="tree">{"".join(items) or "<li class=muted>적용된 오브젝트 없음</li>"}</ul>')
+    for i, o in enumerate(resp["objects"]):
+        fl = "".join(f'<li>{_uv_name(f)} <span class="muted">{_esc(structure_svg.ORIGIN_TEXT.get(f["origin"], f["origin"]))}</span>'
+                     f'{" " + UV_LOCK if f["locked"] else ""}'
+                     f'{" <span class=lbl>선택지 " + _esc(" · ".join(str(x) for x in f["options"])) + "</span>" if f.get("options") else ""}</li>'
+                     for f in o["fields"])
+        items.append(f'<li id="{structure_svg.node_anchor(i)}">{_uv_name(o)} <span class="tag">{_esc(o["semantic_kind"])}</span> '
+                     f'<span class="muted">{_esc(structure_svg.ORIGIN_TEXT.get(o["origin"], o["origin"]))}</span>'
+                     f'{" " + UV_LOCK if o["locked"] else ""}'
+                     f'<ul>{fl or "<li class=muted>필드 없음</li>"}</ul></li>')
+    items += [f'<li id="{structure_svg.core_anchor(c["kind"])}"><span class="nm">코어 {_esc(structure_svg.CORE_TEXT.get(c["kind"], c["kind"]))}</span>'
+              f' <span class="muted">{_esc(structure_svg.ORIGIN_TEXT["core"])} — 참조 필드가 가리키는 공통 테이블</span></li>' for c in resp["core"]]
+    tk = _table(['<th>종류</th><th>상태</th><th class="num">n</th>'],
+                [f'<tr><td>{_esc(admin_db.VALUE_LABELS["kind"].get(r["kind"], r["kind"]))}</td>'
+                 f'<td>{_esc(admin_db.VALUE_LABELS["status"].get(r["status"], r["status"]))}</td><td class="num">{_esc(r["n"])}</td></tr>'
+                 for r in tickets], "문의 없음")
+    return (f'<p><a href="/admin/users">← 사용자 목록</a></p><h1>사용자 — {_esc(u["email"])}</h1>{summary}'
+            f'<h2>DMO 그래프</h2>{legend}<div class="dmo">{structure_svg.render(resp)}</div>'
+            f'<p class="note">원을 누르면 구조 트리의 그 오브젝트로, 선을 누르면 관계 집계 행으로 가요. 대상이 없는 관계(오브젝트 미지정·대상 정의 없음)는 선이 없어요.</p>'
+            f'<h2>관계별 집계</h2><p class="note">관계 = 참조 필드 하나. 연결 = 살아 있는 항목에서 출발한 정상 연결 수(오류·검사 불가 제외). '
+            f'기록에서 출발하는 분류 연결은 관계가 아니라 세지 않아요.</p>'
+            + _table(['<th class="num">#</th><th>출발</th><th>필드</th><th>대상</th><th>카디널리티</th><th>구분</th><th>보호</th>'
+                      '<th class="num">연결</th><th class="num">오류</th><th class="num">검사 불가</th>'], rrows, "관계 없음")
+            + '<h2>무결성</h2><p class="note">검사 불가는 정상이 아니에요 — 정의만으로는 맞는지 볼 수 없는 연결이에요.</p>'
+            + _table(['<th>코드</th><th>검사</th><th class="num">건</th><th>위치</th>'], erows)
+            + f'<h2>표준 상태</h2><p class="note">설치 버전·표식 상태·표준 오브젝트별 상태 코드.</p>'
+            f'<p><span class="nm">{_esc(std["version"] or "—")}</span> · 표식 {_esc(std["state"] or "—")}</p>{std_t}'
+            f'<h2>구조 트리</h2><ul class="tree">{"".join(items) or "<li class=muted>적용된 오브젝트 없음</li>"}</ul>'
+            f'<h2>문의 요약</h2><p class="note">원문은 <a href="/admin/tickets">문의 화면</a>에서만 봐요.</p>{tk}')
 
 
 class Web:
@@ -816,7 +864,7 @@ class Web:
         self.privacy_html = render_privacy(md.replace("{{CONTACT_LINE}}", privacy_contact_line())) if md else None
 
     def load_consent(self, d: Path):
-        """동의 문서 버전(α2)을 시작 때 한 번 읽어 db 에 넣는다. 버전이 바뀔 때만 db 의 동의 통과 캐시가 비워진다."""
+        """처리방침(·약관) 버전을 시작 때 한 번 읽어 db 에 넣는다(/privacy·화면 표시용)."""
         db.set_consent_versions(read_consent_versions(d, self.dev))
 
     @property
@@ -850,12 +898,9 @@ class Web:
         resp.delete_cookie(name, path="/")
 
     # ── 세션 ───────────────────────────────────────────
-    def session_value(self, uid: str, ra: int | None = None) -> str:
-        """세션 쿠키 v2 값 {uid, iat, ra?}. exp 는 sign 이 붙인다(7일). ra 는 재인증 콜백만 넘긴다."""
-        data = {"uid": uid, "iat": int(time.time())}
-        if ra is not None:
-            data["ra"] = ra
-        return self.sign(data, SESSION_TTL)
+    def session_value(self, uid: str) -> str:
+        """세션 쿠키 v2 값 {uid, iat}. exp 는 sign 이 붙인다(7일)."""
+        return self.sign({"uid": uid, "iat": int(time.time())}, SESSION_TTL)
 
     async def _session_row(self, s: dict):
         """서명 통과한 세션 쿠키의 users 행 — iat 정수·미래 아님 → 행 있음 → 차단 아님 → iat ≥ web_revoked_before.
@@ -877,16 +922,15 @@ class Web:
 
     async def uid_of(self, request) -> str | None:
         """세션 uid. 찾으면 request.state.uid 에도 둔다 — /api/* 사용 집계 래퍼가 DB 조회 없이 읽는다.
-        request.state.role·ra 도 둔다(관리자 판정·재인증 창은 이 값만 읽는다 — 두 번째 조회 없음).
-        DEV(dev_user) 경로는 쿠키 없이 그대로 — 단 차단이면 None. ra 는 없다."""
-        request.state.role, request.state.ra = None, None
+        request.state.role 도 둔다(관리자 판정은 이 값만 읽는다 — 두 번째 조회 없음). 옛 쿠키에 남은 ra 키는 읽지 않는다.
+        DEV(dev_user) 경로는 쿠키 없이 그대로 — 단 차단이면 None."""
+        request.state.role = None
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         uid = None
         if s and s.get("uid"):
             row = await self._session_row(s)
             if row:
                 uid, request.state.role = row["id"], row["role"]
-                request.state.ra = s.get("ra") if _is_int(s.get("ra")) else None
         elif self.dev and self.dev_user:
             u = await run_in_threadpool(db.user_by_email, self.dev_user)
             if not u.get("blocked_at"):
@@ -903,9 +947,10 @@ class Web:
         uid = await self.uid_of(request)
         if uid is None:
             return RedirectResponse("/", status_code=302)
-        if not await run_in_threadpool(db.has_consent, uid):   # 미동의 — 동의 화면 먼저(MCP 전용 사용자도 여기로 온다)
-            return RedirectResponse("/consent", status_code=302)
         html = _fill_assets(APP_HTML.read_text(encoding="utf-8"))   # 요청마다 읽는다 — 헤더 해시와 본문이 같은 내용에서 나온다
+        # Q1: 관리자는 <!--user-->(문의·이름 공유 메뉴·문의 섹션)를, 그 밖은 <!--admin-->(운영 콘솔)를 보내지 않는다. 표식도 남기지 않는다
+        drop, keep = ("user", "admin") if getattr(request.state, "role", None) == "admin" else ("admin", "user")
+        html = re.sub(rf"<!--{drop}-->.*?<!--/{drop}-->", "", html, flags=re.S).replace(f"<!--{keep}-->", "").replace(f"<!--/{keep}-->", "")
         return _html_resp(html, headers={"cache-control": "no-store", "content-security-policy": app_csp(html)})
 
     async def root(self, request):
@@ -946,59 +991,14 @@ class Web:
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
         return '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
 
-    # ── 동의 (α2) ─────────────────────────────────────
+    # ── 동의 ─────────────────────────────────────────
     async def consent(self, request):
-        """동의 화면. 세션 없으면 /, 이미 동의했으면 /app. 스크립트 없이 form POST(/api/consent)."""
-        uid = await self.uid_of(request)
-        if uid is None:
-            return RedirectResponse("/", status_code=302)
-        if await run_in_threadpool(db.has_consent, uid):
-            return RedirectResponse("/app", status_code=302)
-        rows = "".join(
-            f'<p><label><input type="checkbox" name="{_esc(kind)}" value="{_esc(ver)}" required> '
-            f'<a href="{CONSENT_LABELS[kind][1]}">{CONSENT_LABELS[kind][0]}</a>({_esc(ver)})에 동의합니다.</label></p>'
-            for kind, ver in db.CONSENT_VERSIONS.items())
-        opt = ('<p><label><input type="checkbox" name="optional" value="struct_names"> (선택) 「구조 이름 공유」에 동의합니다.</label><br>'
-               f'<small>안 해도 모든 기능을 써요. <a href="{OPTIONAL_CONSENT_HREF}">무엇을 보나요</a></small></p>')
-        body = f'<form method="post" action="/api/consent">{rows}{opt}<p><button type="submit">동의하고 시작</button></p></form>'
-        resp = _page("시작하기 전에 동의해 주세요", body)
-        resp.headers["cache-control"] = "no-store"
-        return resp
-
-    async def api_consent(self, request):
-        """동의 기록. 세션(401) → Origin(403) → form 또는 JSON {kind: version, optional?: [선택 동의 kind]} → db.consent_grant
-        (필수·선택 한 트랜잭션) → 302 /app(form) 또는 {ok, redirect}(JSON). 문서·버전이 맞지 않으면 400 ARG-INVALID.
-        form 의 선택 체크는 optional=<kind>(체크한 것만 온다). write_gate 를 지나지 않는다(동의 전 사용자가 부른다)."""
-        uid, err = await self._need(request)
-        if err:
-            return err
-        if not self.same_origin(request):
-            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
-        is_json = request.headers.get("content-type", "").split(";")[0].strip().lower() == "application/json"
-        try:
-            if is_json:
-                body = await request.json()
-                assert isinstance(body, dict)
-                optional = body.pop("optional", [])
-            else:
-                pairs = parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True)
-                optional = [v for k, v in pairs if k == "optional"]
-                body = dict((k, v) for k, v in pairs if k != "optional")
-            assert isinstance(optional, list) and all(isinstance(v, str) for v in optional)
-            assert all(isinstance(v, str) for v in body.values())
-        except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "동의할 문서·버전이 필요해요."}, status_code=400)
-        try:
-            await run_in_threadpool(db.consent_grant, uid, body, optional)
-        except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
-        if is_json:
-            return JSONResponse({"ok": True, "redirect": "/app"})
+        """옛 동의 화면 주소(북마크·옛 안내) — 필수 동의 게이트는 없앴다. 항상 302 /app."""
         return RedirectResponse("/app", status_code=302)
 
     async def api_optional_consent(self, request):
         """선택 동의 켜기/끄기. 세션(401) → Origin(403) → JSON {kind, on(bool)} → db.optional_consent_set(한 트랜잭션·로그).
-        동의 게이트 밖(미동의자도 끌 수 있다). 같은 상태로 다시 보내면 changed=false(로그 없음)."""
+        같은 상태로 다시 보내면 changed=false(로그 없음)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1017,7 +1017,7 @@ class Web:
 
     async def api_desk_visibility(self, request):
         """문의 섹션 숨김(계정 메뉴). 세션(401) → Origin(403) → JSON {hidden(bool)}(400) → db.desk_hidden_set.
-        동의 게이트 밖(미동의자도 바꿀 수 있다). 숨겨도 메뉴에서 문의를 열 수 있다(화면 쪽)."""
+        숨겨도 메뉴에서 문의를 열 수 있다(화면 쪽)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1044,24 +1044,9 @@ class Web:
         if request.query_params.get("fresh") == "1":   # 로그아웃 직후 — AuthKit 세션이 살아 있어도 로그인 폼을 띄운다
             q["prompt"] = "login"
         flow = {"v": verifier, "s": state}
-        if request.query_params.get("reauth") == "1":   # β2 재인증 — 지금 세션 uid 를 r 로. 돌아갈 곳 URL 은 담지 않는다(콜백이 /admin 고정)
-            uid = await self.uid_of(request)
-            if uid is not None:
-                flow.update(r=uid, t0=int(time.time()))
         resp = RedirectResponse(f"{self.issuer}/oauth2/authorize?{urlencode(q)}", status_code=302)
         self.set_cookie(resp, FLOW_COOKIE, self.sign(flow, FLOW_TTL), FLOW_TTL)
         return resp
-
-    @staticmethod
-    def _reauth_fresh(claims: dict, t0) -> bool:
-        """재인증 콜백 토큰이 새 로그인인지. auth_time 이 있으면 t0 − 60초 이후여야, 없으면 통과(Google 자동 통과 한계 — README).
-        t0 가 정수가 아니면 False."""
-        if not _is_int(t0):
-            return False
-        if "auth_time" not in claims:
-            return True
-        at = claims["auth_time"]
-        return isinstance(at, (int, float)) and not isinstance(at, bool) and at >= t0 - AUTH_TIME_SKEW
 
     async def token_post(self, data: dict) -> tuple[int, dict]:
         """토큰 교환. 시험에서 바꿔 끼운다."""
@@ -1096,14 +1081,8 @@ class Web:
         except Exception as e:   # ToolError·CrmError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
             return _page("사용자를 연결하지 못했어요", f"<p>{_esc(msg)}</p>{again}", 502)
-        claims = verified.claims or {}
-        print(f"[web] 로그인 토큰 claims 키: {sorted(str(k) for k in claims)}", flush=True)   # 키 이름만 — 값 금지(auth_time·iat 실측용)
-        r = flow.get("r")
-        ra = None
-        if r is not None and r == uid and self._reauth_fresh(claims, flow.get("t0")):
-            ra = int(time.time())   # 재인증 = 같은 사람이 방금 다시 로그인. 다른 uid 면 일반 로그인(ra 없음)
-        resp = RedirectResponse("/admin" if r is not None else "/app", status_code=302)
-        self.set_cookie(resp, SESSION_COOKIE, self.session_value(uid, ra), SESSION_TTL)
+        resp = RedirectResponse("/app", status_code=302)
+        self.set_cookie(resp, SESSION_COOKIE, self.session_value(uid), SESSION_TTL)
         self.clear_cookie(resp, FLOW_COOKIE)
         return resp
 
@@ -1126,9 +1105,16 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me, flags = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid)))
+        st, me, flags, std, srcs, cnt = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid),
+                                                                         db.std_status(uid), db.sources(uid), db.source_counts(uid)))
+        st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
+        st["sources"], st["source_counts"] = srcs, cnt   # PR #20 출처(계약 모양 {id,kind,name,location}) · 출처별 기록 수 — 본인만, /app 전용
+        st["structure"] = contract.respond({   # PR #20 Q5 구조 정의 보기 — 본인 계약 응답(origin·locked·cardinality 는 서버 판정). /app 전용
+            "definitions": st["definitions"], "sources": srcs, "std_choices": std["objects"],
+            "std_marks": {"version": std["version"], "state": std["state"]} if std["version"] else None}, "self")
+        st["structure_svg"] = structure_svg.render(st["structure"])   # 같은 응답의 DMO 그래프(서버 결정적 배치) — 목록과 같은 순번 앵커. /app 전용
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
-        if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
+        if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
@@ -1170,7 +1156,7 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
     async def api_item(self, request):
@@ -1211,8 +1197,48 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
+
+    async def api_std_preview(self, request):
+        """표준 편입 미리보기(R3) — 세션 사용자 본인 것만(다른 사용자를 고르는 인자가 없다). 읽기 전용·플래그 무관. 본인 label 이 들어 있다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.std_preview, uid)
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_std_choose(self, request):
+        """표준 오브젝트 선택 — 보류·거절 기록 · 편입 적용. 세션(401) → Origin(403) → JSON {std_key, state 문자열,
+        confirmed_meaning bool?, expected_revision 정수|null?}(400) → write_gate → db.std_choose(ARG-INVALID·FEATURE-OFF·STANDARD-LOCKED·
+        CONFLICT·DEF-INVALID 400). 편입은 confirmed_meaning=true 와 미리보기에서 본 revision 을 들고 온다. 대상 사용자 = 세션 uid 뿐."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict) and isinstance(body.get("std_key"), str) and isinstance(body.get("state"), str)
+            assert isinstance(body.get("confirmed_meaning", False), bool)
+            rev = body.get("expected_revision")
+            assert rev is None or (isinstance(rev, int) and not isinstance(rev, bool))
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(std_key·state 문자열, confirmed_meaning true/false, "
+                                 "expected_revision 정수 또는 null)이 필요해요."}, status_code=400)
+        key, state, meant = body["std_key"], body["state"], body.get("confirmed_meaning", False)
+
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+            db.write_gate("std_choose", {"std_key": key, "state": state}, uid)
+            return db.std_choose(uid, key, state, meant, rev)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
 
     async def api_feedback(self, request):
         """문의(desk-0). GET = 「내 문의」(본인 글·상태·답변 유무·공개 갱신, 운영자 메모 없음) — 관리자도 같다(운영은 /admin/tickets)
@@ -1255,7 +1281,7 @@ class Web:
         return JSONResponse(out, headers={"cache-control": "no-store"})
 
     # ── /admin (β2) ────────────────────────────────────
-    # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 재인증 창은 REAUTH_WINDOWS(동작 기준).
+    # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 관리자 세션이면 모든 화면·동작을 바로 연다.
     async def _admin_who(self, request) -> str | None:
         """관리자 세션 uid. DEV·무세션·비관리자(차단 포함 — uid_of 가 이미 거른다)면 None."""
         if self.dev:
@@ -1264,12 +1290,9 @@ class Web:
         return uid if uid is not None and getattr(request.state, "role", None) == "admin" else None
 
     async def admin_index(self, request):
-        """/admin 개요 — 상태 띠 · 사용자 표(+미연결 행) · 오류 표 14일 · 정의 분포. 표 정의는 리포트 프리셋과 같다(admin_db.aggregate).
-        화면 창(admin.view) 밖이면 /admin/reauth."""
+        """/admin 개요 — 상태 띠 · 사용자 표(+미연결 행) · 오류 표 14일 · 정의 분포. 표 정의는 리포트 프리셋과 같다(admin_db.aggregate)."""
         if await self._admin_who(request) is None:
             return _not_found()
-        if not reauth_ok(request.state.ra, "admin.view"):
-            return RedirectResponse("/admin/reauth", status_code=302)
         role = request.state.role
         today = admin_db.kst_today()
         since = today - _dt.timedelta(days=admin_db.RECENT_DAYS - 1)
@@ -1284,14 +1307,12 @@ class Web:
         for r in usage:
             calls[r["user_id"]] = calls.get(r["user_id"], 0) + r["n"]
         links = {k: href for k, _, href in preset_links(today)}
-        ver = db.CONSENT_VERSIONS.get("privacy")
 
         def num(label, n, warn=False, href=None):
             v = f'<b class="warn">{_esc(n)}</b>' if warn and n else f"<b>{_esc(n)}</b>"
             inner = f"{_esc(label)} {v}"
             return f'<span><a href="{_esc(href)}">{inner}</a></span>' if href else f"<span>{inner}</span>"
-        bar = ('<div class="bar">' + num("사용자", band["users"], href=links["consent"])
-               + num(f"처리방침 {ver or '—'} 동의", band["consented"]) + num("이름 공유 동의", band["names"])
+        bar = ('<div class="bar">' + num("사용자", band["users"]) + num("이름 공유 동의", band["names"])
                + num("미종결 문의", band["open_tickets"], href="/admin/tickets")
                + num(f"개인정보 기한 임박(≤{admin_db.PRIVACY_SOON_DAYS}일)", band["privacy_soon"], True)
                + num("기한 초과", band["privacy_over"], True) + "</div>")
@@ -1303,7 +1324,7 @@ class Web:
                          f'<td>{_esc(ld.isoformat() if ld else "—")}</td><td class="num">{_esc(calls.get(u["id"], 0))}</td>'
                          f'<td class="num">{_esc(no)}</td></tr>')
         ld = lastd.get("")
-        urows.append(f'<tr><td class="muted">미연결 사용량(로그인 전·미동의)</td><td>—</td><td>{_esc(ld.isoformat() if ld else "—")}</td>'
+        urows.append(f'<tr><td class="muted">미연결 사용량(로그인 전)</td><td>—</td><td>{_esc(ld.isoformat() if ld else "—")}</td>'
                      f'<td class="num">{_esc(calls.get("", 0))}</td><td class="num">—</td></tr>')
         user_t = _table(['<th>이메일</th><th>가입일</th><th>최근 활동일</th><th class="num">14일 호출</th><th class="num">정의 수</th>'],
                         urows)
@@ -1324,27 +1345,17 @@ class Web:
         return _admin_page("관리 — 개요", body, cur="overview")
 
     async def admin_reauth(self, request):
-        """재인증 시작 — 로그인 폼을 강제(fresh=1)하고 콜백이 같은 uid 면 ra 를 준다."""
+        """옛 링크 호환 — 관리자 세션이면 302 /admin. 비관리자·무세션·DEV 는 다른 /admin 경로와 같은 404."""
         if await self._admin_who(request) is None:
             return _not_found()
-        return RedirectResponse("/login?fresh=1&reauth=1", status_code=302)
+        return RedirectResponse("/admin", status_code=302)
 
     async def admin_setup(self, request):
         uid = await self._admin_who(request)
         if uid is None:
             return _not_found()
-        ra = request.state.ra
-        if not reauth_ok(ra, "admin.view"):
-            return RedirectResponse("/admin/reauth", status_code=302)
         role = request.state.role
         users, audit = await run_in_threadpool(lambda: (admin_db.users(role), admin_db.audit(role)))
-        now = time.time()
-        risky = REAUTH_WINDOWS["role.grant"] - (now - ra)
-        view = REAUTH_WINDOWS["admin.view"] - (now - ra)
-        risky_txt = f"위험 동작 {_left(risky)} 남음" if risky >= 0 else '<span class="warn">위험 동작(부여·회수·끊기·차단)은 다시 로그인해야 해요</span>'
-        bar = (f'<div class="bar"><span>재인증: {risky_txt} · 화면 {_left(view)} 남음</span>'
-               f'<a href="/admin/reauth">다시 로그인</a><a href="/app">대시보드로</a></div>')
-        ver = db.CONSENT_VERSIONS.get("privacy")
 
         def btn(action, label, fields, danger=False):
             hidden = "".join(f'<input type="hidden" name="{_esc(k)}" value="{_esc(v)}">' for k, v in fields.items())
@@ -1355,7 +1366,6 @@ class Web:
         for u in users:
             is_admin = u["role"] == "admin"
             role_tag = '<span class="tag admin">관리자</span>' if is_admin else '<span class="tag">사용자</span>'
-            consent = "—" if u["consented"] is None else ("동의" if u["consented"] else '<span class="muted">미동의</span>')
             blocked = f'<span class="tag blocked">차단 {_esc(_kst(u["blocked_at"]))}</span>' if u["blocked_at"] else ""
             acts = [btn("/admin/role", "관리자 회수", {"uid": u["id"], "role": "user"}, True) if is_admin
                     else btn("/admin/role", "관리자 부여", {"uid": u["id"], "role": "admin"}),
@@ -1363,7 +1373,7 @@ class Web:
                     btn("/admin/unblock", "차단 해제", {"uid": u["id"]}) if u["blocked_at"]
                     else btn("/admin/block", "차단", {"uid": u["id"]}, True)]
             rows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td>{_esc(_kst(u["created"]))}</td><td>{role_tag}</td>'
-                        f'<td>{consent}</td><td>{blocked}</td><td>{_esc(_kst(u["web_revoked_before"]))}</td>'
+                        f'<td>{blocked}</td><td>{_esc(_kst(u["web_revoked_before"]))}</td>'
                         f'<td><div class="acts">{"".join(acts)}</div></td></tr>')
 
         def who(email, uid_):
@@ -1374,9 +1384,9 @@ class Web:
         arows = "".join(f'<tr><td>{_esc(_kst(a["at"]))}</td><td class="email">{who(a["actor_email"], a["actor_id"])}</td>'
                         f'<td>{_esc(ADMIN_LABELS.get(a["action"], a["action"]))}</td><td class="email">{who(a["target_email"], a["target_id"])}</td></tr>'
                         for a in audit)
-        body = (f'<h1>관리 — Setup</h1>{bar}'
+        body = (f'<h1>관리 — Setup</h1>'
                 f'<h2>사용자 {len(users)}명</h2><div class="tbl"><table><thead><tr><th>이메일</th><th>가입일</th><th>역할</th>'
-                f'<th>처리방침{" " + _esc(ver) if ver else ""}</th><th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
+                f'<th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
                 f'<h2>감사 로그 최근 {admin_db.AUDIT_LIST}건</h2><div class="tbl"><table><thead><tr><th>시각</th><th>실행자</th><th>동작</th>'
                 f'<th>대상</th></tr></thead><tbody>{arows or "<tr><td colspan=4 class=muted>없음</td></tr>"}</tbody></table></div>')
@@ -1397,7 +1407,7 @@ class Web:
             return None
 
     async def _admin_post(self, request, op: str):
-        """/admin POST 공통 — 관리자 세션(아니면 404) → Origin 정확히 일치(403) → form(400) → 재인증 창(403 REAUTH-REQUIRED)
+        """/admin POST 공통 — 관리자 세션(아니면 404) → Origin 정확히 일치(403) → form(400)
         → admin_db.act(한 트랜잭션·감사) → 303 /admin/setup."""
         uid = await self._admin_who(request)
         if uid is None:
@@ -1409,11 +1419,6 @@ class Web:
         role = (form or {}).get("role") if op == "role" else None
         if not form or not form.get("uid") or (op == "role" and role not in ("admin", "user")):
             return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>ARG-INVALID</p>{back}", 400)
-        action = {"signout": "user.web_signout", "block": "user.block", "unblock": "user.unblock"}.get(op) \
-            or ("role.grant" if role == "admin" else "role.revoke")
-        if not reauth_ok(request.state.ra, action):
-            return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 이 동작은 15분 안에 다시 로그인한 '
-                               '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403)
         try:
             await run_in_threadpool(admin_db.act, uid, op, form["uid"], role)
         except db.CrmError as e:
@@ -1422,7 +1427,7 @@ class Web:
                                f"{'<p>' + _esc(e.action) + '</p>' if e.action else ''}{back}", status)
         return RedirectResponse("/admin/setup", status_code=303)
 
-    # 문의 처리(P3) — form POST 4개. 화면(/admin/tickets/<id>)은 P4. 사다리는 _admin_post 와 같고 재인증 창은 ticket.update(12h).
+    # 문의 처리(P3) — form POST 4개. 화면(/admin/tickets/<id>)은 P4. 사다리는 _admin_post 와 같다.
     _TICKET_OPS = {   # op → (form 필드, admin_db 함수 이름)
         "status": (("status",), "ticket_status"),
         "reply": (("reply",), "ticket_reply"),
@@ -1431,7 +1436,7 @@ class Web:
     }
 
     async def _admin_ticket_post(self, request, op: str):
-        """/admin/tickets/{tid}/{op} — 관리자 세션(아니면 404) → Origin(403) → form(400) → 재인증 ticket.update(403)
+        """/admin/tickets/{tid}/{op} — 관리자 세션(아니면 404) → Origin(403) → form(400)
         → admin_db(변경+사건 한 트랜잭션) → 303 /admin/tickets/{tid}."""
         uid = await self._admin_who(request)
         if uid is None:
@@ -1445,9 +1450,6 @@ class Web:
         form = await self._admin_form(request, TICKET_FORM_MAX)
         if form is None or fields[0] not in form:
             return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>ARG-INVALID</p>{back}", 400, cur="tickets")
-        if not reauth_ok(request.state.ra, "ticket.update"):
-            return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 문의 처리는 12시간 안에 다시 로그인한 '
-                               '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403, cur="tickets")
         args = [form.get(f, "") for f in fields]
         try:
             await run_in_threadpool(getattr(admin_db, fn), request.state.role, uid, tid, *args)
@@ -1492,8 +1494,8 @@ class Web:
                            cur=cur)
 
     async def admin_schema(self, request):
-        """/admin/schema — 서비스 표준 구조(템플릿 + 코어 표준 오브젝트, 코드 정의) + 사용자 목록.
-        ?u=<불투명 id> — 그 사용자의 트리(이름 없음). 유효 이름 공유 동의자면 현재 이름을 함께 보인다(admin_db 이름 분기)."""
+        """/admin/schema — 서비스 표준 구조(템플릿 + 코어 표준 오브젝트, 코드 정의) + 사용자 목록(상세 링크).
+        ?u=<불투명 id> — 옛 사용자 트리 주소. 그 사용자의 새 상세(/admin/users/<불투명 id>)로 302, 모르는 id 는 404(입력을 되비추지 않는다)."""
         _, err = await self._admin_view(request)
         if err:
             return err
@@ -1513,7 +1515,7 @@ class Web:
                 no, nf = counts.get(u["id"], (0, 0))
                 rows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td class="num">{_esc(no)}</td><td class="num">{_esc(nf)}</td>'
                             f'<td>{"동의" if names.get(u["id"]) else "—"}</td>'
-                            f'<td><a href="/admin/schema?u={_esc(self._opaque(u["id"]))}">트리</a></td></tr>')
+                            f'<td><a href="/admin/users/{_esc(self._opaque(u["id"]))}">상세</a></td></tr>')
             body = (f'<h1>스키마</h1>{render_standard()}<h2>사용자별 구조</h2>'
                     f'<p class="note">개수는 적용된 오브젝트·필드(보관 제외). 이름 공유 = 유효 선택 동의(현재 버전).</p>'
                     + _table(['<th>이메일</th><th class="num">오브젝트</th><th class="num">필드</th><th>이름 공유</th><th></th>'], rows))
@@ -1523,10 +1525,7 @@ class Web:
         if u is None:
             return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/schema">스키마로</a></p>',
                                404, cur="schema")
-        rows, (onames, fnames) = await run_in_threadpool(lambda: (admin_db.schema_tree(role, u["id"]),
-                                                                  admin_db.schema_names(role, u["id"])))
-        body = render_user_tree(u["email"], self._opaque(u["id"]), rows, onames, fnames)
-        return _admin_page("관리 — 스키마", body, cur="schema")
+        return RedirectResponse(f"/admin/users/{self._opaque(u['id'])}", status_code=302)
 
     async def admin_reports(self, request):
         """/admin/reports — GET 쿼리스트링(ds·g1·g2·필터·from·to)만. 열거 키·허용 조합은 admin_db 허용표. 모르는 키·조합은 400 화면."""
@@ -1575,7 +1574,7 @@ class Web:
         return _admin_page("관리 — 리포트", body, cur="reports")
 
     # ── /admin/tickets — 문의 리스트·레코드(P4-4·5) ─────────────
-    # 서버 렌더·form 만(스크립트 0). 리스트엔 원문·메모·화면·도구·UA 가 없다 — 원문은 레코드 페이지에서만. 재인증 창 = admin.view(12h).
+    # 서버 렌더·form 만(스크립트 0). 리스트엔 원문·메모·화면·도구·UA 가 없다 — 원문은 레코드 페이지에서만.
     _TK_KIND = {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"}
     _TK_STATUS = {"open": "접수", "ack": "확인", "doing": "처리중", "done": "완료", "wontfix": "보류"}
     _TK_LIST_STATUS = {"active": "미종결", "all": "전체", "closed": "종결", **_TK_STATUS}
@@ -1602,13 +1601,11 @@ class Web:
         return f'<span class="tag due">{"오늘까지" if left == 0 else f"{left}일 남음"}</span> <span class="muted">{_esc(due.isoformat())}</span>'
 
     async def _admin_view(self, request):
-        """GET /admin 화면 공통(스키마·리포트·문의) — 관리자 세션(아니면 None·404) → 화면 창 admin.view(밖이면 /admin/reauth 302).
+        """GET /admin 화면 공통(스키마·리포트·문의) — 관리자 세션(아니면 None·404).
         반환 (uid, None) 또는 (None, 응답). role 은 request.state.role."""
         uid = await self._admin_who(request)
         if uid is None:
             return None, _not_found()
-        if not reauth_ok(request.state.ra, "admin.view"):
-            return None, RedirectResponse("/admin/reauth", status_code=302)
         return uid, None
 
     async def admin_tickets(self, request):
@@ -1717,6 +1714,58 @@ class Web:
                 f'</tr></thead><tbody>{"".join(rows) or "<tr><td colspan=6 class=muted>없음</td></tr>"}</tbody></table></div>')
         return _admin_page("관리 — 문의", body, cur="tickets")
 
+    # ── /admin/users 운영자 사용자 뷰(PR #20 Q5) — 조회는 admin_db.userview·users·schema_names 만, 구조 글자는 contract.respond 출력만 ──
+    async def admin_users(self, request):
+        """/admin/users — 사용자 목록: 오브젝트 n · 관계 N · 그중 연결 있음 M · 표준 상태 코드. 이름 없음(목록은 언제나 admin_noconsent)."""
+        _, err = await self._admin_view(request)
+        if err:
+            return err
+        if request.query_params:
+            return self._admin_bad("사용자 목록을 열 수 없어요", "쿼리 키를 받지 않아요.", "/admin/users", "users")
+        role = request.state.role
+        users, views = await run_in_threadpool(lambda: (admin_db.users(role), admin_db.userview(role)))
+        trs = []
+        for u in users:
+            v = views.get(u["id"])
+            if v is None:   # 두 조회 사이에 생긴 계정 — 다음 조회에 나온다
+                continue
+            resp, st = uv_build({**v, "names": False})
+            href = f"/admin/users/{_esc(self._opaque(u['id']))}"
+            blk = ' <span class="tag blocked">차단</span>' if u["blocked_at"] else ""
+            trs.append(f'<tr><td class="email"><a href="{href}">{_esc(u["email"])}</a></td><td>{_esc(_kst(u["created"])[:10])}</td>'
+                       f'<td>{"관리자" if u["role"] == "admin" else "사용자"}{blk}</td><td>{"동의" if v["names"] else "—"}</td>'
+                       f'<td class="num">{_esc(resp["counts"]["objects"])}</td><td class="num">{_esc(resp["counts"]["relations"])}</td>'
+                       f'<td class="num">{_esc(sum(1 for n in st["linked"] if n))}</td><td>{_uv_std(resp["std"])}</td>'
+                       f'<td><a href="{href}">상세</a></td></tr>')
+        body = (f'<h1>사용자 {len(trs)}명</h1><p class="note">오브젝트 = 적용된 사용자 정의(보관 제외) · 관계 = 참조 필드 · '
+                f'연결 있음 = 정상 연결이 1개 이상인 관계 · 표준 = 설치 버전·표식 상태·표준 오브젝트별 상태 코드. 개수만, 이름 없음.</p>'
+                + _table(['<th>이메일</th><th>가입일</th><th>역할</th><th>이름 공유</th><th class="num">오브젝트</th><th class="num">관계</th>'
+                          '<th class="num">연결 있음</th><th>표준</th><th></th>'], trs))
+        return _admin_page("관리 — 사용자", body, cur="users")
+
+    async def admin_user(self, request):
+        """/admin/users/<불투명 id> — 요약 → DMO 그래프 → 관계 집계 → 무결성 → 표준 상태 → 구조 트리 → 문의 요약.
+        이름은 이름 공유 유효 동의자만(admin_consent — admin_db.schema_names 분기 행). 모르는 id 404(입력을 되비추지 않는다)."""
+        _, err = await self._admin_view(request)
+        if err:
+            return err
+        if request.query_params:
+            return self._admin_bad("사용자를 열 수 없어요", "쿼리 키를 받지 않아요.", "/admin/users", "users")
+        role = request.state.role
+        users = await run_in_threadpool(admin_db.users, role)
+        u = next((x for x in users if self._opaque(x["id"]) == request.path_params["oid"]), None)
+        if u is None:
+            return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/users">사용자 목록으로</a></p>',
+                               404, cur="users")
+        views, (onames, fnames) = await run_in_threadpool(lambda: (admin_db.userview(role, u["id"]), admin_db.schema_names(role, u["id"])))
+        v = views.get(u["id"])
+        if v is None:
+            return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/users">사용자 목록으로</a></p>',
+                               404, cur="users")
+        resp, st = uv_build(v, onames, fnames)
+        body = render_userview(u, self._opaque(u["id"]), v["names"], resp, st, v["tickets"])
+        return _admin_page("관리 — 사용자", body, cur="users")
+
     def routes(self) -> list[Route]:
         u = _usage
         return [
@@ -1734,9 +1783,10 @@ class Web:
             Route("/api/candidate/decide", u("web:candidate_decide", self.api_decide), methods=["POST"]),
             Route("/api/item", u("web:item", self.api_item)),
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
+            Route("/api/std/preview", u("web:std_preview", self.api_std_preview)),
+            Route("/api/std/choose", u("web:std_choose", self.api_std_choose), methods=["POST"]),
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
-            Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
             Route("/api/desk-visibility", u("web:desk_visibility", self.api_desk_visibility), methods=["POST"]),
             Route("/admin", self.admin_index),
@@ -1746,6 +1796,8 @@ class Web:
             Route("/admin/signout", self.admin_signout, methods=["POST"]),
             Route("/admin/block", self.admin_block, methods=["POST"]),
             Route("/admin/unblock", self.admin_unblock, methods=["POST"]),
+            Route("/admin/users", self.admin_users),
+            Route("/admin/users/{oid}", self.admin_user),
             Route("/admin/schema", self.admin_schema),
             Route("/admin/reports", self.admin_reports),
             Route("/admin/tickets", self.admin_tickets),

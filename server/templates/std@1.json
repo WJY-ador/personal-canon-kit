@@ -1,0 +1,101 @@
+{
+  "template_key": "std",
+  "template_version": 1,
+  "objects": [
+    {
+      "key": "axes",
+      "label": "축",
+      "semantic_kind": "collection",
+      "policy": {},
+      "fields": [
+        {
+          "key": "keywords",
+          "label": "검색어",
+          "value_type": "text_list",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        }
+      ],
+      "id": "od_axes"
+    },
+    {
+      "key": "decision_events",
+      "label": "결정",
+      "semantic_kind": "event",
+      "policy": {},
+      "fields": [
+        {
+          "key": "happened_on",
+          "label": "결정일",
+          "value_type": "date",
+          "required": false,
+          "options": [],
+          "target_kind": null,
+          "target_object_id": null,
+          "multiple": false
+        },
+        {
+          "key": "claims",
+          "label": "판단",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "multiple": true
+        }
+      ],
+      "id": "od_events"
+    },
+    {
+      "key": "principles",
+      "label": "기준",
+      "semantic_kind": "principle",
+      "policy": {
+        "promotion": {
+          "confirmed_claims_min": 2,
+          "claim_field": "evidence_claims",
+          "distinct_events_min": 0,
+          "event_field": null,
+          "event_claim_field": null
+        }
+      },
+      "fields": [
+        {
+          "key": "evidence_claims",
+          "label": "근거 판단",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "multiple": true
+        },
+        {
+          "key": "evidence_events",
+          "label": "근거 결정",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "multiple": true
+        },
+        {
+          "key": "axes",
+          "label": "관심 축",
+          "value_type": "reference",
+          "required": false,
+          "options": [],
+          "target_kind": "item",
+          "target_object_id": "od_axes",
+          "multiple": true
+        }
+      ],
+      "id": "od_principles"
+    }
+  ]
+}

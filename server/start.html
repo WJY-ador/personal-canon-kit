@@ -103,6 +103,7 @@ h1 em { font-style: normal; color: var(--accent); }
   background: var(--accent); color: var(--on-accent);
   box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 18%, transparent), 0 14px 34px -8px color-mix(in srgb, var(--accent) 70%, transparent);
   transition: transform .15s, box-shadow .15s; }
+.cta-note { margin: 0; font-size: .78rem; color: var(--ink); opacity: .78; }
 .btn-login:hover { transform: translateY(-2px); box-shadow: 0 0 0 9px color-mix(in srgb, var(--accent) 22%, transparent), 0 20px 40px -8px color-mix(in srgb, var(--accent) 75%, transparent); }
 
 /* 데모: 넓게, 남은 높이만큼만 보이고 아래는 화면 끝에 걸친다. 테마별 촬영본(라이트·다크) × (움직임·정지) 4장 중 하나만 보인다.
@@ -162,6 +163,7 @@ body.start:has(#still:checked) .demo .anim { display: none; }
     <p class="lead">기록하고, AI 와 대화하며 쌓은 데이터를 내 판단으로 활용하고 관리하는 대시보드예요.</p>
     <div class="cta">
       <a class="btn-login" href="/login">로그인</a>
+      <p class="cta-note">시작하면 <a href="/privacy">개인정보 처리방침</a>이 적용돼요.</p>
     </div>
   </main>
   <section class="demo" aria-label="사용 모습 미리 보기 — 로그인하면 보이는 실제 화면을 샘플 데이터로 찍었어요. 기록 원문, AI 후보와 원문 대조, 내 판단으로 남기기, 구조 탭.">

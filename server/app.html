@@ -101,8 +101,9 @@ a.setup-gear:hover { border-color: var(--accent); color: var(--accent); }
 .acct-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; width: max-content; min-width: 13rem; max-width: calc(100vw - 2rem);
   display: flex; flex-direction: column; gap: .1rem; padding: .3rem; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 6px 20px color-mix(in srgb, var(--ink) 14%, transparent); }
-.acct-menu button { justify-content: space-between; width: 100%; border-color: transparent; background: transparent; font-size: .8rem; color: var(--ink); }
-.acct-menu button:hover { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
+.acct-menu button, .acct-menu a.btn { justify-content: space-between; width: 100%; border-color: transparent; background: transparent; font-size: .8rem; color: var(--ink); }
+.acct-menu a.btn { display: flex; align-items: center; text-decoration: none; }   /* 관리자 「운영 콘솔」 — 링크를 메뉴 버튼과 같은 모양으로 */
+.acct-menu button:hover, .acct-menu a.btn:hover { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
 .acct-menu .st { font-size: .72rem; color: var(--muted); font-weight: 600; }
 .acct-menu button[aria-pressed="true"] .st { color: var(--accent); }
 .acct-menu hr { border: 0; border-top: 1px solid var(--line); margin: .2rem 0; }
@@ -380,11 +381,8 @@ dialog .dh b { font-size: 1rem; }
 dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 .foot { color: var(--soft); font-size: .72rem; padding: .4rem 1.4rem 2.4rem; }
 
-/* 문의 데스크(desk-0) — #view 밖, 푸터 위. 보드 토큰 그대로 */
-.desk { margin-top: 1.6rem; }
-.desk .paper { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.2rem 2.2rem; }
-.desk h2.sh { margin: 0 0 .35rem; }
-.desk .hint { margin: 0 0 .7rem; }
+/* 문의 데스크(desk-0) — 계정 메뉴에서 여는 대화창(desk-dlg, Q1b). 보드 토큰 그대로 */
+#desk-dlg .hint { margin: 0 0 .7rem; }
 .deskkinds { border: 0; padding: 0; margin: 0 0 .5rem; display: flex; flex-wrap: wrap; gap: .1rem 1rem; font-size: .84rem; }
 .deskkinds label { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; min-height: 32px; }
 .deskkinds input { accent-color: var(--accent); margin: 0; }
@@ -395,7 +393,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 #desk-count.over { color: var(--fail); font-weight: 600; }
 .desknote { font-size: .76rem; color: var(--muted); margin: .6rem 0 0; line-height: 1.6; }
 #desk-status { font-size: .82rem; color: var(--muted); margin: .4rem 0 0; }
-#desk-status:empty, #desk-error:empty { margin: 0; }
+#desk-status:empty, #desk-error:empty, #desk-list-error:empty { margin: 0; }
 .desktbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .desktbl { border-collapse: collapse; width: 100%; font-size: .82rem; }
 .desktbl th, .desktbl td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -408,8 +406,70 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 .desktk h3:first-child { margin-top: 0; }
 .desktk .desktxt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: .9rem; line-height: 1.65; }
 .desktk ul { margin: 0; padding-left: 1.1rem; font-size: .84rem; }
-@media (min-width: 1000px) { .desk .paper { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
 @media (max-width: 700px) { #desk-text { font-size: 16px; } .desktbl th, .desktbl td { padding: .4rem .3rem; } }
+
+/* 출처 · 확정 전 재검토 (Q4) */
+.chip.src { font-family: inherit; letter-spacing: 0; white-space: normal; overflow-wrap: anywhere; }
+.chip.src.none { border-style: dashed; color: var(--soft); }
+.recs .srcl { margin-top: .15rem; }
+.recheck { font-size: .78rem; line-height: 1.55; color: var(--ink); background: var(--warn-bg); border-radius: 6px; padding: .4rem .6rem; margin: .1rem 0 .35rem; }
+.recheck .chip { margin-right: .3rem; }
+/* 구조 정의 (Q5) — origin·locked·cardinality 는 서버 판정(/api/state structure)을 그대로 그린다 */
+.chip.o-std { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: var(--accent-soft); }
+.chip.o-tpl { color: var(--ai); border-color: color-mix(in srgb, var(--ai) 40%, transparent); background: var(--ai-bg); }
+.chip.o-core { color: var(--ink); font-weight: 600; }
+.chip.lock { color: var(--mine); border: 1px solid var(--mine); background: var(--mine-bg); font-weight: 600; }
+.sdef { display: flex; flex-direction: column; gap: .7rem; }
+.sobj { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .8rem .95rem; min-width: 0; }
+.sobj.locked { border-left: 3px solid var(--mine); }
+.sohead { display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap; margin-bottom: .35rem; }
+.sohead h3 { margin: 0; font-size: 1rem; }
+.sohead .tech, .sftbl .tech { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
+.sftbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-top: .3rem; }
+.sftbl { border-collapse: collapse; width: 100%; font-size: .8rem; }
+.sftbl th, .sftbl td { text-align: left; padding: .35rem .45rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.sftbl th { color: var(--muted); font-weight: 600; font-size: .72rem; white-space: nowrap; }
+.sftbl td:first-child { min-width: 7rem; }
+.srel { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; font-size: .84rem; }
+.srel li { display: flex; gap: .35rem; flex-wrap: wrap; align-items: center; }
+.spv { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: .7rem; }
+.spvc { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .8rem .95rem; min-width: 0; font-size: .84rem; }
+.spvc h4 { margin: 0 0 .35rem; font-size: .95rem; display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.spvc dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .25rem .6rem; margin: .4rem 0; }
+.spvc dt { color: var(--muted); font-size: .76rem; }
+.spvc dd { margin: 0; overflow-wrap: anywhere; }
+.spvc ul { margin: .2rem 0; padding-left: 1.1rem; }
+.spvc .acts { margin-top: .6rem; }
+.spvc .pstatus, .spvc .perror, #std-msg { font-size: .8rem; margin: .4rem 0 0; }
+.spvc .pstatus:empty, .spvc .perror:empty, #std-msg:empty { margin: 0; }
+.spvc .perror { color: var(--fail); font-weight: 600; }
+#std-dlg ul { margin: .2rem 0 .6rem; padding-left: 1.1rem; font-size: .86rem; }
+#std-dlg h3 { font-size: .8rem; font-weight: 600; color: var(--muted); margin: .8rem 0 .3rem; }
+#std-dlg .stdok { display: flex; gap: .5rem; align-items: flex-start; font-size: .88rem; font-weight: 600; margin: .8rem 0; }
+#std-dlg .stdok input { margin-top: .25rem; flex: none; }
+#std-dlg .acts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.sftbl .tech { white-space: nowrap; }
+/* 구조 정의 목록/그래프 전환 — 그래프 = 서버 structure_svg.render(structure)(/api/state structure_svg). 배치·판정은 서버, 여기선 넣기만 */
+.dmode { display: flex; gap: .3rem; margin: 0 0 .9rem; }
+.dmode button { border: 1px solid var(--line); color: var(--muted); background: none; font: inherit; font-size: .74rem; padding: .15rem .7rem; border-radius: 999px; cursor: pointer; }
+.dmode button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); font-weight: 600; background: var(--card); }
+.dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }
+.dmo svg { display: block; width: 100%; min-width: 420px; height: auto; max-width: 760px; margin: 0 auto; }   /* 좁은 폭은 래퍼(.dmo) 안에서 가로 스크롤 */
+.dmo a { text-decoration: none; }
+.dmo a:hover circle, .dmo a:focus-visible circle { stroke-width: 3; }
+.dmo a:hover line, .dmo a:hover path { stroke-width: 2.4; }
+.dlegend { display: flex; flex-wrap: wrap; gap: .25rem .9rem; font-size: .76rem; color: var(--muted); margin: 0 0 .6rem; }
+.dlegend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid; vertical-align: -1px; margin-right: .25rem; }
+.dlegend .o-core { background: var(--dmo-core-bg); border-color: var(--dmo-core-line); }
+.dlegend .o-standard { background: var(--dmo-standard-bg); border-color: var(--dmo-standard-line); }
+.dlegend .o-template { background: var(--dmo-template-bg); border-color: var(--dmo-template-line); }
+.dlegend .o-custom { background: var(--dmo-custom-bg); border-color: var(--dmo-custom-line); }
+[id^="dmo-"] { scroll-margin-top: 1rem; }
+.dmo-hit { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* DMO 토큰 = structure_svg.tokens_css(dark_attr=True, dark_media=False) 그대로 — 앱 테마 토글(data-theme)을 따르고 OS 는 따르지 않는다. 시험이 같은 문자열을 본다 */
+:root{--dmo-ink:#2B2824;--dmo-muted:#6B635A;--dmo-line:#4A443E;--dmo-core-bg:#F6E3EA;--dmo-core-line:#A3406B;--dmo-standard-bg:#DCEBE3;--dmo-standard-line:#186A4B;--dmo-template-bg:#FBEBD8;--dmo-template-line:#B5651D;--dmo-custom-bg:#ECEAE6;--dmo-custom-line:#6B635A}:root[data-theme="dark"]{--dmo-ink:#E7EAE6;--dmo-muted:#A3AAA6;--dmo-line:#BFC6C2;--dmo-core-bg:#3A2230;--dmo-core-line:#E08AB0;--dmo-standard-bg:#1C2E26;--dmo-standard-line:#4FB08A;--dmo-template-bg:#33281C;--dmo-template-line:#E0A262;--dmo-custom-bg:#2A2D2E;--dmo-custom-line:#A3AAA6}
+@media (max-width: 700px) { .spv { grid-template-columns: minmax(0, 1fr); } .spvc .acts { position: static; padding: 0; }
+  .sftbl { min-width: 560px; } }   /* 좁은 폭은 표만 래퍼 안에서 가로 스크롤 */
 
 @media (max-width: 900px) {
   .board { grid-template-columns: minmax(0, 1fr); }
@@ -450,14 +510,15 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <div class="axislegend" id="legend"></div></div>
   <div class="who"><details class="acct" id="acct"><summary><span class="sr">계정 메뉴 </span><span id="who"></span><span class="caret" aria-hidden="true">▾</span></summary>
     <div class="acct-menu" id="acct-menu">
-      <button type="button" data-acct="send">문의 보내기</button>
-      <button type="button" data-acct="mine">내 문의</button>
-      <button type="button" data-acct="privacy">개인정보 요청</button>
+      <!--admin--><a class="btn" href="/admin" id="acct-console">운영 콘솔</a>
+      <hr><!--/admin-->
+      <!--user--><button type="button" data-acct="send" aria-haspopup="dialog">문의 보내기</button>
+      <button type="button" data-acct="mine" aria-haspopup="dialog">내 문의</button>
+      <button type="button" data-acct="privacy" aria-haspopup="dialog">개인정보 요청</button>
       <hr>
       <button type="button" data-acct="names" id="acct-names" aria-pressed="false">구조 이름 공유 <span class="st" id="acct-names-st">꺼짐</span></button>
       <p class="acct-note">안 해도 모든 기능을 써요. <a href="/privacy#privacy-1">무엇을 보나요</a></p>
-      <button type="button" data-acct="desk" id="acct-desk">문의 섹션 숨기기</button>
-      <hr>
+      <hr><!--/user-->
       <button type="button" data-acct="logout" id="logout">로그아웃</button>
       <p class="acct-msg" id="acct-msg" role="status"></p>
     </div></details><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><a class="refresh setup-gear" id="setup-link" href="/admin/setup" hidden title="관리 Setup" aria-label="관리 Setup">⚙</a><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
@@ -466,9 +527,10 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
 <main id="view" class="wrap"></main>
-<section class="wrap desk" id="desk" aria-labelledby="desk-title"><div class="paper">
+<footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></footer>
+<!--user--><dialog id="desk-dlg" aria-labelledby="desk-dlg-title"><div class="dh"><b id="desk-dlg-title">문의</b>
+  <button class="small" type="button" id="desk-dlg-close">닫기</button></div><div class="db">
   <form id="desk-form" novalidate>
-    <h2 class="sh" id="desk-title">문의</h2>
     <p class="hint">안 되는 것·바라는 것·궁금한 것을 운영자에게 보내요. 처리 상태는 「내 문의」에서 보여요.</p>
     <fieldset class="deskkinds"><legend class="sr">문의 종류</legend>
       <label><input type="radio" name="kind" value="bug" checked> 버그</label>
@@ -483,17 +545,25 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <p id="desk-notice" class="desknote">이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요. <a href="/privacy">개인정보 처리방침</a></p>
     <p id="desk-status" role="status"></p><p id="desk-error" role="alert" class="blocked"></p>
   </form>
-  <div>
-    <h2 class="sh" id="desk-list-title">내 문의</h2>
+  <div id="desk-mine">
     <p class="hint" id="desk-list-hint">처리 상태와 운영자 답변을 볼 수 있어요. 접수일을 누르면 열려요.</p>
     <div class="desktbl-wrap"><table class="desktbl" id="desk-tbl"><thead id="desk-head"><tr><th scope="col">접수일</th><th scope="col">종류</th><th scope="col">상태</th><th scope="col">답변</th><th scope="col">최근 갱신</th><th scope="col">글</th></tr></thead>
       <tbody id="desk-list"></tbody></table></div>
     <p id="desk-empty" class="empty" hidden>아직 보낸 문의가 없어요.</p>
+    <p id="desk-list-error" role="alert" class="blocked"></p>
   </div>
-</div></section>
-<footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></footer>
+</div></dialog><!--/user-->
 <dialog id="dlg" aria-labelledby="dlg-title"><div class="dh"><div><b id="dlg-title"></b><div id="dlg-meta" class="recmeta" style="margin:2px 0 0"></div></div>
   <button class="small" id="dlg-close">닫기</button></div><div class="db" id="dlg-body"></div></dialog>
+<dialog id="std-dlg" aria-labelledby="std-dlg-title" aria-describedby="std-dlg-lead"><div class="dh"><b id="std-dlg-title">표준으로 편입하기</b>
+  <button class="small" type="button" id="std-dlg-close">닫기</button></div><div class="db">
+  <p id="std-dlg-lead"></p>
+  <h3>편입하면 막히는 변경</h3><ul id="std-dlg-lock"></ul>
+  <p class="hint" id="std-dlg-fields"></p>
+  <p class="hint">label 은 계속 바꿀 수 있고, 필드·선택지는 더할 수 있어요. 편입한 뒤엔 보류·거절로 되돌릴 수 없어요.</p>
+  <label class="stdok"><input type="checkbox" id="std-dlg-ok"> <span id="std-dlg-oktext"></span></label>
+  <div class="acts"><button class="primary" type="button" id="std-dlg-go" disabled>편입하기</button><button class="tertiary" type="button" id="std-dlg-cancel">취소</button></div>
+</div></dialog>
 <script>
 "use strict";
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -546,7 +616,6 @@ const WHAT = {
   "RECORD-MISSING": "기록이 지워졌거나 찾을 수 없어요.",
   "UNAUTHORIZED": "로그인이 풀렸어요.",
   "OFFLINE": "서버에 연결하지 못했어요.",
-  "CONSENT-REQUIRED": "처리방침 동의가 필요해요.",
 };
 const FIXHINT = "새로 고침해도 그대로면 다시 로그인해 보세요.";
 function techInfo(err) {
@@ -829,7 +898,14 @@ function decisionChip(it) {
   const st = STCHIP[it.decision] || STCHIP.pending;
   return `<span class="chip ${st[0]}">${st[1]}</span>`;
 }
+// 「구조」 탭 두 보기 — 항목(카드 그리드) · 구조 정의(#structure/defs). 정의 id 는 od_ 로 시작해 defs 와 겹치지 않는다
+// 보기 전환이 맨 위 · 오브젝트 필(sub, 「구조 고르기」)은 그 아래 — 항목 보기에서만 넘긴다
+function structViews(tab, on, sub = "") {
+  const a = (href, label, v) => `<a href="${esc(href)}" class="${on === v ? "on" : ""}"${on === v ? ' aria-current="true"' : ""}>${label}</a>`;
+  return `<nav class="pills sview" aria-label="구조 보기">${a(`#${tab.id}`, "항목", "items")}${a(`#${tab.id}/defs`, "구조 정의", "defs")}</nav>` + sub;
+}
 function renderStructure(tab, a, b) {
+  if (a === "defs") return renderDefs(tab);
   const ds = defsList();
   const rules = ds.filter(d => d.semantic_kind === "principle"), others = ds.filter(d => d.semantic_kind !== "principle");
   const cs = ok("candidates") ? (S.candidates || []) : [];
@@ -840,15 +916,16 @@ function renderStructure(tab, a, b) {
   if (!FILTERS.some(x => x[0] === filter)) filter = "confirmed";
   const cnt = d => (S.items || []).filter(it => it.object_id === d.id).length;
   const pill = (href, label, n, on) => `<a href="${esc(href)}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${esc(label)}<span class="n m">${n}</span></a>`;
-  subnav(rules.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")
+  subnav("");
+  const sub = `<nav class="pills sobjs" aria-label="구조 고르기">${rules.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")
     + pill(`#${tab.id}/cand/${filter}`, LABELS.candidate, cs.length, sel === "cand")
-    + others.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join(""), "구조 고르기");
-  if (sel === "cand") return renderCandGallery(tab, cs, filter);
+    + others.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")}</nav>`;
+  if (sel === "cand") return renderCandGallery(tab, cs, filter, sub);
   const d = defById(sel);
   const list = (S.items || []).filter(it => it.object_id === d.id);
   const props = (S.item_proposals || []).filter(it => it.object_id === d.id);
   const cards = props.map(it => itemCard(tab, it, d, b)).join("") + list.map(it => itemCard(tab, it, d, b)).join("");
-  $("view").innerHTML = `<div class="struct"><div>${cards ? `<div class="gallery">${cards}</div>`
+  $("view").innerHTML = structViews(tab, "items", sub) + `<div class="struct"><div>${cards ? `<div class="gallery">${cards}</div>`
       : `<div class="empty">아직 ${esc(d.label)} 항목이 없어요. 연결한 AI 대화에서 제안하면 여기서 적용할 수 있어요.</div>`}</div>
     <aside id="panel" aria-label="${esc(d.label)} 서랍" aria-live="polite"><p class="empty">카드를 누르면 여기 떠요.</p></aside></div>`;
   if (b && itemById(b)) openDrawer(tab, b);
@@ -875,14 +952,14 @@ function dataSummary(it, d) {
     return `${f.label} ${Array.isArray(v) ? v.join(", ") : v}`;
   }).filter(Boolean).join(" · ");
 }
-function renderCandGallery(tab, cs, f) {
-  if (!ok("candidates")) { $("view").innerHTML = partFail(S.read.candidates.error, "문장 목록"); return; }
+function renderCandGallery(tab, cs, f, sub) {
+  if (!ok("candidates")) { $("view").innerHTML = structViews(tab, "items", sub) + partFail(S.read.candidates.error, "문장 목록"); return; }
   const pills = `<nav class="pills" aria-label="결정 고르기">${FILTERS.map(([k, l]) => {
     const n = k === "all" ? cs.length : cs.filter(c => c.status === k).length, on = k === f;
     return `<a href="#${esc(tab.id)}/cand/${k}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${l}<span class="n">${n}</span></a>`;
   }).join("")}</nav>`;
   const list = cs.filter(c => f === "all" || c.status === f).sort(byNewest);
-  $("view").innerHTML = pills + (list.length ? `<div class="gallery">${list.map(c => assetCard(tab, c)).join("")}</div>` : `<div class="empty">${esc(NOCARD[f])}</div>`);
+  $("view").innerHTML = structViews(tab, "items", sub) + pills + (list.length ? `<div class="gallery">${list.map(c => assetCard(tab, c)).join("")}</div>` : `<div class="empty">${esc(NOCARD[f])}</div>`);
 }
 function assetCard(tab, c) {
   const st = STCHIP[c.status] || STCHIP.pending;
@@ -898,6 +975,209 @@ function assetCard(tab, c) {
     <h3>${esc(c.text)}</h3>
     <p class="summary"><mark>${esc(c.quote)}</mark></p>
     <div class="meta"><span>${esc(md(c.created))}</span><a data-rec="${esc(c.record_id)}" data-quote="${esc(c.quote)}" tabindex="0" role="button">${esc(title)}</a></div></article>`;
+}
+
+// ── 구조 정의 (Q5) — S.structure(서버 contract.respond 본인 응답)만 그린다. origin·locked·cardinality 를 여기서 다시 판정하지 않는다.
+// 편집은 연결한 AI 대화에서 — 이 화면에서 쓰는 것은 표준 편입 선택(보류·거절·편입)뿐이다.
+const ORIGIN_CHIP = {standard: ["o-std", "표준"], template: ["o-tpl", "선택 템플릿"], custom: ["", "직접 추가"], core: ["o-core", "코어"]};
+const originChip = o => { const x = ORIGIN_CHIP[o] || ["", o]; return `<span class="chip ${x[0]}">${esc(x[1])}</span>`; };
+const LOCK_TIP = "편입된 표준 정의예요. key·종류·표준 필드 모양은 바꿀 수 없고, label 은 바꿀 수 있어요.";
+const lockChip = on => on ? `<span class="chip lock" title="${esc(LOCK_TIP)}">표준 정의 보호</span>` : "";
+const VTYPE = {text: "글", number: "숫자", boolean: "예/아니오", date: "날짜", select: "고르기", text_list: "글 목록", reference: "참조"};
+const KIND_LABEL = {principle: LABELS.principle, event: LABELS.event, collection: LABELS.collection};
+const CORE_LABEL = {record: LABELS.record, candidate: LABELS.candidate};
+// 목록/그래프 전환 — 기본 목록. 라우트(해시)를 쓰지 않는다: 해시를 바꾸면 render → scrollTo(0,0) 과 편입 미리보기 재요청이 돈다
+let defsMode = "list";
+const DMO_ORIGIN = ["core", "standard", "template", "custom"];
+const josa = (w, a, b) => { const c = String(w).slice(-1).charCodeAt(0) - 0xAC00; return c < 0 || c > 11171 || c % 28 === 0 ? b : a; };   // 받침 있으면 a
+function renderDefs(tab) {
+  subnav("");
+  const st = S.structure;
+  if (!st || !Array.isArray(st.objects)) {
+    $("view").innerHTML = structViews(tab, "defs") + `<div class="empty">구조 정의를 읽지 못했어요. ${esc(FIXHINT)}</div>`;
+    return;
+  }
+  const objs = st.objects, rels = st.relations || [];
+  const oById = id => objs.find(o => o.id === id);
+  const tgt = r => r.target_kind === "item" ? (oById(r.target_object_id) || {}).label || "찾을 수 없는 오브젝트" : CORE_LABEL[r.target_kind] || r.target_kind;
+  const relOf = (oid, fk) => rels.find(r => r.object_id === oid && r.field_key === fk);
+  const nItems = id => (S.items || []).filter(it => it.object_id === id).length;
+  const fieldRow = (o, f) => {
+    const r = f.value_type === "reference" ? relOf(o.id, f.key) : null;
+    return `<tr><td>${esc(f.label)}${f.std_name && f.std_name !== f.label ? ` <span class="tech">표준 「${esc(f.std_name)}」</span>` : ""}</td>
+      <td><span class="tech">${esc(f.key)}</span></td>
+      <td>${esc(VTYPE[f.value_type] || f.value_type)}${r ? ` → ${esc(tgt(r))} <span class="chip">${esc(r.cardinality)}</span>` : ""}</td>
+      <td>${originChip(f.origin)}</td><td>${f.locked ? lockChip(true) : `<span class="tech">—</span>`}</td></tr>`;
+  };
+  // id dmo-o<n>·dmo-r<n>·dmo-core-<kind> = structure_svg node_anchor·rel_anchor·core_anchor(응답 순서 그대로) — 그래프 링크가 가리킨다
+  const objCard = (o, i) => `<article class="sobj${o.locked ? " locked" : ""}" id="dmo-o${i + 1}" aria-labelledby="sobj-${esc(o.id)}">
+    <div class="sohead"><h3 id="sobj-${esc(o.id)}">${esc(o.label)}</h3><span class="tech">${esc(o.key)}</span></div>
+    <div class="labels">${originChip(o.origin)}${lockChip(o.locked)}${o.std_name ? `<span class="chip">표준 「${esc(o.std_name)}」</span>` : ""}
+      <span class="chip">${esc(KIND_LABEL[o.semantic_kind] || o.semantic_kind)}</span><span class="chip">항목 ${nItems(o.id)}</span></div>
+    ${o.fields.length ? `<div class="sftbl-wrap"><table class="sftbl"><thead><tr><th scope="col">필드</th><th scope="col">key</th><th scope="col">값</th>
+      <th scope="col">구분</th><th scope="col">보호</th></tr></thead><tbody>${o.fields.map(f => fieldRow(o, f)).join("")}</tbody></table></div>`
+      : `<p class="hint">필드가 없어요.</p>`}</article>`;
+  const relRow = (r, i) => { const o = oById(r.object_id) || {}, f = (o.fields || []).find(x => x.key === r.field_key) || {};
+    return `<li id="dmo-r${i + 1}"><b>${esc(o.label || "")}</b><span class="tech">${esc(f.label || r.field_key)}</span> → <b>${esc(tgt(r))}</b>
+      <span class="chip">${esc(r.cardinality)}</span>${originChip(r.origin)}${lockChip(r.locked)}</li>`; };
+  const core = st.core || [];
+  const svg = typeof S.structure_svg === "string" ? S.structure_svg : "";
+  const mode = m => `<button type="button" data-dmode="${m}" aria-pressed="${defsMode === m}">${m === "list" ? "목록" : "그래프"}</button>`;
+  $("view").innerHTML = structViews(tab, "defs") + `<div class="paper"><div class="eyebrow">구조 정의</div>
+    <p class="hint" style="margin:.3rem 0 .9rem">내 오브젝트·필드와 관계예요. 정의를 바꾸는 일은 연결한 AI 대화에서 해요. 여기서는 표준 편입만 고를 수 있어요.</p>
+    <div class="dmode" role="group" aria-label="구조 정의 보기 방식">${mode("list")}${mode("graph")}</div>
+    <div id="dlist"${defsMode === "list" ? "" : " hidden"}>
+    <section class="sec"><h3>오브젝트<span class="count">${objs.length}</span></h3>
+      ${objs.length ? `<div class="sdef">${objs.map(objCard).join("")}</div>` : `<div class="empty">아직 오브젝트가 없어요.</div>`}</section>
+    <section class="sec"><h3>관계<span class="count">${rels.length}</span></h3>
+      ${rels.length ? `<ul class="srel">${rels.map(relRow).join("")}</ul>` : `<div class="empty">참조 필드가 없어요.</div>`}
+      ${core.length ? `<p class="hint" style="margin:.6rem 0 0">${originChip("core")} 공통으로 쓰는 ${core.map(x => `<b id="dmo-core-${esc(x.kind)}">${esc(CORE_LABEL[x.kind] || x.kind)}</b>`).join("·")}${josa(CORE_LABEL[core[core.length - 1].kind] || "", "을", "를")} 가리키는 관계가 있어요.</p>` : ""}</section></div>
+    <section class="sec" id="dgraph"${defsMode === "graph" ? "" : " hidden"} aria-label="구조 그래프">
+      <div class="dlegend">${DMO_ORIGIN.map(k => `<span><i class="o-${k}"></i>${esc((ORIGIN_CHIP[k] || ["", k])[1])}</span>`).join("")}
+        <span>점선 고리 = 표준 정의 보호</span><span>선 = 관계(화살표 없음) · 세 갈래 = 여러(N) · 두 줄 = 하나(1) · 참조를 가진 쪽이 N</span></div>
+      ${svg ? `<div class="dmo">${svg}</div>` : `<div class="empty">그래프를 읽지 못했어요. 목록으로 보세요. ${esc(FIXHINT)}</div>`}
+      <p class="hint" style="margin:.6rem 0 0">원을 누르면 목록의 그 오브젝트로, 선을 누르면 그 관계로 가요. 대상 오브젝트를 정하지 않은 관계는 선이 없어요.</p></section>
+    <section class="sec" aria-labelledby="std-pv-title"><h3 id="std-pv-title">표준 편입 미리보기</h3>
+      <p class="hint">표준 정의마다 편입·보류·거절을 골라요. 편입한 정의는 「표준 정의 보호」를 받아요. 고르지 않아도 다른 기능은 그대로예요.</p>
+      <p id="std-msg" role="status" aria-atomic="true"></p><div id="std-pv" aria-busy="true"><p class="empty">미리보기를 불러오는 중이에요…</p></div></section></div>`;
+  loadPreview();
+}
+
+function defsShow(m) {
+  defsMode = m === "graph" ? "graph" : "list";
+  const l = $("dlist"), g = $("dgraph");
+  if (!l || !g) return;
+  l.hidden = defsMode !== "list";
+  g.hidden = defsMode !== "graph";
+  for (const b of document.querySelectorAll("[data-dmode]")) b.setAttribute("aria-pressed", String(b.dataset.dmode === defsMode));
+}
+// 그래프 원·선 → 목록의 같은 id. SVG <a href="#dmo-…"> 는 해시를 바꾸지 않게 가로챈다(라우트 해시 앱 — #dmo-o1 은 탭이 아니다)
+function defsJump(id) {
+  const n = /^dmo-/.test(id) ? document.getElementById(id) : null;
+  if (!n) return;
+  defsShow("list");
+  n.setAttribute("tabindex", "-1");
+  n.scrollIntoView({block: "start"});
+  n.focus({preventScroll: true});
+  n.classList.add("dmo-hit");
+  setTimeout(() => n.classList.remove("dmo-hit"), 1600);
+}
+
+// ── 편입 미리보기 · 선택 (§3) — GET /api/std/preview(본인 것만, 읽기 전용) → 보류·거절·편입. 편입은 명시 확인 대화창을 거친다 ──
+const STD_STATE = {seeded: ["st-mine", "처음부터 표준"], incorporated: ["st-mine", "편입함"], deferred: ["st-wait", "보류"],
+  refused: ["st-off", "거절"], none: ["", "아직 고르지 않음"]};
+const STD_READY = ["seeded", "incorporated"];
+const STRUCT_TEXT = {match: "일치 — 표준과 같은 모양", extend: "확장 — 표준 + 내가 더한 필드", missing: "누락 — 같은 key 오브젝트가 없어요",
+  conflict: "충돌 — 표준과 모양이 달라요"};
+const STD_CONFLICT = {
+  key_draft_only: () => "같은 key 오브젝트가 아직 적용 전 초안이에요. 대화에서 초안을 적용하거나 key 를 바꾼 뒤 다시 보세요",
+  key_archived: () => "같은 key 오브젝트가 보관돼 있어요",
+  kind: () => "오브젝트 종류(semantic_kind)가 표준과 달라요",
+  field_missing: f => `표준 필드 ${f} 가 없어요`,
+  field_archived: f => `표준 필드 ${f} 가 보관돼 있어요`,
+  field_value_type: f => `필드 ${f} 의 값 종류가 표준과 달라요`,
+  field_target_kind: f => `필드 ${f} 가 가리키는 종류가 표준과 달라요`,
+  field_target: f => `필드 ${f} 가 표준 대상 오브젝트를 가리키지 않아요`,
+  field_multiple: f => `필드 ${f} 의 여러 개 허용이 표준과 달라요`,
+  field_required: f => `필드 ${f} 의 필수 여부가 표준과 달라요`,
+  field_options: f => `필드 ${f} 에 표준 선택지가 빠져 있어요`,
+};
+const BLOCK_TEXT = {already: "이미 표준으로 쓰고 있어요.", conflict: "구조가 표준과 달라요. 대화로 정의를 표준 모양에 맞춘 뒤 다시 보세요.",
+  needs_target: "참조 대상 표준을 먼저 편입해야 해요."};
+// 편입하면 막히는 변경 — 서버 contract.LOCKED_CHANGES 코드와 같은 뜻
+const LOCK_TEXT = {archive: "오브젝트 삭제·보관", key: "오브젝트 key 바꾸기", semantic_kind: "오브젝트 종류(semantic_kind) 바꾸기",
+  std_id: "표준 식별자 떼기·바꾸기 — 보류·거절로 되돌리기 포함", field_remove: "표준 필드 빼기",
+  field_shape: "표준 필드의 key·값 종류·대상·여러 개·필수 바꾸기", option_remove: "표준 선택지 빼기·값 바꾸기"};
+const STD_DONE = {deferred: "보류로 남겼어요. 다른 기능은 그대로예요.", refused: "거절로 남겼어요. 기존 오브젝트와 링크는 그대로예요.",
+  incorporated: "편입했어요. 이 정의는 이제 「표준 정의 보호」를 받아요."};
+const STD_ERR = {
+  "FEATURE-OFF": "표준 정의 선택은 아직 열리지 않았어요. 읽기(미리보기·목록)는 지금도 돼요.",
+  "DEF-INVALID": "지금 구조로는 편입할 수 없어요. 미리보기를 다시 불러왔어요 — 사유를 확인해 주세요.",
+  "CONFLICT": "다른 곳에서 먼저 바뀌었어요. 미리보기를 다시 불러왔어요 — 다시 확인해 주세요.",
+  "STANDARD-LOCKED": "이미 편입된 표준은 보류·거절로 바꿀 수 없어요.",
+};
+let stdPv = null, stdMsg = "", stdAsk = null, pvAt = 0;
+const stdName = k => { const o = stdPv && stdPv.objects.find(x => x.std_key === k); return o ? o.std_name : k; };
+function pvCard(o) {
+  const stc = STD_STATE[o.state] || ["", o.state], ready = STD_READY.includes(o.state);
+  const obj = o.object;
+  const lock = o.lock || {changes: [], fields: []};
+  let acts;
+  if (ready) acts = `<p class="hint" style="margin:.5rem 0 0">${esc(BLOCK_TEXT.already)}</p>`;
+  else acts = `<div class="acts" role="group" aria-label="표준 ${esc(o.std_name)} 선택">
+      <button class="secondary" type="button" data-std="deferred" data-key="${esc(o.std_key)}"${o.state === "deferred" ? " disabled" : ""}>보류</button>
+      <button class="secondary" type="button" data-std="refused" data-key="${esc(o.std_key)}"${o.state === "refused" ? " disabled" : ""}>거절</button>
+      ${o.can_incorporate ? `<button class="primary" type="button" data-std="incorporated" data-key="${esc(o.std_key)}" aria-haspopup="dialog">편입…</button>` : ""}</div>
+    ${o.can_incorporate ? "" : `<p class="blocked">편입할 수 없어요 — ${(o.blocked || []).map(b => esc(BLOCK_TEXT[b] || "지금은 편입할 수 없어요.")).join(" ")}</p>`}`;
+  return `<article class="spvc" aria-labelledby="spv-${esc(o.std_key)}"><h4 id="spv-${esc(o.std_key)}">표준 「${esc(o.std_name)}」<span class="chip ${stc[0]}">${esc(stc[1])}</span></h4>
+    <dl><dt>내 오브젝트</dt><dd>${obj ? `${esc(obj.label)} <span class="tech">${esc(obj.key)} · r${esc(obj.revision)}${obj.archived ? " · 보관됨" : ""}</span>` : "없음 — 편입하면 표준 정의를 새로 넣어요"}</dd>
+      <dt>구조</dt><dd>${esc(STRUCT_TEXT[o.structure] || o.structure)}${(o.conflicts || []).length ? `<ul>${o.conflicts.map(x =>
+        `<li>${esc((STD_CONFLICT[x.code] || (() => "표준과 다른 곳이 있어요"))(x.field || ""))}</li>`).join("")}</ul>` : ""}</dd>
+      ${o.meaning_check ? `<dt>뜻 확인</dt><dd>key 가 같아도 뜻이 같다는 보장은 없어요. 편입할 때 같은 뜻으로 쓰는지 확인해요.</dd>` : ""}
+      <dt>필요한 대상</dt><dd>${(o.needs || []).length ? `<ul>${o.needs.map(n => `<li><span class="tech">${esc(n.field)}</span> → 표준 「${esc(stdName(n.std_key))}」 · ${esc((STD_STATE[n.state] || ["", n.state])[1])}${n.ready ? "" : " — 먼저 편입해야 해요"}</li>`).join("")}</ul>` : "없음"}</dd>
+      <dt>잠금 영향</dt><dd><details><summary>편입하면 막히는 변경 ${lock.changes.length}가지</summary><ul>${lock.changes.map(ch => `<li>${esc(LOCK_TEXT[ch] || ch)}</li>`).join("")}</ul>
+        ${lock.fields.length ? `잠기는 표준 필드: <span class="tech">${lock.fields.map(esc).join(", ")}</span>` : ""}</details></dd></dl>
+    ${acts}<p class="pstatus" role="status" aria-atomic="true" id="spv-st-${esc(o.std_key)}"></p><p class="perror" role="alert" aria-atomic="true" id="spv-er-${esc(o.std_key)}"></p></article>`;
+}
+async function loadPreview() {
+  const box = $("std-pv");
+  if (!box) return;
+  const at = ++pvAt;
+  let r, j = {};
+  try { r = await fetch("/api/std/preview", {cache: "no-store"}); j = await r.json(); } catch (e) { r = null; }
+  if ($("std-pv") !== box || pvAt !== at) return;
+  box.setAttribute("aria-busy", "false");
+  if (r && r.status === 401) { location.href = "/"; return; }
+  if (!r || !r.ok || !Array.isArray(j.objects)) { box.innerHTML = partFail({code: (j && j.code) || "OFFLINE", msg: (j && j.msg) || ""}, "편입 미리보기"); return; }
+  stdPv = j;
+  box.innerHTML = `<div class="spv">${j.objects.map(pvCard).join("")}</div>`;
+  if (stdMsg) { $("std-msg").textContent = stdMsg; stdMsg = ""; }
+  box.onclick = e => {
+    const b = e.target.closest("button[data-std]");
+    if (!b || b.disabled) return;
+    const o = stdPv.objects.find(x => x.std_key === b.dataset.key);
+    if (!o) return;
+    if (b.dataset.std === "incorporated") stdConfirm(o); else stdChoose(o, b.dataset.std);
+  };
+}
+// 편입 확인 — 「이 오브젝트를 표준 ○○ 와 같은 뜻으로 쓴다」 + 잠금 영향. 체크해야 편입 버튼이 켜진다(confirmed_meaning=true)
+function stdConfirm(o) {
+  stdAsk = o;
+  const nm = o.std_name, obj = o.object;
+  $("std-dlg-title").textContent = `표준 「${nm}」${roJosa(nm)} 편입하기`;
+  $("std-dlg-lead").textContent = obj ? `내 오브젝트 「${obj.label}」(key ${obj.key})에 표준 식별자를 달아요. 데이터·항목은 그대로예요.`
+                                      : `같은 key 오브젝트가 없어 표준 「${nm}」 정의를 새로 넣어요.`;
+  $("std-dlg-oktext").textContent = obj ? `이 오브젝트를 표준 「${nm}」${josa(nm, "과", "와")} 같은 뜻으로 쓴다. 아래 잠금 영향을 확인했다.`
+                                        : `표준 「${nm}」 정의를 새로 넣는다. 아래 잠금 영향을 확인했다.`;
+  const lock = o.lock || {changes: [], fields: []};
+  $("std-dlg-lock").replaceChildren(...lock.changes.map(ch => { const li = document.createElement("li"); li.textContent = LOCK_TEXT[ch] || ch; return li; }));
+  $("std-dlg-fields").textContent = lock.fields.length ? `잠기는 표준 필드: ${lock.fields.join(", ")}` : "";
+  $("std-dlg-ok").checked = false;
+  $("std-dlg-go").disabled = true;
+  $("std-dlg").showModal();
+  $("std-dlg-ok").focus();
+}
+async function stdChoose(o, state) {
+  const st = $("spv-st-" + o.std_key), er = $("spv-er-" + o.std_key);
+  if (er) er.textContent = "";
+  if (st) st.textContent = "저장하고 있어요…";
+  const btns = document.querySelectorAll("#std-pv button[data-std]");
+  btns.forEach(b => { b.disabled = true; });
+  const body = {std_key: o.std_key, state};
+  if (state === "incorporated") { body.confirmed_meaning = true; body.expected_revision = o.object ? o.object.revision : null; }
+  let r, j = {};
+  try {
+    r = await fetch("/api/std/choose", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
+    j = await r.json().catch(() => ({}));
+  } catch (e) { r = null; }
+  if (r && r.status === 401) { location.href = "/"; return; }
+  if (r && r.ok) { stdMsg = `표준 「${o.std_name}」 — ${STD_DONE[state]}`; await load(); return; }
+  const code = j && j.code;
+  if (code === "CONFLICT" || code === "DEF-INVALID") { stdMsg = `표준 「${o.std_name}」 — ${STD_ERR[code]}`; await load(); return; }
+  const msg = STD_ERR[code] || (r ? (j && j.msg) || "저장하지 못했어요. 다시 해 보세요." : "서버에 연결하지 못했어요. 잠시 뒤 다시 해 보세요.");
+  if (stdPv && $("std-pv")) $("std-pv").innerHTML = `<div class="spv">${stdPv.objects.map(pvCard).join("")}</div>`;   // 버튼을 되살린다
+  const er2 = $("spv-er-" + o.std_key);
+  if (er2) er2.textContent = msg;
 }
 
 // ── 서랍 — 항목 전문·관계·이력·제안(diff)·결정 ──
@@ -1015,7 +1295,6 @@ async function itemAct(tab, it, act) {
     j = await r.json().catch(() => ({}));
   } catch (e) { r = null; }
   if (r && r.status === 401) { location.href = "/"; return; }
-  if (j.code === "CONSENT-REQUIRED") { location.href = "/consent"; return; }
   if (!r || !r.ok) {
     st.textContent = "";
     er.textContent = !r ? "서버에 연결하지 못했어요. 새로 고침해 확인해 주세요." : j.code === "CONFLICT" ? CONFLICT_TEXT : (j.msg || "저장하지 못했어요.");
@@ -1050,7 +1329,7 @@ function renderMap(tab) {
   const flags = c => `<div class="kflags"><span class="kflag${c.origin === "ai" ? "" : " memo"}">${c.origin === "ai" ? "AI가 쓴 문장" : "내가 쓴 메모"}</span>${c.edited_by_user ? `<span class="kflag memo">내가 고침</span>` : ""}</div>`;
   $("view").innerHTML = `<div class="kanban">
     ${col("들어오는 것", inbox.length, "AI 대화에서 후보를 뽑으면 다음 열로", inbox.map(j => `<div class="kcard"><div class="kname">${esc(j.broken ? "읽지 못한 기록" : j.title)}</div>
-      <div class="kmeta"><span>${esc(md(j.created))}</span><span>${esc(srcLabel(j.source))}</span></div>
+      <div class="kmeta"><span>${esc(md(j.created))}</span><span>${esc(srcText(j))}</span></div>
       <div class="kacts"><button type="button" data-rec="${esc(j.id)}">원문</button></div></div>`).join(""))}
     ${col("내 손 대기", wait.length, "원문과 대조해 정해요", wait.map(c => `<div class="kcard hot"><div class="kname">${esc(c.text)}</div>${flags(c)}
       <div class="kacts">${src(c)}<a class="btn" href="${esc(reviewHref(tab, c))}">대조</a></div></div>`).join(""))}
@@ -1120,32 +1399,36 @@ function runStatus() { return ""; }
 // ── 기록형 탭 — 왼: 고른 기록 원문 + 이 기록에서 나온 문장 / 오른: 다른 기록(sticky) ──
 function renderRecordTab(tab, sel) {
   const bl = new Set(tab.blocks);
-  const js = ok("journal") ? (S.journal || []) : [];
+  const all = ok("journal") ? (S.journal || []) : [];
+  const filt = all.length ? srcFilter(all.length) : "";   // 먼저 — 없는 출처를 고른 상태면 「전부」로 되돌린다
+  const js = all.filter(srcMatch);
   const j = js.find(x => x.id === sel) || js[0];
   let body, side = "";
   if (!ok("journal")) body = partFail(S.read.journal.error, "기록 목록");
-  else if (!j) body = firstRun(tab, bl);
+  else if (!all.length) body = firstRun(tab, bl);
+  else if (!j) body = `${filt}<div class="empty">최근 기록 중에 이 출처에서 온 기록이 없어요.</div>`;
   else {
     const cs = (S.candidates || []).filter(c => c.record_id === j.id);
     const q = qById(j.question_id);
-    body = `<div class="eyebrow">기록${q ? ` · ${esc(q.text)}` : ""}</div><h2 class="title">${esc(j.broken ? "읽지 못한 기록" : j.title)}</h2>
+    body = `${filt}<div class="eyebrow">기록${q ? ` · ${esc(q.text)}` : ""}</div><h2 class="title">${esc(j.broken ? "읽지 못한 기록" : j.title)}</h2>
+      <div class="labels">${srcChip(j)}</div>
       ${bl.has("next") ? nextLine(tab, "") : ""}
       <div id="recbody"><div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></div>
       ${(bl.has("candidates") || bl.has("sheet")) && cs.length ? `<section class="sec"><h3>이 기록에서 나온 문장<span class="count">${cs.length}</span></h3>
         <div class="cards">${cs.map(c => `<div class="card ${c.status === "confirmed" ? "mine" : "cand"}"><p class="sent">${esc(c.text)}</p>
-        <div class="labels">${decision(c)}${origin(c)}</div></div>`).join("")}</div></section>` : ""}
+        <div class="labels">${decision(c)}${origin(c)}</div>${reviewNote(c)}</div>`).join("")}</div></section>` : ""}
       ${bl.has("status") ? runStatus() : ""}`;
     if (js.length > 1) side = `<h2 class="sh">다른 기록 <span class="speclabel">${js.length - 1}</span></h2>
       <div class="recbox"><ul class="recs">${js.filter(x => x.id !== j.id).slice(0, 12).map(x => `<li><a href="#${esc(tab.id)}/${esc(x.id)}">
         <div class="d">${esc(dayParts(x.created).d)}<small>${dayParts(x.created).mo ? dayParts(x.created).mo + "월" : ""}</small></div>
-        <div><div class="t">${esc(x.broken ? "읽지 못한 기록" : x.title)}</div><div class="s">${esc(x.excerpt || "")}</div></div></a></li>`).join("")}</ul></div>`;
+        <div><div class="t">${esc(x.broken ? "읽지 못한 기록" : x.title)}</div><div class="s">${esc(x.excerpt || "")}</div><div class="srcl">${srcChip(x)}</div></div></a></li>`).join("")}</ul></div>`;
   }
   $("view").innerHTML = side ? `<div class="board"><div class="paper">${body}</div><aside class="rside" aria-label="다른 기록">${side}</aside></div>`
                              : `<div class="paper sheet">${body}</div>`;
   if (j) fetchRec(j.id).then(r => {
     const box = $("recbody");
     if (!box) return;
-    box.innerHTML = r.ok ? `<div class="recmeta">${esc(mdhm(r.meta.created))} · ${esc(srcLabel(r.meta.source))}</div><div class="doc">${docHtml(r, "").html}</div>`
+    box.innerHTML = r.ok ? `<div class="recmeta">${esc(mdhm(r.meta.created))} · ${esc(srcLine(j.id, r.meta.source))}</div><div class="doc">${docHtml(r, "").html}</div>`
                          : partFail({code: r.code, msg: r.msg}, "이 기록");
   });
 }
@@ -1158,9 +1441,54 @@ function fetchRec(id) {
   return recCache[id];
 }
 function srcLabel(s) {
-  if (!s) return "출처 없음";
+  if (!s) return "";
   if (s.startsWith("파일:")) return "파일에서 가져옴";
   return s;
+}
+// ── 출처 (Q4) — 기록의 source_id → S.sources 이름·종류. source_id 가 없으면 「출처 미확인」. 옛 source 문자열은 「기록 당시 표기」로 보조 ──
+const SRC_KIND = {file: "파일", url: "웹 주소", chat: "대화", other: "기타"};
+const SRC_NONE = "출처 미확인";
+const srcById = id => (S.sources || []).find(x => x.id === id);
+const srcOf = r => (r && r.source_id && srcById(r.source_id)) || null;
+function srcText(r) { const x = srcOf(r); return x ? `${x.name} · ${SRC_KIND[x.kind] || x.kind}` : SRC_NONE; }
+function srcChip(r) {
+  const x = srcOf(r);
+  return x ? `<span class="chip src" title="${esc(x.location || "")}">${esc(srcText(r))}</span>` : `<span class="chip src none">${SRC_NONE}</span>`;
+}
+// 원문 머리말 한 줄 — 출처 + 옛 문자열(있으면)
+function srcLine(id, raw) {
+  const old = srcLabel(raw);
+  return srcText(recById(id)) + (old ? ` · 기록 당시 표기 「${old}」` : "");
+}
+// 기록 탭 출처 필터 — all · none(출처 미확인) · 출처 id. 개수는 source_counts(전체 기록 기준, 목록은 최근 기록만 온다)
+let recSrc = "all";
+const srcMatch = r => recSrc === "all" || (recSrc === "none" ? !srcOf(r) : r.source_id === recSrc);
+function srcFilter(shown) {
+  const cnt = S.source_counts || {}, by = cnt.by_source || {};
+  const total = Object.values(by).reduce((a, n) => a + n, 0) + (cnt.unconfirmed || 0);
+  const opts = [["all", "전부", total]].concat((S.sources || []).map(x => [x.id, `${x.name} · ${SRC_KIND[x.kind] || x.kind}`, by[x.id] || 0]),
+    [["none", SRC_NONE, cnt.unconfirmed || 0]]);
+  if (!opts.some(o => o[0] === recSrc)) recSrc = "all";
+  return `<nav class="pills srcf" aria-label="출처별 보기">${opts.map(([k, l, n]) => {
+    const on = k === recSrc;
+    return `<a data-srcf="${esc(k)}" tabindex="0" role="button" aria-pressed="${on}" class="${on ? "on" : ""}">${esc(l)}<span class="n">${n}</span></a>`;
+  }).join("")}</nav>${total > shown ? `<p class="hint">목록엔 최근 기록 ${shown}편까지 보여요. 개수는 전체 기록 기준이에요.</p>` : ""}`;
+}
+// ── 확정 전 재검토 (§6) — 후보의 review = 근거 기록의 사유 코드. 문구는 서버 CANDIDATE-REVIEW 와 같은 뜻. 정정 안내는 author_unknown·processed 에만 ──
+const REVIEW_TEXT = {
+  author_unknown: "근거 기록의 작성자를 확인할 수 없어 이 후보를 확정할 수 없어요.",
+  external: "근거 기록이 남이 쓴 글이라 이 후보를 확정할 수 없어요.",
+  processed: "근거 기록이 원문 그대로가 아니라 이 후보를 확정할 수 없어요.",
+  deleted: "근거 기록이 삭제돼 이 후보를 확정할 수 없어요.",
+};
+const REVIEW_FIX = {
+  author_unknown: "작성자 정보가 실제로 틀렸을 때만 연결한 AI 대화에서 기록 정보를 정정하세요.",
+  processed: "가공 방식 정보가 실제로 틀렸을 때만 연결한 AI 대화에서 기록 정보를 정정하세요.",
+};
+function reviewNote(c) {
+  if (!c.review) return "";
+  return `<p class="recheck"><span class="chip flag">확정 전 재검토</span>${esc(REVIEW_TEXT[c.review] || "근거 기록이 인용 조건에 맞지 않아 이 후보를 확정할 수 없어요.")}
+    ${REVIEW_FIX[c.review] ? esc(REVIEW_FIX[c.review]) + " " : ""}남기지 않거나 아직 안 정함으로 둘 수는 있어요.</p>`;
 }
 // 본문을 빈 줄 기준 문단으로 나눈다. 제목(# …)은 화면 제목과 겹쳐 뺀다.
 // 「이게 어디에 붙나」 절은 키트가 붙이는 양식이라 따로 그리고, 질문 ID 는 질문 문장으로 바꿔 보인다.
@@ -1212,7 +1540,7 @@ async function showReader(id, quote) {
   const r = await fetchRec(id);
   if ($("reader") !== rd || readerAt !== at) return;   // 그사이 다른 원문을 골랐거나 화면이 바뀌었다
   if (!r.ok) { rd.innerHTML = partFail({code: r.code, msg: r.msg}, "이 기록"); return; }
-  rd.innerHTML = `<div class="rh"><b>${esc(r.title)}</b><span class="recmeta" style="margin:0">${esc(mdhm(r.meta.created))} · ${esc(srcLabel(r.meta.source))}</span></div>
+  rd.innerHTML = `<div class="rh"><b>${esc(r.title)}</b><span class="recmeta" style="margin:0">${esc(mdhm(r.meta.created))} · ${esc(srcLine(id, r.meta.source))}</span></div>
     <div class="doc">${docHtml(r, at.quote).html}</div>`;
 }
 async function openRec(id, quote) {
@@ -1225,7 +1553,7 @@ async function openRec(id, quote) {
   const r = await fetchRec(id);
   if (!r.ok) { $("dlg-body").innerHTML = partFail({code: r.code, msg: r.msg}, "이 기록"); return; }
   $("dlg-title").textContent = r.title;
-  $("dlg-meta").textContent = `${mdhm(r.meta.created)} · ${srcLabel(r.meta.source)}`;
+  $("dlg-meta").textContent = `${mdhm(r.meta.created)} · ${srcLine(id, r.meta.source)}`;
   $("dlg-body").innerHTML = `<div class="doc">${docHtml(r, quote || "").html}</div>`;
 }
 
@@ -1286,7 +1614,7 @@ function renderReview(tab, qid, key) {
   show(`<div class="review">${head(wait.length, true)}
     <section class="rvcard" data-candidate-id="${esc(c.id)}" aria-labelledby="candidate-title">
       <p class="rvq">${byRec ? "" : "질문 · "}${esc(qText)}</p><h3 id="candidate-title" class="sr">판단 후보</h3><p class="sent">${esc(c.text)}</p>
-      <div class="labels">${decision(c)}${origin(c)}${aiWordingChip(c)}</div></section>
+      <div class="labels">${decision(c)}${origin(c)}${aiWordingChip(c)}</div>${reviewNote(c)}</section>
     <section class="rvsrc" id="rvsrc" aria-labelledby="source-title"><div class="srchead"><h3 id="source-title">근거 원문</h3></div>
       <div class="doc"><p class="dim">원문을 불러오는 중이에요…</p></div></section>
     <section class="rvact" aria-labelledby="decision-title" aria-busy="false">
@@ -1339,7 +1667,7 @@ function renderReview(tab, qid, key) {
     const meta = `<div class="srchead"><h3 id="source-title">근거 원문 · ${esc(r.title)}</h3><span class="recmeta" style="margin:0">${esc(md(r.meta.created))}</span></div>`;
     const d = splitDoc(r.body, r.title);
     const full = docHtml(r, quote).html;
-    const tech = `<details class="tech"><summary>기술 정보</summary>만든 시각 ${esc(mdhm(r.meta.created))} · 출처 ${esc(srcLabel(r.meta.source))} · 근거 구절 ${quote.length}자</details>`;
+    const tech = `<details class="tech"><summary>기술 정보</summary>만든 시각 ${esc(mdhm(r.meta.created))} · 출처 ${esc(srcLine(c.record_id, r.meta.source))} · 근거 구절 ${quote.length}자</details>`;
     if (!String(r.body).includes(quote)) {
       $("rvsrc").innerHTML = meta + `<div class="srcwarn"><b>후보의 근거 구절이 저장된 원문과 일치하지 않아 남길 수 없어요.</b>
         찾던 구절: <q>${esc(quote)}</q></div><div class="doc">${full}</div>${tech}`;
@@ -1404,7 +1732,6 @@ async function decide(cur, action, text) {
   }
   if (r.status === 401) { location.href = "/"; return; }
   const j = await r.json().catch(() => ({}));
-  if (j.code === "CONSENT-REQUIRED") { location.href = "/consent"; return; }
   if (!r.ok && j.code === "CONFLICT") {
     // 다른 곳에서 먼저 바뀌었다 — 서버 문구를 저장 상태 띠에 남기고 상태를 다시 받아 그린다
     lastSave = j.msg || CONFLICT_TEXT;
@@ -1424,10 +1751,16 @@ async function decide(cur, action, text) {
 
 // ── 이벤트 ───────────────────────────────────────────
 document.addEventListener("click", e => {
+  const dm = e.target.closest("[data-dmode]");
+  if (dm) { defsShow(dm.dataset.dmode); return; }
+  const da = e.target.closest(".dmo a");
+  if (da) { e.preventDefault(); defsJump((da.getAttribute("href") || "").slice(1)); return; }
   const a = e.target.closest("[data-rec]");
   if (a) { e.preventDefault(); openRec(a.dataset.rec, a.dataset.quote || ""); return; }
   const g = e.target.closest("[data-go]");
   if (g) { e.preventDefault(); location.hash = g.dataset.go; return; }
+  const sf = e.target.closest("[data-srcf]");
+  if (sf) { e.preventDefault(); recSrc = sf.dataset.srcf; render(); const n = document.querySelector(`[data-srcf="${CSS.escape(recSrc)}"]`); if (n) n.focus(); return; }
   const cp = e.target.closest("[data-copy]");
   if (cp) {
     const done = () => { const t = cp.textContent; cp.textContent = "요청을 복사했어요."; setTimeout(() => cp.textContent = t, 1500); };
@@ -1435,32 +1768,43 @@ document.addEventListener("click", e => {
   }
 });
 document.addEventListener("keydown", e => {
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-rec], [data-go]")) { e.preventDefault(); e.target.click(); }
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-rec], [data-go], [data-srcf]")) { e.preventDefault(); e.target.click(); }
 });
 $("dlg-close").onclick = () => $("dlg").close();
+$("std-dlg-close").addEventListener("click", () => $("std-dlg").close());
+$("std-dlg-cancel").addEventListener("click", () => $("std-dlg").close());
+$("std-dlg-ok").addEventListener("change", () => { $("std-dlg-go").disabled = !$("std-dlg-ok").checked; });
+$("std-dlg-go").addEventListener("click", () => {
+  if (!$("std-dlg-ok").checked || !stdAsk) return;
+  const o = stdAsk;
+  stdAsk = null;
+  $("std-dlg").close();
+  stdChoose(o, "incorporated");
+});
 window.addEventListener("hashchange", () => { if (S) { render(); window.scrollTo(0, 0); } });
-$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); deskLoad(); };
+$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); };
 $("logout").onclick = async () => {
   let to = "/?out=1";
   try { const j = await (await fetch("/logout", {method: "POST"})).json(); if (j && j.ok && j.redirect) to = j.redirect; } catch (e) {}
   location.href = to;
 };
-// ── 계정 메뉴 (P5) — 문의 열기 · 이름 공유 · 문의 섹션 숨김 · 로그아웃(위 핸들러) ──
-let deskPeek = false;   // 숨긴 문의 섹션을 메뉴에서 이번 화면에만 연 상태(저장값은 그대로)
+// ── 계정 메뉴 (P5) — 문의 대화창 열기(Q1b) · 이름 공유 · 로그아웃(위 핸들러) ──
+// 관리자(Q1)는 서버가 사용자 전용 구간(문의·이름 공유 메뉴, 문의 대화창)을 빼고 「운영 콘솔」을 넣어 보낸다 — 요소가 없으면 건너뛴다.
 function acctApply() {
-  const u = S && S.user || {}, names = u.struct_names === true, hidden = u.desk_hidden === true;
+  if (!$("acct-names")) return;
+  const names = (S && S.user || {}).struct_names === true;
   $("acct-names").setAttribute("aria-pressed", names ? "true" : "false");
   $("acct-names-st").textContent = names ? "켜짐" : "꺼짐";
-  $("acct-desk").textContent = hidden ? "문의 섹션 보이기" : "문의 섹션 숨기기";
-  $("desk").hidden = hidden && !deskPeek;
 }
 function acctClose() { $("acct").open = false; }
+// 「문의 보내기」·「개인정보 요청」은 보내기 폼, 「내 문의」는 목록 — 한 대화창에서 한쪽만 보인다. 상세는 그 위에 dlg 로 겹쳐 연다
 function deskOpen(where) {
-  deskPeek = true;
-  $("desk").hidden = false;
-  const target = where === "mine" ? $("desk-list-title") : $("desk-form");
-  target.scrollIntoView({block: "start"});
-  if (where !== "mine") $("desk-text").focus({preventScroll: true});
+  const mine = where === "mine";
+  $("desk-dlg-title").textContent = mine ? "내 문의" : "문의 보내기";
+  $("desk-form").hidden = mine;
+  $("desk-mine").hidden = !mine;
+  if (!$("desk-dlg").open) $("desk-dlg").showModal();
+  if (mine) deskLoad(); else $("desk-text").focus();
 }
 async function acctPost(url, body) {
   $("acct-msg").textContent = "";
@@ -1488,9 +1832,6 @@ $("acct-menu").addEventListener("click", async e => {
   try {
     if (act === "names") {
       if (await acctPost("/api/optional-consent", {kind: "struct_names", on: S.user.struct_names !== true})) await load();
-    } else if (act === "desk") {
-      const hidden = S.user.desk_hidden !== true;
-      if (await acctPost("/api/desk-visibility", {hidden})) { S.user.desk_hidden = hidden; deskPeek = false; acctApply(); acctClose(); }
     }
   } finally { b.disabled = false; }
 });
@@ -1505,7 +1846,7 @@ const DESK_MAX = 4096;   // 서버 db.LIMIT_TICKET 과 같은 단위(UTF-8 바�
 const DESK_CHIP = {open: "st-wait", ack: "", doing: "flag", done: "st-mine", wontfix: "st-off"};
 const DESK_PAGE = {today: "today", question: "question", record: "record", structure: "structure", map: "map"};
 const deskBytes = s => new TextEncoder().encode(s).length;
-// 운영자 처리는 /admin/tickets(서버 렌더) — /app 은 관리자여도 「내 문의」만 본다.
+// 운영자 처리는 /admin/tickets(서버 렌더) — 관리자 /app 엔 문의 대화창이 없다(Q1, 서버가 사용자 전용 구간을 뺀다).
 function deskPage() {
   if (!S) return "other";
   const R = route();
@@ -1554,7 +1895,8 @@ async function deskLoad() {
   let r, j;
   try { r = await fetch("/api/feedback", {cache: "no-store"}); j = await r.json(); } catch (e) { r = null; }
   if (r && r.status === 401) return;   // 로그인이 풀렸으면 load() 가 시작 화면으로 보낸다
-  if (!r || !r.ok) { $("desk-error").textContent = "내 문의를 불러오지 못했어요. 새로 고침해 주세요."; return; }
+  if (!r || !r.ok) { $("desk-list-error").textContent = "내 문의를 불러오지 못했어요. 새로 고침해 주세요."; return; }
+  $("desk-list-error").textContent = "";
   const list = j.tickets || [];
   $("desk-list").replaceChildren(...list.map(deskRow));
   $("desk-empty").hidden = list.length > 0;
@@ -1584,12 +1926,14 @@ async function deskSend(e) {
   $("desk-status").textContent = "보냈어요. 처리 상태는 「내 문의」에서 볼 수 있어요.";
   deskLoad();
 }
-$("desk-text").addEventListener("input", deskCount);
-$("desk-form").addEventListener("submit", deskSend);
-$("desk-list").addEventListener("click", e => { const b = e.target.closest("button[data-tk]"); if (b) deskShow(b.dataset.tk); });
+if ($("desk-dlg")) {   // 관리자 응답엔 문의 대화창이 없다(Q1)
+  $("desk-dlg-close").addEventListener("click", () => $("desk-dlg").close());
+  $("desk-text").addEventListener("input", deskCount);
+  $("desk-form").addEventListener("submit", deskSend);
+  $("desk-list").addEventListener("click", e => { const b = e.target.closest("button[data-tk]"); if (b) deskShow(b.dataset.tk); });
+}
 // ── /문의 데스크 ──
 load();
-deskLoad();
 </script>
 </body>
 </html>

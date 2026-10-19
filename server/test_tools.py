@@ -15,26 +15,39 @@
      · 상태 전이·closed_at · privacy_log 종결 기록 · 메모 2KB
 8) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
-9) α2: 동의 버전(guides 머리글)·게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로) · 일일 한도(기록·질문·후보·결정·제안)
-   · usage_daily(메모리만·flush 합산/접기/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
-10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 ra(콜백 같은 uid·auth_time·창 12h/15m·미래) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
+9) α2: 처리방침 버전(guides 머리글) · 필수 동의 게이트 없음(미동의자 MCP·웹 쓰기·/app 200·/consent→/app·/api/consent 404) · 일일 한도(기록·질문·후보·결정·제안)
+   · usage_daily(메모리만·flush 합산/로그인 사용자는 그 uid/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
+10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 없음(관리자 세션이면 화면·POST 바로, /admin/reauth→/admin, 콜백→/app, 옛 ra 무시) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
    · 부여·회수·LAST-ADMIN·동시 회수 · 차단/해제(웹·MCP AUTH-BLOCKED/REVOKED) · 웹 끊기는 MCP 무관 · /app 에 관리자 데이터 없음
    · CSP·스크립트 0·이스케이프 · admin_cli grant · 감사 파기 · bootstrap(임시 스키마)·lifespan 배선
 11) 운영 경계(admin_db): 정적(/admin·관리자 문의 핸들러는 db 조회를 직접 안 부름 · admin_db SQL 은 ALLOW 리터럴만 · SELECT * 0 ·
    본문 열 0 · text·admin_note 는 문의 상세만 · label·options 는 이름 공유 분기만) · ALLOW 키별 행 키 = cols · 조회자·미구현 키 거절
    · 표식(금지 열 값이 /admin·/api 관리자 응답에 없음, 문의 상세엔 있음)
-12) 선택 동의·처리방침 v2: v1 동의자 쓰기 거절 · /consent 선택 체크 기본 해제 · 필수+선택 한 트랜잭션(실패 주입 롤백)
-   · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효 · /privacy v2 · 옛 사용량 삭제 표식 멱등(임시 스키마)
+12) 선택 동의·처리방침 v4: 옛 버전 동의자도 쓰기 통과 · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효
+   · /privacy v4(처리 근거 표·출처·표준 편입·작성자 표시·계정 메뉴 문의) · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
-13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·재인증·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
-14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·재인증·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
+13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·옛 ra 쿠키 통과·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
+14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·옛 ra 쿠키 통과·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
    · escape · 리포트 400(모르는 키·조합·기간) · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)
-15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖
+15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖(화면은 안 씀 — Q1b)
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
    · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
-   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
+   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(사용자 상세에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
+17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
+   · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 대화창은 보내지 않음)
+   · Q1b 일반 사용자 /app = 하단 문의 섹션 없음 · 「문의 보내기」·「내 문의」는 대화창(desk-dlg) · 「문의 섹션 숨기기」 없음
+18) R2(PR #20 3단계, DB 없이): 기능 플래그 해석(on 만 켬) · render.yaml sync:false 선언 · 수신자별 응답(본인·운영자 비동의·동의) 허용 목록
+   · 이름 누출 0(비동의: label·key·선택지·출처 name·location·id / 동의: key·선택지 값·출처·id) · origin·관계 파생 · std 모양 · 오류 코드 문구 · 예제 동결 일치
+19) R3(PR #20 4단계): 표준 편입 미리보기 판정(누락·일치·확장·충돌 사유·참조 의존·초안·보관) · 쓰기 0(READ ONLY·전 테이블 해시)·플래그 무관
+   · std_choices 보류·거절(STANDARD off → FEATURE-OFF · 덮어쓰기 · 편입된 것 STANDARD-LOCKED · 무관한 쓰기 안 막음) · 본인만(/api/std/*)
+   · /api/state std 모양(MCP 엔 없음) · definitions() template_slot·std_id → origin · init_schema 옛 DB 2회 멱등
+20) Q2(PR #20 5단계): template_std == 동결 파일 · 신규 시드(on)/안 함(off) · 시드 실패 주입 → 로그인 성공·seed_pending·재시도·정의 생기면 중단
+   · 동시 재시도 1회 · 기존 사용자(표식 없음) 쓰기 0 · 편입 적용(누락·일치·확장·새 id) · 재검증(revision·대상 상태·이미 편입)·참조 의존·충돌·확인 없음
+   · 잠금 표(거절·허용, propose·apply, 플래그 off 에서도, select 선택지) · 일일 한도·template_slot 백필 제외 · init_schema 2회 멱등
+21) Q3 축소(PR #20 6단계): 출처(SOURCES off 기록만·on 찾거나 만들기·사용자별·FK·옛 기록 미확인·본인만·MCP 인자) · 분류 역할(이관·멱등·시드·
+   늦은 축·record_attach 역할 경유·CLASSIFY-OFF) · 확정 재검사 4사유·review(웹=MCP)·해제 · external 거절·정정 허용 · init_schema 2회 멱등
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -44,7 +57,7 @@
 """
 import asyncio
 import json
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import os
 import re
 import secrets
@@ -94,6 +107,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from mcp.client import Client  # noqa: E402
 
 import auth  # noqa: E402
+import contract  # noqa: E402
 import db  # noqa: E402
 import envnames  # noqa: E402
 import main  # noqa: E402
@@ -110,9 +124,13 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + ("tk-owner@example.com", "tk-other@example.com", "tk-admin@example.com") \
     + ("tkv-admin@example.com", "<i>tkv</i>@example.com") \
     + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com", "int-names@example.com") \
+    + ("r1-admin@example.com", "r1-user@example.com") \
+    + tuple(f"r3{k}@example.com" for k in ("none", "match", "conf", "edge", "orig")) \
+    + tuple(f"q3{k}@example.com" for k in ("src", "srcb", "role", "nor", "refu", "late", "rev", "mcp")) \
+    + tuple(f"q2{k}@example.com" for k in ("off", "seed", "dev", "fail", "stop", "race", "old", "inc", "dep", "conf", "lock", "opt", "web")) \
     + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
-# p4* = 운영 화면(개요·스키마·리포트)
+# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1, r3* = R3 표준 미리보기·선택, q2* = Q2 시드·편입·잠금, q3* = Q3 출처·역할·재검사
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -140,7 +158,7 @@ def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_tes
         claims["scp"] = scp
     if sid is not None:
         claims["sid"] = sid
-    claims.update(extra or {})   # β2: auth_time 등
+    claims.update(extra or {})   # β2: 임의 클레임
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": kid})
 
 
@@ -451,7 +469,7 @@ async def test_web():
                 r = await h.get("/privacy")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
-                             "제28조의8", "v2 · 2026-10-19", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
+                             "제28조의8", "v4 · 2026-10-20", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
                     assert word in r.text, word
                 assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 real_contact, real_privacy = os.environ.get("CRM_CONTACT"), site.privacy_html
@@ -823,6 +841,10 @@ def test_definitions():
     # record_attach: attach_to·axes 저장, notes, 다른 사용자 item 거절
     tp = db.item_propose(A, t["id"], 1, None, 0, "H", "관심 축 H", "", {"keywords": ["판단"]}, [])
     topic = db.item_decide(A, tp["item_id"], 0, tp["proposal_id"], "apply")
+    # 분류(axes)는 역할 매핑 대상 오브젝트의 항목만(§5) — A 의 축 오브젝트 key 는 topics 라 이관 규칙(key axes)에 안 잡힌다
+    expect("CLASSIFY-OFF", db.record_attach, A, ra["id"], None, [topic["id"]])
+    with db.tx() as c:   # 시험 재료: 분류 대상 = topics (역할 매핑이 정본 — key 와 무관)
+        c.execute("INSERT INTO user_roles (user_id,role,object_id) VALUES (%s,'classify',%s)", (A, t["id"]))
     out = db.record_attach(A, ra["id"], [{"field_key": "attach_to", "target_kind": "item", "target_id": I},
                                          {"field_key": "attach_to", "target_kind": "candidate", "target_id": c3}],
                            [topic["id"]], "다음 글 재료", "새 축 후보: 위임")
@@ -1247,8 +1269,10 @@ def test_migration():
                 c.rollback()
         # (5) 운영 꼴 행이 머지 뒤 첫 결정·이력·복원·근거 검사에서 사는지 — 실제 db 함수로
         with pool_on(old):
-            d = db.candidate_decide("u_m1", "c_m1", "confirm")
-            assert d["status"] == "confirmed" and d["revision"] == 2 and d["wording_by"] is None, d
+            e = expect("CANDIDATE-REVIEW", db.candidate_decide, "u_m1", "c_m1", "confirm")   # §6: 옛 기록 = unknown → 확정 불가
+            assert e.message == contract.REVIEW_MSG["author_unknown"] and db.candidate_get("u_m1", "c_m1")["review"] == "author_unknown"
+            d = db.candidate_decide("u_m1", "c_m1", "exclude")   # 다른 결정은 된다
+            assert d["status"] == "excluded" and d["revision"] == 2 and d["wording_by"] is None, d
             hist = db.candidate_history("u_m1", "c_m1")
             assert [h["prev_revision"] for h in hist] == [None, None, None, 1], hist
             assert hist[0]["prev_text"] == "옛 문장" and hist[0]["prev_status"] == "pending", hist[0]
@@ -1299,7 +1323,8 @@ def test_core_pr1():
     expect("ARG-INVALID", db.record_add, A, "", "본문", None, "x", "nobody", "verbatim")
     # 비적격 기록(unknown·external·rewritten)엔 후보가 하나도 안 붙는다
     un = db.record_add(A, "출처 미상", "남이 정리한 문장이다. 둘째 문장이다.", None, "가져옴", "unknown", "unknown")
-    ext = db.record_add(A, "외부", "남이 정리한 문장이다.", None, "가져옴", "external", "verbatim")
+    ext = db.record_add(A, "외부", "남이 정리한 문장이다.", None, "가져옴", "self", "verbatim")   # external 직접 입력은 SCOPE-SELF-ONLY(§6)
+    ext = db.record_provenance_set(A, ext["id"], "external", "verbatim", "남의 글이었음")       # 후보 없는 기록의 external 정정은 된다
     rw = db.record_add(A, "다듬은 글", "남이 정리한 문장이다.", None, "가져옴", "self", "rewritten")
     for rec in (un, ext, rw):
         added, dropped = db.candidates_propose(A, rec["id"], "", [{"text": "가", "quote": "남이 정리한 문장이다"},
@@ -1628,6 +1653,8 @@ async def test_start_assets():
                 assert {n for n, _ in urls} == set(ASSET_MAX), urls
                 assert all(web.ASSETS[n][2] == v for n, v in urls), urls
                 assert t.count('class="btn-login"') == 1 and t.count('href="/login') == 1, "로그인 버튼 하나"
+                assert '<p class="cta-note">시작하면 <a href="/privacy">개인정보 처리방침</a>이 적용돼요.</p>' in t, "버튼 아래 고지 한 줄"
+                assert not re.search(r"cta-note[^<]*<a[^>]*>[^<]*</a>[^<]*v\d", t), "고지 줄에 버전 문자열 없음"
                 assert t.index('class="btn-login"') < t.index('<section class="demo"'), "로그인 버튼이 데모보다 앞"
                 assert '<input type="checkbox" id="still">' in t and "움직임 멈추기" in t, "움직임 멈추기 체크박스"
                 assert t.count('alt=""') == 4 and 'class="demo" aria-label="사용 모습 미리 보기' in t, "데모 그림 alt 는 비우고 설명은 section 이름"
@@ -1904,10 +1931,10 @@ async def test_feedback_admin():
                 r = await h.post(url, json={"id": ids["bug"], "status": "ack", "admin_note": "x"}, headers=origin)
                 assert r.status_code == 404, (url, r.status_code)   # 라우트 없음 — /api/feedback/{tid} 는 GET 만, 나머지는 Mount("/") 의 404
             assert _ticket(ids["bug"])["status"] == "open" and _ticket(ids["bug"])["admin_note"] == "", "비관리자 쓰기는 반영 안 됨"
-            # 관리자 — β2: role=admin + 재인증(ra) 쿠키 세션. DEV 폴백엔 ra 가 없어 관리자 경로가 닫힌다
+            # 관리자 — β2: role=admin 쿠키 세션. DEV 폴백에선 관리자 경로가 닫힌다
             _set_role(uid, "admin")
             site.dev, site.dev_user = False, ""
-            h.cookies.set("crm_session", site.session_value(uid, int(time.time()) - 3600))
+            h.cookies.set("crm_session", site.session_value(uid))
             for hd in ({}, {"origin": "https://evil.example"}):   # Origin 없음·다름 → 403 (관리자여도)
                 for op, data in (("status", {"status": "ack"}), ("note", {"admin_note": "x"})):
                     r = await post(ids["bug"], op, data, hd)
@@ -2016,8 +2043,9 @@ def test_feedback_units():
         assert rest.startswith("`"), rest[:60]
         end = rest.index("`", 1)
         assert rest[end + 1:].lstrip().startswith(";"), rest[end:end + 40]
-    sec = html[html.index('<section class="wrap desk"'):html.index("</section>")]
-    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 절 — 고지 문장·처리방침 링크"
+    i = html.index('<dialog id="desk-dlg"')   # Q1b: 문의 폼·목록은 계정 메뉴에서 여는 대화창
+    sec = html[i:html.index("</dialog>", i)]
+    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 대화창 — 고지 문장·처리방침 링크"
     for w in ('value="bug"', 'value="request"', 'value="question"', 'value="privacy"', "개인정보 요청", "내 문의", "4096"):
         assert w in sec, w
     assert 'ticketStatus: {open: "접수", ack: "확인", doing: "처리중", done: "완료", wontfix: "보류"}' in html
@@ -2052,9 +2080,9 @@ def _agreements(uid):
 
 
 def test_consent_versions():
-    """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v2."""
+    """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v4."""
     import tempfile
-    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v2", db.CONSENT_VERSIONS
+    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v4", db.CONSENT_VERSIONS
     assert web.read_consent_versions(web.GUIDES_DIR, dev=False) == db.CONSENT_VERSIONS
     with tempfile.TemporaryDirectory() as t:
         d = Path(t)
@@ -2094,107 +2122,64 @@ def test_consent_versions():
         (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v3 · 2027-01-01` 시행.\n", encoding="utf-8")
         (d / "12-terms.md").write_text("# 약관\n\n`v2 · 2027-01-01`\n", encoding="utf-8")
         assert web.read_consent_versions(d, dev=False) == {"privacy": "v3", "terms": "v2"}, "terms 문서가 생기면 자동으로 둘"
-    # 머리글 N 을 올리면 전원 재동의 — 캐시도 비워진다
-    tester = db.user_by_email(TESTER)["id"]
-    db.require_consent(tester)
-    real = dict(db.CONSENT_VERSIONS)
-    try:
-        db.set_consent_versions({**real, "privacy": f"v{int(real['privacy'][1:]) + 1}"})
-        expect("CONSENT-REQUIRED", db.require_consent, tester)
-        expect("ARG-INVALID", db.consent_grant, tester, real)   # 옛 버전으로는 동의 못 한다
-    finally:
-        db.set_consent_versions(real)
-    db.require_consent(tester)
-    print("OK — α2 동의 버전(guides 머리글 v2·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동·버전 올리면 재동의) 통과")
+    print("OK — α2 처리방침 버전(guides 머리글 v4·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동) 통과")
 
 
 async def test_consent_gate():
-    """미동의 사용자: MCP·웹 쓰기 거절(문의는 면제), 읽기 정상 → /consent 동의(B5 경로) → 통과."""
+    """필수 동의 게이트 없음: agreements 행이 없는 사용자도 MCP·웹 쓰기 통과 · /app 200 · /consent 302 /app(세션 있든 없든)
+    · POST /api/consent 404 · 사용량은 그 uid 로 flush(로그인 전 요청만 '') · 코드·app.html 에 CONSENT-REQUIRED·/consent 링크 0."""
     site = main.site
     origin = {"origin": PUBLIC}
     nc = db.user_by_email(NOCONSENT)["id"]
-    assert not _agreements(nc) and nc not in db._consented
-    real_site, real_all = (site.dev, site.dev_user), db.TICKET_DAILY_ALL
+    assert not _agreements(nc)
+    real_site = (site.dev, site.dev_user)
+    today = db._dt.datetime.now(db.KST).date()
     try:
-        db.TICKET_DAILY_ALL = 10 ** 6   # 7) 절이 오늘 전역 문의 한도(100)를 채워 뒀다 — 여기선 동의 면제만 본다
         _as_user(site, NOCONSENT)
+        db.usage_flush()
+        u0, a0 = _usage_row(today, nc, "record_add", "OK"), _usage_row(today, "", "web:state", "UNAUTHORIZED")
         async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-            # 게이트 — MCP 쓰기
-            r = await c.call_tool("record_add", {"text": "동의 전 기록"})
-            msg = r.content[0].text
-            assert r.is_error and "[CONSENT-REQUIRED]" in msg and f"{PUBLIC}/consent" in msg, msg
-            r = await c.call_tool("question_add", {"text": "동의 전 질문"})
-            assert r.is_error and "[CONSENT-REQUIRED]" in r.content[0].text, r.content[0].text
-            assert db.records(nc) == [] and db.questions(nc) == []
-            # 게이트 — 웹 쓰기 API 는 403 JSON
-            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
-            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
-            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
-            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
-            # 게이트 밖 — 읽기·도움말
-            for tool, args in (("state_get", {}), ("help_get", {"topic": "words"}), ("question_list", {})):
-                r = await c.call_tool(tool, args)
-                assert not r.is_error, (tool, r.content[0].text[:200])
-            assert (await h.get("/api/state")).status_code == 200
-            # 면제 — 개인정보 문의는 동의 전에도(MCP·웹)
-            r = await c.call_tool("feedback_send", {"kind": "privacy", "text": "동의 전 탈퇴 문의"})
+            # MCP 쓰기 — 동의 행 없이 통과
+            r = await c.call_tool("record_add", {"text": "동의 행 없이 기록"})
             assert not r.is_error, r.content[0].text
-            r = await h.post("/api/feedback", json={"kind": "question", "text": "동의 전 웹 문의"}, headers=origin)
-            assert r.status_code == 200, r.text
-            # /app → /consent, /consent 화면(스크립트 0·form POST·버전 라벨·no-store·보안 헤더)
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", (r.status_code, r.headers.get("location"))
+            r = await c.call_tool("question_add", {"text": "동의 행 없이 질문"})
+            assert not r.is_error, r.content[0].text
+            assert len(db.records(nc)) == 1 and len(db.questions(nc)) == 1
+            # 웹 쓰기 — 403 이 아니라 게이트를 지나 db 판정(없는 후보·항목 → 400)
+            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] != "CONSENT-REQUIRED", r.text
+            # /app 200 · /consent 302 /app · /api/consent 404
+            assert (await h.get("/app")).status_code == 200
             r = await h.get("/consent")
-            t = r.text
-            assert r.status_code == 200 and r.headers["cache-control"] == "no-store", r.status_code
-            csp = r.headers["content-security-policy"]
-            assert r.headers["x-frame-options"] == "DENY" and "frame-ancestors 'none'" in csp and "script-src 'self'" in csp, csp
-            assert "unsafe-inline" not in csp and "unsafe-eval" not in csp, csp
-            assert "<script" not in t and 'method="post" action="/api/consent"' in t, t[:500]
-            assert 'name="privacy" value="v2"' in t and 'href="/privacy"' in t and "(v2)" in t and "동의하고 시작" in t, t
-            assert "terms" not in t, "약관 문서가 없으면 체크박스도 없다"
-            # 세션 없음 → /consent 는 / 로
+            assert r.status_code == 302 and r.headers["location"] == "/app", r.headers.get("location")
+            r = await h.post("/api/consent", json={"privacy": "v3"}, headers=origin)
+            assert r.status_code == 404, r.status_code
+            u = (await h.get("/api/state")).json()["user"]
+            assert set(u) == {"email", "struct_names", "desk_hidden"}, u
+            # 세션 없음 — /consent 는 /app(→ /), 로그인 전 요청의 사용량은 ''
             site.dev, site.dev_user = False, ""
             r = await h.get("/consent")
-            assert r.status_code == 302 and r.headers["location"] == "/", r.headers.get("location")
-            r = await h.post("/api/consent", data={"privacy": "v2"}, headers=origin)
-            assert r.status_code == 401, r.status_code
-
-            # B5: MCP 거절 → 브라우저 로그인(세션 쿠키) → /app 이 /consent 로 → 동의 → MCP 다음 호출 통과
-            h.cookies.set("crm_session", site.session_value(nc))
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent"
-            r = await h.post("/api/consent", data={"privacy": "v2"})   # Origin 없음
-            assert r.status_code == 403 and r.json()["code"] == "ORIGIN", r.text
-            r = await h.post("/api/consent", json={"privacy": "v0"}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", data={}, headers=origin)   # 체크 안 함
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "terms": "v1"}, headers=origin)   # 없는 문서까지
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            assert not _agreements(nc)
-            assert (await c.call_tool("record_add", {"text": "아직 동의 전"})).is_error
-            r = await h.post("/api/consent", data={"privacy": "v2"}, headers=origin)   # form POST
-            assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
-            assert [(a["kind"], a["version"]) for a in _agreements(nc)] == [("privacy", "v2")]
-            r = await c.call_tool("record_add", {"text": "동의 뒤 기록"})
-            assert not r.is_error, r.content[0].text
-            r = await h.get("/consent")
-            assert r.status_code == 302 and r.headers["location"] == "/app"
-            assert (await h.get("/app")).status_code == 200
-            r = await h.post("/api/consent", json={"privacy": "v2"}, headers=origin)   # JSON 경로 · 다시 해도 한 행
-            assert r.status_code == 200 and r.json() == {"ok": True, "redirect": "/app"}, r.text
-            assert len(_agreements(nc)) == 1
-            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", "동의 뒤엔 게이트를 지나 db 판정"
-            h.cookies.clear()
-        # 캐시: 통과한 uid 는 메모리 집합에 — 다음 판정은 DB 를 안 본다
-        assert nc in db._consented
+            assert r.status_code == 302 and r.headers["location"] == "/app", r.headers.get("location")
+            assert (await h.get("/api/state")).status_code == 401
+        assert not _agreements(nc), "agreements 는 새로 쓰지 않는다"
+        db.usage_flush()
+        assert _usage_row(today, nc, "record_add", "OK") == u0 + 1, "동의 행 없는 로그인 사용자 사용량은 그 uid 로"
+        assert _usage_row(today, "", "web:state", "UNAUTHORIZED") == a0 + 1, "로그인 전 요청만 ''"
     finally:
         site.dev, site.dev_user = real_site
-        db.TICKET_DAILY_ALL = real_all
         os.environ["CRM_DEV_USER"] = TESTER
-    print("OK — α2 동의 게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로·Origin 403·버전 불일치 400) 통과")
+    # 정적: 코드·화면에 CONSENT-REQUIRED·/consent 링크 0(옛 주소 302 라우트만 남는다)
+    for f in [*HERE.glob("*.py"), *HERE.glob("*.html")]:
+        if f.name == "test_tools.py":
+            continue
+        t = f.read_text(encoding="utf-8")
+        assert "CONSENT-REQUIRED" not in t and "/api/consent" not in t and "consent_grant" not in t, f.name
+        hits = [ln for ln in t.splitlines() if "/consent" in ln]
+        assert hits == ([] if f.name != "web.py" else ['            Route("/consent", self.consent),']), (f.name, hits)
+    assert not hasattr(db, "require_consent") and not hasattr(db, "consent_grant") and not hasattr(db, "CONSENT_EXEMPT")
+    print("OK — 필수 동의 게이트 없음(동의 행 없이 MCP·웹 쓰기·/app 200·/consent→/app·/api/consent 404·사용량 그 uid·로그인 전 ''·정적 0) 통과")
 
 
 def _bulk(sql, args):
@@ -2358,7 +2343,7 @@ async def test_usage():
         assert delta(s0, (today, tester, "candidate_decide", "ARG-INVALID")) == 1
         assert delta(s0, (today, tester, "state_get", "OK")) == 1
         assert delta(s0, (today, "", "help_get", "OK")) == 1, "help_get 은 uid 를 풀지 않는다 — 추가 조회 없이 ''"
-        assert delta(s0, (today, tester, "candidates_propose", "EXC")) == 1, "쓰기 도구는 게이트(동의)에서 uid 를 이미 풀었다"
+        assert delta(s0, (today, tester, "candidates_propose", "EXC")) == 1, "쓰기 도구는 게이트(write_gate)에서 uid 를 이미 풀었다"
         # 웹: 경로 이름 · 응답 code · 401 은 '' · 200 본문의 code(항목 코드)는 읽지 않는다
         s0 = snap()
         assert (await h.get("/api/state")).status_code == 200
@@ -2377,30 +2362,29 @@ async def test_usage():
     assert all(re.fullmatch(r"[a-z_]+|web:[a-z_]+", n) for n in names), names
     assert all(re.fullmatch(r"OK|EXC|[A-Z][A-Z-]*", cd) for cd in codes), codes
 
-    # flush: 합산 upsert · 두 번이면 n 합산 · 미동의 uid 는 '' 로 접힘(같은 묶음의 여러 미동의 uid 가 한 키로 — 중복 키 오류 없음)
+    # flush: 합산 upsert · 두 번이면 n 합산 · 로그인 전(uid 없음·'') 요청만 '' — 로그인 사용자는 동의 행과 무관하게 그 uid
     db.usage_flush()
     assert snap() == {}, "flush 는 스냅샷을 뗀다"
     t0, a0 = _usage_row(today, tester, "record_add", "OK"), _usage_row(today, "", "state_get", "OK")
     for _ in range(2):
         db.usage_count(tester, "record_add", "OK")
-    db.usage_count("u_ghost_a", "state_get", "OK")
-    db.usage_count("u_ghost_b", "state_get", "OK")
-    assert db.usage_flush() == 3
+    db.usage_count(None, "state_get", "OK")
+    db.usage_count("", "state_get", "OK")
+    assert db.usage_flush() == 2, "None 과 '' 은 같은 키"
     assert _usage_row(today, tester, "record_add", "OK") == t0 + 2
     assert _usage_row(today, "", "state_get", "OK") == a0 + 2
-    assert _usage_row(today, "u_ghost_a", "state_get", "OK") == 0 and _usage_row(today, "u_ghost_b", "state_get", "OK") == 0
     for _ in range(3):
         db.usage_count(tester, "record_add", "OK")
     db.usage_flush()
     assert _usage_row(today, tester, "record_add", "OK") == t0 + 5, "두 번째 flush 는 n 에 더한다"
-    # privacy 키가 없으면 전원 ''
+    # 처리방침 버전이 없어도(동의 문서 없음) 로그인 사용자는 그 uid — 접기 없음
     real_v = dict(db.CONSENT_VERSIONS)
     try:
         db.set_consent_versions({})
         a1, t1 = _usage_row(today, "", "record_get", "OK"), _usage_row(today, tester, "record_get", "OK")
         db.usage_count(tester, "record_get", "OK")
         db.usage_flush()
-        assert _usage_row(today, "", "record_get", "OK") == a1 + 1 and _usage_row(today, tester, "record_get", "OK") == t1
+        assert _usage_row(today, "", "record_get", "OK") == a1 and _usage_row(today, tester, "record_get", "OK") == t1 + 1
     finally:
         db.set_consent_versions(real_v)
     # 풀 checkout 실패 → 묶음 버림, 예외 없음
@@ -2445,22 +2429,21 @@ async def test_usage():
     finally:
         db.usage_flush, db.close, main.USAGE_FLUSH_EVERY = real_flush, real_close, real_every
         del sm.run
-    print("OK — α2 usage_daily(메모리만·풀 checkout 0·MCP 전 도구·웹 래퍼·flush 합산/접기/실패 버림·종료 순서 flush→close) 통과")
+    print("OK — α2 usage_daily(메모리만·풀 checkout 0·MCP 전 도구·웹 래퍼·flush 합산/그 uid·로그인 전만 ''/실패 버림·종료 순서 flush→close) 통과")
 
 
 def test_alpha2_delete():
-    """user_delete 뒤 usage_daily·agreements 에 그 uid 행 0, 동의 캐시에서도 빠진다."""
+    """user_delete 뒤 usage_daily·agreements 에 그 uid 행 0."""
     nc = db.user_by_email(NOCONSENT)["id"]
     db.usage_count(nc, "record_add", "OK")
     db.usage_flush()
     today = db._dt.datetime.now(db.KST).date()
-    assert _usage_row(today, nc, "record_add", "OK") >= 1 and _agreements(nc), "동의한 사용자는 자기 uid 로 집계된다"
+    assert _usage_row(today, nc, "record_add", "OK") >= 1, "로그인 사용자는 동의 행이 없어도 자기 uid 로 집계된다"
     db.user_delete(nc)
     with db.tx() as c:
         left = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (nc,)).fetchone()["n"] for t in ("usage_daily", "agreements")}
     assert left == {"usage_daily": 0, "agreements": 0}, left
-    assert nc not in db._consented
-    print("OK — α2 계정 삭제(usage_daily·agreements 0·동의 캐시 제거) 통과")
+    print("OK — α2 계정 삭제(usage_daily·agreements 0) 통과")
 
 
 def test_alpha2_delete_lock():
@@ -2471,7 +2454,6 @@ def test_alpha2_delete_lock():
     uid = db.user_by_email(LIM_EMAIL["records"])["id"]
     today = db._dt.datetime.now(db.KST).date()
     db.usage_flush()
-    assert _agreements(uid), "동의한 사용자여야 flush 가 자기 uid 로 올린다"
     entered, go, errs = threading.Event(), threading.Event(), []
     real_conn = db._usage_conn
 
@@ -2515,7 +2497,7 @@ def test_alpha2_delete_lock():
     print("OK — α2 삭제 잠금(flush 가 잠금 잡은 동안 user_delete 블록·삭제 uid 행 0·메모리 키 0) 통과")
 
 
-# ── 10) β2 — 관리자 역할 · 재인증 · 감사 · 웹 끊기 · 차단 · Setup ─────────
+# ── 10) β2 — 관리자 역할 · 감사 · 웹 끊기 · 차단 · Setup (재인증 없음) ─────────
 
 B2 = {k: f"b2{k}@example.com" for k in ("a", "b", "c", "m")}   # a·b = 관리자 후보, c = 사용자, m = MCP(차단 시험)
 B2_XSS = "<b>esc</b>@example.com"
@@ -2549,7 +2531,7 @@ def _tok(sub, iat="now"):
 
 
 async def test_beta2():
-    """β2: /admin 404(무세션·비관리자·DEV) · 재인증(ra) 흐름·창 · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류) · 부여·회수·LAST-ADMIN·동시 회수
+    """β2: /admin 404(무세션·비관리자·DEV) · 재인증 없음(ra 없이 화면·POST, /admin/reauth→/admin, 콜백→/app, 옛 ra 무시) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류) · 부여·회수·LAST-ADMIN·동시 회수
     · 차단/해제(웹·MCP) · 웹 끊기는 MCP 무관 · /app 관리자 경로 창 · CSP·이스케이프 · CLI · 감사 파기 · lifespan 배선."""
     import datetime
     import threading
@@ -2564,8 +2546,6 @@ async def test_beta2():
     C = db.user_by_subject("b2c_sub", B2["c"])["id"]
     M = db.user_by_subject("b2m_sub", B2["m"])["id"]
     X = db.user_by_email(B2_XSS)["id"]
-    for u in (A, B, C, M, X):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     with db.tx() as c:   # 시험 밖 관리자(이전 실행·bootstrap)는 잠깐 내린다 — LAST-ADMIN·동시 회수는 전역 관리자 수를 본다
         others = [r["id"] for r in c.execute("SELECT id FROM users WHERE role='admin' AND NOT (email = ANY(%s))",
                                              (list(TEST_EMAILS),)).fetchall()]
@@ -2574,8 +2554,8 @@ async def test_beta2():
     real = (site.dev, site.dev_user, site.client_id, site.token_post, db.session_user)
     site.dev, site.dev_user, site.client_id = False, "", "client_test"
     now = lambda: int(time.time())   # noqa: E731
-    ck = lambda uid, ra=None, iat=None: site.sign({"uid": uid, "iat": now() if iat is None else iat,   # noqa: E731
-                                                   **({} if ra is None else {"ra": ra})}, 600)
+    ck = lambda uid, iat=None: site.sign({"uid": uid, "iat": now() if iat is None else iat}, 600)   # noqa: E731
+    ck_ra = lambda uid, ra: site.sign({"uid": uid, "iat": now(), "ra": ra}, 600)   # 옛 쿠키 — ra 는 무시돼야 한다  # noqa: E731
 
     async def call(method, path, cookie=None, origin=True, data=None):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -2590,7 +2570,7 @@ async def test_beta2():
     site.token_post = fake_token_post
 
     async def login(cookie, reauth, sub, extra=None):
-        """쿠키 세션으로 /login(?fresh=1&reauth=1) → 콜백. (콜백 응답, 새 세션 쿠키 내용)."""
+        """쿠키 세션으로 /login(옛 링크 ?fresh=1&reauth=1 포함) → 콜백. (콜백 응답, 새 세션 쿠키 내용)."""
         tok_next.update(sub=sub, extra=extra)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
             if cookie:
@@ -2606,16 +2586,16 @@ async def test_beta2():
              ("/admin/unblock", {"uid": C}))
     try:
         # ── 404: 무세션 · 비관리자 · DEV ──
-        for cookie in (None, ck(C, now()), ck(C)):
+        for cookie in (None, ck_ra(C, now()), ck(C)):
             for path in ("/admin", "/admin/setup", "/admin/reauth"):
                 r = await call("GET", path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code, r.text[:80])
             for path, data in posts:
                 r = await call("POST", path, cookie, data=data)
                 assert r.status_code == 404, (path, r.status_code)
-        site.dev, site.dev_user = True, B2["a"]   # DEV: 관리자 dev_user 여도, ra 쿠키가 있어도 404
+        site.dev, site.dev_user = True, B2["a"]   # DEV: 관리자 dev_user 여도, 관리자 쿠키가 있어도 404
         try:
-            for cookie in (None, ck(A, now())):
+            for cookie in (None, ck(A)):
                 for path in ("/admin", "/admin/setup", "/admin/reauth"):
                     assert (await call("GET", path, cookie)).status_code == 404, ("DEV", path)
                 for path, data in posts:
@@ -2624,39 +2604,37 @@ async def test_beta2():
             site.dev, site.dev_user = False, ""
         assert _urow(C)["role"] == "user" and not _audit_rows(C), "404 경로는 아무것도 안 바꾼다"
 
-        # ── 재인증 ──
-        r = await call("GET", "/admin", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (r.status_code, r.headers.get("location"))
-        r = await call("GET", "/admin/setup", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth"
+        # ── 재인증 없음 — 관리자 세션이면 화면·POST 바로 ──
+        for path in ("/admin", "/admin/setup", "/admin/tickets", "/admin/schema", "/admin/reports"):
+            r = await call("GET", path, ck(A))
+            assert r.status_code == 200, (path, r.status_code, r.headers.get("location"))
+            assert "재인증" not in r.text and "다시 로그인" not in r.text and "/admin/reauth" not in r.text, (path, "재인증 문구 0")
         r = await call("GET", "/admin/reauth", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/login?fresh=1&reauth=1", r.headers.get("location")
-        t0 = now()
-        r, s = await login(ck(A), True, "b2a_sub")   # 같은 uid → ra
-        assert r.status_code == 302 and r.headers["location"] == "/admin" and s["uid"] == A and _is_int(s.get("ra")), (r.headers, s)
-        assert t0 <= s["ra"] <= now(), s
-        r, s = await login(ck(A), True, "b2c_sub")   # 콜백 uid 다름 → 일반 로그인(ra 없음)
-        assert s["uid"] == C and "ra" not in s and r.headers["location"] == "/admin", s
-        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 61 - 60})   # auth_time < t0 − 60 → ra 없음
-        assert s["uid"] == A and "ra" not in s, s
-        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 30})        # auth_time ≥ t0 − 60 → ra
-        assert s["uid"] == A and _is_int(s.get("ra")), s
-        r, s = await login(ck(A, now()), False, "b2a_sub")   # 일반 로그인 — 이전 ra 도 버린다
-        assert r.headers["location"] == "/app" and s["uid"] == A and "ra" not in s, (r.headers, s)
-        r, s = await login(None, True, "b2a_sub")   # 세션 없이 reauth=1 → r 없음 → 일반 로그인
-        assert r.headers["location"] == "/app" and "ra" not in s, s
-        # 창: view 12h · 위험 15m · 미래 거절
-        assert (await call("GET", "/admin/setup", ck(A, now() - 13 * 3600))).headers.get("location") == "/admin/reauth", "ra 13h → view 거절"
-        assert (await call("GET", "/admin/setup", ck(A, now() + 60))).headers.get("location") == "/admin/reauth", "ra 미래 → 거절"
-        assert (await call("GET", "/admin/setup", ck(A, now() - 16 * 60))).status_code == 200, "ra 16m → view 는 통과"
-        r = await call("POST", "/admin/role", ck(A, now() - 16 * 60), data={"uid": C, "role": "admin"})
-        assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text and 'href="/admin/reauth"' in r.text, (r.status_code, r.text[:200])
-        assert _urow(C)["role"] == "user", "ra 16m → role 거절"
-        assert web.reauth_ok(now() - 14 * 60, "role.grant") and not web.reauth_ok(now() - 16 * 60, "role.grant")
-        assert web.reauth_ok(now() - 11 * 3600, "admin.view") and not web.reauth_ok(now() - 13 * 3600, "ticket.update")
-        assert "ticket.read_all" not in web.REAUTH_WINDOWS, "/app 문의함 창은 P5 에서 뺐다"
-        assert not web.reauth_ok(None, "admin.view") and not web.reauth_ok(str(now()), "admin.view") and not web.reauth_ok(True, "admin.view")
-        assert not web.reauth_ok(now() + 5, "admin.view") and web.reauth_ok(now(), "user.block")
+        assert r.status_code == 302 and r.headers["location"] == "/admin", r.headers.get("location")
+        for ra in (now() - 13 * 3600, now() + 60, "x", True):   # 옛 쿠키의 ra — 값이 무엇이든 무시(무효로 만들지 않는다)
+            r = await call("GET", "/admin/setup", ck_ra(A, ra))
+            assert r.status_code == 200, ("옛 ra", ra, r.status_code)
+            assert (await call("GET", "/api/state", ck_ra(A, ra))).status_code == 200, ("옛 ra /api", ra)
+        r = await call("GET", "/admin/setup", ck(A))
+        assert "<th>차단</th>" in r.text and "처리방침" not in r.text and "미동의" not in r.text, "사용자 표에 처리방침 동의 열 없음"
+        # 콜백은 항상 /app, 쿠키 = {uid, iat, exp}. 옛 링크(reauth=1)·옛 ra 쿠키·auth_time 클레임도 같다
+        for cookie, reauth, sub, extra in ((ck_ra(A, now()), True, "b2a_sub", None), (ck(A), True, "b2c_sub", None),
+                                           (ck(A), True, "b2a_sub", {"auth_time": now() - 3600}), (ck_ra(A, now()), False, "b2a_sub", None),
+                                           (None, True, "b2a_sub", None), (None, False, "b2a_sub", None)):
+            r, s = await login(cookie, reauth, sub, extra)
+            assert r.status_code == 302 and r.headers["location"] == "/app", (sub, reauth, r.headers.get("location"))
+            assert set(s) == {"uid", "iat", "exp"} and s["uid"] == (C if sub == "b2c_sub" else A), s
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:   # flow 쿠키에 r·t0 없음
+            h.cookies.set("crm_session", ck(A))
+            r = await h.get("/login", params={"fresh": "1", "reauth": "1"})
+            flow = site.unsign(r.cookies.get(web.FLOW_COOKIE))
+            assert r.status_code == 302 and set(flow) == {"v", "s", "exp"}, flow
+        assert not hasattr(web, "reauth_ok") and not hasattr(web, "REAUTH_WINDOWS") and not hasattr(web, "AUTH_TIME_SKEW")
+        assert not hasattr(web.Web, "_reauth_fresh")
+        code = "\n".join(Path(__file__).with_name(n).read_text(encoding="utf-8") for n in
+                         ("web.py", "admin_db.py", "db.py", "auth.py", "main.py", "admin_cli.py", "app.html", "start.html"))
+        for word in ("REAUTH", "reauth_ok", "auth_time", "_reauth_fresh", "state.ra", "재인증"):
+            assert word not in code, f"정적: {word} 0"
 
         # ── 쿠키 v2 ──
         assert (await call("GET", "/api/state", site.sign({"uid": A}, 600))).status_code == 401, "옛 쿠키(iat 없음) 무효"
@@ -2782,8 +2760,8 @@ async def test_beta2():
         assert rc[0]["detail"] == {"from": "admin", "to": "admin", "unblocked": True}, rc
         assert admin_cli.main(["list"]) == 0 and A in {r["id"] for r in db.admins()}
 
-        # ── /app 에 관리자 데이터 없음(P5) — 재인증 창과 무관하게 같은 모양, ⚙ 링크용 admin 만 ──
-        for cookie in (ck(A), ck(A, now() - 13 * 3600), ck(A, now() - 3600), ck(A, now())):
+        # ── /app 에 관리자 데이터 없음(P5) — 옛 ra 쿠키여도 같은 모양, ⚙ 링크용 admin 만 ──
+        for cookie in (ck(A), ck_ra(A, now() - 13 * 3600), ck_ra(A, now())):
             st = (await call("GET", "/api/state", cookie)).json()
             assert "admin_tickets" not in st and st["user"].get("admin") is True, list(st)
             r = await call("GET", "/api/feedback", cookie)
@@ -2793,7 +2771,7 @@ async def test_beta2():
                 for path in ("/api/feedback/status", "/api/feedback/note"):
                     r = await h.post(path, json={"id": "tk_nope", "status": "ack", "admin_note": "x"}, headers={"origin": PUBLIC})
                     assert r.status_code == 404, (path, r.status_code)
-        assert "admin" not in (await call("GET", "/api/state", ck(C, now()))).json()["user"], "비관리자는 ra 가 있어도 admin 키 없음"
+        assert "admin" not in (await call("GET", "/api/state", ck(C, now()))).json()["user"], "비관리자는 admin 키 없음"
 
         # ── /admin/setup: CSP · 스크립트 0 · 이스케이프 · 감사 표 ──
         r = await call("GET", "/admin/setup", ck(A, now()))
@@ -2802,8 +2780,10 @@ async def test_beta2():
         assert "<script" not in r.text.lower() and not re.search(r"\son[a-z]+\s*=", r.text, re.I), "스크립트·이벤트 속성 0"
         assert "&lt;b&gt;esc&lt;/b&gt;@example.com" in r.text and "<b>esc" not in r.text, "이메일 이스케이프"
         for word in (B2["m"], "관리자 부여", "관리자 회수", "웹 로그인 끊기", "차단", 'action="/admin/role"', 'action="/admin/block"',
-                     'name="uid"', "재인증", 'href="/admin/reauth"', "감사 로그", "복구(CLI)", "웹 로그인 끊기"):
+                     'name="uid"', "감사 로그", "복구(CLI)", "웹 로그인 끊기"):
             assert word in r.text, word
+        for word in ("재인증", "다시 로그인", "/admin/reauth", "REAUTH", "남음"):
+            assert word not in r.text, ("Setup 에 재인증 문구 0", word)
         db.admin_act(A, "signout", X)
         db.user_delete(X)   # 지워진 계정 → 감사 표엔 id 앞 8자
         r = await call("GET", "/admin/setup", ck(A, now()))
@@ -2821,7 +2801,7 @@ async def test_beta2():
         site.dev, site.dev_user, site.client_id, site.token_post, db.session_user = real
         site.dev, site.dev_user = True, TESTER
         _sql("UPDATE users SET role='admin' WHERE id = ANY(%s)", (others,))
-    print("OK — β2 /admin 404·재인증 흐름·창(12h·15m·미래)·쿠키 v2·끊기·차단/해제(웹·MCP)·부여/회수·LAST-ADMIN·동시 회수·CLI·/app 창·CSP·이스케이프·감사 파기 통과")
+    print("OK — β2 /admin 404·재인증 없음(ra 없이 화면·POST·/admin/reauth→/admin·콜백→/app·옛 ra 무시·정적 0)·쿠키 v2·끊기·차단/해제(웹·MCP)·부여/회수·LAST-ADMIN·동시 회수·CLI·/app 창·CSP·이스케이프·감사 파기 통과")
 
 
 async def test_beta2_bootstrap():
@@ -2892,11 +2872,16 @@ async def test_beta2_bootstrap():
 # 운영 화면·운영 POST 의 DB 접근은 admin_db 한 모듈. 「본문」은 운영 경로에서 SELECT 하지 않는다.
 # 표식 시험이 도는 관리자 응답 — 새 /admin 페이지·리포트는 여기에 더한다(P4). (method, path, form/json)
 ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
-ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets")
+ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets",
+              "/admin/users")
 # P4: 리포트는 프리셋 전부 + 데이터셋별 차원 하나씩, 스키마는 사용자 트리(?u=)까지 — 동적 URL 이라 admin_report_urls() 가 만든다
-ADB_ALLOWED_DB = {"CrmError", "CONSENT_VERSIONS"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외·상수만, 조회 함수 없음
-ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value|questions|records|"
-                           r"candidates|tabs|items)\b", re.I)
+ADB_ALLOWED_DB = {"CrmError"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외만, 조회 함수 없음(처리방침 동의 표시는 뺐다)
+ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value)\b", re.I)
+ADB_BODY_TABLES = re.compile(r"\b(questions|records|candidates|tabs|items)\b", re.I)
+# PR #20 Q5: 연결·무결성 조회만 본문 테이블을 이름으로 부른다 — 대신 SQL 의 한정 열(별칭.열)은 상태·식별 열뿐(ADB_STATE_COLS)
+ADB_STATE_KEYS = ("userview.counts", "userview.links")
+ADB_STATE_COLS = {"id", "user_id", "created", "kind", "state", "version", "std_key", "record_id", "object_id", "revision", "archived_at",
+                  "deleted_at", "source_item_id", "source_object_id", "source_record_id", "field_key", "target_item_id", "target_record_id"}
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
 ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
 ADB_TEXT_KEYS = ("tickets.detail",)   # text·admin_note 를 읽는 유일한 조회(P5 에서 /app 문의함 이행 키를 뺐다)
@@ -2954,6 +2939,11 @@ def test_admin_boundary_static():
         if not sql:
             continue
         assert not ADB_BODY_COLS.search(sql), (k, ADB_BODY_COLS.search(sql).group(0))
+        if k in ADB_STATE_KEYS:
+            cols = set(re.findall(r"\b[a-z]{1,3}\.([a-z_]+)\b", sql))
+            assert cols <= ADB_STATE_COLS, (k, "상태·식별 열만", sorted(cols - ADB_STATE_COLS))
+        else:
+            assert not ADB_BODY_TABLES.search(sql), (k, ADB_BODY_TABLES.search(sql).group(0))
         if k not in ADB_TEXT_KEYS:
             assert not ADB_TEXT_COLS.search(sql), (k, "text·admin_note 는 문의 상세만")
         if v["consent"] != "struct_names":
@@ -2981,8 +2971,6 @@ async def test_admin_boundary():
     tmark, nmark = "MARKT" + secrets.token_hex(4), "MARKN" + secrets.token_hex(4)   # 문의 원문·메모 — 상세에만
     A = db.user_by_subject("adb_admin_sub", ADB["admin"])["id"]
     U = db.user_by_subject("adb_user_sub", ADB["user"])["id"]
-    for u in (A, U):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     with db.tx() as c:
         c.execute("INSERT INTO questions (id,user_id,text) VALUES ('q_adb',%s,%s)", (U, mark + "-q"))
@@ -2994,6 +2982,11 @@ async def test_admin_boundary():
                   (U, mark + "-fl", Jsonb([{"value": "v", "label": mark + "-opt"}])))
         c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,body,data,revision) "
                   "VALUES (%s,'i_adb','od_adb',1,%s,%s,%s,1)", (U, mark + "-it", mark + "-ib", Jsonb({"f1": mark + "-data"})))
+        # PR #20 Q5: 참조 필드 + 연결 1개(자기 참조) — /admin/users 상세의 관계·연결 집계가 도는 자리
+        c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,target_kind,target_object_id,position) "
+                  "VALUES (%s,'od_adb','f2',%s,'reference','item','od_adb',1)", (U, mark + "-rl"))
+        c.execute("INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_item_id) "
+                  "VALUES (%s,'i_adb','od_adb','f2','i_adb')", (U,))
     t = {"id": "tk_adb" + secrets.token_hex(3)}   # SQL 로 — desk 시험이 전역 하루 한도를 채워 둔다
     with db.tx() as c:
         c.execute("INSERT INTO tickets (id,user_id,kind,text,via,admin_note) VALUES (%s,%s,'bug',%s,'web',%s)", (t["id"], U, tmark, nmark))
@@ -3007,7 +3000,7 @@ async def test_admin_boundary():
     db.optional_consent_set(A, "struct_names", True)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
-    cookie = site.session_value(A, ra=int(time.time()))
+    cookie = site.session_value(A)
     seen = []
 
     async def call(method, path, **kw):
@@ -3017,12 +3010,12 @@ async def test_admin_boundary():
         seen.append((method, path, r.status_code))
         return r, r.text + json.dumps(dict(r.headers), ensure_ascii=False)
     try:
-        for path in ADMIN_GETS + tuple(admin_report_urls()) + (f"/admin/schema?u={site._opaque(U)}",):
+        for path in ADMIN_GETS + tuple(admin_report_urls()) + (f"/admin/schema?u={site._opaque(U)}", f"/admin/users/{site._opaque(U)}"):
             r, out = await call("GET", path)
             assert r.status_code in (200, 302), (path, r.status_code)
             assert mark not in out, f"{path} 응답에 금지 열 값"
-        # 허용 응답 — 이름 공유 동의자(A)의 현재 이름은 트리에 보인다(비동의 U 의 이름은 위에서 0)
-        r, out = await call("GET", f"/admin/schema?u={site._opaque(A)}")
+        # 허용 응답 — 이름 공유 동의자(A)의 현재 이름은 사용자 상세에 보인다(비동의 U 의 이름은 위에서 0)
+        r, out = await call("GET", f"/admin/users/{site._opaque(A)}")
         assert r.status_code == 200 and all(w in out for w in ("이름공유오브젝트", "이름공유필드", "이름공유선택지")) and mark not in out, out[-600:]
         r, out = await call("GET", "/admin/setup")
         assert r.status_code == 200 and ADB["user"] in out and tmark not in out and nmark not in out, "Setup 엔 이메일만, 문의 원문 없음"
@@ -3060,7 +3053,8 @@ async def test_admin_boundary():
         snap.update({"overview.band": [admin_db.overview_band("admin")], "overview.last_active": admin_db.last_active("admin"),
                      **{admin_db.REPORT_DATASETS[ds]: admin_db.report_rows("admin", ds, *(() if ds == "structure" else (today, today)))
                         for ds in admin_db.REPORT_DATASETS},
-                     "schema.tree": admin_db.schema_tree("admin", U), "schema.object_names": names[0], "schema.field_names": names[1]})
+                     "schema.tree": admin_db.schema_tree("admin", U), "schema.object_names": names[0], "schema.field_names": names[1],
+                     **admin_db.userview_rows("admin", U)})
         assert admin_db.schema_names("admin", U) == ([], []), "비동의자는 이름 분기 0행"
         assert set(snap) == {k for k, v in admin_db.ALLOW.items() if v["sql"]}, "ALLOW 키가 늘면 스냅샷도 늘린다"
         for k, rows in snap.items():
@@ -3073,8 +3067,8 @@ async def test_admin_boundary():
     print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세·레코드 페이지에만 원문·메모 · ALLOW 행 키 = cols) 통과")
 
 
-# ── 12) 선택 동의 · 처리방침 v2 · 옛 사용량 삭제 ──────────
-OC = {k: f"oc{k}@example.com" for k in ("1", "2", "3", "4")}   # 1 = v1 동의자 · 2 = 선택 포함 동의 · 3 = 선택 없이 동의 · 4 = 실패 주입·동시
+# ── 12) 선택 동의 · 처리방침 v4 · 옛 사용량 삭제 ──────────
+OC = {k: f"oc{k}@example.com" for k in ("1", "2", "3", "4")}   # 1 = 옛 버전(v1) 동의 행 · 3 = 왕복 · 4 = 실패 주입·동시
 
 
 def _optional_rows(uid):
@@ -3085,18 +3079,15 @@ def _optional_rows(uid):
 
 
 async def test_optional_consent():
-    """v1 동의자 쓰기 거절 · /consent 선택 체크(기본 해제) · 필수+선택 한 트랜잭션(실패 주입 → 필수 롤백) · 선택 없이 → 행 없음
+    """옛 버전 동의 행만 있는 사용자도 쓰기·/app 통과 · 계정 메뉴 경로(/api/optional-consent)로 켜기 · 실패 주입 → 행 0
     · /api/optional-consent 401·403·400 · 켜기/끄기 왕복과 로그 · 같은 상태 무동작 · 미동의자도 끔 · 동시 두 요청 → 행 1개
-    · 옛 버전 동의는 무효 · /privacy v2(비로그인) · 사용량 삭제 표식 멱등."""
+    · 옛 버전 동의는 무효 · /privacy v4 처리 근거 표·출처·표준 편입·작성자 표시·계정 메뉴 문의(비로그인) · 사용량 삭제 표식 멱등."""
     import threading
     site = main.site
     U = {k: db.user_by_subject(f"oc{k}_sub", e)["id"] for k, e in OC.items()}
-    with db.tx() as c:   # consent_setup 이 시험 사용자 전부를 v2 로 동의시켜 둔다 — 이 절은 미동의에서 시작
+    with db.tx() as c:
         c.execute("DELETE FROM agreements WHERE user_id = ANY(%s)", (list(U.values()),))
-    for u in U.values():
-        db._consented.discard(u)
-    v2 = dict(db.CONSENT_VERSIONS)
-    assert v2.get("privacy") == "v2" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (v2, db.OPTIONAL_VERSIONS)
+    assert db.CONSENT_VERSIONS.get("privacy") == "v4" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (db.CONSENT_VERSIONS, db.OPTIONAL_VERSIONS)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     origin = {"origin": PUBLIC}
@@ -3107,52 +3098,36 @@ async def test_optional_consent():
             h.cookies.set("crm_session", site.session_value(uid))
         return h
     try:
-        # v1 동의자 — v2 를 읽은 뒤엔 쓰기 거절(CONSENT-REQUIRED)
+        # 옛 버전(v1) 동의 행만 있어도 — 처리방침 버전과 무관하게 쓰기·/app 통과(재동의 없음)
         with db.tx() as c:
             c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,'privacy','v1')", (U["1"],))
-        db._consented.discard(U["1"])
-        expect("CONSENT-REQUIRED", db.write_gate, "record_add", {"text": "v1 동의자"}, U["1"])
+        db.write_gate("record_add", {"text": "v1 동의 행"}, U["1"])   # 통과
         async with client(U["1"]) as h:
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", r.status_code
-            r = await h.get("/consent")
-            t = r.text
-            assert r.status_code == 200 and "<script" not in t and 'name="privacy" value="v2"' in t, t[:300]
-            assert 'name="optional" value="struct_names"' in t and "안 해도 모든 기능을 써요" in t and 'href="/privacy#privacy-1"' in t, t
-            assert not re.search(r'name="optional"[^>]*checked', t), "선택 동의는 기본 해제"
-            # 필수 + 선택(form) → 한 트랜잭션
-            r = await h.post("/api/consent", data={"privacy": "v2", "optional": "struct_names"}, headers=origin)
-            assert r.status_code == 302 and r.headers["location"] == "/app", r.text[:200]
-        assert ("privacy", "v2") in [(a["kind"], a["version"]) for a in _agreements(U["1"])]
+            assert (await h.get("/app")).status_code == 200
+            u = (await h.get("/api/state")).json()["user"]
+            assert u["struct_names"] is False, "이름 공유는 기본 꺼짐"
+            # 이름 공유는 계정 메뉴 경로로만 켠다
+            r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
+            assert r.status_code == 200 and r.json()["changed"] is True, r.text
+        assert [(a["kind"], a["version"]) for a in _agreements(U["1"])] == [("privacy", "v1")], "agreements 는 새로 쓰지 않는다"
         assert _optional_rows(U["1"]) == ([{"kind": "struct_names", "version": "s1", "state": "granted"}],
                                           [{"kind": "struct_names", "version": "s1", "action": "grant"}]), _optional_rows(U["1"])
         assert db.optional_consent_ok(U["1"], "struct_names")
-        db.write_gate("record_add", {"text": "v2 동의 뒤"}, U["1"])   # 통과
-        # 선택 없이 동의(JSON) → optional 행 없음
-        async with client(U["3"]) as h:
-            r = await h.post("/api/consent", json={"privacy": "v2"}, headers=origin)
-            assert r.status_code == 200, r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "optional": ["nope"]}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "optional": "struct_names"}, headers=origin)
-            assert r.status_code == 400, "optional 은 목록"
         assert _optional_rows(U["3"]) == ([], []) and not db.optional_consent_ok(U["3"], "struct_names")
-        # 실패 주입 — 선택 저장이 터지면 필수도 롤백(db·웹 둘 다)
+        # 실패 주입 — 선택 저장이 터지면 행도 로그도 없다(한 트랜잭션)
         real_apply = db._optional_apply
 
         def boom(*a, **k):
             raise db.CrmError("INJECTED", "선택 저장 실패 주입")
         db._optional_apply = boom
         try:
-            expect("INJECTED", db.consent_grant, U["4"], v2, ["struct_names"])
+            expect("INJECTED", db.optional_consent_set, U["4"], "struct_names", True)
             async with client(U["4"]) as h:
-                r = await h.post("/api/consent", data={"privacy": "v2", "optional": "struct_names"}, headers=origin)
+                r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
                 assert r.status_code == 400 and r.json()["code"] == "INJECTED", r.text
         finally:
             db._optional_apply = real_apply
-        assert not _agreements(U["4"]) and _optional_rows(U["4"]) == ([], []), "하나만 저장되지 않는다"
-        db._consented.discard(U["4"])
-        assert not db.has_consent(U["4"])
+        assert not _agreements(U["4"]) and _optional_rows(U["4"]) == ([], []), "실패하면 아무것도 저장되지 않는다"
         # /api/optional-consent — 401 · 403 · 400
         async with client() as h:
             r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
@@ -3174,7 +3149,7 @@ async def test_optional_consent():
         assert cur == [{"kind": "struct_names", "version": "s1", "state": "withdrawn"}] and [x["action"] for x in log] == ["grant", "withdraw"], (cur, log)
         assert not db.optional_consent_ok(U["3"], "struct_names")
         # 미동의자도 끌 수 있다(게이트 밖) — 행 없음 + 끄기 = 무동작, 켜기·끄기도 된다
-        assert not db.has_consent(U["4"])
+        assert not _agreements(U["4"])
         async with client(U["4"]) as h:
             r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": False}, headers=origin)
             assert r.status_code == 200 and r.json()["changed"] is False, r.text
@@ -3201,13 +3176,20 @@ async def test_optional_consent():
         assert db.optional_consent_set(U["4"], "struct_names", True)["changed"] is True and db.optional_consent_ok(U["4"], "struct_names")
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "names", True)
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "struct_names", 1)
-        # /privacy v2 — 로그인 없이
+        # /privacy v4 — 로그인 없이 · 처리 근거 표(제15조①4호 계약 이행 · ⑥ 정당한 이익 · ① 선택 동의)
         async with client() as h:
             r = await h.get("/privacy")
-        for word in ("v2 · 2026-10-19", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
-                     "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"'):
+        for word in ("v4 · 2026-10-20", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
+                     "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"',
+                     "처리 근거", "제15조 제1항 제4호", "제15조 제1항 제6호", "제15조 제1항 제1호",
+                     "로그인 전 요청의 이용 기록은 사용자와 연결하지 않습니다",
+                     "출처(종류·이름·위치)", "표준 편입", "작성자 표시만 검사", "계정 메뉴 「문의 보내기」"):
             assert word in r.text, word
+        basis = r.text[r.text.index("처리 근거"):r.text.index('id="privacy-2"')]
+        assert "<table>" in basis and basis.count("<tr>") == 4, basis
         assert r.status_code == 200 and "지금은 모으지 않습니다" not in r.text and "v1 · 2026-10-18" not in r.text
+        assert "v2 · 2026-10-19" not in r.text and "v3 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
+        assert "로그인한 뒤 「문의」에서" not in r.text, "문의 경로는 계정 메뉴 「문의 보내기」"
     finally:
         site.dev, site.dev_user = real
     # 사용량 삭제 표식 — 임시 스키마: 새 DB 는 표식만 · 두 번째 init 은 안 지움 · 표식 없는 옛 DB 는 1회 전부 삭제
@@ -3231,8 +3213,8 @@ async def test_optional_consent():
             assert c.execute("SELECT count(*) AS n FROM usage_daily").fetchone()["n"] == 1, "삭제는 1회만"
     finally:
         drop_schema(name)
-    print("OK — 선택 동의(v1 거절·/consent 선택 기본 해제·한 트랜잭션·실패 주입 롤백·왕복 로그 2·무동작·미동의자 끄기·동시 1행·옛 버전 무효)"
-          "·/privacy v2·사용량 삭제 표식 멱등 통과")
+    print("OK — 선택 동의(옛 버전 행도 통과·계정 메뉴로만 켬·실패 주입 행 0·왕복 로그 2·무동작·미동의자 끄기·동시 1행·옛 버전 무효)"
+          "·/privacy v4·사용량 삭제 표식 멱등 통과")
 
 
 # ── 13) 문의 완결 (P3) ──────────────────────────────────
@@ -3257,19 +3239,17 @@ def _tk_hist(tid):
 async def test_ticket_p3():
     """공개/내부 분리(웹·MCP) · 남의 문의 404 · 답변 한 트랜잭션(사건 실패 주입 → 답변 롤백) · 메모는 public_updated 그대로
     · 재분류 기산점 = created(11일 전 → 즉시 초과) · privacy 재진입 privacy_log 1행 · 해제 사유 필수·저장 · 종결 문의 재분류
-    · 파기 cascade · 정기 파기 태스크 · /admin/tickets POST 사다리(404·403 Origin·400·403 재인증·303) · 회수된 관리자·재인증 밖 거절."""
+    · 파기 cascade · 정기 파기 태스크 · /admin/tickets POST 사다리(404·403 Origin·400·303 — 옛 ra 쿠키도 303) · 회수된 관리자 거절."""
     import admin_db
     site = main.site
     O = db.user_by_subject("tk_owner_sub", TK["owner"])["id"]
     X = db.user_by_subject("tk_other_sub", TK["other"])["id"]
     A = db.user_by_subject("tk_admin_sub", TK["admin"])["id"]
-    for u in (O, X, A):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    ck_admin, ck_stale = site.session_value(A, ra=now), site.session_value(A, ra=now - 13 * 3600)
+    ck_admin, ck_stale = site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)   # ck_stale = 옛 ra 쿠키(무시)
 
     async def req(method, path, cookie=None, origin=True, **kw):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3369,16 +3349,14 @@ async def test_ticket_p3():
         n0 = len(_tk_hist(t1))
         for op, form in ops:
             p = f"/admin/tickets/{t1}/{op}"
-            for cookie in (None, site.session_value(O, ra=now)):           # 무세션·비관리자 → 404
+            for cookie in (None, site.session_value(O)):           # 무세션·비관리자 → 404
                 assert (await req("POST", p, cookie, data=form)).status_code == 404, (op, "404")
             r = await req("POST", p, ck_admin, origin=False, data=form)
             assert r.status_code == 403 and "ORIGIN" in r.text, (op, r.status_code)
             r = await req("POST", p, ck_admin, json=form)
             assert r.status_code == 400 and "ARG-INVALID" in r.text, (op, r.status_code)
-            r = await req("POST", p, ck_stale, data=form)
-            assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text, (op, r.status_code)
             assert len(_tk_hist(t1)) == n0, (op, "거절은 아무것도 안 바꾼다")
-            r = await req("POST", p, ck_admin, data=form)
+            r = await req("POST", p, ck_stale, data=form)   # 재인증 없음 — 옛 ra(13h 전) 쿠키도 그대로 처리
             assert r.status_code == 303 and r.headers["location"] == f"/admin/tickets/{t1}", (op, r.status_code, r.text[:200])
             n0 = len(_tk_hist(t1))
         row = _ticket(t1)
@@ -3463,15 +3441,13 @@ TKV = {"admin": "tkv-admin@example.com", "u": "<i>tkv</i>@example.com"}
 
 
 async def test_ticket_pages():
-    """/admin/tickets 리스트·/admin/tickets/<id> 레코드: 비관리자·무세션 404 · 재인증 창 밖 → /admin/reauth · CSP·스크립트 0·이벤트 속성 0
+    """/admin/tickets 리스트·/admin/tickets/<id> 레코드: 비관리자·무세션 404 · 옛 ra 쿠키도 200 · CSP·스크립트 0·이벤트 속성 0
     · escape(text·reply·memo·email 의 <script>) · 기본 필터(미종결)·기한 정렬(초과 최우선 → 기한 → 접수순) · 모르는 키 400 · 행 상한
     · 리스트에 원문·메모·화면·도구 없음 · 레코드에 원문·Path(현재 강조)·답변·메모·재분류·이력(공개/내부) · form action 이 P3 POST 를 가리킴."""
     import admin_db
     site = main.site
     A = db.user_by_subject("tkv_admin_sub", TKV["admin"])["id"]
     U = db.user_by_subject("tkv_user_sub", TKV["u"])["id"]
-    for u in (A, U):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     xss = "<script>alert(1)</script>"
     # 앞 절 문의(오늘 접수)가 많아 기본 목록이 상한에 걸릴 수 있다 — 이 절의 비개인정보 문의는 접수일을 앞당겨 앞쪽에 둔다
@@ -3490,7 +3466,7 @@ async def test_ticket_pages():
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    ck_admin, ck_stale = site.session_value(A, ra=now), site.session_value(A, ra=now - 13 * 3600)
+    ck_admin, ck_stale = site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)   # ck_stale = 옛 ra 쿠키(무시)
 
     async def get(path, cookie=ck_admin):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3500,11 +3476,11 @@ async def test_ticket_pages():
     pages = ("/admin/tickets", f"/admin/tickets/{t_new}")
     try:
         for path in pages:
-            for cookie in (None, site.session_value(U, ra=now)):
+            for cookie in (None, site.session_value(U)):
                 r = await get(path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
             r = await get(path, ck_stale)
-            assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+            assert r.status_code == 200, (path, r.status_code)
             r = await get(path)
             t = r.text
             csp = r.headers["content-security-policy"]
@@ -3568,7 +3544,7 @@ async def test_ticket_pages():
             assert r.status_code == 200 and 'aria-current="step">처리중<' in r.text and "접수 → 처리중" in r.text
     finally:
         site.dev, site.dev_user = real
-    print("OK — 문의 화면(404·재인증·DEV · CSP·스크립트 0·escape · 기본 미종결·기한 정렬·초과 표시 · 리스트에 원문·메모 없음 · 400 · 상한"
+    print("OK — 문의 화면(404·옛 ra 통과·DEV · CSP·스크립트 0·escape · 기본 미종결·기한 정렬·초과 표시 · 리스트에 원문·메모 없음 · 400 · 상한"
           " · 레코드 Path·form 4종·공개/내부 배지 · POST→303→반영) 통과")
 
 
@@ -3577,11 +3553,13 @@ P4 = {k: f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o")}
 
 
 async def test_admin_screens():
-    """/admin 개요·/admin/schema·/admin/reports — 404(무세션·비관리자·DEV) · 재인증 창 · CSP·스크립트 0·no-store·공통 메뉴
+    """/admin 개요·/admin/schema·/admin/reports — 404(무세션·비관리자·DEV) · 옛 ra 쿠키도 200 · CSP·스크립트 0·no-store·공통 메뉴
     · 이름 공유: 동의자만 현재 이름(템플릿 이름 바꾼 것 포함), 비동의·철회·옛 버전은 0 · 출력 escape · 리포트 잘못된 키·조합 400
     · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)."""
     import datetime
+    import hashlib
     import admin_db
+    import structure_svg
     import template_author
     from psycopg.types.json import Jsonb
     site = main.site
@@ -3616,8 +3594,8 @@ async def test_admin_screens():
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    good = site.session_value(A, ra=now)
-    pages = ("/admin", "/admin/schema", "/admin/reports")
+    good = site.session_value(A)
+    pages = ("/admin", "/admin/schema", "/admin/reports", "/admin/users")
 
     async def get(path, cookie=good):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3634,9 +3612,9 @@ async def test_admin_screens():
         assert mark not in t, (path, "비동의·철회·옛 버전 이름이 보인다")
         return t
     try:
-        # ── 404 · 재인증 ──
-        for cookie in (None, site.session_value(U["g"], ra=now)):
-            for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage"):
+        # ── 404 · 재인증 없음 ──
+        for cookie in (None, site.session_value(U["g"])):
+            for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage", f"/admin/users/{site._opaque(U['g'])}"):
                 r = await get(path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
         site.dev, site.dev_user = True, P4["a"]
@@ -3648,19 +3626,29 @@ async def test_admin_screens():
         for cookie in (site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)):
             for path in pages + ("/admin/reports?ds=usage&g1=day",):
                 r = await get(path, cookie)
-                assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+                assert r.status_code == 200, (path, r.status_code)
         # ── 공통 메뉴 · 개요 ──
-        for path, cur in (("/admin", "/admin"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
+        for path, cur in (("/admin", "/admin"), ("/admin/users", "/admin/users"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
                           ("/admin/setup", "/admin/setup"), ("/admin/tickets", "/admin/tickets")):
             r = await get(path)
             t = clean(r, path)
-            assert r.status_code == 200 and all(f'href="{h}"' in t for h in ("/admin", "/admin/schema", "/admin/reports",
+            assert r.status_code == 200 and all(f'href="{h}"' in t for h in ("/admin", "/admin/users", "/admin/schema", "/admin/reports",
                                                                             "/admin/tickets", "/admin/setup", "/app")), path
             assert f'<a href="{cur}" aria-current=page>' in t and len(re.findall(r"<a [^>]*aria-current", t)) == 1, (path, "현재 메뉴 하나")
         r = await get("/admin")
         t = clean(r, "/admin")
         assert all(e in t for e in P4.values()) and "미연결 사용량" in t and "RATE-LIMIT" in t and "record_add" in t, t[-1500:]
         assert "G-RENAMED" not in t and "G-OBJ" not in t, "개요엔 이름이 없다"
+        bar = t[t.index('<div class="bar">'):]
+        bar = bar[:bar.index("</div>")]
+        assert "이름 공유 동의" in bar and "처리방침" not in bar and bar.count("동의") == 1, ("상태 띠: 처리방침 동의 항목 없음", bar)
+        assert "consent" not in admin_db.ALLOW["report.users"]["dims"] and "consent" not in admin_db.ALLOW["report.users"]["filters"]
+        assert "consented" not in admin_db.ALLOW["report.users"]["cols"] + admin_db.ALLOW["setup.users"]["cols"] + admin_db.ALLOW["overview.band"]["cols"]
+        assert [k for k, _, _ in admin_db.REPORT_PRESETS] == ["errors14", "linked14", "defs", "types", "tickets"], "프리셋 「사용자 동의」 없음"
+        assert "consent" not in admin_db.VALUE_LABELS
+        assert all("agreements" not in (v["sql"] or "") for v in admin_db.ALLOW.values()), "운영 조회는 agreements 를 읽지 않는다"
+        r = await get("/admin/reports?ds=users&g1=consent")
+        assert r.status_code == 400, "사용자 동의 차원은 없다"
         for k, _, href in web.preset_links(today):   # 개요 표의 리포트 링크 = 프리셋
             if k in ("errors14", "defs"):
                 assert f'href="{web._esc(href)}"' in t or f'href="{href}"' in t, (k, href)
@@ -3691,30 +3679,59 @@ async def test_admin_screens():
         assert "admin_note" not in std_html and ">hint<" not in std_html, "표준 구조 화면에도 운영자 전용 열이 없다"
         assert "G-RENAMED" not in t and "G-FLD" not in t and "admin_audit" not in t and "usage_daily" not in t, "목록엔 사용자 이름·DB 내부 테이블 없음"
         for k in ("g", "n", "w", "o"):
-            assert f'href="/admin/schema?u={site._opaque(U[k])}"' in t, k
-        # ── 스키마: 사용자 트리 — 동의자만 현재 이름 ──
+            assert f'href="/admin/users/{site._opaque(U[k])}"' in t, k
+        # ── 옛 사용자 트리(/admin/schema?u=) → 새 상세로 302. 상세: 동의자만 현재 이름(PR #20 Q5 — 계약 출력) ──
         r = await get(f"/admin/schema?u={site._opaque(U['g'])}")
-        t = clean(r, "/admin/schema?u=g")
+        assert r.status_code == 302 and r.headers["location"] == f"/admin/users/{site._opaque(U['g'])}", (r.status_code, r.headers)
+        r = await get(f"/admin/users/{site._opaque(U['g'])}")
+        t = clean(r, "/admin/users/g")
         assert r.status_code == 200 and "&lt;script&gt;alert(1)&lt;/script&gt;G-OBJ" in t and "&lt;b&gt;G-OPT&lt;/b&gt;" in t, t[-1500:]
-        assert "G-RENAMED" in t and "G-FLD" in t and "G-REF" in t and "유효 동의 —" in t, "템플릿 유래라도 바꾼 이름은 동의자만"
-        assert "u1" in t and "f1" in t and "f2" in t and "tpl:axes" in t and "tpl:keywords" in t and "→ tpl:axes" in t, "표시 이름·관계"
-        assert "p4u" not in t and "pick" not in t, "사용자가 지은 id·key 는 보이지 않는다"
+        assert "G-RENAMED" in t and "G-FLD" in t and "G-REF" in t and "동의 — 현재 이름" in t, "템플릿 유래라도 바꾼 이름은 동의자만"
+        assert "오브젝트 1" in t and "필드 a" in t and "N:N" in t, "자리표·관계"
+        assert "p4u" not in t and "pick" not in t and "tpl:" not in t and "v1" not in t, "사용자가 지은 id·key·선택지 값·tpl 표시 이름은 보이지 않는다"
         for k in ("n", "w", "o"):
-            r = await get(f"/admin/schema?u={site._opaque(U[k])}")
-            t = clean(r, f"/admin/schema?u={k}")
-            assert r.status_code == 200 and "u1" in t and "tpl:axes" in t and 'class="lbl"' not in t and "유효 동의 없음" in t, (k, t[-800:])
+            r = await get(f"/admin/users/{site._opaque(U[k])}")
+            t = clean(r, f"/admin/users/{k}")
+            assert r.status_code == 200 and "오브젝트 1" in t and 'class="lbl"' not in t and "동의 없음" in t, (k, t[-800:])
             assert admin_db.schema_names("admin", U[k]) == ([], []), k
         # 철회하면 그 뒤 조회부터 이름이 빠진다
         db.optional_consent_set(U["g"], "struct_names", False)
-        t = (await get(f"/admin/schema?u={site._opaque(U['g'])}")).text
+        t = (await get(f"/admin/users/{site._opaque(U['g'])}")).text
         assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, "철회 뒤 이름 0"
         db.optional_consent_set(U["g"], "struct_names", True)
         expect("FORBIDDEN", admin_db._rows, "schema.object_names", "admin", (U["g"], "s1"))   # 이름 키는 일반 조회 경로로 못 연다
         expect("FORBIDDEN", admin_db.schema_names, "user", U["g"])
         for path, code in ((f"/admin/schema?u={'0' * 12}", 404), ("/admin/schema?u=x&u=y", 400), ("/admin/schema?x=1", 400),
-                           (f"/admin/schema?u={site._opaque(U['g'])}&zz=1", 400)):
+                           (f"/admin/schema?u={site._opaque(U['g'])}&zz=1", 400), (f"/admin/users/{'0' * 12}", 404), ("/admin/users?x=1", 400),
+                           (f"/admin/users/{site._opaque(U['g'])}?zz=1", 400)):
             r = await get(path)
             assert r.status_code == code and "<script" not in r.text.lower(), (path, r.status_code)
+        # ── 리포트 구조 출처 = contract.origin_of 순서(PR #20 R4): std_id 가 template_slot 보다 먼저 ──
+        with db.tx() as c:   # 시드가 template_slot 을 칠한 행에 std_id 를 단다(옛 백필 + 편입) — 표준이어야 한다
+            assert c.execute("UPDATE object_defs SET std_id='std:principles' WHERE user_id=%s AND key='principles' "
+                             "AND template_slot IS NOT NULL", (U["g"],)).rowcount == 1
+            assert c.execute("UPDATE field_defs SET std_id='std:principles.axes' WHERE user_id=%s AND object_id='od_principles' "
+                             "AND key='axes' AND template_slot IS NOT NULL", (U["g"],)).rowcount == 1
+        ref = {k: hashlib.md5(k.encode()).hexdigest() for k in ("od_principles", "od_axes", "od_p4u")}
+        gf = [(r_, admin_db._facts("structure", r_, today)) for r_ in admin_db.report_rows("admin", "structure") if r_["user_id"] == U["g"]]
+        og = {r_["object_ref"]: f_["origin"] for r_, f_ in gf}
+        assert (og[ref["od_principles"]], og[ref["od_axes"]], og[ref["od_p4u"]]) == ("standard", "template", "user"), og
+        fo = {(r_["object_ref"], r_["field_std"] or r_["field_slot"] or ""): f_["field_origin"] for r_, f_ in gf if f_["field_origin"]}
+        assert fo[(ref["od_principles"], "std:principles.axes")] == "standard", fo
+        assert {v for (o_, _), v in fo.items() if o_ == ref["od_principles"]} == {"standard", "template"}, "같은 오브젝트의 나머지 필드는 템플릿"
+        assert {v for (o_, _), v in fo.items() if o_ == ref["od_p4u"]} == {"user"}, fo
+        assert "standard" in admin_db.report_spec("structure")["filters"]["origin"]
+        ot = structure_svg.ORIGIN_TEXT   # 리포트 출처 라벨 = 앱 용어(키 user ↔ 앱 custom) · 다른 차원의 user 라벨은 그대로
+        assert admin_db.VALUE_LABELS["origin"] == admin_db.VALUE_LABELS["field_origin"] == {
+            "standard": ot["standard"], "template": ot["template"], "user": ot["custom"]}, admin_db.VALUE_LABELS["origin"]
+        assert admin_db.VALUE_LABELS["role"]["user"] == "사용자"
+        st = admin_db.report("admin", "structure", ("origin",), {"origin": "standard"}, today=today)
+        assert st["rows"] and st["rows"][0]["values"]["objects"] >= 1, st
+        for path in ("/admin/reports?ds=structure&g1=origin", "/admin/reports?ds=structure&g1=field_origin&origin=standard"):
+            r = await get(path)
+            t = clean(r, path)
+            assert r.status_code == 200 and "표준" in t, (path, r.status_code)
+            assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, (path, "리포트에 이름 없음")
         # ── 리포트: 프리셋 · 모든 차원·필터 200, 이름 0 ──
         urls = admin_report_urls()
         assert len([u for u in urls if "ds=" in u]) > 40, len(urls)
@@ -3726,7 +3743,7 @@ async def test_admin_screens():
             assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, (path, "리포트에 이름 없음")
         r = await get(web._report_href({"ds": "usage", "g1": "name", "g2": "code", "result": "error",
                                         "from": today.isoformat(), "to": today.isoformat()}))
-        assert "RATE-LIMIT" in r.text and "출처" in r.text and "집계식" in r.text and "sum(n)" in r.text, "지표 정의 표"
+        assert "RATE-LIMIT" in r.text and "<th>산출 근거</th>" in r.text and "<th>출처</th>" not in r.text and "집계식" in r.text and "sum(n)" in r.text, "지표 정의 표"
         # 행 상한 — 이름 205개 → 상위 200
         out = admin_db.report("admin", "usage", ("name",), {}, today.isoformat(), today.isoformat(), today)
         assert out["capped"] and len(out["rows"]) == admin_db.REPORT_ROWS and out["total"] >= 205, (out["total"], len(out["rows"]))
@@ -3753,20 +3770,14 @@ async def test_admin_screens():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM usage_daily WHERE user_id='' AND name='p4:unlinked'")
-    print("OK — 운영 화면(개요·스키마·리포트: 404·재인증·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
-
-
-def consent_setup():
-    """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
-    for email in TEST_EMAILS:
-        if email != NOCONSENT:
-            db.consent_grant(db.user_by_email(email)["id"], dict(db.CONSENT_VERSIONS))
+            c.execute("UPDATE object_defs SET std_id=NULL WHERE user_id=%s AND std_id='std:principles'", (U["g"],))
+            c.execute("UPDATE field_defs SET std_id=NULL WHERE user_id=%s AND std_id='std:principles.axes'", (U["g"],))
+    print("OK — 운영 화면(개요·스키마·리포트: 404·옛 ra 통과·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
 
 
 async def run():
     db.init_schema()   # 서버 시작과 같은 멱등 마이그레이션 — 시험 DB 가 직전 코드의 스키마여도 새 열·admin_audit 를 깐다(cleanup 이 쓴다)
     cleanup()
-    consent_setup()
     try:
         test_migration()
         test_core_pr1()
@@ -3800,6 +3811,13 @@ async def run():
         await test_admin_screens()
         await test_app_account_menu()
         await test_integration_p5()
+        await test_r1_flags_off()
+        test_r2_contract()
+        await test_r3_std()
+        await test_q2_std()
+        await test_q3()
+        await test_q5_admin()
+        await test_q45_user()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3808,7 +3826,8 @@ async def run():
             left = c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchone()["n"]
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
                     for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets",
-                              "agreements", "usage_daily", "optional_consents", "optional_consent_log")}
+                              "agreements", "usage_daily", "optional_consents", "optional_consent_log", "std_marks", "std_choices",
+                              "sources", "user_roles")}
             rest["admin_audit"] = c.execute("SELECT count(*) AS n FROM admin_audit WHERE actor_id = ANY(%s) OR target_id = ANY(%s)",
                                             (ids, ids)).fetchone()["n"]
         db.close()
@@ -3819,7 +3838,7 @@ async def run():
 
 # ── 15) /app 계정 메뉴(P5) ─────────────────────────────
 
-AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user = 동의자 · nocon = 미동의(게이트 밖 확인)
+AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user = 일반 · nocon = 동의 행 없음
 
 
 async def test_app_account_menu():
@@ -3840,7 +3859,6 @@ async def test_app_account_menu():
 
     wipe()
     U = {k: db.user_by_subject(f"am-{k}_sub", e)["id"] for k, e in AM.items()}
-    db.consent_grant(U["user"], dict(db.CONSENT_VERSIONS))
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     origin = {"origin": PUBLIC}
@@ -3899,11 +3917,11 @@ async def test_app_account_menu():
             u = (await h.get("/api/state")).json()["user"]
             assert u["desk_hidden"] is True and u["struct_names"] is False, u
             assert set(u) == {"email", "struct_names", "desk_hidden"}, "비관리자 user 키는 셋"
-        # 동의 게이트 밖 — 미동의자도 바꾼다(/app 은 /consent 로 보낸다)
+        # 동의 행이 없는 사용자도 /app 200 · 바꾼다
         async with client(U["nocon"]) as h:
-            assert not db.has_consent(U["nocon"])
+            assert not _agreements(U["nocon"])
             r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", r.status_code
+            assert r.status_code == 200, r.status_code
             r = await h.post("/api/desk-visibility", json={"hidden": True}, headers=origin)
             assert r.status_code == 200 and hidden_of(U["nocon"]) is True, r.text
         # MCP state_get(db.state)에는 두 키가 없다
@@ -3919,15 +3937,19 @@ async def test_app_account_menu():
         assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
         assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
         menu = html[html.index('<details class="acct" id="acct">'):html.index("</details>")]
-        for act in ("send", "mine", "privacy", "names", "desk", "logout"):
+        for act in ("send", "mine", "privacy", "names", "logout"):
             assert f'data-acct="{act}"' in menu, act
-        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', 'id="acct-desk"', "구조 이름 공유", "로그아웃"):
+        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', "구조 이름 공유", "로그아웃"):
             assert w in menu, w
+        for w in ('data-acct="desk"', 'id="acct-desk"', "문의 섹션"):   # Q1b: 숨기기 메뉴 없음(서버 API·열은 남는다)
+            assert w not in menu, w
         assert 'id="setup-link"' not in menu and 'id="setup-link"' in html, "⚙ 는 메뉴 밖에 그대로"
         assert re.search(r"#who \{[^}]*text-overflow: ellipsis[^}]*\}", html) and re.search(r"#who \{[^}]*min-width: 0", html), "#who 말줄임"
-        for w in ('fetch(url, {method: "POST"', '"/api/desk-visibility", {hidden}', '"/api/optional-consent", {kind: "struct_names"',
-                  '[name="kind"][value="privacy"]', '$("desk").hidden = hidden && !deskPeek;'):
+        for w in ('fetch(url, {method: "POST"', '"/api/optional-consent", {kind: "struct_names"',
+                  '[name="kind"][value="privacy"]', '$("desk-dlg").showModal()'):
             assert w in html, w
+        for w in ("/api/desk-visibility", "desk_hidden", "deskPeek", 'id="desk"'):   # Q1b: 화면은 숨김 상태를 안 쓴다
+            assert w not in html, w
         async with client(U["user"]) as h:
             r = await h.get("/app")
             assert r.status_code == 200 and f"'sha256-{web.inline_script_hashes(r.text)[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
@@ -3940,17 +3962,17 @@ async def test_app_account_menu():
 
 
 # ── 16) 통합(P5-6) — 운영 콘솔 묶음 최종 ─────────────────
-# /admin 의 GET 화면 전부(개요·Setup·재인증·문의·스키마·리포트).
+# /admin 의 GET 화면 전부(개요·Setup·옛 재인증 링크·문의·스키마·리포트).
 INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com",
        "n": "int-names@example.com"}
-INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports")
+INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports", "/admin/users")
 INT_TICKET_OPS = (("status", {"status": "doing"}), ("reply", {"reply": "공개 답변"}), ("note", {"admin_note": "내부 메모 INTNOTE"}),
                   ("reclassify", {"kind": "request", "reason": ""}))
 
 
 async def test_integration_p5():
-    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · 이름 공유: 동의자 이름은 /admin/schema 트리에만 보이고
-    리포트(프리셋·구조)엔 없음, 철회 뒤 다음 조회부터 트리에도 0 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 「내 문의」 순서(최근 공개 갱신,
+    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · 이름 공유: 동의자 이름은 /admin/users 상세에만 보이고
+    리포트(프리셋·구조)엔 없음, 철회 뒤 다음 조회부터 상세에도 0 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 「내 문의」 순서(최근 공개 갱신,
     없으면 접수 — 웹·MCP 같음) · 파기 cascade(privacy_log 는 남음) · 관리자 세션으로도 /app·/api/state·/api/feedback 에 관리자 데이터 0."""
     site = main.site
     A = db.user_by_subject("int_a_sub", INT["a"])["id"]
@@ -3958,8 +3980,6 @@ async def test_integration_p5():
     O = db.user_by_subject("int_o_sub", INT["o"])["id"]
     X = db.user_by_subject("int_x_sub", INT["x"])["id"]
     N = db.user_by_subject("int_n_sub", INT["n"])["id"]
-    for u in (A, B, O, X, N):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     _set_role(B, "admin")
     real = (site.dev, site.dev_user)
@@ -3977,7 +3997,7 @@ async def test_integration_p5():
                   (db.new_id("pl"), t))
     try:
         # ── 공개/내부 이력 — 관리자가 웹으로 처리 4종 ──
-        ck_a = site.session_value(A, ra=now())
+        ck_a = site.session_value(A)
         for op, form in INT_TICKET_OPS:
             if op == "reclassify":
                 form = {"kind": "request", "reason": "not_privacy"}
@@ -3991,7 +4011,7 @@ async def test_integration_p5():
         assert r.status_code == 200 and j["reply"] == "공개 답변" and [h["kind"] for h in j["history"]] == ["status", "reply"], j
         assert "INTNOTE" not in r.text and "admin_note" not in j and "reclassify" not in r.text and "not_privacy" not in r.text, r.text
         assert (await req("GET", f"/api/feedback/{t}", site.session_value(X))).status_code == 404, "남의 문의는 404"
-        assert (await req("GET", f"/api/feedback/{t}", site.session_value(A, ra=now()))).status_code == 404, "관리자도 /api 로는 남의 문의 404"
+        assert (await req("GET", f"/api/feedback/{t}", site.session_value(A))).status_code == 404, "관리자도 /api 로는 남의 문의 404"
         try:
             for email, ok in ((INT["o"], True), (INT["x"], False)):
                 os.environ["CRM_DEV_USER"] = email
@@ -4015,7 +4035,7 @@ async def test_integration_p5():
                 assert "INTTEXT" not in out and "INTNOTE" not in out and INT["o"] not in out, "남의 문의·메모·이메일 없음"
             for gone in ("admin-band", "admin_tickets", "/api/feedback/status", "/api/feedback/note", "문의함"):
                 assert gone not in app_.text, gone
-        # ── 이름 공유 — 동의자 이름은 /admin/schema 트리에만, 리포트엔 언제나 0 · 철회하면 다음 조회부터 트리에도 0 ──
+        # ── 이름 공유 — 동의자 이름은 /admin/users 상세에만, 리포트엔 언제나 0 · 철회하면 다음 조회부터 상세에도 0 ──
         from psycopg.types.json import Jsonb
         nm = "INTNAME" + secrets.token_hex(3)
         with db.tx() as c:
@@ -4023,7 +4043,7 @@ async def test_integration_p5():
                       (N, nm + "-obj"))
             c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,'od_int','f1',%s,'select',%s)",
                       (N, nm + "-fld", Jsonb([{"value": "v", "label": nm + "-opt"}])))
-        tree = f"/admin/schema?u={site._opaque(N)}"
+        tree = f"/admin/users/{site._opaque(N)}"
         reports = [href for _, _, href in web.preset_links()] + ["/admin/reports?ds=structure",
                                                                  "/admin/reports?ds=structure&g1=value_type&g2=origin"]
 
@@ -4033,8 +4053,8 @@ async def test_integration_p5():
             for href in reports:
                 r_ = await req("GET", href, ck_a)
                 assert r_.status_code == 200 and nm not in r_.text, (href, r_.status_code, "리포트엔 이름이 없다")
-            for path in ("/admin", "/admin/schema", "/admin/setup", "/admin/tickets?status=all"):
-                assert nm not in (await req("GET", path, ck_a)).text, (path, "트리 밖엔 이름이 없다")
+            for path in ("/admin", "/admin/schema", "/admin/setup", "/admin/tickets?status=all", "/admin/users"):
+                assert nm not in (await req("GET", path, ck_a)).text, (path, "상세 밖엔 이름이 없다")
             return [x for x in ("-obj", "-fld", "-opt") if nm + x in t_.text]
         assert await names_seen() == [], "비동의 — 트리에 이름 0"
         db.optional_consent_set(N, "struct_names", True)
@@ -4060,7 +4080,7 @@ async def test_integration_p5():
         # ── 권한 회수: B 가 A 를 회수 → A 의 옛 세션은 끊기고, 새 세션(role=user)도 /admin 전부 404·처리 POST 거절 ──
         assert db.admin_act(B, "role", A, "user") == {"changed": True}
         n_hist = len(_tk_hist(t))
-        for cookie in (ck_a, site.session_value(A, ra=now() + 1)):
+        for cookie in (ck_a, site.session_value(A)):
             for path in INT_ADMIN_GETS + (f"/admin/tickets/{t}",):
                 r = await req("GET", path, cookie)
                 assert r.status_code == 404, (path, r.status_code)
@@ -4082,8 +4102,1666 @@ async def test_integration_p5():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM privacy_log WHERE ticket_id=%s", (t,))   # FK·cascade 밖
-    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 트리만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
+    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 상세만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
           " · 내 문의 공개 갱신순 웹=MCP · 파기 cascade · /app 관리자 데이터 0) 통과")
+
+
+# ── 17) R1 — 기능 플래그 둘 다 미설정(off) 기준선 · Q1 관리자 /app 메뉴 ─────────
+# 플래그 코드는 3단계 몫이다. 이 절은 두 env 를 지운 상태(= off, 명세 §7)에서 로그인·/admin·문의 처리·Q1 이 되는지를 고정한다.
+R1 = {"a": "r1-admin@example.com", "u": "r1-user@example.com"}
+R1_FLAGS = ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")
+R1_USER_ONLY = ('data-acct="send"', 'data-acct="mine"', 'data-acct="privacy"', 'data-acct="names"',
+                'id="acct-names"', 'id="desk-dlg"', 'id="desk-form"', 'id="desk-list"', "구조 이름 공유")
+R1_GONE = ('id="desk"', '<section class="wrap desk"', 'data-acct="desk"', 'id="acct-desk"', "문의 섹션", "deskPeek", "/api/desk-visibility")   # Q1b — 둘 다
+R1_ADMIN_ONLY = ('id="acct-console"', '<a class="btn" href="/admin" id="acct-console">운영 콘솔</a>')
+
+
+async def test_r1_flags_off():
+    """두 플래그 미설정에서: 웹 로그인(/login → 콜백 → /app)·DEV 경로 · /admin 무세션·일반·DEV 404, 관리자 GET 화면 전부 바로(재인증 없음,
+    /admin/reauth → /admin) · 문의 처리 POST(상태·답변, 일반 사용자 404) → 소유자 「내 문의」에 반영 · Q1: 관리자 /app 계정 메뉴 = 운영 콘솔·로그아웃,
+    문의·이름 공유 메뉴·문의 대화창은 본문에 없음(서버가 안 보냄) · Q1b: 일반 사용자는 하단 문의 섹션 없이 「문의 보내기」·「내 문의」 메뉴가
+    대화창(desk-dlg)을 연다, 숨기기 메뉴 없음 · 표식 0 · CSP 해시 = 보낸 본문 · API 모양은 그대로."""
+    from urllib.parse import parse_qs, urlparse
+    site = main.site
+    fake_jwks(main._auth_kwargs["token_verifier"])
+    saved = {k: os.environ.pop(k, None) for k in R1_FLAGS}
+    A = db.user_by_subject("r1a_sub", R1["a"])["id"]
+    U = db.user_by_subject("r1u_sub", R1["u"])["id"]
+    _set_role(A, "admin")
+    real = (site.dev, site.dev_user, site.client_id, site.token_post)
+    site.dev, site.dev_user, site.client_id = False, "", "client_test"
+    tok = {"sub": ""}
+
+    async def fake_token_post(data):
+        return 200, {"access_token": make_token(sub=tok["sub"]), "token_type": "Bearer"}
+    site.token_post = fake_token_post
+
+    async def login(sub):
+        """/login → /auth/callback(가짜 토큰 교환) → 302 /app. 새 세션 쿠키 값."""
+        tok["sub"] = sub
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            r = await h.get("/login")
+            st = parse_qs(urlparse(r.headers["location"]).query)["state"][0]
+            r = await h.get("/auth/callback", params={"code": "c", "state": st})
+            assert r.status_code == 302 and r.headers["location"] == "/app", (sub, r.status_code, r.text[:200])
+            return r.cookies.get("crm_session")
+
+    async def req(method, path, cookie=None, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("crm_session", cookie)
+            return await h.request(method, path, headers={"origin": PUBLIC}, **kw)
+
+    def q1(r, admin):
+        """Q1·Q1b — /app 본문. 관리자 = ⚙ + 운영 콘솔·로그아웃만, 일반 = 문의 메뉴 + 문의 대화창(하단 섹션 없음). 표식은 어느 쪽에도 남지 않는다."""
+        assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
+        hs = web.inline_script_hashes(r.text)
+        assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
+        assert not re.search(r"<!--/?(user|admin)-->", r.text), "표식 0"
+        for w in ('id="setup-link"', 'id="acct-menu"', 'id="logout"'):
+            assert w in r.text, w
+        for w in R1_USER_ONLY:
+            assert (w in r.text) is not admin, (admin, w)
+        for w in R1_ADMIN_ONLY:
+            assert (w in r.text) is admin, (admin, w)
+        for w in R1_GONE:
+            assert w not in r.text, (admin, w)
+        if not admin:   # Q1b: 문의 폼·목록은 대화창 안에만 있다
+            i = r.text.index('<dialog id="desk-dlg"')
+            dlg = r.text[i:r.text.index("</dialog>", i)]
+            for w in ('id="desk-form"', 'id="desk-list"', 'id="desk-text"', 'id="desk-send"'):
+                assert r.text.count(w) == 1 and w in dlg, w
+            menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
+            for act in ("send", "mine"):
+                assert f'data-acct="{act}" aria-haspopup="dialog"' in menu, act
+        if admin:
+            menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
+            assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "로그아웃"], menu
+    try:
+        assert not any(k in os.environ for k in R1_FLAGS), "두 플래그 미설정"
+        # ── 로그인 — 웹(세션 쿠키) · DEV ──
+        ck_a, ck_u = await login("r1a_sub"), await login("r1u_sub")
+        assert site.unsign(ck_a)["uid"] == A and site.unsign(ck_u)["uid"] == U
+        for ck, admin in ((ck_a, True), (ck_u, False)):
+            q1(await req("GET", "/app", ck), admin)
+            st = await req("GET", "/api/state", ck)
+            assert st.status_code == 200 and (st.json()["user"].get("admin") is True) is admin, st.json()["user"]
+            assert set(st.json()["user"]) == {"email", "struct_names", "desk_hidden"} | ({"admin"} if admin else set()), "API 모양 그대로"
+            fb = await req("GET", "/api/feedback", ck)
+            assert fb.status_code == 200 and set(fb.json()) == {"tickets"}, fb.text
+        for email, admin in ((R1["u"], False), (R1["a"], True)):
+            site.dev, site.dev_user = True, email
+            q1(await req("GET", "/app"), admin)
+            assert (await req("GET", "/api/state")).json()["user"]["email"] == email
+            assert (await req("GET", "/admin")).status_code == 404, "DEV 는 관리자여도 /admin 404"
+        site.dev, site.dev_user = False, ""
+        # ── 관리자 권한 — 무세션·일반 404 · 관리자 바로(재인증 없음) ──
+        for path in INT_ADMIN_GETS:
+            for ck in (None, ck_u):
+                assert (await req("GET", path, ck)).status_code == 404, (path, ck is None)
+            r = await req("GET", path, ck_a)
+            if path == "/admin/reauth":
+                assert r.status_code == 302 and r.headers["location"] == "/admin", r.status_code
+            else:
+                assert r.status_code == 200 and "재인증" not in r.text, (path, r.status_code)
+        # ── /admin 문의 처리 — 상태·답변(일반 사용자는 404, 바뀌지 않음) ──
+        t = _tk_insert(U, text="R1 문의 R1TEXT")
+        ops = (("status", {"status": "doing"}), ("reply", {"reply": "R1 답변"}))
+        for op, form in ops:
+            assert (await req("POST", f"/admin/tickets/{t}/{op}", ck_u, data=form)).status_code == 404, op
+        assert _ticket(t)["status"] == "open" and _tk_hist(t) == [], "일반 사용자 POST 는 아무것도 안 바꾼다"
+        for op, form in ops:
+            r = await req("POST", f"/admin/tickets/{t}/{op}", ck_a, data=form)
+            assert r.status_code == 303 and r.headers["location"] == f"/admin/tickets/{t}", (op, r.status_code, r.text[:200])
+        rec = await req("GET", f"/admin/tickets/{t}", ck_a)
+        assert rec.status_code == 200 and "R1TEXT" in rec.text, rec.status_code
+        j = (await req("GET", f"/api/feedback/{t}", ck_u)).json()
+        assert j["status"] == "doing" and j["reply"] == "R1 답변" and [h["kind"] for h in j["history"]] == ["status", "reply"], j
+        assert not any(k in os.environ for k in R1_FLAGS), "시험 중에도 미설정"
+    finally:
+        site.dev, site.dev_user, site.client_id, site.token_post = real
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+    print("OK — R1 플래그 off 기준선(로그인 웹·DEV · /admin 일반 404·관리자 바로·재인증 없음 · 문의 처리 · Q1 관리자 /app 메뉴 · Q1b 문의 대화창) 통과")
+
+
+# ── 18) R2 — 응답 계약 · 플래그 해석 · 오류 코드 (DB 없음) ─────────
+# 명세 §7·§8·§1·§6. 화면·DB 열은 다음 단계 — 여기선 contract 순수 함수와 동결 예제(server/contract/*.json)만 고정한다.
+R2_FORBID_ADMIN = {"id", "key", "value", "name", "location", "object_id", "field_key", "target_object_id"}   # counts.sources(개수)는 허용 — 출처 목록은 최상위 키 검사가 막는다
+R2_ADMIN_OBJ = {"ref", "std_name", "semantic_kind", "origin", "std_id", "locked", "fields"}
+R2_ADMIN_FIELD = {"ref", "std_name", "origin", "std_id", "locked"}
+R2_ADMIN_REL = {"from", "field", "to", "cardinality", "origin", "std_id", "locked"}
+
+
+def _r2_keys(x):
+    """응답 안 모든 dict 의 키 — std.objects 의 표준 key 는 값 쪽 제품 문자열이라 뺀다."""
+    out = set()
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if k == "objects" and isinstance(v, dict):
+                continue
+            out.add(k)
+            out |= _r2_keys(v)
+    elif isinstance(x, list):
+        for v in x:
+            out |= _r2_keys(v)
+    return out
+
+
+def _r2_user_strings(user):
+    """사용자가 정한 문자열 — (label 류, key·id·선택지 값·출처 류). 표준 key·표준 필드 key 는 std_id·std 상태의 제품 문자열이라 key 쪽에서 뺀다."""
+    std_keys = {k for sid in contract.STD_NAMES for k in sid[4:].split(".")}
+    labels, keys = set(), set()
+    for o in user["definitions"]:
+        labels.add(o["label"])
+        keys.add(o["id"])
+        if o["key"] not in std_keys:
+            keys.add(o["key"])
+        for f in o["fields"]:
+            labels.add(f["label"])
+            labels |= {op["label"] for op in f["options"]}
+            keys |= {op["value"] for op in f["options"]}
+            if f["key"] not in std_keys:
+                keys.add(f["key"])
+    for s in user["sources"]:
+        keys |= {s["id"], s["name"], s["location"]}
+    return labels, keys
+
+
+def test_r2_contract():
+    """플래그: CRM_FEATURE_* 는 정확히 `on` 만 켬(호출마다 env) · render.yaml 두 키 sync:false
+    · 예제: server/contract/*.json == contract.respond(EXAMPLES) 직렬화(6개, 그 밖 파일 없음)
+    · 누출: 운영자 비동의 응답 문자열에 사용자 label·key·선택지(값·label)·출처 name·location·id 0, 동의 응답에도 key·선택지 값·출처·id 0
+      · 운영자 응답의 dict 키 = 허용 목록 · 본인 응답엔 전부 있음
+    · 파생: 편입된 기준에 사용자가 더한 필드·참조 필드 = custom·null·false · 관계 = 참조 필드 값 그대로 · N:1/N:N · template · core 노드
+      · 미편입 같은 key 오브젝트엔 표준명·std_id 없음 · std 모양(표식 없음 = version·state null, objects 는 선택 그대로) · 표준명 = templates/std@1.json · 오류 코드 3종 문구"""
+    # ── 플래그 해석 표 ──
+    saved = {k: os.environ.pop(k, None) for k in R1_FLAGS}
+    try:
+        for name, env_key in (("STANDARD", "CRM_FEATURE_STANDARD"), ("SOURCES", "CRM_FEATURE_SOURCES")):
+            other = [k for k in R1_FLAGS if k != env_key][0]
+            for v, want in ((None, False), ("on", True), ("off", False), ("ON", False), ("On", False), ("1", False),
+                            ("true", False), ("", False), (" on", False), ("on ", False)):
+                os.environ.pop(env_key, None)
+                if v is not None:
+                    os.environ[env_key] = v
+                assert contract.feature_on(name) is want, (name, v)
+                assert (contract.standard_on() if name == "STANDARD" else contract.sources_on()) is want, (name, v)
+                assert contract.feature_on("SOURCES" if name == "STANDARD" else "STANDARD") is False, "다른 플래그는 영향 없음"
+                assert other not in os.environ
+            os.environ.pop(env_key, None)
+        expect_err = False
+        try:
+            contract.feature_on("standard")
+        except ValueError:
+            expect_err = True
+        assert expect_err, "모르는 플래그 이름은 거절"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    ry = (HERE / "render.yaml").read_text(encoding="utf-8")
+    for k in R1_FLAGS:
+        assert re.search(rf"- key: {k}\n\s+sync: false\b", ry), k
+    # ── 예제 동결 ──
+    names = sorted(p.name for p in contract.EXAMPLES_DIR.glob("*.json"))
+    assert names == sorted(f"{n}.{v}.json" for n in contract.EXAMPLES for v in contract.VIEWERS), names
+    for n, user in contract.EXAMPLES.items():
+        for v in contract.VIEWERS:
+            got = contract.dump(contract.respond(user, v))
+            assert got == contract.example_path(n, v).read_text(encoding="utf-8"), \
+                f"동결 예제와 다름: {n}.{v} — 의도한 변경이면 cd server && .venv/bin/python contract.py"
+    # ── 수신자별 노출 ──
+    for n, user in contract.EXAMPLES.items():
+        labels, keys = _r2_user_strings(user)
+        assert labels and keys
+        r_self, r_no, r_yes = (contract.respond(user, v) for v in contract.VIEWERS)
+        s_self, s_no, s_yes = (json.dumps(r, ensure_ascii=False) for r in (r_self, r_no, r_yes))
+        for w in labels | keys:
+            assert w in s_self, (n, "본인 응답엔 이름이 다 있다", w)
+            assert w not in s_no, (n, "비동의 누출", w)
+        for w in keys:
+            assert w not in s_yes, (n, "동의여도 key·선택지 값·출처 name·location·id 0", w)
+        for w in labels:
+            assert w in s_yes, (n, "동의 응답엔 현재 label·선택지 label", w)
+        for r, consent in ((r_no, False), (r_yes, True)):
+            ks = _r2_keys(r)
+            assert not ks & R2_FORBID_ADMIN, (n, ks & R2_FORBID_ADMIN)
+            assert ("label" in ks) is consent and ("options" in ks) is consent, (n, consent)
+            extra = {"label"} if consent else set()
+            for o in r["objects"]:
+                assert set(o) == R2_ADMIN_OBJ | extra, set(o)
+                for f in o["fields"]:
+                    assert set(f) == R2_ADMIN_FIELD | (extra | {"options"} if consent else set()), set(f)
+                    assert all(isinstance(x, str) for x in f.get("options", [])), "선택지는 label 문자열만"
+            for rel in r["relations"]:
+                assert set(rel) == R2_ADMIN_REL, set(rel)
+            assert set(r) == {"contract", "viewer", "std", "counts", "objects", "relations", "core"}, set(r)
+            assert r["std"] == r_self["std"] and r["counts"] == r_self["counts"], "표준 상태 코드·개수는 같다"
+        assert "sources" in r_self and r_self["counts"]["sources"] == len(user["sources"]) >= 1
+    # ── 파생 — full: 편입된 기준 + 사용자 필드·참조 필드 ──
+    full = contract.respond(contract.EXAMPLES["full"], "self")
+    byo = {o["id"]: o for o in full["objects"]}
+    pr = byo["od_principles"]
+    assert (pr["origin"], pr["std_id"], pr["locked"], pr["std_name"]) == ("standard", "std:principles", True, "기준")
+    pf = {f["key"]: f for f in pr["fields"]}
+    for k in ("ukey_register", "ukey_owner"):
+        assert (pf[k]["origin"], pf[k]["std_id"], pf[k]["locked"], pf[k]["std_name"]) == ("custom", None, False, None), k
+    assert (pf["axes"]["origin"], pf["axes"]["std_id"], pf["axes"]["locked"]) == ("standard", "std:principles.axes", True)
+    rels = {(r["object_id"], r["field_key"]): r for r in full["relations"]}
+    assert len(rels) == len(full["relations"]) == sum(f["value_type"] == "reference" for o in full["objects"] for f in o["fields"])
+    for (oid, fk), r in rels.items():
+        f = next(f for f in byo[oid]["fields"] if f["key"] == fk)
+        assert (r["origin"], r["std_id"], r["locked"]) == (f["origin"], f["std_id"], f["locked"]), "관계 = 참조 필드 값 그대로"
+        assert r["cardinality"] == ("N:N" if f["multiple"] else "N:1")
+    assert (rels[("od_principles", "ukey_owner")]["cardinality"], rels[("od_principles", "ukey_owner")]["origin"],
+            rels[("od_principles", "ukey_owner")]["locked"]) == ("N:1", "custom", False)
+    assert rels[("od_principles", "evidence_events")]["cardinality"] == "N:N" and rels[("od_principles", "evidence_events")]["locked"]
+    assert byo["od_craft"]["origin"] == "template" and rels[("od_craft", "related_events")]["origin"] == "template"
+    assert {c["kind"]: c["origin"] for c in full["core"]} == {"record": "core", "candidate": "core"}
+    adm = contract.respond(contract.EXAMPLES["full"], "admin_noconsent")
+    arel = {(r["from"], r["field"]): r for r in adm["relations"]}
+    assert arel[("오브젝트 3", "필드 e")]["to"] == "오브젝트 4" and arel[("오브젝트 3", "필드 e")]["origin"] == "custom"
+    assert arel[("오브젝트 2", "필드 b")]["to"] == "candidate" and arel[("오브젝트 4", "필드 b")]["to"] == "record"
+    assert full["std"] == {"version": "std@1", "state": "adopting",
+                           "objects": {"axes": "incorporated", "decision_events": "incorporated", "principles": "incorporated"}}
+    # ── 파생 — partial: 부분 편입 · 같은 key 미편입 오브젝트에 표준명 없음 ──
+    part = contract.respond(contract.EXAMPLES["partial"], "self")
+    pa = contract.respond(contract.EXAMPLES["partial"], "admin_noconsent")
+    assert part["std"] == {"version": "std@1", "state": "adopting",
+                           "objects": {"axes": "incorporated", "decision_events": "deferred", "principles": "none"}}
+    same = next(o for o in part["objects"] if o["key"] == "decision_events")
+    assert (same["origin"], same["std_id"], same["locked"], same["std_name"]) == ("custom", None, False, None)
+    i = part["objects"].index(same)
+    assert (pa["objects"][i]["std_name"], pa["objects"][i]["std_id"]) == (None, None), "같은 key 라는 이유로 표준명을 붙이지 않는다"
+    assert all(f["std_name"] is None for f in pa["objects"][i]["fields"])
+    assert "결정" not in json.dumps(pa, ensure_ascii=False), "미편입 오브젝트의 표준명 0"
+    # ── std 모양 · origin 우선순위 · 자리표 ──
+    none_all = {"version": None, "state": None, "objects": {k: "none" for k in contract.STD_KEYS}}
+    assert contract.std_state(None, None) == none_all and contract.respond({}, "self")["std"] == none_all
+    # 표식 없음 + 보류·거절 선택만 → objects 는 선택 그대로, version·state 는 null(§0)
+    nomark = {"std_choices": {"decision_events": "deferred", "principles": "refused"}}
+    want = {"version": None, "state": None, "objects": {"axes": "none", "decision_events": "deferred", "principles": "refused"}}
+    assert contract.std_state(None, nomark["std_choices"]) == want
+    for v in contract.VIEWERS:
+        assert contract.respond(nomark, v)["std"] == want, v
+    # 표준명 = templates/std@1.json label(std_id 는 key 로 만든 것, 파일엔 없음)
+    sd = json.loads((HERE / "templates" / "std@1.json").read_text(encoding="utf-8"))
+    assert contract.STD_VERSION == "std@1" and contract.STD_KEYS == ("axes", "decision_events", "principles")
+    assert contract.STD_NAMES == {**{f"std:{o['key']}": o["label"] for o in sd["objects"]},
+                                  **{f"std:{o['key']}.{f['key']}": f["label"] for o in sd["objects"] for f in o["fields"]}}
+    assert "std:" not in json.dumps(sd), "식별자는 파일에 넣지 않는다"
+    assert contract.std_state({"version": "std@1", "state": "seeded"}, {"axes": "bogus"})["objects"]["axes"] == "none"
+    assert contract.origin_of({"std_id": "std:axes", "template_slot": "author@1:axes"}) == "standard"
+    assert contract.origin_of({"template_slot": "author@1:axes"}) == "template" and contract.origin_of({}) == "custom"
+    assert contract.std_name("std:principles.evidence_events") == "근거 결정" and contract.std_name("std@1:axes") is None
+    assert [contract.field_ref(i) for i in (0, 25, 26, 27)] == ["필드 a", "필드 z", "필드 aa", "필드 ab"]
+    # ── 오류 코드 ──
+    e = db._std_locked("archive", "std:principles")
+    assert isinstance(e, db.CrmError) and e.code == "STANDARD-LOCKED" and "std:principles" in e.message
+    assert set(contract.LOCKED_CHANGES) >= {"archive", "key", "semantic_kind", "std_id", "field_remove", "field_shape", "option_remove"}
+    for why in ("author_unknown", "external", "processed", "deleted"):
+        e = db._cand_review(why)
+        assert e.code == "CANDIDATE-REVIEW" and e.message and "{" not in e.message + e.action, why
+        assert "verbatim" not in e.message + e.action and "self" not in e.message + e.action, "「self·verbatim 으로 바꾸면 풀린다」 금지"
+        assert ("record_provenance_set" in e.action) is (why in ("author_unknown", "processed")), why
+    assert len({contract.REVIEW_MSG[w] for w in contract.REVIEW_REASONS}) == 4
+    e = db._scope_self()
+    assert e.code == "SCOPE-SELF-ONLY" and "{" not in e.message + e.action
+    rr = lambda a, t, d=None: contract.review_reason({"author_kind": a, "text_process": t, "deleted_at": d})
+    assert rr("self", "verbatim") is None and rr("unknown", "verbatim") == "author_unknown" and rr("external", "verbatim") == "external"
+    assert [rr("self", t) for t in ("structured", "rewritten", "generated", "unknown")] == ["processed"] * 4
+    assert rr("external", "generated", "2026-10-19") == "deleted"
+    print("OK — R2 계약(플래그 on 만 · render.yaml · 예제 6개 동결 · 비동의·동의 이름 누출 0 · origin·관계 파생 · std 모양 · 오류 코드 3종) 통과")
+
+
+# ── 19) R3 — 표준 편입 미리보기(읽기 전용) · std_choices 기록(보류·거절) ─────────
+R3 = {k: f"r3{k}@example.com" for k in ("none", "match", "conf", "edge", "orig")}
+# none = 정의 없음(전부 누락) · match = 일치·확장·참조 대응 · conf = 충돌 사유 · edge = 초안만·보관 · orig = template·std_id 출처
+
+
+def _r3_def(uid, key, label, kind, fields, oid=None, policy=None, object_id=None, rev=0):
+    d = {"key": key, "label": label, "semantic_kind": kind, "fields": fields}
+    if oid:
+        d["id"] = oid
+    if policy is not None:
+        d["policy"] = policy
+    p = db.definition_propose(uid, object_id, rev, d)
+    return db.definition_apply(uid, p["object_id"], p["proposal_id"], rev)
+
+
+def _r3_tables_digest():
+    """현재 스키마 모든 테이블의 행 수·내용 해시 — 미리보기 전후가 같아야 한다(쓰기 0)."""
+    with db.tx() as c:
+        ts = [r["table_name"] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() "
+                                                 "AND table_type='BASE TABLE' ORDER BY table_name").fetchall()]
+        return {t: c.execute(f"SELECT count(*) AS n, md5(coalesce(string_agg(x::text, ',' ORDER BY x::text), '')) AS h FROM \"{t}\" x")
+                .fetchone() for t in ts}
+
+
+def _r3_by(pv):
+    return {o["std_key"]: o for o in pv["objects"]}
+
+
+async def test_r3_std():
+    """미리보기 판정 표(누락·일치·확장·충돌 사유·참조 의존·초안·보관) · 쓰기 0(READ ONLY·전 테이블 해시) · 플래그 무관 읽기
+    · 선택 기록(STANDARD off → FEATURE-OFF, on → 기록·덮어쓰기·def_id/def_revision) · 편입된 것 보류·거절 → STANDARD-LOCKED
+    · 보류·거절이 정의·항목 쓰기를 안 막음 · 다른 사용자 접근 거절 · /api/std/* 401·403·400 · /api/state std 모양(MCP 엔 없음)
+    · definitions() 의 template_slot·std_id → contract origin · init_schema 옛 DB 2회 멱등."""
+    site = main.site
+    saved = os.environ.pop("CRM_FEATURE_STANDARD", None)
+    U = {k: db.user_by_email(e)["id"] for k, e in R3.items()}
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+
+    async def req(method, path, uid=None, origin=True, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if uid:
+                h.cookies.set("crm_session", site.session_value(uid))
+            return await h.request(method, path, headers={"origin": PUBLIC} if origin else {}, **kw)
+
+    def with_flag(on, fn, *a):
+        prev = os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if on:
+            os.environ["CRM_FEATURE_STANDARD"] = "on"
+        try:
+            return fn(*a)
+        finally:
+            os.environ.pop("CRM_FEATURE_STANDARD", None)
+            if prev is not None:
+                os.environ["CRM_FEATURE_STANDARD"] = prev
+
+    def choices(uid):
+        with db.tx() as c:
+            return {r["std_key"]: r for r in c.execute("SELECT std_key,state,def_id,def_revision,confirmed_meaning,at FROM std_choices "
+                                                       "WHERE user_id=%s", (uid,)).fetchall()}
+
+    def sql(q, args=()):
+        with db.tx() as c:
+            c.execute(q, args)
+    try:
+        assert "CRM_FEATURE_STANDARD" not in os.environ
+        # ── 재료 ──
+        # match: 축 일치(id 가 템플릿과 다름) · 결정 확장(사용자 필드) · 기준 일치 — 참조는 그 사용자의 축·결정 오브젝트로 대응
+        m_ax = _r3_def(U["match"], "axes", "주제 R3LBL01", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}],
+                       oid="od_myaxes")
+        m_ev = _r3_def(U["match"], "decision_events", "결정 R3LBL02", "event", [
+            {"key": "happened_on", "label": "날", "value_type": "date"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True},
+            {"key": "project", "label": "프로젝트", "value_type": "text"}], oid="od_myevents")
+        m_pr = _r3_def(U["match"], "principles", "원칙 R3LBL03", "principle", [
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": m_ev["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": m_ax["id"],
+             "multiple": True}])
+        # conf: 축 종류·필드 타입 · 결정 필드 누락·multiple·required · 기준 대상 다름·대상 종류 다름·보관 필드
+        c_ax = _r3_def(U["conf"], "axes", "축", "event", [{"key": "keywords", "label": "단어", "value_type": "text"}])
+        _r3_def(U["conf"], "decision_events", "결정", "event", [
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "required": True}])
+        c_bk = _r3_def(U["conf"], "books", "책", "collection", [])
+        c_pr = _r3_def(U["conf"], "principles", "기준", "principle", [
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": c_bk["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        promo = {**db.DEFAULT_PROMOTION, "claim_field": "my_claims"}
+        _r3_def(U["conf"], "principles", "기준", "principle", [   # evidence_claims 를 빼고 적용 → 보관 필드
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": c_bk["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "candidate", "multiple": True},
+            {"key": "my_claims", "label": "내 근거", "value_type": "reference", "target_kind": "candidate", "multiple": True}],
+            policy={"promotion": promo}, object_id=c_pr["id"], rev=1)
+        # edge: 축 = 적용 전 초안만 · 결정 = 보관 오브젝트 · 기준 없음
+        db.definition_propose(U["edge"], None, 0, {"key": "axes", "label": "초안 축", "semantic_kind": "collection", "fields": []})
+        e_ev = _r3_def(U["edge"], "decision_events", "결정", "event", [
+            {"key": "happened_on", "label": "날", "value_type": "date"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        sql("UPDATE object_defs SET archived_at=now() WHERE user_id=%s AND id=%s", (U["edge"], e_ev["id"]))
+
+        # ── 미리보기 판정 표 (플래그 미설정 = 읽기는 무관) ──
+        before = _r3_tables_digest()
+        pv = {k: db.std_preview(uid) for k, uid in U.items()}
+        assert _r3_tables_digest() == before, "미리보기는 어떤 행도 쓰지 않는다"
+        real_objs = db._std_objects
+
+        def evil(c, uid, lock=False):   # 미리보기 트랜잭션 안에서 쓰기를 시도 → READ ONLY 가 막는다
+            c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,'std@x','seeded')", (uid,))
+            raise AssertionError("미리보기 트랜잭션에서 쓰기가 통과했다 — READ ONLY 가 아니다")
+        db._std_objects = evil
+        try:
+            db.std_preview(U["none"])
+            raise AssertionError("READ ONLY 트랜잭션이어야 한다")
+        except psycopg.errors.ReadOnlySqlTransaction:
+            pass
+        finally:
+            db._std_objects = real_objs
+        for k, p in pv.items():
+            assert p["version"] == contract.STD_VERSION and [o["std_key"] for o in p["objects"]] == list(contract.STD_KEYS), k
+            assert p["std"] == contract.std_state(None, None), k
+            for o in p["objects"]:
+                assert o["structure"] in db.STD_STRUCTURES and set(o["blocked"]) <= set(db.STD_BLOCKS), o
+                assert all(x["code"] in db.STD_CONFLICTS for x in o["conflicts"]), o
+                assert o["can_incorporate"] is (not o["blocked"]) and o["state"] == "none" and o["choice"] is None
+                assert o["std_id"] == contract.std_id_of(o["std_key"]) and o["std_name"] == contract.std_name(o["std_id"])
+                assert o["meaning_check"] is (o["object"] is not None), o
+                assert o["lock"]["changes"] == ["archive", "key", "semantic_kind", "std_id", "field_remove", "field_shape"], o["lock"]
+        lockf = {"axes": ["keywords"], "decision_events": ["happened_on", "claims"], "principles": ["evidence_claims", "evidence_events", "axes"]}
+        assert {o["std_key"]: o["lock"]["fields"] for o in pv["none"]["objects"]} == lockf
+        n = _r3_by(pv["none"])
+        assert [n[k]["structure"] for k in contract.STD_KEYS] == ["missing"] * 3 and not any(o["conflicts"] for o in n.values())
+        assert n["axes"]["can_incorporate"] and n["decision_events"]["can_incorporate"] and n["axes"]["needs"] == []
+        assert n["principles"]["blocked"] == ["needs_target"], "참조 대상(결정·축)이 편입 전이면 기준은 편입 불가"
+        assert n["principles"]["needs"] == [{"field": "evidence_events", "std_key": "decision_events", "state": "none", "ready": False},
+                                            {"field": "axes", "std_key": "axes", "state": "none", "ready": False}]
+        m = _r3_by(pv["match"])
+        assert (m["axes"]["structure"], m["decision_events"]["structure"], m["principles"]["structure"]) == ("match", "extend", "match"), m
+        assert m["axes"]["object"] == {"id": "od_myaxes", "key": "axes", "label": "주제 R3LBL01", "revision": 1, "archived": False}
+        assert m["axes"]["blocked"] == [] and m["principles"]["blocked"] == ["needs_target"]
+        cf = _r3_by(pv["conf"])
+        got = {k: [(x["code"], x["field"]) for x in o["conflicts"]] for k, o in cf.items()}
+        assert got == {"axes": [("kind", None), ("field_value_type", "keywords")],
+                       "decision_events": [("field_missing", "happened_on"), ("field_multiple", "claims"), ("field_required", "claims")],
+                       "principles": [("field_archived", "evidence_claims"), ("field_target", "evidence_events"),
+                                      ("field_target_kind", "axes")]}, got
+        assert all(o["structure"] == "conflict" and o["blocked"][0] == "conflict" and o["meaning_check"] for o in cf.values())
+        assert cf["principles"]["blocked"] == ["conflict", "needs_target"]
+        ed = _r3_by(pv["edge"])
+        assert (ed["axes"]["conflicts"], ed["axes"]["object"]["revision"]) == ([{"code": "key_draft_only", "field": None}], 0)
+        assert (ed["decision_events"]["conflicts"], ed["decision_events"]["object"]["archived"]) == ([{"code": "key_archived", "field": None}], True)
+        assert ed["axes"]["meaning_check"] and ed["decision_events"]["meaning_check"] and ed["principles"]["structure"] == "missing"
+        # 단위 — select 선택지(std@1 엔 없음: 잠금 영향 option_remove·field_options 는 표준 select 가 있을 때만) · 대상 대응
+        sd = {"key": "s", "semantic_kind": "collection", "fields": [
+            {"key": "kind", "value_type": "select", "required": False, "multiple": False, "target_kind": None, "target_object_id": None,
+             "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]},
+            {"key": "to", "value_type": "reference", "required": False, "multiple": False, "target_kind": "item",
+             "target_object_id": "od_tpl", "options": []}]}
+        row = {"revision": 2, "archived_at": None, "semantic_kind": "collection"}
+        uf = lambda opts, to: [{**sd["fields"][0], "options": [{"value": v, "label": v} for v in opts], "archived_at": None},   # noqa: E731
+                               {**sd["fields"][1], "target_object_id": to, "archived_at": None}]
+        assert db._std_classify(sd, row, uf(["a", "b", "c"], "od_mine"), {"od_tpl": "od_mine"}) == ("match", [])
+        assert db._std_classify(sd, row, uf(["a"], "od_mine"), {"od_tpl": "od_mine"}) == ("conflict", [{"code": "field_options", "field": "kind"}])
+        assert db._std_classify(sd, row, uf(["a", "b"], "od_tpl"), {}) == ("conflict", [{"code": "field_target", "field": "to"}])
+        assert "option_remove" in db._std_lock_effects(sd)["changes"]
+
+        # ── 선택 기록: 플래그 off → FEATURE-OFF(쓰기 0), 모드 전환(STD_CHOICE_NEEDS_FLAG=False)이면 off 에서도 기록 ──
+        e = expect("FEATURE-OFF", db.std_choose, U["match"], "principles", "deferred")
+        assert e.message == contract.FEATURE_OFF_MSG["STANDARD"] and choices(U["match"]) == {}
+        db.STD_CHOICE_NEEDS_FLAG = False
+        try:
+            assert db.std_choose(U["none"], "axes", "deferred")["state"] == "deferred"
+        finally:
+            db.STD_CHOICE_NEEDS_FLAG = True
+        sql("DELETE FROM std_choices WHERE user_id=%s", (U["none"],))
+        for bad in (("nope", "deferred"), ("axes", "incorporated"), ("axes", "seeded"), ("axes", "none")):   # incorporated = 확인 없음(5단계)
+            with_flag(True, expect, "ARG-INVALID", db.std_choose, U["match"], *bad)
+        # on → 기록(def_id·def_revision = 같은 key 기존 오브젝트) · 덮어쓰기 · 없는 오브젝트는 NULL
+        r = with_flag(True, db.std_choose, U["match"], "principles", "deferred")
+        assert (r["def_id"], r["def_revision"], r["std"]["objects"]["principles"]) == (m_pr["id"], 1, "deferred"), r
+        assert (r["std"]["version"], r["std"]["state"]) == (None, None), "표식 없이 보류만 — version·state null(§0)"
+        at1 = choices(U["match"])["principles"]["at"]
+        _r3_def(U["match"], "principles", "원칙 R3LBL03", "principle", [   # 정의가 바뀐 뒤 다시 고르면 새 revision 을 기록
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": m_ev["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": m_ax["id"],
+             "multiple": True}, {"key": "memo", "label": "메모", "value_type": "text"}], object_id=m_pr["id"], rev=1)
+        r = with_flag(True, db.std_choose, U["match"], "principles", "refused")
+        ch = choices(U["match"])
+        assert len(ch) == 1 and (ch["principles"]["state"], ch["principles"]["def_revision"]) == ("refused", 2), ch
+        assert ch["principles"]["at"] >= at1 and ch["principles"]["confirmed_meaning"] is False
+        r = with_flag(True, db.std_choose, U["none"], "decision_events", "refused")
+        assert (r["def_id"], r["def_revision"]) == (None, None)
+        r = with_flag(True, db.std_choose, U["edge"], "axes", "deferred")
+        assert (r["def_id"], r["def_revision"]) == (ed["axes"]["object"]["id"], 0), "초안 행도 기록"
+        p2 = _r3_by(db.std_preview(U["match"]))
+        assert p2["principles"]["state"] == "refused" and p2["principles"]["choice"]["def_revision"] == 2
+        assert p2["principles"]["structure"] == "extend", "사용자 필드 memo 를 더하면 확장"
+        # 참조 의존: 대상이 편입(또는 seeded)이면 풀린다 — 편입 적용은 5단계라 행을 직접 넣는다(시험 재료)
+        sql("INSERT INTO std_choices (user_id,std_key,state,def_id,def_revision) VALUES (%s,'axes','incorporated',%s,1),"
+            "(%s,'decision_events','seeded',%s,1)", (U["match"], m_ax["id"], U["match"], m_ev["id"]))
+        p3 = _r3_by(db.std_preview(U["match"]))
+        assert p3["principles"]["blocked"] == [] and p3["principles"]["can_incorporate"], p3["principles"]
+        assert [x["ready"] for x in p3["principles"]["needs"]] == [True, True]
+        assert p3["axes"]["blocked"] == ["already"] and not p3["axes"]["can_incorporate"]
+        # 이미 편입·시드된 것은 보류·거절로 되돌릴 수 없다(= std_id 제거) — 대응 오브젝트에 std_id 만 있어도 같다
+        for k in ("axes", "decision_events"):
+            e = with_flag(True, expect, "STANDARD-LOCKED", db.std_choose, U["match"], k, "refused")
+            assert f"std:{k}" in e.message
+        sql("UPDATE object_defs SET std_id='std:axes' WHERE user_id=%s AND id=%s", (U["conf"], c_ax["id"]))
+        with_flag(True, expect, "STANDARD-LOCKED", db.std_choose, U["conf"], "axes", "deferred")
+        sql("UPDATE object_defs SET std_id=NULL WHERE user_id=%s AND id=%s", (U["conf"], c_ax["id"]))
+
+        # ── 보류·거절은 정의·항목 쓰기를 막지 않는다 ──
+        with_flag(True, db.std_choose, U["conf"], "axes", "refused")
+        with_flag(True, db.std_choose, U["conf"], "decision_events", "deferred")
+        ax2 = _r3_def(U["conf"], "axes", "축 바꿈", "collection", [{"key": "keywords", "label": "단어", "value_type": "text"},
+                                                                  {"key": "color", "label": "색", "value_type": "text"}],
+                      object_id=c_ax["id"], rev=1)
+        assert ax2["revision"] == 2 and ax2["semantic_kind"] == "collection"
+        it = db.item_propose(U["conf"], c_ax["id"], 2, None, 0, "AX-1", "축 하나", "", {"keywords": "k", "color": "r"}, [])
+        assert db.item_decide(U["conf"], it["item_id"], 0, it["proposal_id"], "apply")["revision"] == 1
+        assert _r3_def(U["conf"], "notes", "노트", "collection", [])["revision"] == 1
+        assert choices(U["conf"])["axes"]["def_revision"] == 1, "기록은 고를 때 본 revision 그대로(적용 재검증은 5단계)"
+
+        # ── 웹: 본인만 · 401 · 403 · 400 · 플래그 ──
+        assert (await req("GET", "/api/std/preview")).status_code == 401
+        assert (await req("POST", "/api/std/choose", json={"std_key": "axes", "state": "deferred"})).status_code == 401
+        w = await req("GET", "/api/std/preview", U["match"])
+        assert w.status_code == 200 and w.headers.get("cache-control") == "no-store" and w.json() == db.std_preview(U["match"])
+        wo = await req("GET", f"/api/std/preview?user_id={U['match']}&uid={U['match']}", U["none"])   # 다른 사용자를 고를 인자가 없다
+        assert wo.json() == db.std_preview(U["none"]) and "R3LBL" not in wo.text and U["match"] not in wo.text and "od_my" not in wo.text
+        assert (await req("POST", "/api/std/choose", U["none"], origin=False, json={"std_key": "axes", "state": "deferred"})).status_code == 403
+        for body in ([], {"std_key": "axes"}, {"std_key": 1, "state": "deferred"}):
+            b = await req("POST", "/api/std/choose", U["none"], json=body)
+            assert b.status_code == 400 and b.json()["code"] == "ARG-INVALID", body
+        off = await req("POST", "/api/std/choose", U["none"], json={"std_key": "axes", "state": "deferred"})
+        assert off.status_code == 400 and off.json()["code"] == "FEATURE-OFF" and "axes" not in choices(U["none"])
+        os.environ["CRM_FEATURE_STANDARD"] = "on"
+        try:
+            ok = await req("POST", "/api/std/choose", U["none"], json={"std_key": "axes", "state": "deferred", "user_id": U["match"]})
+            assert ok.status_code == 200 and ok.json()["std"]["objects"]["axes"] == "deferred", ok.text
+            lk = await req("POST", "/api/std/choose", U["match"], json={"std_key": "axes", "state": "refused"})
+            assert lk.status_code == 400 and lk.json()["code"] == "STANDARD-LOCKED" and "R3LBL" not in lk.text
+        finally:
+            os.environ.pop("CRM_FEATURE_STANDARD", None)
+        assert choices(U["match"])["axes"]["state"] == "incorporated", "본문 user_id 는 무시 — 남의 선택을 못 바꾼다"
+        # /api/state std = contract.std_state 모양(계약 예제와 같은 키) · MCP state_get 엔 없음
+        ex = json.loads(contract.example_path("full", "self").read_text(encoding="utf-8"))["std"]
+        for k, uid in U.items():
+            st = (await req("GET", "/api/state", uid)).json()
+            assert set(st["std"]) == set(ex) and set(st["std"]["objects"]) == set(ex["objects"]), st["std"]
+            assert st["std"] == db.std_status(uid) == db.std_preview(uid)["std"], k
+        assert (await req("GET", "/api/state", U["match"])).json()["std"]["objects"] == \
+            {"axes": "incorporated", "decision_events": "seeded", "principles": "refused"}
+        sql("INSERT INTO std_marks (user_id,version,state) VALUES (%s,%s,'adopting')", (U["match"], contract.STD_VERSION))
+        assert db.std_status(U["match"])["version"] == "std@1" and db.std_status(U["match"])["state"] == "adopting"
+        assert "std" not in db.state(U["match"]), "MCP state_get 에는 넣지 않는다"
+
+        # ── definitions() → template_slot·std_id → contract origin ──
+        o_cr = _r3_def(U["orig"], "craft", "방식", "collection", [{"key": "project", "label": "프로젝트", "value_type": "text"},
+                                                                {"key": "mine", "label": "내 것", "value_type": "text"}])
+        db.template_slot_mark(U["orig"], o_cr["id"], "author@1:craft", {"project": "author@1:craft.project"})
+        o_ax = _r3_def(U["orig"], "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"},
+                                                             {"key": "extra", "label": "더함", "value_type": "text"}])
+        sql("UPDATE object_defs SET std_id='std:axes', template_slot='author@1:axes' WHERE user_id=%s AND id=%s", (U["orig"], o_ax["id"]))
+        sql("UPDATE field_defs SET std_id='std:axes.keywords' WHERE user_id=%s AND object_id=%s AND key='keywords'", (U["orig"], o_ax["id"]))
+        defs = db.definitions(U["orig"])
+        assert all({"template_slot", "std_id"} <= set(d) and all({"template_slot", "std_id"} <= set(f) for f in d["fields"]) for d in defs)
+        resp = contract.respond({"definitions": defs}, "self")
+        org = {o["key"]: (o["origin"], [(f["key"], f["origin"], f["locked"]) for f in o["fields"]]) for o in resp["objects"]}
+        assert org == {"craft": ("template", [("project", "template", False), ("mine", "custom", False)]),
+                       "axes": ("standard", [("keywords", "standard", True), ("extra", "custom", False)])}, org
+
+        # ── init_schema: 옛 DB(std 열·테이블 없음) → 2회 멱등 · CHECK ──
+        name = f"r3_{secrets.token_hex(3)}"
+        create_schema(name)
+        try:
+            with schema_conn(name) as c:
+                db.init_schema(c)
+                c.execute("DROP TABLE std_marks, std_choices")
+                c.execute("ALTER TABLE field_defs DROP COLUMN std_id")
+                c.execute("ALTER TABLE object_defs DROP COLUMN std_id")
+                c.commit()
+                shape = lambda: c.execute(   # noqa: E731
+                    "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND table_name IN ('object_defs','field_defs','std_marks','std_choices') "
+                    "ORDER BY table_name, column_name").fetchall()
+                db.init_schema(c)
+                c.commit()
+                first = shape()
+                cols = {(r["table_name"], r["column_name"]) for r in first}
+                assert {("object_defs", "std_id"), ("field_defs", "std_id"), ("std_marks", "state"), ("std_choices", "confirmed_meaning")} <= cols
+                db.init_schema(c)
+                c.commit()
+                assert shape() == first, "두 번째 init_schema 가 뭔가 바꿨다"
+                c.execute("INSERT INTO users (id,email) VALUES ('u_r3','r3@x.test')")
+                for q in ("INSERT INTO std_choices (user_id,std_key,state,def_id) VALUES ('u_r3','axes','refused','od_x')",
+                          "INSERT INTO std_choices (user_id,std_key,state) VALUES ('u_r3','axes','none')",
+                          "INSERT INTO std_marks (user_id,version,state) VALUES ('u_r3','std@1','done')"):
+                    try:
+                        with c.transaction():
+                            c.execute(q)
+                        raise AssertionError(f"CHECK 가 막아야 한다: {q}")
+                    except psycopg.errors.CheckViolation:
+                        pass
+                c.rollback()
+        finally:
+            drop_schema(name)
+    finally:
+        site.dev, site.dev_user = real
+        db.STD_CHOICE_NEEDS_FLAG = True
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if saved is not None:
+            os.environ["CRM_FEATURE_STANDARD"] = saved
+    print("OK — R3 표준 미리보기(누락·일치·확장·충돌 사유·참조 의존·초안·보관 · 쓰기 0 READ ONLY · 플래그 무관) · std_choices 보류·거절"
+          "(FEATURE-OFF·덮어쓰기·편입 잠금·무관한 쓰기 안 막음) · 본인만 · /api/state std · template·std_id 출처 · init_schema 멱등 통과")
+
+
+# ── 20) Q2 — 신규 시드 · 편입 적용 · 표준 잠금 ─────────
+Q2 = {k: f"q2{k}@example.com" for k in ("off", "seed", "dev", "fail", "stop", "race", "old", "inc", "dep", "conf", "lock", "opt", "web")}
+# off = 플래그 off 신규 · seed = 신규 시드 · dev = user_by_email 신규 · fail = 시드 실패 → 재시도 · stop = 정의 생긴 뒤 재시도 중단
+# race = 동시 재시도 · old = 기존 사용자(표식 없음) · inc = 편입(누락·일치·확장·재검증) · dep = 참조 대상 상태 바뀜 · conf = 구조 충돌
+# lock = 잠금 표(시드 사용자) · opt = 표준 select 선택지(명세를 시험에서만 바꿔 끼움) · web = POST /api/std/choose 편입
+
+
+@contextmanager
+def _q2_flag(on):
+    prev = os.environ.pop("CRM_FEATURE_STANDARD", None)
+    if on:
+        os.environ["CRM_FEATURE_STANDARD"] = "on"
+    try:
+        yield
+    finally:
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if prev is not None:
+            os.environ["CRM_FEATURE_STANDARD"] = prev
+
+
+def _q2_rows(uid):
+    """그 사용자의 표준 관련 행 전부 — 쓰기 0 비교용."""
+    with db.tx() as c:
+        q = lambda sql: [dict(r) for r in c.execute(sql, (uid,)).fetchall()]   # noqa: E731
+        return {"marks": q("SELECT version,state FROM std_marks WHERE user_id=%s ORDER BY version"),
+                "choices": q("SELECT std_key,state,def_id,def_revision,confirmed_meaning,at FROM std_choices WHERE user_id=%s ORDER BY std_key"),
+                "objects": q("SELECT id,key,label,semantic_kind,revision,std_id,template_slot,updated_at FROM object_defs WHERE user_id=%s ORDER BY id"),
+                "fields": q("SELECT object_id,key,value_type,std_id,template_slot,archived_at FROM field_defs WHERE user_id=%s ORDER BY object_id,key")}
+
+
+def _q2_sub(k):
+    return f"q2{k}_sub"
+
+
+async def test_q2_std():
+    """template_std 출력 == 동결 파일 · 신규 시드(on)/안 함(off)·user_by_email 경로 · 시드 실패 주입 → 사용자 생성 성공·seed_pending·재시도
+    성공 · 정의 생긴 뒤 재시도 중단 · 플래그 off 면 재시도 없음 · 동시 재시도 1회 · 기존 사용자(표식 없음) 로그인 쓰기 0
+    · 편입(누락·일치·확장, 명세 id 가 쓰이면 새 id) · 재검증(revision·참조 대상 상태·이미 편입) · 참조 의존 · 구조 충돌 · 확인 없음 · 플래그 off
+    · 잠금 표(거절·허용, propose·apply, 플래그 off 에서도) · 일일 한도·template_slot 백필 제외 · init_schema 2회 멱등."""
+    import contextlib
+    import io
+    import threading
+    import template_std
+    saved = os.environ.pop("CRM_FEATURE_STANDARD", None)
+    real_seed, real_doc = db._std_seed, dict(db._std_doc_cache)
+    U = {}
+    try:
+        # ── 동결 파일 ──
+        assert template_std.frozen_doc() == json.loads((HERE / "templates" / "std@1.json").read_text(encoding="utf-8"))
+        assert template_std.STD_NAME == contract.STD_VERSION and "std_slot" not in (HERE / "template_std.py").read_text(encoding="utf-8")
+        doc = db.std_doc()
+
+        # ── 신규 시드: off 면 아무것도 · on 이면 정의 3·선택 3·표식 seeded ──
+        U["off"] = db.user_by_subject(_q2_sub("off"), Q2["off"])["id"]
+        assert _q2_rows(U["off"]) == {"marks": [], "choices": [], "objects": [], "fields": []}, "플래그 off = 시드 안 함"
+        with _q2_flag(True):
+            U["seed"] = db.user_by_subject(_q2_sub("seed"), Q2["seed"])["id"]
+            U["dev"] = db.user_by_email(Q2["dev"])["id"]
+            U["lock"] = db.user_by_subject(_q2_sub("lock"), Q2["lock"])["id"]
+            again = _q2_rows(U["seed"])
+            assert db.user_by_subject(_q2_sub("seed"), Q2["seed"])["id"] == U["seed"] and _q2_rows(U["seed"]) == again, "재로그인 = 쓰기 0"
+        for k in ("seed", "dev", "lock"):
+            r = _q2_rows(U[k])
+            assert r["marks"] == [{"version": "std@1", "state": "seeded"}], (k, r["marks"])
+            assert [(o["id"], o["key"], o["revision"], o["std_id"], o["template_slot"]) for o in sorted(r["objects"], key=lambda o: o["id"])] == [
+                ("od_axes", "axes", 1, "std:axes", None), ("od_events", "decision_events", 1, "std:decision_events", None),
+                ("od_principles", "principles", 1, "std:principles", None)], k
+            assert {(f["object_id"], f["key"]): f["std_id"] for f in r["fields"]} == {
+                (o["id"], f["key"]): f"std:{o['key']}.{f['key']}" for o in doc["objects"] for f in o["fields"]}, k
+            assert [(ch["std_key"], ch["state"], ch["def_id"], ch["def_revision"], ch["confirmed_meaning"]) for ch in r["choices"]] == [
+                ("axes", "seeded", "od_axes", 1, False), ("decision_events", "seeded", "od_events", 1, False),
+                ("principles", "seeded", "od_principles", 1, False)], k
+            assert db.std_status(U[k]) == {"version": "std@1", "state": "seeded", "objects": {k2: "seeded" for k2 in contract.STD_KEYS}}
+        defs = db.definitions(U["seed"])
+        pr = next(d for d in defs if d["key"] == "principles")
+        assert [(f["key"], f["target_object_id"], f["position"]) for f in pr["fields"]] == [
+            ("evidence_claims", None, 0), ("evidence_events", "od_events", 1), ("axes", "od_axes", 2)]
+        assert pr["policy"] == doc["objects"][2]["policy"] and pr["label"] == "기준"
+        hist = db.definition_history(U["seed"], "od_principles")
+        assert len(hist) == 1 and hist[0]["revision"] == 1 and hist[0]["fields"][1]["target_object_id"] == "od_events"
+        resp = contract.respond({"definitions": defs, "std_marks": {"version": "std@1", "state": "seeded"},
+                                 "std_choices": {k: "seeded" for k in contract.STD_KEYS}}, "self")
+        assert all(o["origin"] == "standard" and o["locked"] and all(f["origin"] == "standard" for f in o["fields"]) for o in resp["objects"])
+        assert all(o["blocked"] == ["already"] for o in db.std_preview(U["seed"])["objects"])
+        # 일일 한도: 시드 행은 안 센다(상한 0 이어도 통과) · 사용자가 만든 정의는 센다
+        real_limits = dict(db.DAILY_LIMITS)
+        try:
+            db.DAILY_LIMITS["proposals"] = 0
+            with db.tx() as c:
+                db._daily_gate(c, U["seed"], "proposals", 0)
+        finally:
+            db.DAILY_LIMITS.clear()
+            db.DAILY_LIMITS.update(real_limits)
+        # template_slot 백필(author@1: id·key 가 같으면 칠함)이 시드 행(od_axes·axes …)을 칠하지 않는다 · init_schema 2회 멱등
+        before = _q2_rows(U["seed"])
+        with db.tx() as c:
+            db._backfill_template_slots(c)
+        db.init_schema()
+        db.init_schema()
+        assert _q2_rows(U["seed"]) == before, "백필·init_schema 가 시드 행을 바꿨다"
+
+        # ── 시드 실패 주입 → 사용자 생성 성공 · seed_pending · 로그 · 재시도 성공 ──
+        def boom(c, uid):
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision,std_id) VALUES (%s,'od_axes','axes','x','collection',1,'std:axes')", (uid,))
+            raise RuntimeError("주입")
+        out = io.StringIO()
+        db._std_seed = boom
+        try:
+            with _q2_flag(True), contextlib.redirect_stdout(out):
+                for k in ("fail", "stop", "race"):
+                    U[k] = db.user_by_subject(_q2_sub(k), Q2[k])["id"]
+                    assert db.user_by_subject(_q2_sub(k), Q2[k])["id"] == U[k], "재시도가 또 실패해도 로그인은 된다"
+        finally:
+            db._std_seed = real_seed
+        assert out.getvalue().count("[std] create 표준 시드 실패 — seed_pending 으로 남김: RuntimeError") == 3, out.getvalue()
+        assert out.getvalue().count("[std] retry 표준 시드 실패") == 3 and "주입" not in out.getvalue()
+        for k in ("fail", "stop", "race"):
+            assert _q2_rows(U[k]) == {"marks": [{"version": "std@1", "state": "seed_pending"}], "choices": [], "objects": [], "fields": []}, \
+                "savepoint 롤백 — 시드 중간 행이 남지 않는다"
+        db.user_by_subject(_q2_sub("fail"), Q2["fail"])   # 플래그 off — 재시도 안 함
+        assert _q2_rows(U["fail"])["marks"][0]["state"] == "seed_pending"
+        with _q2_flag(True):
+            db.user_by_subject(_q2_sub("fail"), Q2["fail"])
+        r = _q2_rows(U["fail"])
+        assert r["marks"][0]["state"] == "seeded" and len(r["objects"]) == 3 and len(r["choices"]) == 3, r
+        # 정의가 하나라도(초안 포함) 생겼으면 재시도를 멈춘다 — 표식은 seed_pending 그대로, §3 로
+        db.definition_propose(U["stop"], None, 0, {"key": "notes", "label": "노트", "semantic_kind": "collection", "fields": []})
+        with _q2_flag(True):
+            db.user_by_subject(_q2_sub("stop"), Q2["stop"])
+        r = _q2_rows(U["stop"])
+        assert r["marks"][0]["state"] == "seed_pending" and [o["key"] for o in r["objects"]] == ["notes"] and r["choices"] == []
+        assert all(o["structure"] == "missing" for o in db.std_preview(U["stop"])["objects"])
+        with _q2_flag(True):   # 시드를 멈춘 계정의 첫 편입 → 표식을 adopting 으로 올린다(§12)
+            db.std_choose(U["stop"], "axes", "incorporated", True, None)
+        assert _q2_rows(U["stop"])["marks"] == [{"version": "std@1", "state": "adopting"}]
+        assert db.std_status(U["stop"])["objects"]["axes"] == "incorporated"
+        # 동시 재시도 두 요청 → 시드 1회(users 행 잠금 → 표식 재확인)
+        calls = []
+
+        def slow(c, uid):
+            calls.append(uid)
+            time.sleep(0.3)
+            real_seed(c, uid)
+        db._std_seed = slow
+        errs = []
+
+        def go():
+            try:
+                db.user_by_subject(_q2_sub("race"), Q2["race"])
+            except Exception as e:   # noqa: BLE001
+                errs.append(e)
+        out = io.StringIO()
+        try:
+            with _q2_flag(True), contextlib.redirect_stdout(out):
+                th = [threading.Thread(target=go) for _ in range(2)]
+                for t in th:
+                    t.start()
+                for t in th:
+                    t.join()
+        finally:
+            db._std_seed = real_seed
+        r = _q2_rows(U["race"])
+        assert not errs and calls == [U["race"]] and "[std]" not in out.getvalue(), (errs, calls, out.getvalue())
+        assert r["marks"][0]["state"] == "seeded" and len(r["objects"]) == 3 and len(r["choices"]) == 3
+
+        # ── 기존 사용자(표식 없음): 플래그 on 으로 로그인·DEV 조회해도 쓰기 0 (자동 시드·분류 없음) ──
+        U["old"] = db.user_by_subject(_q2_sub("old"), Q2["old"])["id"]
+        _r3_def(U["old"], "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+        before = _q2_rows(U["old"])
+        with _q2_flag(True):
+            db.user_by_subject(_q2_sub("old"), Q2["old"])
+            db.user_by_email(Q2["old"])
+        assert _q2_rows(U["old"]) == before and before["marks"] == [] and before["choices"] == []
+
+        # ── 편입 적용 ──
+        U["inc"] = db.user_by_email(Q2["inc"])["id"]
+        ax = _r3_def(U["inc"], "axes", "주제", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}], oid="od_myax")
+        ev = _r3_def(U["inc"], "decision_events", "결정", "event", [
+            {"key": "happened_on", "label": "날", "value_type": "date"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True},
+            {"key": "project", "label": "프로젝트", "value_type": "text"}], oid="od_myev")
+        _r3_def(U["inc"], "books", "책", "collection", [], oid="od_principles")   # 명세 id 를 다른 key 가 쓴다 → 누락 편입은 새 id
+        # 편입 전에 만든 초안 — 편입 뒤 apply 가 최신 정의로 재검증해 STANDARD-LOCKED
+        d_ax = db.definition_propose(U["inc"], ax["id"], 1, {"key": "axes", "label": "주제", "semantic_kind": "collection", "fields": []})
+        d_ev = db.definition_propose(U["inc"], ev["id"], 1, {"key": "decision_events", "label": "결정", "semantic_kind": "event", "fields": [
+            {"key": "happened_on", "label": "날", "value_type": "text"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True}]})
+        pv = _r3_by(db.std_preview(U["inc"]))
+        assert (pv["axes"]["structure"], pv["decision_events"]["structure"], pv["principles"]["structure"]) == ("match", "extend", "missing")
+        inc = lambda k, rev, meant=True: db.std_choose(U["inc"], k, "incorporated", meant, rev)   # noqa: E731
+        expect("FEATURE-OFF", inc, "axes", 1)
+        with _q2_flag(True):
+            before = _q2_rows(U["inc"])
+            for meant in (False, None, "true", 1):
+                expect("ARG-INVALID", inc, "axes", 1, meant)
+            expect("ARG-INVALID", inc, "axes", "1")
+            e = expect("DEF-INVALID", inc, "principles", None)   # 참조 의존 — 축·결정 편입 전
+            assert "decision_events" in e.message and "axes" in e.message, e.message
+            expect("CONFLICT", inc, "axes", 0)                  # 미리보기와 다른 revision
+            expect("CONFLICT", inc, "principles", 1)            # 누락인데 revision 을 들고 옴
+            assert _q2_rows(U["inc"]) == before, "거절은 아무것도 안 쓴다"
+            ax2 = _r3_def(U["inc"], "axes", "주제 바꿈", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}],
+                          object_id=ax["id"], rev=1)   # 미리보기 뒤에 정의가 바뀜(rev 2) — draft 는 지워진다
+            assert ax2["revision"] == 2
+            e = expect("CONFLICT", inc, "axes", 1)
+            assert e.action == "표준 미리보기를 다시 보고 고르세요." and "지금 2" in e.message
+            d_ax = db.definition_propose(U["inc"], ax["id"], 2, {"key": "axes", "label": "주제", "semantic_kind": "collection", "fields": []})
+            r = inc("axes", 2)
+            assert (r["def_id"], r["def_revision"], r["std"]["objects"]["axes"], r["std"]["state"]) == ("od_myax", 2, "incorporated", "adopting")
+            expect("CONFLICT", inc, "axes", 2)                  # 이미 편입
+            r = inc("decision_events", 1)
+            assert (r["def_id"], r["def_revision"]) == ("od_myev", 1)
+            rows = _q2_rows(U["inc"])
+            byo = {o["id"]: o for o in rows["objects"]}
+            assert (byo["od_myax"]["std_id"], byo["od_myax"]["revision"], byo["od_myev"]["std_id"], byo["od_myev"]["revision"]) == \
+                ("std:axes", 2, "std:decision_events", 1), "편입은 std_id 만 — revision 그대로"
+            assert {(f["object_id"], f["key"]): f["std_id"] for f in rows["fields"] if f["object_id"] in ("od_myax", "od_myev")} == {
+                ("od_myax", "keywords"): "std:axes.keywords", ("od_myev", "happened_on"): "std:decision_events.happened_on",
+                ("od_myev", "claims"): "std:decision_events.claims", ("od_myev", "project"): None}, "사용자 필드엔 달지 않는다"
+            # 편입 전 초안 apply → 최신 정의(std_id 있음)로 재검증해 거절
+            e = expect("STANDARD-LOCKED", db.definition_apply, U["inc"], ax["id"], d_ax["proposal_id"], 2)
+            assert e.message == contract.locked_message("field_remove", "std:axes.keywords"), e.message
+            e = expect("STANDARD-LOCKED", db.definition_apply, U["inc"], ev["id"], d_ev["proposal_id"], 1)
+            assert e.message == contract.locked_message("field_shape", "std:decision_events.happened_on"), e.message
+            # 대상(축) label 변경은 허용 — revision 이 올라도 기준 편입을 막지 않는다(대상 revision 은 비교하지 않는다)
+            _r3_def(U["inc"], "axes", "주제 또 바꿈", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}],
+                    object_id=ax["id"], rev=2)
+            r = inc("principles", None)
+            assert r["def_id"] not in ("od_principles", None) and r["def_revision"] == 1, r
+            np = next(d for d in db.definitions(U["inc"]) if d["key"] == "principles")
+            assert np["std_id"] == "std:principles" and np["revision"] == 1 and np["template_slot"] is None
+            assert {f["key"]: (f["target_object_id"], f["std_id"]) for f in np["fields"]} == {
+                "evidence_claims": (None, "std:principles.evidence_claims"), "evidence_events": ("od_myev", "std:principles.evidence_events"),
+                "axes": ("od_myax", "std:principles.axes")}
+            ch = {c["std_key"]: c for c in _q2_rows(U["inc"])["choices"]}
+            assert all(ch[k]["state"] == "incorporated" and ch[k]["confirmed_meaning"] is True for k in contract.STD_KEYS), ch
+            assert _q2_rows(U["inc"])["marks"] == [{"version": "std@1", "state": "adopting"}]
+            expect("STANDARD-LOCKED", db.std_choose, U["inc"], "principles", "refused")
+        # 일일 한도: 편입된 정의(누락 편입으로 넣은 기준 포함)는 안 센다 — 오늘 센 제안 = 편입 안 한 books 하나
+        real_limits = dict(db.DAILY_LIMITS)
+        try:
+            db.DAILY_LIMITS["proposals"] = 1
+            with db.tx() as c:
+                db._daily_gate(c, U["inc"], "proposals", 0)
+            try:
+                with db.tx() as c:
+                    db._daily_gate(c, U["inc"], "proposals", 1)
+                raise AssertionError("books 는 세야 한다")
+            except db.CrmError as e:
+                assert e.code == "RATE-LIMIT"
+        finally:
+            db.DAILY_LIMITS.clear()
+            db.DAILY_LIMITS.update(real_limits)
+
+        # 참조 대상 상태가 미리보기 뒤에 바뀌면(시험 재료: SQL 로 보류로 되돌림) 기준 편입 거절, 쓰기 0
+        U["dep"] = db.user_by_email(Q2["dep"])["id"]
+        with _q2_flag(True):
+            dax = _r3_def(U["dep"], "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+            dev = _r3_def(U["dep"], "decision_events", "결정", "event", [
+                {"key": "happened_on", "label": "날", "value_type": "date"},
+                {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+            db.std_choose(U["dep"], "axes", "incorporated", True, 1)
+            db.std_choose(U["dep"], "decision_events", "incorporated", True, 1)
+            assert _r3_by(db.std_preview(U["dep"]))["principles"]["can_incorporate"]
+            with db.tx() as c:
+                c.execute("UPDATE std_choices SET state='deferred' WHERE user_id=%s AND std_key='decision_events'", (U["dep"],))
+            before = _q2_rows(U["dep"])
+            e = expect("DEF-INVALID", db.std_choose, U["dep"], "principles", "incorporated", True, None)
+            assert "decision_events" in e.message and _q2_rows(U["dep"]) == before
+            assert dax["id"] and dev["id"]
+        # 구조 충돌 · 초안만 → DEF-INVALID(사유 코드), 쓰기 0
+        U["conf"] = db.user_by_email(Q2["conf"])["id"]
+        _r3_def(U["conf"], "axes", "축", "event", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+        db.definition_propose(U["conf"], None, 0, {"key": "decision_events", "label": "초안", "semantic_kind": "event", "fields": []})
+        with _q2_flag(True):
+            before = _q2_rows(U["conf"])
+            e = expect("DEF-INVALID", db.std_choose, U["conf"], "axes", "incorporated", True, 1)
+            assert "kind" in e.message and "축" not in e.message, e.message
+            e = expect("DEF-INVALID", db.std_choose, U["conf"], "decision_events", "incorporated", True, 0)
+            assert "key_draft_only" in e.message
+            assert _q2_rows(U["conf"]) == before
+
+        # ── 잠금 표 (시드 사용자 · 플래그 off — 잠금은 플래그와 무관) ──
+        L = U["lock"]
+        assert "CRM_FEATURE_STANDARD" not in os.environ
+        base = {d["key"]: d for d in db.definitions(L)}
+
+        def nd_of(okey, **ch):
+            d = base[okey]
+            fields = [{k: f[k] for k in ("key", "label", "value_type", "required", "options", "target_kind", "target_object_id", "multiple")}
+                      for f in d["fields"]]
+            out = {"key": d["key"], "label": d["label"], "semantic_kind": d["semantic_kind"], "policy": d["policy"], "fields": fields}
+            for k, v in ch.items():
+                if k == "fields":
+                    out["fields"] = v(fields)
+                else:
+                    out[k] = v
+            return out
+
+        def setf(key, attr, val):
+            return lambda fs: [{**f, attr: val} if f["key"] == key else f for f in fs]
+        rejected = [
+            ("principles", {"key": "principles2"}, "key", "std:principles"),
+            ("principles", {"semantic_kind": "collection"}, "semantic_kind", "std:principles"),
+            ("axes", {"fields": lambda fs: []}, "field_remove", "std:axes.keywords"),
+            ("axes", {"fields": setf("keywords", "value_type", "text")}, "field_shape", "std:axes.keywords"),
+            ("decision_events", {"fields": setf("happened_on", "required", True)}, "field_shape", "std:decision_events.happened_on"),
+            ("decision_events", {"fields": setf("claims", "multiple", False)}, "field_shape", "std:decision_events.claims"),
+            ("principles", {"fields": setf("axes", "target_object_id", "od_events")}, "field_shape", "std:principles.axes"),
+            ("principles", {"fields": setf("axes", "target_kind", "candidate")}, "field_shape", "std:principles.axes"),
+        ]
+        for key, ch, change, sid in rejected:
+            o = base[key]
+            e = expect("STANDARD-LOCKED", db.definition_propose, L, o["id"], o["revision"], nd_of(key, **ch))
+            assert e.message == contract.locked_message(change, sid) and e.action == contract.LOCKED_ACT, (change, e.message)
+        with _q2_flag(True):
+            expect("STANDARD-LOCKED", db.definition_propose, L, base["axes"]["id"], 1, nd_of("axes", fields=lambda fs: []))
+        # 허용: label(오브젝트·필드) · policy · 사용자 필드 추가 → 수정 → 삭제 · 항목 쓰기
+        allowed = [
+            ("principles", {"label": "내 원칙", "fields": setf("evidence_claims", "label", "근거 문장")}),
+            ("principles", {"policy": {"promotion": {**base["principles"]["policy"]["promotion"], "confirmed_claims_min": 3}}}),
+            ("axes", {"fields": lambda fs: fs + [{"key": "color", "label": "색", "value_type": "text"}]}),
+            ("axes", {"fields": setf("color", "value_type", "number")}),
+            ("axes", {"fields": lambda fs: [f for f in fs if f["key"] != "color"]}),
+        ]
+        for key, ch in allowed:
+            o = next(d for d in db.definitions(L) if d["key"] == key)
+            base[key] = o
+            p = db.definition_propose(L, o["id"], o["revision"], nd_of(key, **ch))
+            out = db.definition_apply(L, o["id"], p["proposal_id"], o["revision"])
+            assert out["revision"] == o["revision"] + 1 and out["std_id"] == f"std:{key}", (key, ch)
+        cur = {d["key"]: d for d in db.definitions(L)}
+        assert cur["principles"]["label"] == "내 원칙" and cur["principles"]["policy"]["promotion"]["confirmed_claims_min"] == 3
+        assert [f["key"] for f in cur["axes"]["fields"]] == ["keywords"] and all(f["std_id"] for f in cur["principles"]["fields"])
+        with db.tx() as c:
+            col = c.execute("SELECT std_id, archived_at FROM field_defs WHERE user_id=%s AND object_id='od_axes' AND key='color'", (L,)).fetchone()
+        assert col["std_id"] is None and col["archived_at"] is not None, "사용자 필드는 지울 수 있다(보관)"
+        it = db.item_propose(L, "od_axes", cur["axes"]["revision"], None, 0, "AX-1", "축", "", {"keywords": ["a"]}, [])
+        assert db.item_decide(L, it["item_id"], 0, it["proposal_id"], "apply")["revision"] == 1
+        # 표준 select 선택지(std@1 엔 없음) — 명세를 시험에서만 바꿔 끼운다: 명세 값 삭제 거절 · 사용자 값 삭제·label 변경·추가 허용
+        U["opt"] = db.user_by_email(Q2["opt"])["id"]
+        o = _r3_def(U["opt"], "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"},
+                                                        {"key": "tone", "label": "톤", "value_type": "select", "options": ["a", "b", "c"]}])
+        with db.tx() as c:
+            c.execute("UPDATE object_defs SET std_id='std:axes' WHERE user_id=%s AND id=%s", (U["opt"], o["id"]))
+            c.execute("UPDATE field_defs SET std_id='std:axes.'||key WHERE user_id=%s AND object_id=%s", (U["opt"], o["id"]))
+        fake = json.loads(json.dumps(doc))
+        fake["objects"][0]["fields"].append({"key": "tone", "label": "톤", "value_type": "select", "required": False, "multiple": False,
+                                             "options": [{"value": "a", "label": "a"}, {"value": "b", "label": "b"}],
+                                             "target_kind": None, "target_object_id": None})
+        db._std_doc_cache[contract.STD_VERSION] = fake
+
+        def opt_def(opts):
+            return {"key": "axes", "label": "축", "semantic_kind": "collection", "fields": [
+                {"key": "keywords", "label": "단어", "value_type": "text_list"}, {"key": "tone", "label": "톤", "value_type": "select", "options": opts}]}
+        e = expect("STANDARD-LOCKED", db.definition_propose, U["opt"], o["id"], 1, opt_def(["a", "c"]))
+        assert e.message == contract.locked_message("option_remove", "std:axes.tone")
+        p = db.definition_propose(U["opt"], o["id"], 1, opt_def([{"value": "a", "label": "에이"}, "b", "d"]))
+        assert db.definition_apply(U["opt"], o["id"], p["proposal_id"], 1)["revision"] == 2
+        db._std_doc_cache.clear()
+        db._std_doc_cache.update(real_doc)
+
+        # ── 웹 POST /api/std/choose 편입 — 본문 검사 400 · FEATURE-OFF · 200 · 다시 보내면 CONFLICT · 본문 user_id 무시 ──
+        site = main.site
+        real_site = (site.dev, site.dev_user)
+        site.dev, site.dev_user = False, ""
+        U["web"] = db.user_by_email(Q2["web"])["id"]
+        _r3_def(U["web"], "axes", "축 Q2WLBL", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+
+        async def post(body, uid=U["web"]):
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+                h.cookies.set("crm_session", site.session_value(uid))
+                return await h.post("/api/std/choose", headers={"origin": PUBLIC}, json=body)
+        try:
+            ok_body = {"std_key": "axes", "state": "incorporated", "confirmed_meaning": True, "expected_revision": 1, "user_id": U["inc"]}
+            for bad in ({**ok_body, "confirmed_meaning": "true"}, {**ok_body, "expected_revision": "1"},
+                        {**ok_body, "expected_revision": True}):
+                r = await post(bad)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (bad, r.text)
+            r = await post({k: v for k, v in ok_body.items() if k != "confirmed_meaning"})
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+            r = await post(ok_body)
+            assert r.status_code == 400 and r.json()["code"] == "FEATURE-OFF"
+            with _q2_flag(True):
+                inc_before = _q2_rows(U["inc"])
+                r = await post(ok_body)
+                assert r.status_code == 200 and r.json()["std"]["objects"]["axes"] == "incorporated", r.text
+                r = await post(ok_body)
+                assert r.status_code == 400 and r.json()["code"] == "CONFLICT" and "Q2WLBL" not in r.text, r.text
+                assert _q2_rows(U["inc"]) == inc_before, "본문 user_id 는 무시 — 남의 정의를 못 건드린다"
+            assert (await post(ok_body)).json()["code"] == "FEATURE-OFF"
+        finally:
+            site.dev, site.dev_user = real_site
+    finally:
+        db._std_seed = real_seed
+        db._std_doc_cache.clear()
+        db._std_doc_cache.update(real_doc)
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if saved is not None:
+            os.environ["CRM_FEATURE_STANDARD"] = saved
+    print("OK — Q2 표준(template_std 동결 · 시드 on/off·user_by_email · 실패 주입 → 로그인 성공·seed_pending·재시도·정의 생기면 중단·off 재시도 없음"
+          " · 동시 1회 · 기존 사용자 쓰기 0 · 편입 누락·일치·확장·새 id · 재검증 revision·대상 상태·이미 편입 · 참조 의존·충돌·초안·확인 없음·off"
+          " · 잠금 거절 8·허용 5·apply 재검증·플래그 off · select 선택지 · 한도·백필 제외 · init_schema 2회) 통과")
+
+
+# ── 21) Q3 축소 — 출처 · 분류 역할 · 확정 재검사 · 수집 범위 ─────────
+Q3 = {k: f"q3{k}@example.com" for k in ("src", "srcb", "role", "nor", "refu", "late", "rev", "mcp")}
+# src·srcb = 출처(A·B) · role = 역할 이관(axes 있음) · nor = 축 없음 · refu = 표준 축 거절해도 역할 유지 · late = 이관 뒤에 축 생성
+# rev = 확정 재검사·review·수집 범위 · mcp = MCP record_add 출처 인자
+
+
+@contextmanager
+def _q3_sources(on):
+    prev = os.environ.pop("CRM_FEATURE_SOURCES", None)
+    if on:
+        os.environ["CRM_FEATURE_SOURCES"] = "on"
+    try:
+        yield
+    finally:
+        os.environ.pop("CRM_FEATURE_SOURCES", None)
+        if prev is not None:
+            os.environ["CRM_FEATURE_SOURCES"] = prev
+
+
+def _q3_role(uid):
+    with db.tx() as c:
+        r = c.execute("SELECT object_id, at FROM user_roles WHERE user_id=%s AND role='classify'", (uid,)).fetchone()
+    return dict(r) if r else None
+
+
+async def test_q3():
+    """출처: off 면 기록만(source_linked=false)·on 이면 찾거나 만들기·kind 기본·검사 · 다른 사용자 출처 연결은 FK 거절 · 옛 기록 미확인
+    · 노출(/api/state 본인만, MCP state 엔 목록 없음) · MCP record_add 출처 인자 · 역할 이관(axes 있음·없음·초안·표준 거절·멱등)
+    · 시드 = 표준 축 · 이관 뒤 만든 축(즉시 적용) · record_attach 역할 경유·대상 없음 CLASSIFY-OFF·항목→항목 axes 필드는 역할 무관
+    · 확정 재검사 4사유·다른 action 허용·edit_confirm 롤백·확정 판단 불변·review 표시·정정 뒤 해제 · external 거절·정정 허용·PROVENANCE-LOCKED
+    · init_schema 옛 DB 2회 멱등."""
+    site = main.site
+    saved = {k: os.environ.pop(k, None) for k in ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")}
+    real_site = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    U = {k: db.user_by_email(e)["id"] for k, e in Q3.items() if k not in ("mcp",)}
+
+    async def get_state(uid):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            r = await h.get("/api/state")
+            assert r.status_code == 200, r.text
+            return r.json()
+
+    def nrec(uid):
+        with db.tx() as c:
+            return c.execute("SELECT count(*) AS n FROM records WHERE user_id=%s", (uid,)).fetchone()["n"]
+    try:
+        # ── 출처 ──
+        A, B = U["src"], U["srcb"]
+        old = db.record_add(A, "옛 기록", "출처 없이 남긴 글이다.", None, "회의 메모")
+        assert (old["source"], old["source_id"], old["source_linked"]) == ("회의 메모", None, None), old
+        ref = {"kind": "file", "name": "업무일지 Q3SRC", "location": "drive/Q3LOC.md"}
+        off = db.record_add(A, "off", "출처 기능 꺼짐.", None, "대화에서 입력", source_ref=ref)
+        assert (off["source_id"], off["source_linked"]) == (None, False) and db.sources(A) == [], "off = 기록만, 출처 행 0"
+        db.record_add(A, "off2", "검사도 안 한다.", source_ref={"kind": "bogus"})   # off 면 출처 인자를 쓰지 않는다
+        with _q3_sources(True):
+            r1 = db.record_add(A, "on1", "첫 글.", source_ref=ref)
+            r2 = db.record_add(A, "on2", "둘째 글.", source_ref=dict(ref))
+            r3 = db.record_add(A, "on3", "다른 위치.", source_ref={**ref, "location": "drive/other.md"})
+            r4 = db.record_add(A, "on4", "종류 없음.", source_ref={"name": "메모장 Q3SRC"})
+            assert r1["source_linked"] and r1["source_id"] == r2["source_id"] != r3["source_id"], (r1, r2, r3)
+            for bad, code in (({**ref, "name": "  "}, "ARG-INVALID"), ({**ref, "kind": "pdf"}, "ARG-INVALID"),
+                              ({**ref, "name": "가" * 400}, "PAYLOAD-LIMIT"), ("file", "ARG-INVALID")):
+                n0 = nrec(A)
+                expect(code, db.record_add, A, "x", "본문", source_ref=bad)
+                assert nrec(A) == n0, "거절이면 기록도 안 남는다"
+            rb = db.record_add(B, "b", "B 의 글.", source_ref=ref)
+        srcs = db.sources(A)
+        shape = set(contract.EXAMPLES["full"]["sources"][0])
+        assert all(set(s) == shape for s in srcs) and [s["id"] for s in srcs] == [r1["source_id"], r3["source_id"], r4["source_id"]]
+        assert next(s for s in srcs if s["id"] == r4["source_id"])["kind"] == "other" and srcs[0]["location"] == "drive/Q3LOC.md"
+        assert rb["source_id"] not in [s["id"] for s in srcs], "같은 (kind,name,location) 이어도 사용자마다 따로"
+        assert db.source_counts(A) == {"by_source": {r1["source_id"]: 2, r3["source_id"]: 1, r4["source_id"]: 1}, "unconfirmed": 3}
+        try:   # 다른 사용자 출처를 가리킬 수 없다(복합 FK)
+            with db.tx() as c:
+                c.execute("UPDATE records SET source_id=%s WHERE user_id=%s AND id=%s", (r1["source_id"], B, rb["id"]))
+            raise AssertionError("다른 사용자 출처에 연결됐다")
+        except psycopg.errors.ForeignKeyViolation:
+            pass
+        assert db.sources(A) == srcs, "off 로 돌아가도 이미 있는 출처는 읽힌다"
+        assert next(j for j in db.records(A) if j["id"] == old["id"])["source_id"] is None, "옛 기록 = 출처 미확인(NULL)"
+        st = await get_state(A)
+        assert st["sources"] == srcs and st["source_counts"] == db.source_counts(A)
+        assert {j["id"]: j["source_id"] for j in st["journal"]}[r2["id"]] == r1["source_id"]
+        stb = await get_state(B)
+        assert [s["id"] for s in stb["sources"]] == [rb["source_id"]] and not any(s["id"] in json.dumps(stb) for s in srcs), "본인 출처만"
+        assert "sources" not in db.state(A) and "source_counts" not in db.state(A), "MCP state_get 엔 목록 없음(본인 웹만)"
+        # MCP record_add 출처 인자 — off 면 note, on 이면 연결
+        prev_dev = os.environ.get("CRM_DEV_USER")
+        os.environ["CRM_DEV_USER"] = Q3["mcp"]
+        try:
+            async with Client(main.mcp) as c:
+                a = {"text": "MCP 로 남긴 글.", "source_name": "회의록 Q3MCP", "source_kind": "file", "source_location": "notes/m.md"}
+                r = val(await c.call_tool("record_add", a))
+                assert (r["source_id"], r["source_linked"]) == (None, False) and "꺼져" in r["note"], r
+                assert set(val(await c.call_tool("record_add", {"text": "출처 인자 없음."}))) == {"id", "title", "created"}
+                with _q3_sources(True):
+                    r = val(await c.call_tool("record_add", a))
+                    assert r["source_linked"] is True and r["source_id"] and "note" not in r, r
+                    bad = await c.call_tool("record_add", {**a, "source_kind": "pdf"})
+                    assert bad.is_error, bad
+        finally:
+            os.environ["CRM_DEV_USER"] = prev_dev
+        U["mcp"] = db.user_by_email(Q3["mcp"])["id"]
+        assert [s["name"] for s in db.sources(U["mcp"])] == ["회의록 Q3MCP"]
+
+        # ── 분류 역할 ──
+        R = U["role"]
+        rax = _r3_def(R, "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}])
+        rbk = _r3_def(R, "books", "책", "collection", [])
+        _r3_def(U["refu"], "axes", "축", "event", [])   # 표준과 모양이 달라도·거절해도 역할은 key 로
+        with _q2_flag(True):
+            db.std_choose(U["refu"], "axes", "refused")
+        db.definition_propose(U["nor"], None, 0, {"key": "axes", "label": "초안", "semantic_kind": "collection", "fields": []})   # 초안만
+        db.init_schema()
+        assert _q3_role(R)["object_id"] == rax["id"] and _q3_role(U["refu"]) is not None and _q3_role(U["nor"]) is None
+        before = (_q3_role(R), _q3_role(U["refu"]))
+        db.init_schema()
+        assert (_q3_role(R), _q3_role(U["refu"])) == before, "이관 멱등 — at 도 그대로"
+        with db.tx() as c:
+            assert db._migrate_classify_roles(c) == 0
+        assert db.classify_target(U["refu"]) == _q3_role(U["refu"])["object_id"]
+        # record_attach: 역할 대상 항목만 · 대상 없으면 CLASSIFY-OFF(다른 칸은 됨) · 저장 키 axes 그대로
+        it_ax = db.item_decide(R, (p := db.item_propose(R, rax["id"], 1, None, 0, "AX", "축 하나", "", {}, []))["item_id"], 0,
+                               p["proposal_id"], "apply")
+        it_bk = db.item_decide(R, (p := db.item_propose(R, rbk["id"], 1, None, 0, "BK", "책 하나", "", {}, []))["item_id"], 0,
+                               p["proposal_id"], "apply")
+        rr = db.record_add(R, "분류할 글", "분류할 글이다.")
+        out = db.record_attach(R, rr["id"], axes=[it_ax["id"]])
+        assert [(l["field_key"], l["target_id"]) for l in out["links"]] == [("axes", it_ax["id"])]
+        e = expect("LINK-INVALID", db.record_attach, R, rr["id"], None, [it_bk["id"]])
+        assert "분류 대상" in e.message
+        nr = db.record_add(U["nor"], "축 없음", "분류할 데가 없다.")
+        e = expect("CLASSIFY-OFF", db.record_attach, U["nor"], nr["id"], None, [])
+        assert e.message == contract.CLASSIFY_OFF_MSG
+        assert db.record_attach(U["nor"], nr["id"], use_at="쓸 자리")["notes"]["use_at"] == "쓸 자리", "분류만 꺼진다"
+        # 이관 뒤에 축을 만든 사용자 — 다음 재시작을 기다리지 않고 같은 규칙으로 잡힌다
+        lax = _r3_def(U["late"], "axes", "축", "collection", [])
+        assert _q3_role(U["late"]) is None
+        lit = db.item_decide(U["late"], (p := db.item_propose(U["late"], lax["id"], 1, None, 0, "L", "축", "", {}, []))["item_id"], 0,
+                             p["proposal_id"], "apply")
+        lr = db.record_add(U["late"], "글", "늦게 만든 축.")
+        assert db.record_attach(U["late"], lr["id"], axes=[lit["id"]])["links"] and _q3_role(U["late"])["object_id"] == lax["id"]
+        # 항목 → 항목의 axes 참조 필드는 역할을 안 본다 — 기준의 axes 필드가 책 항목을 가리켜도 된다
+        rpr = _r3_def(R, "principles", "기준", "principle", [
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": rbk["id"], "multiple": True}])
+        ip = db.item_propose(R, rpr["id"], 1, None, 0, "P", "기준", "", {}, [{"field_key": "axes", "target_kind": "item", "target_id": it_bk["id"]}])
+        assert db.item_decide(R, ip["item_id"], 0, ip["proposal_id"], "apply")["revision"] == 1
+        # 신규 시드 = 표준 축이 분류 대상
+        assert _q3_role(db.user_by_email("q2seed@example.com")["id"])["object_id"] == "od_axes"
+
+        # ── 확정 재검사 · review · 수집 범위 ──
+        V = U["rev"]
+        n0 = nrec(V)
+        e = expect("SCOPE-SELF-ONLY", db.record_add, V, "남의 글", "남이 쓴 글이다.", None, "가져옴", "external", "verbatim")
+        assert e.message == contract.SCOPE_MSG and nrec(V) == n0
+        assert db.record_add(V, "미상", "누가 썼는지 모른다.", None, "가져옴", "unknown", "unknown")["author_kind"] == "unknown"
+        cand = {}
+        for why in ("ok", "author_unknown", "external", "processed", "deleted", "keep"):
+            rec = db.record_add(V, why, f"{why} 기록의 원문 문장이다.")
+            (cid,), _ = db.candidates_propose(V, rec["id"], "", [{"text": f"{why} 판단", "quote": f"{why} 기록의 원문 문장이다"}], "ai")
+            cand[why] = (rec["id"], cid)
+        assert db.candidate_decide(V, cand["keep"][1], "confirm")["status"] == "confirmed"
+        fix = {"author_unknown": "author_kind='unknown'", "external": "author_kind='external'", "processed": "text_process='rewritten'",
+               "deleted": "deleted_at=now()", "keep": "author_kind='unknown'"}
+        with db.tx() as c:   # 시험 재료: 후보가 붙은 뒤 근거가 비적격이 된 옛 데이터(정정 API 는 PROVENANCE-LOCKED 로 막는다)
+            for why, sql in fix.items():
+                c.execute(f"UPDATE records SET {sql} WHERE user_id=%s AND id=%s", (V, cand[why][0]))
+        for why in ("author_unknown", "external", "processed", "deleted"):
+            rid, cid = cand[why]
+            before = db.candidate_get(V, cid)
+            assert before["review"] == why, (why, before)
+            e = expect("CANDIDATE-REVIEW", db.candidate_decide, V, cid, "confirm")
+            assert (e.message, e.action) == (contract.REVIEW_MSG[why], contract.REVIEW_ACT[why])
+            expect("CANDIDATE-REVIEW", db.candidate_decide, V, cid, "edit_confirm", "고친 문장")
+            assert db.candidate_get(V, cid) == before, "거절 = 아무것도 안 바뀜(edit_confirm 의 edit 도 롤백)"
+            assert (before["record_id"], before["quote"]) == (rid, f"{why} 기록의 원문 문장이다"), "근거 표시 보존"
+            assert db.candidate_decide(V, cid, "edit", "고친 판단")["text"] == "고친 판단"
+            assert db.candidate_decide(V, cid, "exclude")["status"] == "excluded"
+            assert db.candidate_decide(V, cid, "pending")["review"] == why
+        kept = db.candidate_get(V, cand["keep"][1])
+        assert (kept["status"], kept["review"]) == ("confirmed", None), "이미 확정한 판단은 그대로(재검토 표시 없음)"
+        assert db.candidate_decide(V, cand["keep"][1], "confirm")["status"] == "confirmed", "같은 결정 반복은 no-op — 재검사 안 함"
+        listed = {x["id"]: x["review"] for x in db.candidates(V)}
+        assert cand["deleted"][1] not in listed, "삭제 기록의 후보는 목록에 없다"
+        assert {why: listed[cand[why][1]] for why in ("ok", "author_unknown", "external", "processed")} == {
+            "ok": None, "author_unknown": "author_unknown", "external": "external", "processed": "processed"}
+        st = await get_state(V)
+        assert {x["id"]: x["review"] for x in st["candidates"]} == listed and \
+            {x["id"]: x["review"] for x in db.state(V)["candidates"]} == listed, "웹·MCP state 둘 다"
+        # 해제 = 근거 기록이 적격으로 정정될 때뿐(메타데이터가 실제로 틀렸던 경우)
+        db.record_provenance_set(V, cand["author_unknown"][0], "self", "verbatim", "작성자 확인함")
+        assert db.candidate_get(V, cand["author_unknown"][1])["review"] is None
+        assert db.candidate_decide(V, cand["author_unknown"][1], "confirm")["status"] == "confirmed"
+        # 수집 범위: external 로의 정정은 된다(후보 없는 기록) · 후보 있는 적격 기록 → 비적격은 PROVENANCE-LOCKED 그대로
+        lone = db.record_add(V, "혼자", "후보 없는 글이다.")
+        assert db.record_provenance_set(V, lone["id"], "external", "verbatim", "남의 글이었음")["author_kind"] == "external"
+        expect("PROVENANCE-LOCKED", db.record_provenance_set, V, cand["ok"][0], "external", "verbatim", "남의 글?")
+
+        # ── init_schema: 옛 DB(출처·역할 없음) → 2회 멱등, 이관 ──
+        name = f"q3_{secrets.token_hex(3)}"
+        create_schema(name)
+        try:
+            with schema_conn(name) as c:
+                db.init_schema(c)
+                c.execute("ALTER TABLE records DROP CONSTRAINT fk_records_source")
+                c.execute("ALTER TABLE records DROP COLUMN source_id")
+                c.execute("DROP TABLE sources, user_roles")
+                c.execute("INSERT INTO users (id,email) VALUES ('u_q3','q3@x.test')")
+                c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES ('u_q3','od_a','axes','축','collection',1)")
+                c.execute("INSERT INTO records (id,user_id,title,body,source) VALUES ('r_q3','u_q3','t','b','옛 문자열')")
+                c.commit()
+                shape = lambda: c.execute(   # noqa: E731
+                    "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND table_name IN ('records','sources','user_roles') ORDER BY 1, 2").fetchall()
+                db.init_schema(c)
+                c.commit()
+                first, roles = shape(), c.execute("SELECT * FROM user_roles").fetchall()
+                assert {(r["table_name"], r["column_name"]) for r in first} >= {("records", "source_id"), ("sources", "location"),
+                                                                                 ("user_roles", "object_id")}
+                assert [(r["user_id"], r["object_id"]) for r in roles] == [("u_q3", "od_a")]
+                assert c.execute("SELECT source, source_id FROM records WHERE id='r_q3'").fetchone() == {"source": "옛 문자열", "source_id": None}
+                db.init_schema(c)
+                c.commit()
+                assert shape() == first and c.execute("SELECT * FROM user_roles").fetchall() == roles, "두 번째 init_schema 가 바꿨다"
+                assert db._has_constraint(c, "records", "fk_records_source")
+                c.rollback()
+        finally:
+            drop_schema(name)
+    finally:
+        site.dev, site.dev_user = real_site
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    print("OK — Q3 축소(출처 off 기록만·on 찾거나 만들기·검사·사용자별·FK·옛 기록 미확인·본인만·MCP 인자 · 역할 이관·초안 제외·거절 유지·멱등"
+          "·시드 표준 축·늦은 축·record_attach 역할 경유·CLASSIFY-OFF·항목 필드 무관 · 확정 재검사 4사유·edit_confirm 롤백·다른 결정 허용"
+          "·확정 불변·review 웹=MCP·정정 해제 · external 거절·정정 허용·PROVENANCE-LOCKED · init_schema 2회) 통과")
+
+
+# ── 22a) Q5 운영자 화면 — /admin/users · /admin/users/<불투명 id> · structure_svg ─────────
+Q5A = {k: f"q5a{k}@example.com" for k in ("a", "n", "c", "r", "x")}   # a 관리자 · n 비동의 · c 이름 공유 동의 · r 철회 · x 일반 사용자
+TEST_EMAILS += tuple(Q5A.values())
+
+
+def _q5a_fixture(uid, m, h):
+    """표준 편입 2(축·결정) · 사용자 오브젝트(N:1·N:N·대상 미지정 참조·select) · 선택 템플릿·직접 추가 고립 노드 · 출처 1 ·
+    연결: 정상 3 · 없는 대상(보관 항목) 1 · 대상 오브젝트 불일치 1 · 검사 불가(대상 미지정) 1 · M-D 위반(지워진 근거 기록의 후보) 1.
+    사용자 문자열은 m(label·선택지 label·출처·본문), key·id·선택지 값은 h 를 품는다 — 누출 전문 검색용."""
+    from psycopg.types.json import Jsonb
+    o = [f"od_q5{h}_{i}" for i in range(1, 6)]   # 같은 created_at → id 순 = 오브젝트 1..5
+    with db.tx() as c:
+        for oid, key, lab, kind, std, slot in ((o[0], "axes", "축", "collection", "std:axes", None),
+                                               (o[1], "decision_events", "결정", "event", "std:decision_events", None),
+                                               (o[2], f"q5key{h}c", "사용자", "collection", None, None),
+                                               (o[3], f"q5key{h}t", "템플릿", "collection", None, "author@1:craft"),
+                                               (o[4], f"q5key{h}i", "고립", "collection", None, None)):
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision,std_id,template_slot) VALUES (%s,%s,%s,%s,%s,1,%s,%s)",
+                      (uid, oid, key, f"{m}-L-{lab}", kind, std, slot))
+        fd = "INSERT INTO field_defs (user_id,object_id,key,label,value_type,options,target_kind,target_object_id,multiple,position,std_id) " \
+             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        for row in ((o[0], "keywords", "kw", "text_list", [], None, None, False, 0, "std:axes.keywords"),
+                    (o[1], "happened_on", "날짜", "date", [], None, None, False, 0, "std:decision_events.happened_on"),
+                    (o[1], "claims", "판단", "reference", [], "candidate", None, True, 1, "std:decision_events.claims"),
+                    (o[2], f"q5key{h}sel", "고르기", "select", [{"value": f"q5val{h}", "label": f"{m}-OPT"}], None, None, False, 0, None),
+                    (o[2], f"q5key{h}one", "하나", "reference", [], "item", o[0], False, 1, None),
+                    (o[2], f"q5key{h}many", "여럿", "reference", [], "item", o[1], True, 2, None),
+                    (o[2], f"q5key{h}any", "아무", "reference", [], "item", None, True, 3, None)):
+            c.execute(fd, (uid, row[0], row[1], f"{m}-F-{row[2]}", row[3], Jsonb(row[4]), *row[5:]))
+        it = "INSERT INTO items (user_id,id,object_id,schema_revision,title,body,revision,archived_at) VALUES (%s,%s,%s,1,%s,%s,1,%s)"
+        for iid, oid, gone in (("i1", o[0], False), ("i2", o[1], False), ("i3", o[2], False), ("i4", o[0], True), ("i5", o[2], False)):
+            c.execute(it, (uid, f"i_q5{h}{iid}", oid, f"{m}-T", f"{m}-B", "2026-01-01" if gone else None))
+        c.execute("INSERT INTO records (id,user_id,title,body,deleted_at) VALUES (%s,%s,%s,%s,now())", (f"r_q5{h}", uid, f"{m}-RT", "abcdef"))
+        c.execute("INSERT INTO candidates (id,user_id,record_id,text,quote,quote_start,quote_end,origin) VALUES (%s,%s,%s,%s,'abc',0,3,'self')",
+                  (f"c_q5{h}", uid, f"r_q5{h}", f"{m}-CT"))
+        ln = "INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_item_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s)"
+        for src, oid, fk, ti, tc in (("i2", o[1], "claims", None, f"c_q5{h}"),       # 정상(코어 후보)
+                                     ("i3", o[2], f"q5key{h}one", "i1", None),         # 정상 N:1
+                                     ("i3", o[2], f"q5key{h}many", "i2", None),        # 정상 N:N
+                                     ("i3", o[2], f"q5key{h}many", "i4", None),        # 없는 대상(보관 항목)
+                                     ("i5", o[2], f"q5key{h}many", "i1", None),        # 대상 오브젝트 불일치
+                                     ("i5", o[2], f"q5key{h}any", "i1", None)):        # 검사 불가(대상 미지정)
+            c.execute(ln, (uid, f"i_q5{h}{src}", oid, fk, f"i_q5{h}{ti}" if ti else None, tc))
+        c.execute("INSERT INTO sources (user_id,id,kind,name,location) VALUES (%s,%s,'file',%s,%s)", (uid, f"s_q5{h}", f"{m}-SRCNAME", f"{m}-SRCLOC"))
+        c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,'std@1','adopting')", (uid,))
+        for k, stt in (("axes", "incorporated"), ("decision_events", "incorporated"), ("principles", "deferred")):
+            c.execute("INSERT INTO std_choices (user_id,std_key,state) VALUES (%s,%s,%s)", (uid, k, stt))
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via) VALUES (%s,%s,'bug',%s,'web')", (f"tk_q5{h}", uid, f"{m}-TK"))
+
+
+async def test_q5_admin():
+    """Q5 운영자 화면: structure_svg 결정성 · 비동의·철회 사용자 — 목록·상세 HTML·SVG 속성·aria·URL·302 Location·404 본문에 label·key·선택지 값·
+    출처 name·location·id 0 · 동의 사용자 — 현재 label 보임·key·선택지 값 0 · 위조 불투명 id 404 · 일반 사용자 404 · 연결 있음 M ·
+    무결성 오류 3종 ≠ 검사 불가 · cardinality · 표준 상태 코드 · 고립 노드 · 표준 정의 보호."""
+    import admin_db
+    import structure_svg
+    site = main.site
+    U = {k: db.user_by_email(e)["id"] for k, e in Q5A.items()}
+    A = U["a"]
+    _set_role(A, "admin")
+    M = {k: f"Q5M{k.upper()}" + secrets.token_hex(4) for k in ("n", "c", "r")}
+    H = {k: secrets.token_hex(4) for k in ("n", "c", "r")}
+    for k in ("n", "c", "r"):
+        _q5a_fixture(U[k], M[k], H[k])
+    db.optional_consent_set(U["c"], "struct_names", True)
+    db.optional_consent_set(U["r"], "struct_names", True)
+    db.optional_consent_set(U["r"], "struct_names", False)
+    secret = [M["n"], M["r"]] + [f"{p}{H[k]}" for k in ("n", "c", "r") for p in ("q5key", "q5val", "od_q5", "i_q5", "r_q5", "c_q5", "s_q5", "tk_q5")]
+    secret += [M["c"] + x for x in ("-SRCNAME", "-SRCLOC", "-T", "-B", "-RT", "-CT", "-TK")] + list(U.values())
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+
+    async def get(path, cookie=None):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", cookie or site.session_value(A))
+            return await h.get(path)
+
+    def leak_free(r, path):
+        out = r.text + json.dumps(dict(r.headers), ensure_ascii=False)
+        hit = [s for s in secret if s in out]
+        assert not hit, (path, "누출", hit)
+        if r.status_code == 200:
+            assert "<script" not in r.text.lower() and not re.search(r"\son[a-z]+\s*=", r.text, re.I), (path, "스크립트·이벤트 속성 0")
+        return r.text
+
+    def svg_of(t):
+        i = t.index("<svg")
+        return t[i:t.index("</svg>", i) + 6]
+    try:
+        # ── structure_svg: 결정성 · 고정 예제 · 본인 응답도 그린다 ──
+        for name in contract.EXAMPLES:
+            for v in contract.VIEWERS:
+                resp = contract.respond(contract.EXAMPLES[name], v)
+                a, b = structure_svg.render(resp), structure_svg.render(json.loads(json.dumps(resp)))
+                assert a == b and a.startswith("<svg") and a.endswith("</svg>"), (name, v)
+                banned = {"self": None, "admin_noconsent": r"ULBL|PLBL|SRC|ukey|uopt|od_|src_", "admin_consent": r"SRC|ukey|uopt|od_|src_"}[v]
+                assert banned is None or not re.search(banned, a), (name, v, "운영자 SVG 에 key·선택지 값·출처·id(비동의는 label 도) 0")
+        # 대조 — 심은 이름·key·선택지 값·출처는 본인 응답에선 보인다(읽히는 자리에 있다는 증거)
+        own = (await get("/api/state", site.session_value(U["n"]))).text
+        for w in (f"{M['n']}-L-사용자", f"{M['n']}-OPT", f"q5key{H['n']}sel", f"q5val{H['n']}", f"{M['n']}-SRCNAME", f"{M['n']}-SRCLOC"):
+            assert w in own, ("대조 실패 — 본인 state 에 없다", w)
+        # 운영 화면은 밝게 고정(OS 미추종) — 다크 미디어 쿼리 0
+        assert "prefers-color-scheme" not in web._ADMIN_CSS and "prefers-color-scheme" not in (await get("/admin/users")).text
+        # ── 일반 사용자·무세션 404 ──
+        for cookie in (site.session_value(U["x"]), site.session_value(U["n"])):
+            for path in ("/admin/users", f"/admin/users/{site._opaque(U['n'])}"):
+                r = await get(path, cookie)
+                assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
+        # ── 목록: n · N · M · 표준 상태 코드 ──
+        r = await get("/admin/users")
+        t = leak_free(r, "/admin/users")
+        assert r.status_code == 200 and f'href="/admin/users/{site._opaque(U["n"])}"' in t
+        row = next(x for x in t.split("<tr>") if Q5A["n"] in x)
+        assert '<td class="num">5</td><td class="num">4</td><td class="num">3</td>' in row, row
+        assert "std@1 adopting" in row and "axes incorporated" in row and "principles deferred" in row, row
+        assert M["c"] not in t, "목록엔 동의자 이름도 없다"
+        # ── 상세(비동의·철회) ──
+        for k in ("n", "r"):
+            path = f"/admin/users/{site._opaque(U[k])}"
+            r = await get(path)
+            t = leak_free(r, path)
+            assert r.status_code == 200 and "동의 없음" in t and 'class="lbl"' not in t, (k, t[-600:])
+            svg = svg_of(t)
+            assert svg == svg_of((await get(path)).text), "같은 사용자 두 번 → 같은 SVG"
+            assert svg.count('r="42"') == 6, "오브젝트 5(고립 2 포함) + 코어 후보 1 — 같은 크기"
+            assert svg.count("stroke-dasharray") == 2 and svg.count(structure_svg.LOCK_TEXT) >= 2, "편입된 표준 2 = 표준 정의 보호"
+            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 직접 추가" in svg, svg[:1500]
+            assert "marker" not in svg and "arrow" not in svg, "화살표 없음"
+            assert all(f'id="{structure_svg.node_anchor(i)}"' in t for i in range(5)) and f'id="{structure_svg.core_anchor("candidate")}"' in t
+            assert t.count('<td>N:1</td>') == 1 and t.count('<td>N:N</td>') == 3, "카디널리티 표시"
+            for code, n in (("REF-DANGLING", 1), ("REF-MISMATCH", 1), ("MD-ORPHAN", 1)):
+                assert re.search(rf"<td>{code}</td><td>[^<]+</td><td class=\"num\"><span class=err>{n}</span></td>", t), (code, t[-2500:])
+            assert re.search(r"<td>UNCHECKED</td><td>검사 불가[^<]*</td><td class=\"num\">1</td>", t), "검사 불가는 오류와 따로"
+            assert "std@1" in t and "adopting" in t and "incorporated" in t and "deferred" in t, "표준 상태 코드"
+            assert "표준 축" in t and "표준 결정" in t, "편입된 것만 표준명"
+            assert "<th>출처</th>" not in t and "<th>카디널리티</th><th>구분</th>" in t, "관계 집계 열 머리 = 구분(정의 구분 뜻의 '출처' 0 — 출처는 기록 출처 개수만)"
+        v = admin_db.userview("admin", U["n"])[U["n"]]
+        inp = admin_db.contract_input(v)
+        st = admin_db.link_stats(v, inp)
+        assert st["linked"] == [1, 1, 1, 0], st
+        assert sorted((e["code"], e["why"], e["n"]) for e in st["errors"]) == [("MD-ORPHAN", "candidate", 1), ("REF-DANGLING", "target", 1),
+                                                                             ("REF-MISMATCH", "object", 1)], st
+        assert [(e["rel"], e["why"], e["n"]) for e in st["unchecked"]] == [(3, "any_item", 1)], st
+        resp = contract.respond(inp, "admin_noconsent")
+        assert [r_["cardinality"] for r_ in resp["relations"]] == ["N:N", "N:1", "N:N", "N:N"] and resp["counts"]["sources"] == 1
+        assert structure_svg.render(resp) == structure_svg.render(contract.respond(admin_db.contract_input(v), "admin_noconsent"))
+        # ── 상세(동의): 현재 label·선택지 label 보임, key·선택지 값·출처 0 ──
+        path = f"/admin/users/{site._opaque(U['c'])}"
+        r = await get(path)
+        t = leak_free(r, path)
+        assert r.status_code == 200 and "동의 — 현재 이름" in t, t[-600:]
+        assert f"{M['c']}-L-사용자" in t and f"{M['c']}-F-여럿" in t and f"{M['c']}-OPT" in t, "동의자 현재 label·선택지 label"
+        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 직접 추가"' in svg_of(t), "SVG 에도 동의자 label"
+        # 철회 → 다음 조회부터 이름 0
+        db.optional_consent_set(U["c"], "struct_names", False)
+        t = (await get(path)).text
+        assert M["c"] not in t and "동의 없음" in t, "철회 뒤 이름 0"
+        db.optional_consent_set(U["c"], "struct_names", True)
+        # ── URL·오류: 위조 불투명 id · 내부 id · 쿼리 · 옛 트리 302 ──
+        for bad in ("0" * 12, secrets.token_hex(6), U["n"], site._opaque(U["n"])[:-1] + ("0" if site._opaque(U["n"])[-1] != "0" else "1")):
+            r = await get(f"/admin/users/{bad}")
+            t = leak_free(r, bad)
+            assert r.status_code == 404 and "NOT-FOUND" in t and bad not in t, (bad, r.status_code)
+        r = await get(f"/admin/users/{site._opaque(U['n'])}?u=1")
+        assert r.status_code == 400 and leak_free(r, "?u=1")
+        r = await get(f"/admin/schema?u={site._opaque(U['n'])}")
+        leak_free(r, "/admin/schema?u=n")
+        assert r.status_code == 302 and r.headers["location"] == f"/admin/users/{site._opaque(U['n'])}", r.headers
+        for path in ("/admin", "/admin/schema", "/admin/reports?ds=structure&g1=value_type"):
+            leak_free(await get(path), path)
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 22a Q5 운영자 화면(SVG 결정성·예제·본인 응답 · 일반 사용자 404 · 목록 n·N·M·표준 코드 · 비동의·철회 상세 이름·key·값·출처·id 0"
+          "(HTML·SVG·aria·URL·302·404) · 동의 label 보임·key 0·철회 뒤 0 · 위조 id 404 · 무결성 3종 ≠ 검사 불가 · N:1·N:N · 고립·표준 정의 보호) 통과")
+
+
+# ── 22b) Q4·Q5 사용자 화면 — 기록 출처·재검토 · 구조 정의 · 편입 미리보기·확인 대화창 ─────────
+Q45 = {k: f"q45{k}@example.com" for k in ("a", "b")}   # a = 화면 주인 · b = 다른 사용자(이름 누출 표식 Q45B…)
+
+
+async def test_q45_user():
+    """app.html 정적(「구조 정의」 보기·편입 대화창 마크업·체크 게이트·출처 미확인·재검토 문구·인라인 스크립트 1개·on* 0·목록/그래프 전환)
+    · /api/state structure == contract.respond(self) · structure_svg == structure_svg.render(structure)(결정적·script·on* 0·다른 사용자 이름 0)(기대값은 SQL 로 읽은 std_marks·std_choices + db.definitions + db.sources)
+    · 편입 전후 locked·origin 변화 · MCP state(db.state)엔 structure 없음 · 다른 사용자 이름 0(/api/state·/api/std/preview)
+    · 출처 있는 기록·없는 기록·재검토 후보가 화면 입력에 있다 · 관리자 /app 에도 편입 대화창(사용자·관리자 구간 밖).
+    시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
+    from html.parser import HTMLParser
+    import structure_svg
+    site = main.site
+    saved = {k: os.environ.pop(k, None) for k in ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")}
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    emails = list(Q45.values())
+    tokens = structure_svg.tokens_css(dark_attr=True, dark_media=False)
+
+    def svg_tags(svg):
+        """SVG 마크업 → [(태그, 속성 이름들)]. 글자(escape 된 label) 안의 「 onload=」 는 속성이 아니라 세지 않는다."""
+        out = []
+
+        class P(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                out.append((tag, [k for k, _ in attrs]))
+            handle_startendtag = handle_starttag
+        P().feed(svg)
+        return out
+
+    def wipe():
+        with db.tx() as c:
+            ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (emails,)).fetchall()]
+        for i in ids:
+            db.user_delete(i)
+
+    async def get(path, uid):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            r = await h.get(path)
+            assert r.status_code == 200, (path, r.status_code, r.text[:200])
+            return r
+
+    async def choose(uid, body):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", site.session_value(uid))
+            return await h.post("/api/std/choose", json=body, headers={"origin": PUBLIC})
+
+    def expected(uid):
+        """web.py 와 다른 경로 — std_marks·std_choices 를 SQL 로 직접 읽는다."""
+        with db.tx() as c:
+            m = c.execute("SELECT version,state FROM std_marks WHERE user_id=%s AND version=%s", (uid, contract.STD_VERSION)).fetchone()
+            ch = {r["std_key"]: r["state"] for r in c.execute("SELECT std_key,state FROM std_choices WHERE user_id=%s", (uid,)).fetchall()}
+        return contract.respond({"definitions": db.definitions(uid), "std_marks": dict(m) if m else None, "std_choices": ch,
+                                 "sources": db.sources(uid)}, "self")
+
+    wipe()
+    try:
+        # ── app.html 정적 ──
+        html = (HERE / "app.html").read_text(encoding="utf-8")
+        assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
+        assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
+        assert '"구조 정의"' in html and "/defs" in html and 'if (a === "defs") return renderDefs(tab);' in html, "구조 정의 보기·라우트"
+        assert "S.structure" in html and "/api/std/preview" in html and "/api/std/choose" in html
+        i = html.index('<dialog id="std-dlg"')
+        dlg = html[i:html.index("</dialog>", i)]
+        for w in ('id="std-dlg-ok"', 'type="checkbox"', 'id="std-dlg-go" disabled', 'id="std-dlg-lock"', 'id="std-dlg-oktext"',
+                  'id="std-dlg-cancel"'):
+            assert w in dlg, w
+        for mark in ("<!--user-->", "<!--admin-->"):   # 관리자 /app 도 구조 탭을 쓴다 — 대화창은 두 구간 표식 밖
+            for a in [m.start() for m in re.finditer(re.escape(mark), html)]:
+                b = html.index(mark.replace("<!--", "<!--/"), a)
+                assert not (a < i < b), ("편입 대화창이 구간 안", mark)
+        for w in ('같은 뜻으로 쓴다', 'confirmed_meaning = true', 'expected_revision = o.object ? o.object.revision : null',
+                  '$("std-dlg-go").disabled = !$("std-dlg-ok").checked', '"FEATURE-OFF":', '"DEF-INVALID":', '"CONFLICT":',
+                  "표준 정의 보호", "출처 미확인", "source_counts", "확정 전 재검토", "S.sources"):
+            assert w in html, w
+        for code in contract.LOCKED_CHANGES:   # 잠금 영향 문구 — 서버 코드 전부
+            assert re.search(rf"\b{code}: \"", html), code
+        for code in contract.REVIEW_REASONS:
+            assert re.search(rf"\b{code}: \"", html), code
+        fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
+        assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
+        assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
+        # 목록/그래프 전환(기본 목록) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
+        for w in ('let defsMode = "list";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
+                  'id="dmo-o${i + 1}"', 'id="dmo-r${i + 1}"', 'id="dmo-core-${esc(x.kind)}"', 'closest(".dmo a")', 'getAttribute("href")',
+                  "e.preventDefault(); defsJump(", "scrollIntoView"):
+            assert w in html, w
+        assert (structure_svg.node_anchor(0), structure_svg.rel_anchor(0), structure_svg.core_anchor("record")) == (
+            "dmo-o1", "dmo-r1", "dmo-core-record"), "app.html 의 id 꼴 = structure_svg 앵커"
+        assert tokens in html and "prefers-color-scheme" not in tokens and "prefers-color-scheme" not in html, "토큰 = 테마 토글(data-theme)만"
+        assert '[data-theme="dark"]' in tokens
+        chip = html[html.index("const ORIGIN_CHIP = {"):html.index("};", html.index("const ORIGIN_CHIP = {"))]
+        assert dict(re.findall(r'(\w+): \["[^"]*", "([^"]+)"\]', chip)) == structure_svg.ORIGIN_TEXT, "구분 용어 — 그래프 = 목록 칩"
+        assert '<th scope="col">출처</th>' not in html and '<th scope="col">구분</th><th scope="col">보호</th>' in html, "필드 표 열 머리 = 구분(정의 구분 뜻의 '출처' 0)"
+        sv = html[html.index("function structViews("):html.index("\n}", html.index("function structViews("))]   # 구조 탭 순서: 보기 전환 → 오브젝트 필(항목 보기만)
+        assert sv.index('aria-label="구조 보기"') < sv.index("+ sub;") and 'subnav("");\n  const sub = `<nav class="pills sobjs" aria-label="구조 고르기">' in html \
+            and '"구조 고르기");' not in html and 'structViews(tab, "defs", ' not in html and html.count('structViews(tab, "items", sub)') == 3, "보기 전환이 맨 위 · 오브젝트 필은 그 아래 항목 보기에서만"
+        assert "min-width: 420px" in html and ".dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }" in html
+
+        # ── 사용자 A(기존 사용자형 — 표식 없음) · B(다른 사용자) ──
+        A = db.user_by_subject("q45a_sub", Q45["a"])["id"]
+        B = db.user_by_subject("q45b_sub", Q45["b"])["id"]
+        _r3_def(A, "axes", "내 관심축 Q45A01", "collection", [{"key": "keywords", "label": "단어 Q45A02", "value_type": "text_list"},
+                                                                    {"key": "memo", "label": "메모 Q45A03", "value_type": "text"}])
+        _r3_def(A, "principles", "내 원칙 Q45A04", "collection", [{"key": "axes", "label": "축", "value_type": "text"}])   # 충돌
+        _r3_def(B, "axes", "남의 축 Q45B01", "collection", [{"key": "keywords", "label": "남의 단어 Q45B02", "value_type": "text_list"}])
+        os.environ["CRM_FEATURE_SOURCES"] = "on"
+        try:
+            ra = db.record_add(A, "출처 있는 글", "출처가 있는 원문 문장이다.", source_ref={"kind": "file", "name": "업무일지 Q45A05",
+                                                                                   "location": "drive/q45a.md"})
+            db.record_add(B, "남의 글", "남의 원문.", source_ref={"kind": "url", "name": "남의 출처 Q45B03", "location": "https://q45b.example"})
+        finally:
+            os.environ.pop("CRM_FEATURE_SOURCES", None)
+        rn = db.record_add(A, "출처 없는 글", "출처가 없는 원문 문장이다.")
+        rv = db.record_add(A, "비적격 글", "재검토할 원문 문장이다.")
+        (cid,), _ = db.candidates_propose(A, rv["id"], "", [{"text": "재검토 판단", "quote": "재검토할 원문 문장이다"}], "ai")
+        with db.tx() as c:   # 후보가 붙은 뒤 근거가 비적격이 된 옛 데이터(정정 API 는 PROVENANCE-LOCKED)
+            c.execute("UPDATE records SET author_kind='unknown' WHERE user_id=%s AND id=%s", (A, rv["id"]))
+
+        st = (await get("/api/state", A)).json()
+        assert st["structure"] == expected(A), "structure = contract.respond(self)"
+        assert st["structure"]["viewer"] == "self" and st["structure"]["std"] == st["std"]
+        by = {o["key"]: o for o in st["structure"]["objects"]}
+        assert by["axes"]["origin"] == "custom" and by["axes"]["locked"] is False and by["axes"]["std_name"] is None, "편입 전"
+        js = {j["id"]: j for j in st["journal"]}
+        assert js[ra["id"]]["source_id"] and js[rn["id"]]["source_id"] is None, "출처 있는 기록·없는(출처 미확인) 기록"
+        assert [x["name"] for x in st["sources"]] == ["업무일지 Q45A05"] and st["source_counts"] == {
+            "by_source": {js[ra["id"]]["source_id"]: 1}, "unconfirmed": 2}
+        assert next(c for c in st["candidates"] if c["id"] == cid)["review"] == "author_unknown"
+        assert "structure" not in db.state(A), "MCP state_get 에는 structure 없음"
+        pv = (await get("/api/std/preview", A)).json()
+        for body in (json.dumps(st, ensure_ascii=False), json.dumps(pv, ensure_ascii=False)):
+            assert "Q45B" not in body, "다른 사용자 이름 0"
+        pb = _r3_by(pv)
+        assert pb["axes"]["can_incorporate"] and pb["axes"]["structure"] == "extend"
+        assert not pb["principles"]["can_incorporate"] and pb["principles"]["structure"] == "conflict"
+
+        # 편입(화면과 같은 본문) → structure 가 locked·standard 로 바뀐다
+        os.environ["CRM_FEATURE_STANDARD"] = "on"
+        r = await choose(A, {"std_key": "axes", "state": "incorporated", "confirmed_meaning": True,
+                             "expected_revision": pb["axes"]["object"]["revision"]})
+        assert r.status_code == 200 and r.json()["state"] == "incorporated", r.text
+        r = await choose(A, {"std_key": "principles", "state": "incorporated", "confirmed_meaning": True,
+                             "expected_revision": pb["principles"]["object"]["revision"]})
+        assert r.status_code == 400 and r.json()["code"] == "DEF-INVALID", r.text
+        r = await choose(A, {"std_key": "decision_events", "state": "deferred"})
+        assert r.status_code == 200, r.text
+        st = (await get("/api/state", A)).json()
+        assert st["structure"] == expected(A)
+        by = {o["key"]: o for o in st["structure"]["objects"]}
+        assert (by["axes"]["origin"], by["axes"]["locked"], by["axes"]["std_name"]) == ("standard", True, contract.std_name("std:axes")), by["axes"]
+        fo = {f["key"]: f for f in by["axes"]["fields"]}
+        assert fo["keywords"]["locked"] is True and (fo["memo"]["origin"], fo["memo"]["locked"]) == ("custom", False), "사용자 필드는 custom"
+        assert st["structure"]["std"]["objects"] == {"axes": "incorporated", "decision_events": "deferred", "principles": "none"}
+        assert "Q45B" not in json.dumps(st, ensure_ascii=False) + json.dumps((await get("/api/std/preview", A)).json(), ensure_ascii=False)
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+
+        # ── 구조 그래프 — N:1(편입된 axes)·N:N(코어 후보) 관계 · escape 가 필요한 label · 결정적 · script·on* 0 · 다른 사용자 이름 0 ──
+        axes_id = by["axes"]["id"]
+        _r3_def(A, "q45links", 'Q45 연결 "<script>alert(1)</script> onload=x &', "collection",
+                [{"key": "axis", "label": "축 <b onclick=y>", "value_type": "reference", "target_kind": "item", "target_object_id": axes_id,
+                  "multiple": False},
+                 {"key": "claims", "label": "판단들", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        st = (await get("/api/state", A)).json()
+        svg = st["structure_svg"]
+        assert st["structure"] == expected(A), "structure = contract.respond(self)"
+        assert svg == structure_svg.render(st["structure"]) == structure_svg.render(expected(A)), "structure_svg = render(structure) — 결정적"
+        assert "structure_svg" not in db.state(A), "MCP state_get 에는 structure_svg 없음"
+        objs, rels = st["structure"]["objects"], st["structure"]["relations"]
+        assert sorted(r["cardinality"] for r in rels) == ["N:1", "N:N"] and [c["kind"] for c in st["structure"]["core"]] == ["candidate"]
+        assert all(f'href="#{structure_svg.node_anchor(i)}"' in svg for i in range(len(objs)))
+        assert all(f'href="#{structure_svg.rel_anchor(i)}"' in svg for i in range(len(rels)))
+        assert f'href="#{structure_svg.core_anchor("candidate")}"' in svg
+        tags = svg_tags(svg)
+        assert tags and tags[0][0] == "svg" and not [t for t, _ in tags if t in ("script", "foreignobject", "iframe")], "script 0"
+        assert not [(t, k) for t, ks in tags for k in ks if k.lower().startswith("on")], "on* 속성 0"
+        assert "<script" not in svg.lower() and "&lt;script&gt;" in svg and "&lt;b onclick=y&gt;" in svg, "label 은 escape — 글자로만 남는다"
+        assert "Q45B" not in svg and "Q45B" not in json.dumps(st, ensure_ascii=False), "다른 사용자 이름 0"
+
+        # /app — 일반·관리자 모두 편입 대화창·구조 정의 보기 코드가 있다(CSP 해시 = 보낸 본문)
+        for admin in (False, True):
+            _set_role(A, "admin" if admin else "user")
+            r = await get("/app", A)
+            hs = web.inline_script_hashes(r.text)
+            assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"]
+            assert r.text.count('<dialog id="std-dlg"') == 1 and "renderDefs" in r.text, admin
+            assert tokens in r.text and "defsJump" in r.text, ("그래프 전환·토큰", admin)
+            assert ('id="desk-dlg"' in r.text) is not admin, "Q1b·Q1 분기 유지"
+        _set_role(A, "user")
+    finally:
+        site.dev, site.dev_user = real
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+        wipe()
+    with db.tx() as c:
+        assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
+    print("OK — Q4·Q5 사용자 화면(app.html 정적·structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
+          "·구조 그래프 structure_svg = render(structure)·script·on* 0·토큰 data-theme"
+          "·출처 미확인·재검토·관리자 /app 대화창) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

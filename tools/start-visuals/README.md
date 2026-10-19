@@ -66,7 +66,7 @@ DATABASE_URL=postgresql://localhost/crm_test \
 
 - `seed.py`(server 파이썬): `DATABASE_URL` 호스트가 localhost·127.0.0.1 이 아니면 exit 1. 스키마 `CRM_TEST_SCHEMA`(기본 `start_demo`)를 DROP→CREATE 하고
   연결 문자열에 `options=-csearch_path=<스키마>` 를 얹어 그 안에서만 쓴다. 값은 `sample-data/` 와 같은 문장(상수). 촬영 사용자 `demo@local`.
-  촬영 사용자는 현재 처리방침 버전(guides 머리글, 서버와 같은 `web.read_consent_versions`)에 동의시킨다 — 안 하면 `/app` 이 `/consent` 로 간다.
+  필수 동의 게이트는 없다 — 촬영 사용자에게 동의 행을 넣지 않아도 `/app` 이 열린다.
 - `shoot.py`(시스템 python3): DEV 서버를 `--host 127.0.0.1 --port 8932` 로 띄운다(인증 없는 DEV — 0.0.0.0 금지). 브라우저 시계와 「불러온 시각」을 2026-10-15 23:05 KST 로 고정.
   장면 ① 기록 원문 ② 원문과 대조(후보·형광펜) ②' 「내 판단으로 남기기」 클릭 링(촬영 때만 `add_style_tag`) ③ 남긴 뒤(실제 POST) ④ 구조 탭 내 판단. 127.0.0.1 밖 요청 0건 단정.
 - `encode.sh`: 장면 PNG(2x) → 1280w · 12fps · 홀드 + 0.33초 페이드(클릭 전후는 컷) → img2webp(`-kmax 1`, lossy q70). 포스터는 장면 ② 한 장.

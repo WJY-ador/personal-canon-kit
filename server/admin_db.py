@@ -11,18 +11,17 @@
 """
 import datetime as _dt
 
+import contract
 import db
 
 VIEWER_ADMIN = "admin"
 
 # key → sql(리터럴 하나) · cols(응답 열 = 행 키) · viewer(조회자 role) · consent(필요한 선택 동의 kind, 없으면 None)
 ALLOW = {
-    # /admin/setup 사용자 표. consented = 현재 처리방침 버전 동의 여부(버전이 없으면 NULL).
+    # /admin/setup 사용자 표.
     "setup.users": {
-        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before,"
-               "CASE WHEN %s::text IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id "
-               "AND g.kind='privacy' AND g.version=%s) END AS consented FROM users u ORDER BY u.created, u.id",
-        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before", "consented"),
+        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before FROM users u ORDER BY u.created, u.id",
+        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # /admin/setup 감사 로그 — 실행자·대상 이메일(지워진 계정이면 NULL).
@@ -58,17 +57,16 @@ ALLOW = {
     },
     # ── 운영 화면 P4(개요·스키마·리포트) ─────────────────────
     # 오브젝트 id·필드 key 는 사용자가 지은 이름일 수 있어 그대로 꺼내지 않는다 — md5 불투명 참조(*_ref)로만 묶고 화면에 쓰지 않는다.
-    # 상태 띠 — args (privacy 버전, struct_names 버전, 임박 기준일, 개인정보 기한일, 개인정보 기한일). 미종결 = closed_at 없음.
+    # 상태 띠 — args (struct_names 버전, 임박 기준일, 개인정보 기한일, 개인정보 기한일). 미종결 = closed_at 없음.
     "overview.band": {
         "sql": "SELECT (SELECT count(*) FROM users) AS users, "
-               "(SELECT count(DISTINCT g.user_id) FROM agreements g WHERE g.kind='privacy' AND g.version=%s) AS consented, "
                "(SELECT count(*) FROM optional_consents oc WHERE oc.kind='struct_names' AND oc.state='granted' AND oc.version=%s) AS names, "
                "(SELECT count(*) FROM tickets t WHERE t.closed_at IS NULL) AS open_tickets, "
                "(SELECT count(DISTINCT t.id) FROM tickets t JOIN privacy_log p ON p.ticket_id=t.id WHERE t.kind='privacy' "
                "AND t.closed_at IS NULL AND p.received + %s::int - (now() AT TIME ZONE 'Asia/Seoul')::date BETWEEN 0 AND %s::int) AS privacy_soon, "
                "(SELECT count(DISTINCT t.id) FROM tickets t JOIN privacy_log p ON p.ticket_id=t.id WHERE t.kind='privacy' "
                "AND t.closed_at IS NULL AND p.received + %s::int < (now() AT TIME ZONE 'Asia/Seoul')::date) AS privacy_over",
-        "cols": ("users", "consented", "names", "open_tickets", "privacy_soon", "privacy_over"),
+        "cols": ("users", "names", "open_tickets", "privacy_soon", "privacy_over"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # 사용자별 마지막 활동일(usage_daily 의 가장 늦은 day, 전체 기간). user_id '' = 미연결.
@@ -77,19 +75,18 @@ ALLOW = {
         "cols": ("user_id", "last_day"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
-    # 리포트 「사용자」 — 가입 KST 날짜가 [from, to] 인 사용자. args (privacy 버전, struct_names 버전, from, to).
+    # 리포트 「사용자」 — 가입 KST 날짜가 [from, to] 인 사용자. args (struct_names 버전, from, to).
     "report.users": {
         "sql": "SELECT u.id, u.created, u.role, u.blocked_at IS NOT NULL AS blocked, "
-               "EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id AND g.kind='privacy' AND g.version=%s) AS consented, "
                "EXISTS (SELECT 1 FROM optional_consents oc WHERE oc.user_id=u.id AND oc.kind='struct_names' AND oc.state='granted' "
                "AND oc.version=%s) AS names, (SELECT max(d.day) FROM usage_daily d WHERE d.user_id=u.id) AS last_day "
                "FROM users u WHERE (u.created AT TIME ZONE 'Asia/Seoul')::date BETWEEN %s AND %s ORDER BY u.created, u.id",
-        "cols": ("id", "created", "role", "blocked", "consented", "names", "last_day"),
+        "cols": ("id", "created", "role", "blocked", "names", "last_day"),
         "viewer": VIEWER_ADMIN, "consent": None,
         "time": "가입 시각(users.created) 의 KST 날짜",
-        "dims": {"signup_month": "가입 월", "signup_week": "가입 주", "consent": "처리방침 현재 판 동의", "names": "구조 이름 공유",
+        "dims": {"signup_month": "가입 월", "signup_week": "가입 주", "names": "구조 이름 공유",
                  "role": "역할", "blocked": "차단", "active14": "14일 안 활동"},
-        "filters": {"consent": ("yes", "no"), "names": ("yes", "no"), "role": ("user", "admin"), "blocked": ("yes", "no"),
+        "filters": {"names": ("yes", "no"), "role": ("user", "admin"), "blocked": ("yes", "no"),
                     "active14": ("yes", "no")},
         "measures": {"users": {"label": "사용자 수", "src": "users", "time": "가입 시각(KST 날짜)",
                                "missing": "지운 계정은 없다(행째 삭제)", "agg": "행 수"}},
@@ -110,21 +107,21 @@ ALLOW = {
     },
     # 리포트 「구조」 — 사용자 × 적용된 오브젝트(revision>0, 보관 포함) × 필드. 이름 없음. 사용자에 오브젝트가 없으면 object_ref NULL 한 행.
     "report.structure": {
-        "sql": "SELECT u.id AS user_id, md5(o.id) AS object_ref, o.semantic_kind, o.template_slot AS object_slot, "
-               "o.archived_at AS object_archived, f.value_type, f.required, f.multiple, f.target_kind, f.template_slot AS field_slot, "
+        "sql": "SELECT u.id AS user_id, md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, "
+               "o.archived_at AS object_archived, f.value_type, f.required, f.multiple, f.target_kind, f.std_id AS field_std, f.template_slot AS field_slot, "
                "f.archived_at AS field_archived FROM users u LEFT JOIN object_defs o ON o.user_id=u.id AND o.revision > 0 "
                "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id ORDER BY u.created, u.id, o.created_at, o.id, f.position, f.key",
-        "cols": ("user_id", "object_ref", "semantic_kind", "object_slot", "object_archived", "value_type", "required", "multiple",
-                 "target_kind", "field_slot", "field_archived"),
+        "cols": ("user_id", "object_ref", "semantic_kind", "object_std", "object_slot", "object_archived", "value_type", "required", "multiple",
+                 "target_kind", "field_std", "field_slot", "field_archived"),
         "viewer": VIEWER_ADMIN, "consent": None,
         "time": None,   # 지금 상태(스냅샷) — 기간 없음
-        "dims": {"semantic_kind": "오브젝트 종류", "origin": "오브젝트 출처", "value_type": "필드 타입", "field_origin": "필드 출처",
+        "dims": {"semantic_kind": "오브젝트 종류", "origin": "오브젝트 구분", "value_type": "필드 타입", "field_origin": "필드 구분",
                  "required": "필수", "multiple": "다중", "target": "관계 대상", "archived": "보관",
                  "objects_bucket": "사용자별 오브젝트 수 구간", "fields_bucket": "사용자별 필드 수 구간"},
         "user_dims": ("objects_bucket", "fields_bucket"),   # 사용자 단위 차원 — 서로끼리만 묶고 필터와 같이 쓰지 않는다
-        "filters": {"semantic_kind": ("collection", "event", "principle"), "origin": ("template", "user"),
+        "filters": {"semantic_kind": ("collection", "event", "principle"), "origin": ("standard", "template", "user"),
                     "value_type": ("text", "number", "boolean", "date", "select", "text_list", "reference"),
-                    "field_origin": ("template", "user"), "required": ("yes", "no"), "multiple": ("yes", "no"),
+                    "field_origin": ("standard", "template", "user"), "required": ("yes", "no"), "multiple": ("yes", "no"),
                     "target": ("item", "record", "candidate", "none"), "archived": ("yes", "no")},
         "measures": {"users": {"label": "사용자 수", "src": "users · object_defs", "time": "지금",
                                "missing": "행 단위: 오브젝트 없는 사용자 제외 · 구간: 전원(0 구간 포함)",
@@ -154,13 +151,13 @@ ALLOW = {
     },
     # 사용자 한 명의 구조 트리 — 이름 없음. args (user_id).
     "schema.tree": {
-        "sql": "SELECT md5(o.id) AS object_ref, o.semantic_kind, o.template_slot AS object_slot, o.archived_at AS object_archived, "
+        "sql": "SELECT md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, o.archived_at AS object_archived, "
                "md5(f.key) AS field_ref, f.value_type, f.required, f.multiple, f.target_kind, md5(f.target_object_id) AS target_ref, "
-               "f.template_slot AS field_slot, f.archived_at AS field_archived FROM object_defs o "
+               "f.std_id AS field_std, f.template_slot AS field_slot, f.archived_at AS field_archived FROM object_defs o "
                "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id "
                "WHERE o.user_id=%s AND o.revision > 0 ORDER BY o.created_at, o.id, f.position, f.key",
-        "cols": ("object_ref", "semantic_kind", "object_slot", "object_archived", "field_ref", "value_type", "required", "multiple",
-                 "target_kind", "target_ref", "field_slot", "field_archived"),
+        "cols": ("object_ref", "semantic_kind", "object_std", "object_slot", "object_archived", "field_ref", "value_type", "required", "multiple",
+                 "target_kind", "target_ref", "field_std", "field_slot", "field_archived"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # 이름 공유 분기 — 그 사용자의 유효 동의(granted · 현재 버전)가 같은 문장 안에서 참일 때만 행이 나온다. args (user_id, 버전).
@@ -213,8 +210,7 @@ def _row(key, role, args=()):
 
 def users(role):
     """/admin/setup 사용자 표. datetime 그대로."""
-    ver = db.CONSENT_VERSIONS.get("privacy")
-    return _rows("setup.users", role, (ver, ver))
+    return _rows("setup.users", role)
 
 
 def audit(role, limit=AUDIT_LIST):
@@ -346,11 +342,12 @@ OBJECT_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 5, "2–5"), (6, 10, "6–10"), 
 FIELD_BUCKETS = ((0, 0, "0"), (1, 10, "1–10"), (11, 30, "11–30"), (31, 60, "31–60"), (61, None, "61+"))
 # 값 표시 이름(열거 값 → 화면 글자). 없는 값은 그대로 보인다.
 VALUE_LABELS = {
-    "consent": {"yes": "동의", "no": "미동의"}, "names": {"yes": "동의", "no": "안 함"},
+    "names": {"yes": "동의", "no": "안 함"},
     "blocked": {"yes": "차단", "no": "아님"}, "active14": {"yes": "활동", "no": "없음"},
     "role": {"user": "사용자", "admin": "관리자"},
     "result": {"ok": "정상", "error": "오류"}, "linked": {"yes": "연결", "no": "미연결"},
-    "origin": {"template": "템플릿", "user": "사용자"}, "field_origin": {"template": "템플릿", "user": "사용자"},
+    "origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},   # 앱 구분 용어(structure_svg.ORIGIN_TEXT, user = custom)
+    "field_origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},
     "required": {"yes": "필수", "no": "선택"}, "multiple": {"yes": "다중", "no": "단일"}, "archived": {"yes": "보관", "no": "사용 중"},
     "target": {"item": "항목", "record": "기록", "candidate": "후보", "none": "관계 아님"},
     "kind": {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"},
@@ -361,8 +358,7 @@ REPORT_PRESETS = (
     ("errors14", "오류 14일", {"ds": "usage", "g1": "name", "g2": "code", "result": "error", "days": RECENT_DAYS}),
     ("linked14", "연결·미연결 호출 14일", {"ds": "usage", "g1": "day", "g2": "linked", "days": RECENT_DAYS}),
     ("defs", "정의 분포", {"ds": "structure", "g1": "objects_bucket", "g2": "fields_bucket"}),
-    ("types", "필드 타입 × 출처", {"ds": "structure", "g1": "value_type", "g2": "field_origin", "archived": "no"}),
-    ("consent", "사용자 동의", {"ds": "users", "g1": "consent", "g2": "names"}),
+    ("types", "필드 타입 × 구분", {"ds": "structure", "g1": "value_type", "g2": "field_origin", "archived": "no"}),
     ("tickets", "문의 종류 × 상태", {"ds": "tickets", "g1": "kind", "g2": "status"}),
 )
 VALUE_TYPES = db.VALUE_TYPES
@@ -415,8 +411,7 @@ def _named_rows(key, role, subject_uid):
 
 def overview_band(role):
     """개요 상태 띠 숫자."""
-    args = (db.CONSENT_VERSIONS.get("privacy"), db.OPTIONAL_VERSIONS["struct_names"], PRIVACY_DUE_DAYS, PRIVACY_SOON_DAYS,
-            PRIVACY_DUE_DAYS)
+    args = (db.OPTIONAL_VERSIONS["struct_names"], PRIVACY_DUE_DAYS, PRIVACY_SOON_DAYS, PRIVACY_DUE_DAYS)
     return dict(_row("overview.band", role, args))
 
 
@@ -435,7 +430,7 @@ def report_rows(role, ds, d_from=None, d_to=None):
     if d_from is None or d_to is None:
         raise _bad("기간이 필요해요.")
     if ds == "users":
-        return _rows(key, role, (db.CONSENT_VERSIONS.get("privacy"), db.OPTIONAL_VERSIONS["struct_names"], d_from, d_to))
+        return _rows(key, role, (db.OPTIONAL_VERSIONS["struct_names"], d_from, d_to))
     return _rows(key, role, (d_from, d_to))
 
 
@@ -501,12 +496,16 @@ def report_check(ds, dims, filters):
     return spec
 
 
+def _origin(std, slot):
+    return "standard" if std else "template" if slot else "user"
+
+
 def _facts(ds, r, today):
     """원행 하나 → 차원 값 dict(열거 값 또는 날짜 문자열, 해당 없음 None)."""
     if ds == "users":
         d = _kdate(r["created"])
         last = r["last_day"]
-        return {"signup_month": _month(d), "signup_week": _week(d), "consent": _yn(r["consented"]), "names": _yn(r["names"]),
+        return {"signup_month": _month(d), "signup_week": _week(d), "names": _yn(r["names"]),
                 "role": r["role"], "blocked": _yn(r["blocked"]),
                 "active14": _yn(last is not None and last >= today - _dt.timedelta(days=RECENT_DAYS - 1))}
     if ds == "usage":
@@ -516,9 +515,9 @@ def _facts(ds, r, today):
         c, z = _kdate(r["created"]), _kdate(r["closed_at"])
         return {"kind": r["kind"], "status": r["status"], "page": r["page"], "via": r["via"], "created_month": _month(c),
                 "created_week": _week(c), "closed_month": _month(z), "closed_week": _week(z)}
-    has_f = r["value_type"] is not None
-    return {"semantic_kind": r["semantic_kind"], "origin": "template" if r["object_slot"] else "user",
-            "value_type": r["value_type"], "field_origin": ("template" if r["field_slot"] else "user") if has_f else None,
+    has_f = r["value_type"] is not None   # 구분 = contract.origin_of 순서(std_id → template_slot → 사용자)
+    return {"semantic_kind": r["semantic_kind"], "origin": _origin(r["object_std"], r["object_slot"]),
+            "value_type": r["value_type"], "field_origin": _origin(r["field_std"], r["field_slot"]) if has_f else None,
             "required": _yn(r["required"]) if has_f else None, "multiple": _yn(r["multiple"]) if has_f else None,
             "target": (r["target_kind"] or "none") if has_f else None,
             "archived": _yn(r["object_archived"] is not None or (has_f and r["field_archived"] is not None))}
@@ -607,3 +606,140 @@ def preset_params(params, today=None):
         q["from"] = (today - _dt.timedelta(days=params["days"] - 1)).isoformat()
         q["to"] = today.isoformat()
     return q
+
+
+# ── 운영자 사용자 뷰(PR #20 Q5) — /admin/users · /admin/users/<불투명 id> ─────────
+# 구조는 contract.respond(…, admin_*) 를 거쳐서만 화면에 나간다. 여기선 그 입력을 이름 없이 조립한다 — 오브젝트 id·필드 key 는 md5 대리값
+# (_admin 은 id·key 를 내보내지 않는다), label·선택지는 이름 공유 분기(schema_names) 행이 있을 때만 끼운다. 선택지 값은 꺼내지 않는다.
+# 연결·무결성 조회는 items·records·candidates 의 상태 열(revision·archived_at·deleted_at)과 개수만 읽는다 — 본문 열 0.
+# args 는 {"uid": 사용자 id 또는 None(전원), "ver": 설치 표준 버전, "names_ver": struct_names 현재 버전}.
+USERVIEW_KEYS = ("userview.counts", "userview.defs", "userview.links", "userview.tickets")
+ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유효 동의 · 표준 표식·선택(코드) · 출처 수 · M-D 위반(근거 기록이 지워진 후보) 수
+    "sql": "SELECT u.id AS user_id, "
+           "EXISTS (SELECT 1 FROM optional_consents oc WHERE oc.user_id=u.id AND oc.kind='struct_names' AND oc.state='granted' "
+           "AND oc.version=%(names_ver)s) AS names, m.version AS std_version, m.state AS std_state, "
+           "(SELECT coalesce(jsonb_object_agg(ch.std_key, ch.state), '{}'::jsonb) FROM std_choices ch WHERE ch.user_id=u.id) AS std_choices, "
+           "(SELECT count(*) FROM sources s WHERE s.user_id=u.id) AS sources_n, "
+           "(SELECT count(*) FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
+           "WHERE c.user_id=u.id AND r.deleted_at IS NOT NULL) AS md_broken "
+           "FROM users u LEFT JOIN std_marks m ON m.user_id=u.id AND m.version=%(ver)s "
+           "WHERE (%(uid)s::text IS NULL OR u.id=%(uid)s) ORDER BY u.created, u.id",
+    "cols": ("user_id", "names", "std_version", "std_state", "std_choices", "sources_n", "md_broken"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.defs"] = {   # 적용·보관 아닌 오브젝트 × 보관 아닌 필드 — db.definitions 와 같은 범위·순서 + 구분 판정 열(std_id·template_slot)
+    "sql": "SELECT o.user_id, md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, "
+           "md5(f.key) AS field_ref, f.value_type, f.required, f.multiple, f.target_kind, md5(f.target_object_id) AS target_ref, "
+           "f.std_id AS field_std, f.template_slot AS field_slot FROM object_defs o "
+           "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id AND f.archived_at IS NULL "
+           "WHERE (%(uid)s::text IS NULL OR o.user_id=%(uid)s) AND o.revision > 0 AND o.archived_at IS NULL "
+           "ORDER BY o.user_id, o.created_at, o.id, f.position, f.key",
+    "cols": ("user_id", "object_ref", "semantic_kind", "object_std", "object_slot", "field_ref", "value_type", "required", "multiple",
+             "target_kind", "target_ref", "field_std", "field_slot"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.links"] = {   # 항목 출발 연결 묶음 — 출발(살아 있는 항목만) 오브젝트·필드 × 실제 도착 종류·오브젝트 × 대상 없음 여부 × 개수
+    # dangling = 대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다. 기록 출발 연결(attach_to·axes)은 관계(참조 필드)가 아니라 뺀다.
+    "sql": "SELECT l.user_id, md5(l.source_object_id) AS source_ref, md5(l.field_key) AS field_ref, "
+           "CASE WHEN l.target_item_id IS NOT NULL THEN 'item' WHEN l.target_record_id IS NOT NULL THEN 'record' ELSE 'candidate' END "
+           "AS target_kind, md5(ti.object_id) AS target_ref, "
+           "((ti.id IS NOT NULL AND (ti.archived_at IS NOT NULL OR ti.revision = 0)) OR tr.deleted_at IS NOT NULL) AS dangling, "
+           "count(*) AS n FROM item_links l "
+           "JOIN items si ON si.user_id=l.user_id AND si.id=l.source_item_id AND si.revision > 0 AND si.archived_at IS NULL "
+           "LEFT JOIN items ti ON ti.user_id=l.user_id AND ti.id=l.target_item_id "
+           "LEFT JOIN records tr ON tr.user_id=l.user_id AND tr.id=l.target_record_id "
+           "WHERE (%(uid)s::text IS NULL OR l.user_id=%(uid)s) AND l.source_item_id IS NOT NULL "
+           "GROUP BY 1, 2, 3, 4, 5, 6 ORDER BY 1, 2, 3, 4, 5, 6",
+    "cols": ("user_id", "source_ref", "field_ref", "target_kind", "target_ref", "dangling", "n"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.tickets"] = {   # 문의 요약 — 종류 × 상태 개수(원문·메모 없음)
+    "sql": "SELECT t.user_id, t.kind, t.status, count(*) AS n FROM tickets t WHERE (%(uid)s::text IS NULL OR t.user_id=%(uid)s) "
+           "GROUP BY t.user_id, t.kind, t.status ORDER BY t.user_id, t.kind, t.status",
+    "cols": ("user_id", "kind", "status", "n"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+# 무결성 코드 — 「검사 불가」는 정상으로 세지 않고 따로 둔다
+INTEGRITY_CODES = ("REF-DANGLING", "REF-MISMATCH", "MD-ORPHAN")
+UNCHECKED = "UNCHECKED"
+
+
+def userview_rows(role, uid=None):
+    """사용자 뷰 원행 {키: 행 목록} — 네 조회를 한 트랜잭션(같은 시점)에서 읽는다."""
+    sqls = {k: _check(k, role) for k in USERVIEW_KEYS}
+    args = {"uid": None if uid is None else str(uid), "ver": contract.STD_VERSION, "names_ver": db.OPTIONAL_VERSIONS["struct_names"]}
+    with db.tx() as c:
+        return {k: db._all(c, sql, args) for k, sql in sqls.items()}
+
+
+def userview(role, uid=None):
+    """{user_id: 사용자 뷰} — uid 가 None 이면 전원(목록). 값 = {names, std_marks, std_choices, sources_n, md_broken, defs, links, tickets}."""
+    rows = userview_rows(role, uid)
+    out = {}
+    for r in rows["userview.counts"]:
+        out[r["user_id"]] = {"names": bool(r["names"]), "std_choices": dict(r["std_choices"] or {}), "sources_n": r["sources_n"],
+                             "std_marks": {"version": r["std_version"], "state": r["std_state"]} if r["std_state"] else None,
+                             "md_broken": r["md_broken"], "defs": [], "links": [], "tickets": []}
+    for k, dest in (("userview.defs", "defs"), ("userview.links", "links"), ("userview.tickets", "tickets")):
+        for r in rows[k]:
+            if r["user_id"] in out:
+                out[r["user_id"]][dest].append(r)
+    return out
+
+
+def contract_input(v, onames=(), fnames=()):
+    """사용자 뷰 한 명 → contract.respond 입력(user dict). id·key = md5 대리값, label·선택지 label = 이름 공유 분기 행(없으면 None·[]).
+    선택지 값은 None — _admin 은 값을 내보내지 않는다. 출처는 개수만(_admin 은 counts.sources 만 쓴다)."""
+    olab = {r["object_ref"]: r["label"] for r in onames}
+    flab = {(r["object_ref"], r["field_ref"]): (r["label"], r["option_labels"]) for r in fnames}
+    defs, by = [], {}
+    for r in v["defs"]:
+        o = by.get(r["object_ref"])
+        if o is None:
+            o = by[r["object_ref"]] = {"id": r["object_ref"], "key": r["object_ref"], "label": olab.get(r["object_ref"]),
+                                       "semantic_kind": r["semantic_kind"], "policy": {}, "fields": [],
+                                       "std_id": r["object_std"], "template_slot": r["object_slot"]}
+            defs.append(o)
+        if r["field_ref"] is None:
+            continue
+        lab, opts = flab.get((r["object_ref"], r["field_ref"]), (None, None))
+        o["fields"].append({"key": r["field_ref"], "label": lab, "value_type": r["value_type"], "required": r["required"],
+                            "options": [{"value": None, "label": x} for x in opts or []], "target_kind": r["target_kind"],
+                            "target_object_id": r["target_ref"], "multiple": r["multiple"],
+                            "std_id": r["field_std"], "template_slot": r["field_slot"]})
+    return {"definitions": defs, "std_marks": v["std_marks"], "std_choices": v["std_choices"],
+            "sources": [{"id": None, "kind": None, "name": None, "location": None} for _ in range(v["sources_n"])]}
+
+
+def link_stats(v, user_input):
+    """관계(contract.relations 순 = 응답 relations 순)별 정상 연결 수 · 무결성 오류 · 검사 불가.
+    반환 {linked: [n…], errors: [{code, rel, n, why}], unchecked: [{rel, n, why}]} — rel = 관계 순번(없으면 None), why = 사유 코드."""
+    defs = user_input["definitions"]
+    raw = contract.relations(defs)
+    live = {o["id"] for o in defs}
+    idx = {(r["object_id"], r["field_key"]): i for i, r in enumerate(raw)}
+    linked, errors, unchecked = [0] * len(raw), [], []
+    for i, r in enumerate(raw):
+        if r["target_kind"] == "item" and r["target_object_id"] is not None and r["target_object_id"] not in live:
+            errors.append({"code": "REF-DANGLING", "rel": i, "n": 1, "why": "target_def"})
+    for ln in v["links"]:
+        i = idx.get((ln["source_ref"], ln["field_ref"]))
+        if i is None:
+            unchecked.append({"rel": None, "n": ln["n"], "why": "no_def"})
+            continue
+        r = raw[i]
+        if ln["dangling"]:
+            errors.append({"code": "REF-DANGLING", "rel": i, "n": ln["n"], "why": "target"})
+        elif ln["target_kind"] != r["target_kind"]:
+            errors.append({"code": "REF-MISMATCH", "rel": i, "n": ln["n"], "why": "kind"})
+        elif r["target_kind"] == "item" and r["target_object_id"] is None:
+            unchecked.append({"rel": i, "n": ln["n"], "why": "any_item"})
+        elif r["target_kind"] == "item" and r["target_object_id"] not in live:
+            unchecked.append({"rel": i, "n": ln["n"], "why": "target_def"})
+        elif r["target_kind"] == "item" and ln["target_ref"] != r["target_object_id"]:
+            errors.append({"code": "REF-MISMATCH", "rel": i, "n": ln["n"], "why": "object"})
+        else:
+            linked[i] += ln["n"]
+    if v["md_broken"]:
+        errors.append({"code": "MD-ORPHAN", "rel": None, "n": v["md_broken"], "why": "candidate"})
+    return {"linked": linked, "errors": errors, "unchecked": unchecked}

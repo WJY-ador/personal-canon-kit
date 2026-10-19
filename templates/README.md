@@ -8,7 +8,7 @@
 | questions.json | 계속 돌아오는 질문. 1개부터 |
 | sources.json | 연결한 자료 위치와 모델 전송 허용 여부 |
 | tabs.json | 내 탭. 표시 이름(label)과 내부 ID(id)를 따로 둔다. 카탈로그 밖 요구는 requests |
-| candidates.json | 판단 후보. pending(대기)·confirmed(확정)·excluded(제외), 출처 self(내 메모)·ai(AI 제안) |
+| candidates.json | 판단 후보. pending(대기)·confirmed(확정)·excluded(제외), 누가 뽑았나 self(내 메모)·ai(AI 제안) |
 | setup-state.json | 첫 설정 진행 단계 — 중단해도 이어서 하기 위함 |
 | journal.md | 기록 양식 예시 (`record add` 가 자동으로 같은 꼴을 만든다) |
 | journal-tail.md | 기록 끝에 붙는 "이게 어디에 붙나" 네 줄 |

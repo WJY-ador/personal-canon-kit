@@ -1,0 +1,376 @@
+{
+  "contract": 1,
+  "viewer": "self",
+  "std": {
+    "version": "std@1",
+    "state": "adopting",
+    "objects": {
+      "axes": "incorporated",
+      "decision_events": "incorporated",
+      "principles": "incorporated"
+    }
+  },
+  "counts": {
+    "objects": 5,
+    "fields": 14,
+    "relations": 7,
+    "sources": 1
+  },
+  "objects": [
+    {
+      "id": "od_axes",
+      "key": "axes",
+      "label": "내 관심축 ULBL01",
+      "semantic_kind": "collection",
+      "origin": "standard",
+      "std_id": "std:axes",
+      "locked": true,
+      "fields": [
+        {
+          "key": "keywords",
+          "label": "키워드 ULBL02",
+          "value_type": "text_list",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:axes.keywords",
+          "locked": true,
+          "std_name": "검색어"
+        }
+      ],
+      "std_name": "축"
+    },
+    {
+      "id": "od_events",
+      "key": "decision_events",
+      "label": "결정 기록 ULBL03",
+      "semantic_kind": "event",
+      "origin": "standard",
+      "std_id": "std:decision_events",
+      "locked": true,
+      "fields": [
+        {
+          "key": "happened_on",
+          "label": "날짜 ULBL04",
+          "value_type": "date",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:decision_events.happened_on",
+          "locked": true,
+          "std_name": "결정일"
+        },
+        {
+          "key": "claims",
+          "label": "판단들 ULBL05",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:decision_events.claims",
+          "locked": true,
+          "std_name": "판단"
+        },
+        {
+          "key": "ukey_project",
+          "label": "프로젝트명 ULBL06",
+          "value_type": "text",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": "결정"
+    },
+    {
+      "id": "od_principles",
+      "key": "principles",
+      "label": "내 원칙 ULBL07",
+      "semantic_kind": "principle",
+      "origin": "standard",
+      "std_id": "std:principles",
+      "locked": true,
+      "fields": [
+        {
+          "key": "evidence_claims",
+          "label": "근거 문장 ULBL08",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:principles.evidence_claims",
+          "locked": true,
+          "std_name": "근거 판단"
+        },
+        {
+          "key": "evidence_events",
+          "label": "근거 사건 ULBL09",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:principles.evidence_events",
+          "locked": true,
+          "std_name": "근거 결정"
+        },
+        {
+          "key": "axes",
+          "label": "축 연결 ULBL10",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "item",
+          "target_object_id": "od_axes",
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:principles.axes",
+          "locked": true,
+          "std_name": "관심 축"
+        },
+        {
+          "key": "ukey_register",
+          "label": "영역 ULBL11",
+          "value_type": "select",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [
+            {
+              "value": "uopt_customer",
+              "label": "고객 업무 ULBL12"
+            },
+            {
+              "value": "uopt_work",
+              "label": "일하는 방식 ULBL13"
+            }
+          ],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "ukey_owner",
+          "label": "담당자 ULBL14",
+          "value_type": "reference",
+          "required": false,
+          "multiple": false,
+          "target_kind": "item",
+          "target_object_id": "od_upeople",
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": "기준"
+    },
+    {
+      "id": "od_upeople",
+      "key": "ukey_people",
+      "label": "사람들 ULBL15",
+      "semantic_kind": "collection",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "key": "ukey_name",
+          "label": "이름 ULBL16",
+          "value_type": "text",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "ukey_first_rec",
+          "label": "첫 기록 ULBL17",
+          "value_type": "reference",
+          "required": false,
+          "multiple": false,
+          "target_kind": "record",
+          "target_object_id": null,
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": null
+    },
+    {
+      "id": "od_craft",
+      "key": "craft",
+      "label": "접근 방식 ULBL18",
+      "semantic_kind": "collection",
+      "origin": "template",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "key": "project",
+          "label": "프로젝트 ULBL19",
+          "value_type": "text",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "template",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "approach",
+          "label": "방식 ULBL20",
+          "value_type": "text",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "template",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "related_events",
+          "label": "관련 결정 ULBL21",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "item",
+          "target_object_id": "od_events",
+          "options": [],
+          "origin": "template",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": null
+    }
+  ],
+  "relations": [
+    {
+      "object_id": "od_events",
+      "field_key": "claims",
+      "target_kind": "candidate",
+      "target_object_id": null,
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:decision_events.claims",
+      "locked": true
+    },
+    {
+      "object_id": "od_principles",
+      "field_key": "evidence_claims",
+      "target_kind": "candidate",
+      "target_object_id": null,
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.evidence_claims",
+      "locked": true
+    },
+    {
+      "object_id": "od_principles",
+      "field_key": "evidence_events",
+      "target_kind": "item",
+      "target_object_id": "od_events",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.evidence_events",
+      "locked": true
+    },
+    {
+      "object_id": "od_principles",
+      "field_key": "axes",
+      "target_kind": "item",
+      "target_object_id": "od_axes",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.axes",
+      "locked": true
+    },
+    {
+      "object_id": "od_principles",
+      "field_key": "ukey_owner",
+      "target_kind": "item",
+      "target_object_id": "od_upeople",
+      "cardinality": "N:1",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "object_id": "od_upeople",
+      "field_key": "ukey_first_rec",
+      "target_kind": "record",
+      "target_object_id": null,
+      "cardinality": "N:1",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "object_id": "od_craft",
+      "field_key": "related_events",
+      "target_kind": "item",
+      "target_object_id": "od_events",
+      "cardinality": "N:N",
+      "origin": "template",
+      "std_id": null,
+      "locked": false
+    }
+  ],
+  "core": [
+    {
+      "kind": "record",
+      "origin": "core"
+    },
+    {
+      "kind": "candidate",
+      "origin": "core"
+    }
+  ],
+  "sources": [
+    {
+      "id": "src_full1",
+      "kind": "file",
+      "name": "업무일지 SRCNAME01",
+      "location": "fake-drive/SRCLOC01.md"
+    }
+  ]
+}

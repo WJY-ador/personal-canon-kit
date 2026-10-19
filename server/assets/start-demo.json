@@ -1,10 +1,10 @@
 {
   "light": {
-    "app_sha256": "18b7699c672ddab75e9a5e14cdbf17372c72cc15f8526f4c651e926c01f1d289",
-    "shot_at": "2026-10-19T15:03:44+09:00"
+    "app_sha256": "8a78a6858baec1efc2fb19f5a6cc6271f26ba95054968dcb7a0c9444ba8e6c1c",
+    "shot_at": "2026-10-20T00:34:06+09:00"
   },
   "dark": {
-    "app_sha256": "18b7699c672ddab75e9a5e14cdbf17372c72cc15f8526f4c651e926c01f1d289",
-    "shot_at": "2026-10-19T15:03:49+09:00"
+    "app_sha256": "8a78a6858baec1efc2fb19f5a6cc6271f26ba95054968dcb7a0c9444ba8e6c1c",
+    "shot_at": "2026-10-20T00:38:06+09:00"
   }
 }

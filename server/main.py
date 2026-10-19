@@ -60,7 +60,6 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CRM_DEV=1).")
 if not DEV and env("DEV_USER"):
     raise SystemExit("CRM_DEV_USER 는 CRM_DEV=1 일 때만 쓸 수 있어요.")
-db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
 USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
 PURGE_EVERY = 24 * 3600      # 파기(문의·감사) 주기(초) — 실행 중 매일 1회, 시작 때 1회는 따로
 
@@ -76,7 +75,7 @@ if ISSUER:
 mcp = MCPServer("my-crm", instructions=INSTRUCTIONS, **_auth_kwargs)
 
 
-# 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(동의·전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
+# 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
 _call_uid: contextvars.ContextVar = contextvars.ContextVar("crm_call_uid", default=None)
 
@@ -99,7 +98,7 @@ def uid_of(ctx: Context) -> str:
 
 def guard(fn):
     """CrmError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
-    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·동의(CONSENT-REQUIRED, CONSENT_EXEMPT 는 빼고)
+    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)
     ·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고). 모든 도구(읽기 포함)를 db.usage_count 로 센다 — 정상 OK, CrmError 는 그 code,
     그 밖 예외(ToolError 포함)는 EXC. uid 는 이 호출 안에서 이미 푼 것만 쓴다(못 풀었으면 '')."""
     sig = inspect.signature(fn)
@@ -158,11 +157,24 @@ def record_add(
     ctx: Context,
     title: Annotated[str, Field(description="제목 한 줄. 비우면 첫 줄에서 만든다.")] = "",
     question_id: Annotated[str, Field(description="연결할 질문 ID (선택)")] = "",
-    source: Annotated[str, Field(description="출처 (예: 대화에서 입력, 회의 메모)")] = "대화에서 입력",
+    source: Annotated[str, Field(description="출처 메모 문자열 (예: 대화에서 입력, 회의 메모)")] = "대화에서 입력",
+    source_name: Annotated[str, Field(description="출처 연결: 이 기록이 나온 파일·페이지·대화의 이름 (선택). 비우면 연결 안 함")] = "",
+    source_kind: Annotated[Literal["", "file", "url", "chat", "other"],
+                           Field(description="출처 연결: 종류 (선택, 비우면 other)")] = "",
+    source_location: Annotated[str, Field(description="출처 연결: 위치 — 파일 경로·URL 등 (선택)")] = "",
 ) -> dict:
-    """기록 1편을 원문 그대로 남긴다. 저장 뒤 사용자에게 '지금 후보를 뽑을까요?' 하나만 묻는다."""
-    r = db.record_add(uid_of(ctx), title, text, question_id or None, source)
-    return {"id": r["id"], "title": r["title"], "created": r["created"]}
+    """기록 1편을 원문 그대로 남긴다. 직접 쓴 내 기록만 넣는다 — 남의 말·AI 요약은 넣지 않는다.
+    서버는 메타데이터만 검사하고 실제 작성자·가공 방식은 검증하지 않는다(내용 준수는 사용자 몫).
+    source_name 을 주면 같은 이름·종류·위치의 출처를 찾거나 만들어 잇는다 — 출처 기능이 꺼져 있으면 기록만 저장하고 source_linked=false.
+    저장 뒤 사용자에게 '지금 후보를 뽑을까요?' 하나만 묻는다."""
+    ref = {"kind": source_kind, "name": source_name, "location": source_location} if source_name.strip() else None
+    r = db.record_add(uid_of(ctx), title, text, question_id or None, source, source_ref=ref)
+    out = {"id": r["id"], "title": r["title"], "created": r["created"]}
+    if ref is not None:
+        out["source_id"], out["source_linked"] = r["source_id"], r["source_linked"]
+        if not r["source_linked"]:
+            out["note"] = "출처 기능이 꺼져 있어 기록만 저장했어요(출처 연결 안 함)."
+    return out
 
 
 class CandidateIn(BaseModel):
@@ -199,7 +211,9 @@ def candidate_decide(
     ctx: Context,
     text: Annotated[str, Field(description="edit 일 때 사용자가 고친 문장. 사용자 표현 그대로.")] = "",
 ) -> dict:
-    """사용자가 원문과 대조한 뒤 말한 결정을 저장한다. 사용자가 말하기 전에 부르지 않는다. 이전 상태·문장은 이력에 남아 되돌릴 수 있다."""
+    """사용자가 원문과 대조한 뒤 말한 결정을 저장한다. 사용자가 말하기 전에 부르지 않는다. 이전 상태·문장은 이력에 남아 되돌릴 수 있다.
+    confirm 은 근거 기록이 지금도 인용 적격(본인이 쓴 원문 그대로·삭제 안 됨)일 때만 된다 — 아니면 CANDIDATE-REVIEW 로 거절되고
+    exclude·pending·edit 은 그대로 된다. 후보의 review 에 사유 코드가 있으면 사용자에게 그대로 알린다. 이미 확정한 판단은 바뀌지 않는다."""
     return db.candidate_decide(uid_of(ctx), candidate_id, action, text or None)
 
 
@@ -333,11 +347,12 @@ def record_attach(
     record_id: Annotated[str, Field(description="기록 ID")],
     ctx: Context,
     attach_to: Annotated[list[Link] | None, Field(description="이 기록이 붙는 기준·결정 항목 또는 후보. field_key 는 attach_to. null 이면 그대로")] = None,
-    axes: Annotated[list[str] | None, Field(description="관심 축 항목 ID 목록. null 이면 그대로")] = None,
+    axes: Annotated[list[str] | None, Field(description="분류 대상 오브젝트의 항목 ID 목록(관심 축). null 이면 그대로")] = None,
     use_at: Annotated[str | None, Field(description="쓸 자리 메모. null 이면 그대로")] = None,
     unattached: Annotated[str | None, Field(description="아직 안 붙는 것 메모(새 축 후보 등). null 이면 그대로")] = None,
 ) -> dict:
-    """기록이 어디에 붙는지 남긴다(기준·결정·후보 연결, 관심 축, 쓸 자리, 아직 안 붙는 것). 원문은 바뀌지 않는다. 값을 준 칸만 바뀐다."""
+    """기록이 어디에 붙는지 남긴다(기준·결정·후보 연결, 분류 대상 항목, 쓸 자리, 아직 안 붙는 것). 원문은 바뀌지 않는다. 값을 준 칸만 바뀐다.
+    axes 는 분류 대상 오브젝트의 항목만 받는다 — 분류 대상이 없으면 CLASSIFY-OFF(다른 칸은 그대로 쓸 수 있다)."""
     return db.record_attach(uid_of(ctx), record_id, [ln.model_dump() for ln in attach_to] if attach_to is not None else None,
                             axes, use_at, unattached)
 

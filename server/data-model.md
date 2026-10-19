@@ -1,6 +1,6 @@
 # 데이터 모델 (2026-10-18 확정)
 
-전제: 사용자 AI 클라이언트 → MCP → 이 서버 → Postgres. 서버 모델 호출 0. 사용자 10~100명, 1인당 월 기록 10~30편 — 작아서 파티션·아카이브 없음. DDL은 `schema.sql`. 지금 `db.py`는 SQLite 임시판이라 아래와 다르다(차이는 끝 절).
+전제: 사용자 AI 클라이언트 → MCP → 이 서버 → Postgres. 서버 모델 호출 0. 사용자 10~100명, 1인당 월 기록 10~30편 — 작아서 파티션·아카이브 없음. DDL은 `schema.sql`. `db.py` 는 psycopg(Postgres) 판이다(끝 절).
 
 ## 용어 대응 (Salesforce → Postgres)
 | Salesforce | 여기 |
@@ -17,7 +17,7 @@
 | 오브젝트 | 용도 | 관계 |
 |---|---|---|
 | users | 계정. 이메일 하나 = 사용자 하나 | — |
-| agreements | 약관·개인정보 동의, 버전별 | users M-D |
+| agreements | 옛 약관·개인정보 동의 이력(2026-10-19 필수 동의 제거 뒤 새로 쓰지 않음) | users M-D |
 | questions | 계속 돌아오는 질문. 삭제 없음, `archived` 만 | users M-D |
 | records | 기록 원문. soft delete | users M-D · questions Lookup |
 | candidates | 판단 후보. 두 축 `origin`(ai/self) × `decision`(pending/confirmed/excluded) | users M-D(반정규화) · records M-D · questions RESTRICT |
@@ -37,7 +37,7 @@
 - 근거 구간은 문자열이 아니라 **위치**(`quote_start`,`quote_end`)로 식별한다. 모델은 문자열만 보내고 서버가 원문에서 위치를 센다. 원문에 같은 구간이 2곳 이상이면 저장하지 않고 "앞뒤를 포함해 더 길게" 돌려준다. `UNIQUE (user_id, record_id, quote_start, quote_end)` — 같은 구간 재등록 방지. 같은 문장이 두 질문에 답하면 사용자가 질문 하나를 고른다(의도 확인 2026-10-18). Codex 토론: 문자열 키는 반복 문장을 하나로 합친다.
 - 후보 결정 컬럼은 `decision`. 테이블마다 뜻 다른 `status` 를 없앤다. MCP 도구 인자명은 그대로 — ChatGPT 가 승인 시점 스키마를 고정하므로.
 - 탭 제안→적용은 같은 행 `draft_doc`+`draft_id` 로. 적용은 제안 ID 와 기반 revision 이 맞을 때만. 동시에 제안 하나만 — 사용자 1명이 미리보기 하나 보는 흐름이라 충분. 별도 테이블은 안 만든다.
-- `agreements` 지금부터. 지인 시험 사용자도 데이터 저장 동의를 받아야 하고, 나중에 붙이면 소급이 생긴다. 로컬 판의 읽기 경로 동의(`read_paths`)는 호스팅에서 뜻이 없어 버린다.
+- `agreements` 는 옛 이력만(2026-10-19 필수 동의 제거 — 처리 근거는 처리방침 공개, `server/README.md` 「처리방침」 절). 로컬 판의 읽기 경로 동의(`read_paths`)는 호스팅에서 뜻이 없어 버린다.
 - `profile` 은 key-value 유지. 항목 추가에 마이그레이션 없음.
 - `candidate_history` 에 `user_id` 있음(PR①, 2026-10-18 정정 — 전엔 부모 상속이었다). `(user_id, candidate_id) → candidates(user_id, id)` 복합 FK(ON UPDATE RESTRICT, ON DELETE CASCADE)로 다른 사용자 후보에 이력을 못 단다. 조회도 `user_id` 로 거른다. 근거: raw R5.
 
@@ -52,8 +52,8 @@ imports(3단계)가 기대는 저장 계약을 코어에 먼저 넣었다. 기�
 
 ### 판단 로그
 - **인용 적격** = `author_kind='self' AND text_process='verbatim' AND deleted_at IS NULL`. 후보(판단 근거)는 적격 기록에서만 만든다 — 비적격이면 dropped 「이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요」. 승격 근거 수도 적격 기록의 확정 후보만 센다. 목록에서는 빼지 않는다.
-- 기존 기록은 `unknown` 그대로 둔다. 과거 기록 전부를 self/verbatim 으로 백필할 근거가 없다. MCP `record_add` 는 사용자가 대화에서 직접 준 말이라 self/verbatim.
-- 본문·인용 구간은 생성 뒤 불변. **출처 판정은 정정 가능**(`record_provenance_set`, 사유 필수). 후보가 있는 기록의 적격 → 비적격 정정은 거절(`PROVENANCE-LOCKED`) — 과거 오판정은 별도 복구 작업. 후보 생성과 출처 정정은 같은 기록 행을 `FOR UPDATE` 로 잠가 경합을 막는다. 직접 SQL 은 이 계약을 우회할 수 있다(트리거는 지인 시험 뒤, raw R3).
+- 기존 기록은 `unknown` 그대로 둔다. 과거 기록 전부를 self/verbatim 으로 백필할 근거가 없다. MCP `record_add` 는 사용자가 대화에서 직접 준 말이라 self/verbatim. `author_kind='external'` 입력은 `SCOPE-SELF-ONLY`(PR #20 — 서버는 작성자 표시만 검사, 내용은 확인 못 함). 확정(confirm·edit_confirm)도 근거 기록을 다시 검사해 비적격이면 `CANDIDATE-REVIEW`(사유 author_unknown·external·processed·deleted), 미확정 후보 응답에 `review`. 이미 확정한 판단은 그대로.
+- 본문·인용 구간은 생성 뒤 불변. **작성 판정은 정정 가능**(`record_provenance_set`, 사유 필수). 후보가 있는 기록의 적격 → 비적격 정정은 거절(`PROVENANCE-LOCKED`) — 과거 오판정은 별도 복구 작업. 후보 생성과 출처 정정은 같은 기록 행을 `FOR UPDATE` 로 잠가 경합을 막는다. 직접 SQL 은 이 계약을 우회할 수 있다(트리거는 지인 시험 뒤, raw R3).
 - 후보 변경 = 변경 전 스냅샷 이력 한 줄 + revision+1(`UNIQUE(user_id,candidate_id,prev_revision)`). 같은 결정 반복은 no-op(revision 그대로). 웹 결정은 `expected_revision`(선택)이 틀리면 CONFLICT. MCP 도구는 revision 인자를 받지 않는다(서명 불변).
 - 문장 수정(edit·edit_confirm)은 `wording_approved=false`·pending. `wording_by` 는 웹 편집 self, MCP edit 은 모름(NULL). 새 후보는 origin=ai 면 ai, self 면 NULL(AI 가 다듬었는지 모름). 승인(`wording_approved=true`) 경로는 아직 없다 — 다음 PR.
 - 복원(`candidate_restore`)도 새 변경: 지금 상태를 이력(action=restore)으로 남기고 revision+1. v1 이력은 text·decision 만, wording_by NULL. 승인은 넘기지 않는다(승인은 그 revision 에 대한 것). 웹·MCP 노출은 다음 PR.
@@ -69,7 +69,7 @@ imports(3단계)가 기대는 저장 계약을 코어에 먼저 넣었다. 기�
 | object_defs | 오브젝트 정의. `semantic_kind` collection/event/principle · `policy`(승격·대상 규칙) · `history`(적용 revision 마다 전체 정의 스냅샷) · draft_* · `template_slot`(템플릿 계보, 시드만) | users M-D |
 | field_defs | 필드. `value_type` text/number/boolean/date/select/text_list/reference · select `options`=[{value,label}] · reference 는 target_kind(item/record/candidate)·target_object_id·multiple. 빠진 필드는 `archived_at` · `template_slot`(시드만) | object_defs M-D · 대상 오브젝트 보호 Lookup |
 | items | 항목. `code`(적용 뒤 변경·재사용 금지) · title · body · `data`(일반 필드만) · `decision`(principle 만) · revision · draft_* | object_defs 보호 Lookup |
-| item_links | 관계. 출발은 item(필드 key) 또는 record(`attach_to`·`axes`) 중 하나 → 대상 item/record/candidate 중 하나. 값은 data 가 아니라 여기 | 출발 M-D · 대상 보호 Lookup |
+| item_links | 관계. 출발은 item(필드 key) 또는 record(`attach_to`·`axes`) 중 하나 → 대상 item/record/candidate 중 하나. 값은 data 가 아니라 여기. record 출발 `axes` 의 대상 오브젝트는 `user_roles`(classify)가 정한다(PR #20) | 출발 M-D · 대상 보호 Lookup |
 | item_history | 항목 이력. `prev_state`(title·body·data·decision·code·schema_revision·links·archived) + `prev_revision` | items M-D |
 
 기존 테이블 변경: `records.notes jsonb`(「어디에 붙나」 중 쓸 자리·아직 안 붙는 것) · `candidates.question_id` NULL 허용(질문 없는 후보 — 화면은 기록별 묶음). `init_schema` 가 상태를 보고 멱등 ALTER.
@@ -91,11 +91,22 @@ principle 정의의 `policy.promotion`. 기본 `{"confirmed_claims_min":2,"claim
 ### 원작자 템플릿 (`template_author.py`)
 정의 데이터일 뿐 테이블이 아니다. 기준 `od_principles`(principle, register·maturity·근거 판단·근거 결정·관심 축, 결정 2개 조건) · 결정 `od_events`(event) · 숙제 `od_open_questions`(대상 기준·결정·판단 중 정확히 하나) · 발행 `od_publications` · 축 `od_axes` · 접근 방식 `od_craft`. 라벨은 정의 데이터라 뒤에 바꿀 수 있다 — 시드 라벨은 `template_author.py` 맨 위 `LABELS`(동결 뒤엔 판을 올린다 — 아래 계보), 화면 코어 라벨(질문·기록·후보 등)은 `app.html` 의 `const LABELS` 한 곳. questions 자동 생성 없음, works·E 카드 제외.
 
-**템플릿 계보 (`template_slot`, 2026-10-19).** 출처는 id 가 아니라 이 열로 판정한다 — 사용자도 `od_axes` 같은 id 를 직접 만들 수 있어서다.
+**템플릿 계보 (`template_slot`, 2026-10-19).** 템플릿 여부는 id 가 아니라 이 열로 판정한다 — 사용자도 `od_axes` 같은 id 를 직접 만들 수 있어서다. 정의 구분(core·standard·template·custom)은 `std_id` 우선 → `template_slot` → custom(`contract.origin_of`, PR #20).
 - 형식: 오브젝트 `author@1:<object_key>` · 필드 `author@1:<object_key>.<field_key>`. 판(`@1`)이 문자열에 들어 있다.
 - 시드만 채운다: `template_author.seed` 가 `definition_apply` 직후 `db.template_slot_mark` 를 한 번 부른다. MCP·웹 경로는 이 함수를 부르지 않고, 정의 JSON 에 `template_slot` 을 넣어도 정규화가 버린다. `definition_apply` 의 `ON CONFLICT … DO UPDATE SET`·`UPDATE` 에 이 열이 없다 → 사용자가 고쳐 적용해도(필드 빼기·다시 넣기 포함) 슬롯이 남는다. 사용자가 더한 필드는 NULL.
 - 동결: `TEMPLATE_KEY="author"`·`TEMPLATE_VERSION=1` + `server/templates/author@1.json`(정규화 정의 덤프). `TEMPLATE`·`LABELS` 를 바꾸면 시험이 깨진다 — 판을 올리고 새 판 파일을 만든다(옛 판 파일은 남긴다).
 - 백필: `init_schema` 4단계(멱등, `template_slot IS NULL` 만). 동결 v1 의 id·key **쌍**이 둘 다 같은 오브젝트, 그 아래 key 가 템플릿 필드 key 인 필드. key 는 비교만 한다. 한계: 사용자가 시드 전에 id·key 를 둘 다 템플릿과 똑같이 만들었으면 템플릿으로 잡힌다(드묾, 수용). 시드가 적용 뒤 표시 전에 끊겨도 다음 시작 때 백필이 채운다.
+
+## 표준·출처·역할 (PR #20, 2026-10-19)
+| 대상 | 내용 | 관계 |
+|---|---|---|
+| object_defs·field_defs `std_id` | 표준 식별자 `std:<key>[.<field>]`(버전 무관). NULL = 표준 아님. 시드·편입만 채운다. 있으면 잠금(`STANDARD-LOCKED`) | — |
+| std_marks | 사용자·표준 판(`std@1`)마다 1행. state seed_pending(신규 시드 실패 대기)·seeded·adopting(기존 사용자 첫 편입) | users M-D |
+| std_choices | 사용자·표준 오브젝트마다 1행. state deferred·refused·incorporated·seeded, 고를 때 본 def_id·def_revision, confirmed_meaning. 행 없음 = none. 덮어쓰기(이력 없음) | users M-D |
+| sources | 기록 출처(사용자별). kind file·url·chat·other · name · location · UNIQUE(user, kind, name, location) | users M-D |
+| records `source_id` | 출처 연결(nullable, 복합 FK 로 같은 사용자 출처만). 옛 기록은 NULL(「출처 미확인」), 옛 `source` 문자열 보존 | sources Lookup |
+| user_roles | 역할 → 오브젝트 1개. 지금 role = classify(기록 분류 대상) | users M-D · object_defs(CASCADE) |
+기능 플래그 `CRM_FEATURE_STANDARD`·`SOURCES`(미설정 off)는 신규 시드·편입·출처 쓰기만 막는다 — 읽기·잠금은 항상. 상세: `server/README.md` 「표준·출처·기능 플래그」 절.
 
 ## 제약 검증
 Governor limit 없음. M-D 깊이 최대 2(users→candidates→candidate_history). cascade 끝은 users 삭제 = 그 사용자 데이터 전체 삭제 — 계정 삭제 요청 처리와 같다. 인덱스: `(user_id, question_id, decision)`, `(user_id, created)`.
