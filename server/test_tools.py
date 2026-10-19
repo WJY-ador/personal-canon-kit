@@ -579,18 +579,39 @@ async def test_web():
                     auth.user_id_for = real_uif
                 assert r.status_code == 502 and "<svg" not in r.text and "&lt;svg onload=alert(1)&gt;" in r.text, r.text
                 # 보안 헤더: 웹 HTML 응답에만. JSON API·/health 는 그대로
+                csp_base = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; script-src 'self'"
                 sec = {"x-content-type-options": "nosniff", "x-frame-options": "DENY",
-                       "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
-                       "referrer-policy": "same-origin"}
+                       "content-security-policy": csp_base, "referrer-policy": "same-origin"}
                 h.cookies.clear()   # 위에서 넣은 위조 세션 쿠키를 지우고 새로 로그인
                 pages = [await h.get("/"), await h.get("/help"), await h.get("/privacy"), await h.get("/auth/callback", params={"error": "x"})]
                 await login_once(h)
-                pages.append(await h.get("/app"))
-                for r in pages:
+                app_r = await h.get("/app")
+                assert app_r.status_code == 200, app_r.status_code
+                for r in [*pages, app_r]:
                     assert r.headers.get("content-type", "").startswith("text/html"), (r.url, r.headers)
                     for k, v in sec.items():
+                        if k == "content-security-policy" and r is app_r:
+                            continue
                         assert r.headers.get(k) == v, (r.url, k, r.headers.get(k))
-                    assert "script-src" not in r.headers["content-security-policy"], "script-src 는 nonce 작업 뒤에"
+                    csp = r.headers["content-security-policy"]
+                    assert "script-src 'self'" in csp and "unsafe-inline" not in csp and "unsafe-eval" not in csp, (r.url, csp)
+                # /app: 공통 + 'sha256-…' 하나. 기대값은 응답 본문 인라인 스크립트에서 직접 계산(web 함수를 쓰지 않는다)
+                import base64 as _b64m
+                import hashlib as _hl
+                bodies = [b for a, b in re.findall(r"<script\b([^>]*)>(.*?)</script>", app_r.text, flags=re.S | re.I) if "src=" not in a]
+                assert len(bodies) == 1, len(bodies)
+                want = _b64m.b64encode(_hl.sha256(bodies[0].encode("utf-8")).digest()).decode()
+                assert app_r.headers["content-security-policy"] == f"{csp_base} 'sha256-{want}'", app_r.headers["content-security-policy"]
+                # 해시 함수 단위: 한 글자 바꾸면 다름 · 인라인 0개·2개 → 해시 없음('self' 만) · <script src=…> 는 세지 않음
+                one = '<script src="/assets/theme.js?v=1"></script><p>x</p><script>\n  let a = 1;\n</script>'
+                h1 = web.inline_script_hashes(one)
+                assert h1 == [_b64m.b64encode(_hl.sha256(b"\n  let a = 1;\n").digest()).decode()], h1
+                assert web.inline_script_hashes(one.replace("a = 1", "a = 2")) != h1, "한 글자 바꾸면 해시가 달라진다"
+                assert web.app_csp(one) == f"{csp_base} 'sha256-{h1[0]}'"
+                assert web.inline_script_hashes(one.replace("a = 1", "한 = 1")) == [_b64m.b64encode(_hl.sha256("\n  let 한 = 1;\n".encode("utf-8")).digest()).decode()], "UTF-8 바이트"
+                for bad in ('<script src="/a.js"></script><p>인라인 없음</p>', one + "<script>b()</script>", "<p>스크립트 없음</p>"):
+                    assert web.app_csp(bad) == csp_base, bad
+                assert web.inline_script_hashes('<SCRIPT type="module" src="/m.js"></SCRIPT>') == [], "src 있는 태그는 세지 않는다(대소문자 무관)"
                 for r in (await h.get("/api/state"), await h.get("/health")):
                     assert r.headers.get("content-type", "").startswith("application/json"), (r.url, r.headers)
                     assert not any(k in r.headers for k in sec), (r.url, r.headers)
@@ -2071,7 +2092,9 @@ async def test_consent_gate():
             r = await h.get("/consent")
             t = r.text
             assert r.status_code == 200 and r.headers["cache-control"] == "no-store", r.status_code
-            assert r.headers["x-frame-options"] == "DENY" and "frame-ancestors 'none'" in r.headers["content-security-policy"]
+            csp = r.headers["content-security-policy"]
+            assert r.headers["x-frame-options"] == "DENY" and "frame-ancestors 'none'" in csp and "script-src 'self'" in csp, csp
+            assert "unsafe-inline" not in csp and "unsafe-eval" not in csp, csp
             assert "<script" not in t and 'method="post" action="/api/consent"' in t, t[:500]
             assert 'name="privacy" value="v1"' in t and 'href="/privacy"' in t and "(v1)" in t and "동의하고 시작" in t, t
             assert "terms" not in t, "약관 문서가 없으면 체크박스도 없다"

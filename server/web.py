@@ -98,14 +98,33 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# 웹 HTML 응답(/, /app, /help, /privacy, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
-# script-src 는 아직 없다 — app.html·start.html 인라인 스크립트에 nonce 를 붙여야 넣을 수 있다.
+# 웹 HTML 응답(/, /app, /help, /privacy, /consent, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
+# script-src 'self' — 외부(self) theme.js 만. /app 은 응답 본문의 인라인 스크립트 1개 해시를 더한다(app_csp).
+# 'unsafe-inline'·'unsafe-eval' 은 어떤 경우에도 넣지 않는다. style-src·default-src 는 아직 없다(인라인 style).
+CSP_BASE = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; script-src 'self'"
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
-    "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+    "content-security-policy": CSP_BASE,
     "referrer-policy": "same-origin",
 }
+_SCRIPT_RE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.S | re.I)
+_SRC_ATTR_RE = re.compile(r"\bsrc\s*=", re.I)
+
+
+def inline_script_hashes(html: str) -> list[str]:
+    """src 없는 <script> 의 태그 사이 내용(공백·개행 그대로, UTF-8) sha256 → 표준 base64(패딩 포함). CSP 해시는 urlsafe 가 아니다."""
+    return [base64.b64encode(hashlib.sha256(body.encode("utf-8")).digest()).decode()
+            for attrs, body in _SCRIPT_RE.findall(html) if not _SRC_ATTR_RE.search(attrs)]
+
+
+def app_csp(html: str) -> str:
+    """/app CSP. 보낼 바로 그 문자열에서 계산한다. 인라인이 정확히 1개가 아니면 닫는 쪽 — 해시 없이 'self' 만 + 로그 1줄."""
+    hs = inline_script_hashes(html)
+    if len(hs) != 1:
+        print(f"[web] /app 인라인 스크립트가 {len(hs)}개라 CSP 해시를 넣지 않았어요(script-src 'self' 만 — 화면 스크립트가 막힌다)", flush=True)
+        return CSP_BASE
+    return f"{CSP_BASE} 'sha256-{hs[0]}'"
 
 
 def _html_resp(content: str, status: int = 200, headers: dict | None = None) -> HTMLResponse:
@@ -506,7 +525,8 @@ class Web:
             return RedirectResponse("/", status_code=302)
         if not await run_in_threadpool(db.has_consent, uid):   # 미동의 — 동의 화면 먼저(MCP 전용 사용자도 여기로 온다)
             return RedirectResponse("/consent", status_code=302)
-        return _html_resp(_fill_assets(APP_HTML.read_text(encoding="utf-8")), headers={"cache-control": "no-store"})
+        html = _fill_assets(APP_HTML.read_text(encoding="utf-8"))   # 요청마다 읽는다 — 헤더 해시와 본문이 같은 내용에서 나온다
+        return _html_resp(html, headers={"cache-control": "no-store", "content-security-policy": app_csp(html)})
 
     async def root(self, request):
         """시작 화면. 세션 있으면 /app. ?out=1(로그아웃 직후)일 때만 <!--out-->…<!--/out--> 띠를 남기고 [로그인]을 /login?fresh=1 로."""
