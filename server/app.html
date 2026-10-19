@@ -899,9 +899,10 @@ function decisionChip(it) {
   return `<span class="chip ${st[0]}">${st[1]}</span>`;
 }
 // 「구조」 탭 두 보기 — 항목(카드 그리드) · 구조 정의(#structure/defs). 정의 id 는 od_ 로 시작해 defs 와 겹치지 않는다
-function structViews(tab, on) {
+// 보기 전환이 맨 위 · 오브젝트 필(sub, 「구조 고르기」)은 그 아래 — 항목 보기에서만 넘긴다
+function structViews(tab, on, sub = "") {
   const a = (href, label, v) => `<a href="${esc(href)}" class="${on === v ? "on" : ""}"${on === v ? ' aria-current="true"' : ""}>${label}</a>`;
-  return `<nav class="pills sview" aria-label="구조 보기">${a(`#${tab.id}`, "항목", "items")}${a(`#${tab.id}/defs`, "구조 정의", "defs")}</nav>`;
+  return `<nav class="pills sview" aria-label="구조 보기">${a(`#${tab.id}`, "항목", "items")}${a(`#${tab.id}/defs`, "구조 정의", "defs")}</nav>` + sub;
 }
 function renderStructure(tab, a, b) {
   if (a === "defs") return renderDefs(tab);
@@ -915,15 +916,16 @@ function renderStructure(tab, a, b) {
   if (!FILTERS.some(x => x[0] === filter)) filter = "confirmed";
   const cnt = d => (S.items || []).filter(it => it.object_id === d.id).length;
   const pill = (href, label, n, on) => `<a href="${esc(href)}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${esc(label)}<span class="n m">${n}</span></a>`;
-  subnav(rules.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")
+  subnav("");
+  const sub = `<nav class="pills sobjs" aria-label="구조 고르기">${rules.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")
     + pill(`#${tab.id}/cand/${filter}`, LABELS.candidate, cs.length, sel === "cand")
-    + others.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join(""), "구조 고르기");
-  if (sel === "cand") return renderCandGallery(tab, cs, filter);
+    + others.map(d => pill(`#${tab.id}/${d.id}`, d.label, cnt(d), sel === d.id)).join("")}</nav>`;
+  if (sel === "cand") return renderCandGallery(tab, cs, filter, sub);
   const d = defById(sel);
   const list = (S.items || []).filter(it => it.object_id === d.id);
   const props = (S.item_proposals || []).filter(it => it.object_id === d.id);
   const cards = props.map(it => itemCard(tab, it, d, b)).join("") + list.map(it => itemCard(tab, it, d, b)).join("");
-  $("view").innerHTML = structViews(tab, "items") + `<div class="struct"><div>${cards ? `<div class="gallery">${cards}</div>`
+  $("view").innerHTML = structViews(tab, "items", sub) + `<div class="struct"><div>${cards ? `<div class="gallery">${cards}</div>`
       : `<div class="empty">아직 ${esc(d.label)} 항목이 없어요. 연결한 AI 대화에서 제안하면 여기서 적용할 수 있어요.</div>`}</div>
     <aside id="panel" aria-label="${esc(d.label)} 서랍" aria-live="polite"><p class="empty">카드를 누르면 여기 떠요.</p></aside></div>`;
   if (b && itemById(b)) openDrawer(tab, b);
@@ -950,14 +952,14 @@ function dataSummary(it, d) {
     return `${f.label} ${Array.isArray(v) ? v.join(", ") : v}`;
   }).filter(Boolean).join(" · ");
 }
-function renderCandGallery(tab, cs, f) {
-  if (!ok("candidates")) { $("view").innerHTML = structViews(tab, "items") + partFail(S.read.candidates.error, "문장 목록"); return; }
+function renderCandGallery(tab, cs, f, sub) {
+  if (!ok("candidates")) { $("view").innerHTML = structViews(tab, "items", sub) + partFail(S.read.candidates.error, "문장 목록"); return; }
   const pills = `<nav class="pills" aria-label="결정 고르기">${FILTERS.map(([k, l]) => {
     const n = k === "all" ? cs.length : cs.filter(c => c.status === k).length, on = k === f;
     return `<a href="#${esc(tab.id)}/cand/${k}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${l}<span class="n">${n}</span></a>`;
   }).join("")}</nav>`;
   const list = cs.filter(c => f === "all" || c.status === f).sort(byNewest);
-  $("view").innerHTML = structViews(tab, "items") + pills + (list.length ? `<div class="gallery">${list.map(c => assetCard(tab, c)).join("")}</div>` : `<div class="empty">${esc(NOCARD[f])}</div>`);
+  $("view").innerHTML = structViews(tab, "items", sub) + pills + (list.length ? `<div class="gallery">${list.map(c => assetCard(tab, c)).join("")}</div>` : `<div class="empty">${esc(NOCARD[f])}</div>`);
 }
 function assetCard(tab, c) {
   const st = STCHIP[c.status] || STCHIP.pending;
@@ -1013,7 +1015,7 @@ function renderDefs(tab) {
     <div class="labels">${originChip(o.origin)}${lockChip(o.locked)}${o.std_name ? `<span class="chip">표준 「${esc(o.std_name)}」</span>` : ""}
       <span class="chip">${esc(KIND_LABEL[o.semantic_kind] || o.semantic_kind)}</span><span class="chip">항목 ${nItems(o.id)}</span></div>
     ${o.fields.length ? `<div class="sftbl-wrap"><table class="sftbl"><thead><tr><th scope="col">필드</th><th scope="col">key</th><th scope="col">값</th>
-      <th scope="col">출처</th><th scope="col">보호</th></tr></thead><tbody>${o.fields.map(f => fieldRow(o, f)).join("")}</tbody></table></div>`
+      <th scope="col">구분</th><th scope="col">보호</th></tr></thead><tbody>${o.fields.map(f => fieldRow(o, f)).join("")}</tbody></table></div>`
       : `<p class="hint">필드가 없어요.</p>`}</article>`;
   const relRow = (r, i) => { const o = oById(r.object_id) || {}, f = (o.fields || []).find(x => x.key === r.field_key) || {};
     return `<li id="dmo-r${i + 1}"><b>${esc(o.label || "")}</b><span class="tech">${esc(f.label || r.field_key)}</span> → <b>${esc(tgt(r))}</b>

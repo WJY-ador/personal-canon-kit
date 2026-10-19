@@ -639,13 +639,13 @@ def render_report_table(out: dict) -> str:
 
 
 def render_measure_notes(ds: str) -> str:
-    """지표 정의 표 — 출처·기준 시각·결측·집계식."""
+    """지표 정의 표 — 산출 근거·기준 시각·결측·집계식."""
     spec = admin_db.report_spec(ds)
     rows = [f'<tr><td>{_esc(m["label"])}</td><td>{_esc(m["src"])}</td><td>{_esc(m["time"])}</td><td>{_esc(m["missing"])}</td>'
             f'<td>{_esc(m["agg"])}</td></tr>' for m in spec["measures"].values()]
     t = spec["time"] or "지금 상태(기간 없음)"
     return (f'<h2>지표 정의</h2><p class="note">기간 기준: {_esc(t)}</p>'
-            + _table(["<th>측정</th><th>출처</th><th>기준 시각</th><th>결측</th><th>집계식</th>"], rows))
+            + _table(["<th>측정</th><th>산출 근거</th><th>기준 시각</th><th>결측</th><th>집계식</th>"], rows))
 
 
 def render_report_form(ds: str, spec: dict, q: dict, out: dict) -> str:
@@ -819,7 +819,7 @@ def render_userview(u: dict, opaque: str, named: bool, resp: dict, st: dict, tic
             f'<p class="note">원을 누르면 구조 트리의 그 오브젝트로, 선을 누르면 관계 집계 행으로 가요. 대상이 없는 관계(오브젝트 미지정·대상 정의 없음)는 선이 없어요.</p>'
             f'<h2>관계별 집계</h2><p class="note">관계 = 참조 필드 하나. 연결 = 살아 있는 항목에서 출발한 정상 연결 수(오류·검사 불가 제외). '
             f'기록에서 출발하는 분류 연결은 관계가 아니라 세지 않아요.</p>'
-            + _table(['<th class="num">#</th><th>출발</th><th>필드</th><th>대상</th><th>카디널리티</th><th>출처</th><th>보호</th>'
+            + _table(['<th class="num">#</th><th>출발</th><th>필드</th><th>대상</th><th>카디널리티</th><th>구분</th><th>보호</th>'
                       '<th class="num">연결</th><th class="num">오류</th><th class="num">검사 불가</th>'], rrows, "관계 없음")
             + '<h2>무결성</h2><p class="note">검사 불가는 정상이 아니에요 — 정의만으로는 맞는지 볼 수 없는 연결이에요.</p>'
             + _table(['<th>코드</th><th>검사</th><th class="num">건</th><th>위치</th>'], erows)

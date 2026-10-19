@@ -3743,7 +3743,7 @@ async def test_admin_screens():
             assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, (path, "리포트에 이름 없음")
         r = await get(web._report_href({"ds": "usage", "g1": "name", "g2": "code", "result": "error",
                                         "from": today.isoformat(), "to": today.isoformat()}))
-        assert "RATE-LIMIT" in r.text and "출처" in r.text and "집계식" in r.text and "sum(n)" in r.text, "지표 정의 표"
+        assert "RATE-LIMIT" in r.text and "<th>산출 근거</th>" in r.text and "<th>출처</th>" not in r.text and "집계식" in r.text and "sum(n)" in r.text, "지표 정의 표"
         # 행 상한 — 이름 205개 → 상위 200
         out = admin_db.report("admin", "usage", ("name",), {}, today.isoformat(), today.isoformat(), today)
         assert out["capped"] and len(out["rows"]) == admin_db.REPORT_ROWS and out["total"] >= 205, (out["total"], len(out["rows"]))
@@ -5518,6 +5518,7 @@ async def test_q5_admin():
             assert re.search(r"<td>UNCHECKED</td><td>검사 불가[^<]*</td><td class=\"num\">1</td>", t), "검사 불가는 오류와 따로"
             assert "std@1" in t and "adopting" in t and "incorporated" in t and "deferred" in t, "표준 상태 코드"
             assert "표준 축" in t and "표준 결정" in t, "편입된 것만 표준명"
+            assert "<th>출처</th>" not in t and "<th>카디널리티</th><th>구분</th>" in t, "관계 집계 열 머리 = 구분(정의 구분 뜻의 '출처' 0 — 출처는 기록 출처 개수만)"
         v = admin_db.userview("admin", U["n"])[U["n"]]
         inp = admin_db.contract_input(v)
         st = admin_db.link_stats(v, inp)
@@ -5652,7 +5653,11 @@ async def test_q45_user():
         assert tokens in html and "prefers-color-scheme" not in tokens and "prefers-color-scheme" not in html, "토큰 = 테마 토글(data-theme)만"
         assert '[data-theme="dark"]' in tokens
         chip = html[html.index("const ORIGIN_CHIP = {"):html.index("};", html.index("const ORIGIN_CHIP = {"))]
-        assert dict(re.findall(r'(\w+): \["[^"]*", "([^"]+)"\]', chip)) == structure_svg.ORIGIN_TEXT, "출처 용어 — 그래프 = 목록 칩"
+        assert dict(re.findall(r'(\w+): \["[^"]*", "([^"]+)"\]', chip)) == structure_svg.ORIGIN_TEXT, "구분 용어 — 그래프 = 목록 칩"
+        assert '<th scope="col">출처</th>' not in html and '<th scope="col">구분</th><th scope="col">보호</th>' in html, "필드 표 열 머리 = 구분(정의 구분 뜻의 '출처' 0)"
+        sv = html[html.index("function structViews("):html.index("\n}", html.index("function structViews("))]   # 구조 탭 순서: 보기 전환 → 오브젝트 필(항목 보기만)
+        assert sv.index('aria-label="구조 보기"') < sv.index("+ sub;") and 'subnav("");\n  const sub = `<nav class="pills sobjs" aria-label="구조 고르기">' in html \
+            and '"구조 고르기");' not in html and 'structViews(tab, "defs", ' not in html and html.count('structViews(tab, "items", sub)') == 3, "보기 전환이 맨 위 · 오브젝트 필은 그 아래 항목 보기에서만"
         assert "min-width: 420px" in html and ".dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }" in html
 
         # ── 사용자 A(기존 사용자형 — 표식 없음) · B(다른 사용자) ──

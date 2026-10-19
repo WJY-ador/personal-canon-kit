@@ -115,7 +115,7 @@ ALLOW = {
                  "target_kind", "field_std", "field_slot", "field_archived"),
         "viewer": VIEWER_ADMIN, "consent": None,
         "time": None,   # 지금 상태(스냅샷) — 기간 없음
-        "dims": {"semantic_kind": "오브젝트 종류", "origin": "오브젝트 출처", "value_type": "필드 타입", "field_origin": "필드 출처",
+        "dims": {"semantic_kind": "오브젝트 종류", "origin": "오브젝트 구분", "value_type": "필드 타입", "field_origin": "필드 구분",
                  "required": "필수", "multiple": "다중", "target": "관계 대상", "archived": "보관",
                  "objects_bucket": "사용자별 오브젝트 수 구간", "fields_bucket": "사용자별 필드 수 구간"},
         "user_dims": ("objects_bucket", "fields_bucket"),   # 사용자 단위 차원 — 서로끼리만 묶고 필터와 같이 쓰지 않는다
@@ -346,7 +346,7 @@ VALUE_LABELS = {
     "blocked": {"yes": "차단", "no": "아님"}, "active14": {"yes": "활동", "no": "없음"},
     "role": {"user": "사용자", "admin": "관리자"},
     "result": {"ok": "정상", "error": "오류"}, "linked": {"yes": "연결", "no": "미연결"},
-    "origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},   # 앱 출처 용어(structure_svg.ORIGIN_TEXT, user = custom)
+    "origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},   # 앱 구분 용어(structure_svg.ORIGIN_TEXT, user = custom)
     "field_origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},
     "required": {"yes": "필수", "no": "선택"}, "multiple": {"yes": "다중", "no": "단일"}, "archived": {"yes": "보관", "no": "사용 중"},
     "target": {"item": "항목", "record": "기록", "candidate": "후보", "none": "관계 아님"},
@@ -358,7 +358,7 @@ REPORT_PRESETS = (
     ("errors14", "오류 14일", {"ds": "usage", "g1": "name", "g2": "code", "result": "error", "days": RECENT_DAYS}),
     ("linked14", "연결·미연결 호출 14일", {"ds": "usage", "g1": "day", "g2": "linked", "days": RECENT_DAYS}),
     ("defs", "정의 분포", {"ds": "structure", "g1": "objects_bucket", "g2": "fields_bucket"}),
-    ("types", "필드 타입 × 출처", {"ds": "structure", "g1": "value_type", "g2": "field_origin", "archived": "no"}),
+    ("types", "필드 타입 × 구분", {"ds": "structure", "g1": "value_type", "g2": "field_origin", "archived": "no"}),
     ("tickets", "문의 종류 × 상태", {"ds": "tickets", "g1": "kind", "g2": "status"}),
 )
 VALUE_TYPES = db.VALUE_TYPES
@@ -515,7 +515,7 @@ def _facts(ds, r, today):
         c, z = _kdate(r["created"]), _kdate(r["closed_at"])
         return {"kind": r["kind"], "status": r["status"], "page": r["page"], "via": r["via"], "created_month": _month(c),
                 "created_week": _week(c), "closed_month": _month(z), "closed_week": _week(z)}
-    has_f = r["value_type"] is not None   # 출처 = contract.origin_of 순서(std_id → template_slot → 사용자)
+    has_f = r["value_type"] is not None   # 구분 = contract.origin_of 순서(std_id → template_slot → 사용자)
     return {"semantic_kind": r["semantic_kind"], "origin": _origin(r["object_std"], r["object_slot"]),
             "value_type": r["value_type"], "field_origin": _origin(r["field_std"], r["field_slot"]) if has_f else None,
             "required": _yn(r["required"]) if has_f else None, "multiple": _yn(r["multiple"]) if has_f else None,
@@ -627,7 +627,7 @@ ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유�
     "cols": ("user_id", "names", "std_version", "std_state", "std_choices", "sources_n", "md_broken"),
     "viewer": VIEWER_ADMIN, "consent": None,
 }
-ALLOW["userview.defs"] = {   # 적용·보관 아닌 오브젝트 × 보관 아닌 필드 — db.definitions 와 같은 범위·순서 + 출처 판정 열(std_id·template_slot)
+ALLOW["userview.defs"] = {   # 적용·보관 아닌 오브젝트 × 보관 아닌 필드 — db.definitions 와 같은 범위·순서 + 구분 판정 열(std_id·template_slot)
     "sql": "SELECT o.user_id, md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, "
            "md5(f.key) AS field_ref, f.value_type, f.required, f.multiple, f.target_kind, md5(f.target_object_id) AS target_ref, "
            "f.std_id AS field_std, f.template_slot AS field_slot FROM object_defs o "
