@@ -37,6 +37,8 @@
    · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
 17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
    · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 섹션은 보내지 않음), 일반 사용자는 그대로
+18) R2(PR #20 3단계, DB 없이): 기능 플래그 해석(on 만 켬) · render.yaml sync:false 선언 · 수신자별 응답(본인·운영자 비동의·동의) 허용 목록
+   · 이름 누출 0(비동의: label·key·선택지·출처 name·location·id / 동의: key·선택지 값·출처·id) · origin·관계 파생 · std 모양 · 오류 코드 문구 · 예제 동결 일치
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -96,6 +98,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from mcp.client import Client  # noqa: E402
 
 import auth  # noqa: E402
+import contract  # noqa: E402
 import db  # noqa: E402
 import envnames  # noqa: E402
 import main  # noqa: E402
@@ -3738,6 +3741,7 @@ async def run():
         await test_app_account_menu()
         await test_integration_p5()
         await test_r1_flags_off()
+        test_r2_contract()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -4127,6 +4131,197 @@ async def test_r1_flags_off():
             if v is not None:
                 os.environ[k] = v
     print("OK — R1 플래그 off 기준선(로그인 웹·DEV · /admin 일반 404·관리자 바로·재인증 없음 · 문의 처리 · Q1 관리자 /app 메뉴) 통과")
+
+
+# ── 18) R2 — 응답 계약 · 플래그 해석 · 오류 코드 (DB 없음) ─────────
+# 명세 §7·§8·§1·§6. 화면·DB 열은 다음 단계 — 여기선 contract 순수 함수와 동결 예제(server/contract/*.json)만 고정한다.
+R2_FORBID_ADMIN = {"id", "key", "value", "name", "location", "object_id", "field_key", "target_object_id"}   # counts.sources(개수)는 허용 — 출처 목록은 최상위 키 검사가 막는다
+R2_ADMIN_OBJ = {"ref", "std_name", "semantic_kind", "origin", "std_id", "locked", "fields"}
+R2_ADMIN_FIELD = {"ref", "std_name", "origin", "std_id", "locked"}
+R2_ADMIN_REL = {"from", "field", "to", "cardinality", "origin", "std_id", "locked"}
+
+
+def _r2_keys(x):
+    """응답 안 모든 dict 의 키 — std.objects 의 표준 key 는 값 쪽 제품 문자열이라 뺀다."""
+    out = set()
+    if isinstance(x, dict):
+        for k, v in x.items():
+            if k == "objects" and isinstance(v, dict):
+                continue
+            out.add(k)
+            out |= _r2_keys(v)
+    elif isinstance(x, list):
+        for v in x:
+            out |= _r2_keys(v)
+    return out
+
+
+def _r2_user_strings(user):
+    """사용자가 정한 문자열 — (label 류, key·id·선택지 값·출처 류). 표준 key·표준 필드 key 는 std_id·std 상태의 제품 문자열이라 key 쪽에서 뺀다."""
+    std_keys = {k for sid in contract.STD_NAMES for k in sid[4:].split(".")}
+    labels, keys = set(), set()
+    for o in user["definitions"]:
+        labels.add(o["label"])
+        keys.add(o["id"])
+        if o["key"] not in std_keys:
+            keys.add(o["key"])
+        for f in o["fields"]:
+            labels.add(f["label"])
+            labels |= {op["label"] for op in f["options"]}
+            keys |= {op["value"] for op in f["options"]}
+            if f["key"] not in std_keys:
+                keys.add(f["key"])
+    for s in user["sources"]:
+        keys |= {s["id"], s["name"], s["location"]}
+    return labels, keys
+
+
+def test_r2_contract():
+    """플래그: CRM_FEATURE_* 는 정확히 `on` 만 켬(호출마다 env) · render.yaml 두 키 sync:false
+    · 예제: server/contract/*.json == contract.respond(EXAMPLES) 직렬화(6개, 그 밖 파일 없음)
+    · 누출: 운영자 비동의 응답 문자열에 사용자 label·key·선택지(값·label)·출처 name·location·id 0, 동의 응답에도 key·선택지 값·출처·id 0
+      · 운영자 응답의 dict 키 = 허용 목록 · 본인 응답엔 전부 있음
+    · 파생: 편입된 기준에 사용자가 더한 필드·참조 필드 = custom·null·false · 관계 = 참조 필드 값 그대로 · N:1/N:N · template · core 노드
+      · 미편입 같은 key 오브젝트엔 표준명·std_id 없음 · std 모양(표식 없음 = version·state null, objects 는 선택 그대로) · 표준명 = templates/std@1.json · 오류 코드 3종 문구"""
+    # ── 플래그 해석 표 ──
+    saved = {k: os.environ.pop(k, None) for k in R1_FLAGS}
+    try:
+        for name, env_key in (("STANDARD", "CRM_FEATURE_STANDARD"), ("SOURCES", "CRM_FEATURE_SOURCES")):
+            other = [k for k in R1_FLAGS if k != env_key][0]
+            for v, want in ((None, False), ("on", True), ("off", False), ("ON", False), ("On", False), ("1", False),
+                            ("true", False), ("", False), (" on", False), ("on ", False)):
+                os.environ.pop(env_key, None)
+                if v is not None:
+                    os.environ[env_key] = v
+                assert contract.feature_on(name) is want, (name, v)
+                assert (contract.standard_on() if name == "STANDARD" else contract.sources_on()) is want, (name, v)
+                assert contract.feature_on("SOURCES" if name == "STANDARD" else "STANDARD") is False, "다른 플래그는 영향 없음"
+                assert other not in os.environ
+            os.environ.pop(env_key, None)
+        expect_err = False
+        try:
+            contract.feature_on("standard")
+        except ValueError:
+            expect_err = True
+        assert expect_err, "모르는 플래그 이름은 거절"
+    finally:
+        for k, v in saved.items():
+            os.environ.pop(k, None)
+            if v is not None:
+                os.environ[k] = v
+    ry = (HERE / "render.yaml").read_text(encoding="utf-8")
+    for k in R1_FLAGS:
+        assert re.search(rf"- key: {k}\n\s+sync: false\b", ry), k
+    # ── 예제 동결 ──
+    names = sorted(p.name for p in contract.EXAMPLES_DIR.glob("*.json"))
+    assert names == sorted(f"{n}.{v}.json" for n in contract.EXAMPLES for v in contract.VIEWERS), names
+    for n, user in contract.EXAMPLES.items():
+        for v in contract.VIEWERS:
+            got = contract.dump(contract.respond(user, v))
+            assert got == contract.example_path(n, v).read_text(encoding="utf-8"), \
+                f"동결 예제와 다름: {n}.{v} — 의도한 변경이면 cd server && .venv/bin/python contract.py"
+    # ── 수신자별 노출 ──
+    for n, user in contract.EXAMPLES.items():
+        labels, keys = _r2_user_strings(user)
+        assert labels and keys
+        r_self, r_no, r_yes = (contract.respond(user, v) for v in contract.VIEWERS)
+        s_self, s_no, s_yes = (json.dumps(r, ensure_ascii=False) for r in (r_self, r_no, r_yes))
+        for w in labels | keys:
+            assert w in s_self, (n, "본인 응답엔 이름이 다 있다", w)
+            assert w not in s_no, (n, "비동의 누출", w)
+        for w in keys:
+            assert w not in s_yes, (n, "동의여도 key·선택지 값·출처 name·location·id 0", w)
+        for w in labels:
+            assert w in s_yes, (n, "동의 응답엔 현재 label·선택지 label", w)
+        for r, consent in ((r_no, False), (r_yes, True)):
+            ks = _r2_keys(r)
+            assert not ks & R2_FORBID_ADMIN, (n, ks & R2_FORBID_ADMIN)
+            assert ("label" in ks) is consent and ("options" in ks) is consent, (n, consent)
+            extra = {"label"} if consent else set()
+            for o in r["objects"]:
+                assert set(o) == R2_ADMIN_OBJ | extra, set(o)
+                for f in o["fields"]:
+                    assert set(f) == R2_ADMIN_FIELD | (extra | {"options"} if consent else set()), set(f)
+                    assert all(isinstance(x, str) for x in f.get("options", [])), "선택지는 label 문자열만"
+            for rel in r["relations"]:
+                assert set(rel) == R2_ADMIN_REL, set(rel)
+            assert set(r) == {"contract", "viewer", "std", "counts", "objects", "relations", "core"}, set(r)
+            assert r["std"] == r_self["std"] and r["counts"] == r_self["counts"], "표준 상태 코드·개수는 같다"
+        assert "sources" in r_self and r_self["counts"]["sources"] == len(user["sources"]) >= 1
+    # ── 파생 — full: 편입된 기준 + 사용자 필드·참조 필드 ──
+    full = contract.respond(contract.EXAMPLES["full"], "self")
+    byo = {o["id"]: o for o in full["objects"]}
+    pr = byo["od_principles"]
+    assert (pr["origin"], pr["std_id"], pr["locked"], pr["std_name"]) == ("standard", "std:principles", True, "기준")
+    pf = {f["key"]: f for f in pr["fields"]}
+    for k in ("ukey_register", "ukey_owner"):
+        assert (pf[k]["origin"], pf[k]["std_id"], pf[k]["locked"], pf[k]["std_name"]) == ("custom", None, False, None), k
+    assert (pf["axes"]["origin"], pf["axes"]["std_id"], pf["axes"]["locked"]) == ("standard", "std:principles.axes", True)
+    rels = {(r["object_id"], r["field_key"]): r for r in full["relations"]}
+    assert len(rels) == len(full["relations"]) == sum(f["value_type"] == "reference" for o in full["objects"] for f in o["fields"])
+    for (oid, fk), r in rels.items():
+        f = next(f for f in byo[oid]["fields"] if f["key"] == fk)
+        assert (r["origin"], r["std_id"], r["locked"]) == (f["origin"], f["std_id"], f["locked"]), "관계 = 참조 필드 값 그대로"
+        assert r["cardinality"] == ("N:N" if f["multiple"] else "N:1")
+    assert (rels[("od_principles", "ukey_owner")]["cardinality"], rels[("od_principles", "ukey_owner")]["origin"],
+            rels[("od_principles", "ukey_owner")]["locked"]) == ("N:1", "custom", False)
+    assert rels[("od_principles", "evidence_events")]["cardinality"] == "N:N" and rels[("od_principles", "evidence_events")]["locked"]
+    assert byo["od_craft"]["origin"] == "template" and rels[("od_craft", "related_events")]["origin"] == "template"
+    assert {c["kind"]: c["origin"] for c in full["core"]} == {"record": "core", "candidate": "core"}
+    adm = contract.respond(contract.EXAMPLES["full"], "admin_noconsent")
+    arel = {(r["from"], r["field"]): r for r in adm["relations"]}
+    assert arel[("오브젝트 3", "필드 e")]["to"] == "오브젝트 4" and arel[("오브젝트 3", "필드 e")]["origin"] == "custom"
+    assert arel[("오브젝트 2", "필드 b")]["to"] == "candidate" and arel[("오브젝트 4", "필드 b")]["to"] == "record"
+    assert full["std"] == {"version": "std@1", "state": "adopting",
+                           "objects": {"axes": "incorporated", "decision_events": "incorporated", "principles": "incorporated"}}
+    # ── 파생 — partial: 부분 편입 · 같은 key 미편입 오브젝트에 표준명 없음 ──
+    part = contract.respond(contract.EXAMPLES["partial"], "self")
+    pa = contract.respond(contract.EXAMPLES["partial"], "admin_noconsent")
+    assert part["std"] == {"version": "std@1", "state": "adopting",
+                           "objects": {"axes": "incorporated", "decision_events": "deferred", "principles": "none"}}
+    same = next(o for o in part["objects"] if o["key"] == "decision_events")
+    assert (same["origin"], same["std_id"], same["locked"], same["std_name"]) == ("custom", None, False, None)
+    i = part["objects"].index(same)
+    assert (pa["objects"][i]["std_name"], pa["objects"][i]["std_id"]) == (None, None), "같은 key 라는 이유로 표준명을 붙이지 않는다"
+    assert all(f["std_name"] is None for f in pa["objects"][i]["fields"])
+    assert "결정" not in json.dumps(pa, ensure_ascii=False), "미편입 오브젝트의 표준명 0"
+    # ── std 모양 · origin 우선순위 · 자리표 ──
+    none_all = {"version": None, "state": None, "objects": {k: "none" for k in contract.STD_KEYS}}
+    assert contract.std_state(None, None) == none_all and contract.respond({}, "self")["std"] == none_all
+    # 표식 없음 + 보류·거절 선택만 → objects 는 선택 그대로, version·state 는 null(§0)
+    nomark = {"std_choices": {"decision_events": "deferred", "principles": "refused"}}
+    want = {"version": None, "state": None, "objects": {"axes": "none", "decision_events": "deferred", "principles": "refused"}}
+    assert contract.std_state(None, nomark["std_choices"]) == want
+    for v in contract.VIEWERS:
+        assert contract.respond(nomark, v)["std"] == want, v
+    # 표준명 = templates/std@1.json label(std_id 는 key 로 만든 것, 파일엔 없음)
+    sd = json.loads((HERE / "templates" / "std@1.json").read_text(encoding="utf-8"))
+    assert contract.STD_VERSION == "std@1" and contract.STD_KEYS == ("axes", "decision_events", "principles")
+    assert contract.STD_NAMES == {**{f"std:{o['key']}": o["label"] for o in sd["objects"]},
+                                  **{f"std:{o['key']}.{f['key']}": f["label"] for o in sd["objects"] for f in o["fields"]}}
+    assert "std:" not in json.dumps(sd), "식별자는 파일에 넣지 않는다"
+    assert contract.std_state({"version": "std@1", "state": "seeded"}, {"axes": "bogus"})["objects"]["axes"] == "none"
+    assert contract.origin_of({"std_id": "std:axes", "template_slot": "author@1:axes"}) == "standard"
+    assert contract.origin_of({"template_slot": "author@1:axes"}) == "template" and contract.origin_of({}) == "custom"
+    assert contract.std_name("std:principles.evidence_events") == "근거 결정" and contract.std_name("std@1:axes") is None
+    assert [contract.field_ref(i) for i in (0, 25, 26, 27)] == ["필드 a", "필드 z", "필드 aa", "필드 ab"]
+    # ── 오류 코드 ──
+    e = db._std_locked("archive", "std:principles")
+    assert isinstance(e, db.CrmError) and e.code == "STANDARD-LOCKED" and "std:principles" in e.message
+    assert set(contract.LOCKED_CHANGES) >= {"archive", "key", "semantic_kind", "std_id", "field_remove", "field_shape", "option_remove"}
+    for why in ("author_unknown", "external", "processed", "deleted"):
+        e = db._cand_review(why)
+        assert e.code == "CANDIDATE-REVIEW" and e.message and "{" not in e.message + e.action, why
+        assert "verbatim" not in e.message + e.action and "self" not in e.message + e.action, "「self·verbatim 으로 바꾸면 풀린다」 금지"
+        assert ("record_provenance_set" in e.action) is (why in ("author_unknown", "processed")), why
+    assert len({contract.REVIEW_MSG[w] for w in contract.REVIEW_REASONS}) == 4
+    e = db._scope_self()
+    assert e.code == "SCOPE-SELF-ONLY" and "{" not in e.message + e.action
+    rr = lambda a, t, d=None: contract.review_reason({"author_kind": a, "text_process": t, "deleted_at": d})
+    assert rr("self", "verbatim") is None and rr("unknown", "verbatim") == "author_unknown" and rr("external", "verbatim") == "external"
+    assert [rr("self", t) for t in ("structured", "rewritten", "generated", "unknown")] == ["processed"] * 4
+    assert rr("external", "generated", "2026-10-19") == "deleted"
+    print("OK — R2 계약(플래그 on 만 · render.yaml · 예제 6개 동결 · 비동의·동의 이름 누출 0 · origin·관계 파생 · std 모양 · 오류 코드 3종) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

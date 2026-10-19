@@ -1,0 +1,244 @@
+{
+  "contract": 1,
+  "viewer": "admin_noconsent",
+  "std": {
+    "version": "std@1",
+    "state": "adopting",
+    "objects": {
+      "axes": "incorporated",
+      "decision_events": "incorporated",
+      "principles": "incorporated"
+    }
+  },
+  "counts": {
+    "objects": 5,
+    "fields": 14,
+    "relations": 7,
+    "sources": 1
+  },
+  "objects": [
+    {
+      "ref": "오브젝트 1",
+      "std_name": "축",
+      "semantic_kind": "collection",
+      "origin": "standard",
+      "std_id": "std:axes",
+      "locked": true,
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": "검색어",
+          "origin": "standard",
+          "std_id": "std:axes.keywords",
+          "locked": true
+        }
+      ]
+    },
+    {
+      "ref": "오브젝트 2",
+      "std_name": "결정",
+      "semantic_kind": "event",
+      "origin": "standard",
+      "std_id": "std:decision_events",
+      "locked": true,
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": "결정일",
+          "origin": "standard",
+          "std_id": "std:decision_events.happened_on",
+          "locked": true
+        },
+        {
+          "ref": "필드 b",
+          "std_name": "판단",
+          "origin": "standard",
+          "std_id": "std:decision_events.claims",
+          "locked": true
+        },
+        {
+          "ref": "필드 c",
+          "std_name": null,
+          "origin": "custom",
+          "std_id": null,
+          "locked": false
+        }
+      ]
+    },
+    {
+      "ref": "오브젝트 3",
+      "std_name": "기준",
+      "semantic_kind": "principle",
+      "origin": "standard",
+      "std_id": "std:principles",
+      "locked": true,
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": "근거 판단",
+          "origin": "standard",
+          "std_id": "std:principles.evidence_claims",
+          "locked": true
+        },
+        {
+          "ref": "필드 b",
+          "std_name": "근거 결정",
+          "origin": "standard",
+          "std_id": "std:principles.evidence_events",
+          "locked": true
+        },
+        {
+          "ref": "필드 c",
+          "std_name": "관심 축",
+          "origin": "standard",
+          "std_id": "std:principles.axes",
+          "locked": true
+        },
+        {
+          "ref": "필드 d",
+          "std_name": null,
+          "origin": "custom",
+          "std_id": null,
+          "locked": false
+        },
+        {
+          "ref": "필드 e",
+          "std_name": null,
+          "origin": "custom",
+          "std_id": null,
+          "locked": false
+        }
+      ]
+    },
+    {
+      "ref": "오브젝트 4",
+      "std_name": null,
+      "semantic_kind": "collection",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": null,
+          "origin": "custom",
+          "std_id": null,
+          "locked": false
+        },
+        {
+          "ref": "필드 b",
+          "std_name": null,
+          "origin": "custom",
+          "std_id": null,
+          "locked": false
+        }
+      ]
+    },
+    {
+      "ref": "오브젝트 5",
+      "std_name": null,
+      "semantic_kind": "collection",
+      "origin": "template",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": null,
+          "origin": "template",
+          "std_id": null,
+          "locked": false
+        },
+        {
+          "ref": "필드 b",
+          "std_name": null,
+          "origin": "template",
+          "std_id": null,
+          "locked": false
+        },
+        {
+          "ref": "필드 c",
+          "std_name": null,
+          "origin": "template",
+          "std_id": null,
+          "locked": false
+        }
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "from": "오브젝트 2",
+      "field": "필드 b",
+      "to": "candidate",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:decision_events.claims",
+      "locked": true
+    },
+    {
+      "from": "오브젝트 3",
+      "field": "필드 a",
+      "to": "candidate",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.evidence_claims",
+      "locked": true
+    },
+    {
+      "from": "오브젝트 3",
+      "field": "필드 b",
+      "to": "오브젝트 2",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.evidence_events",
+      "locked": true
+    },
+    {
+      "from": "오브젝트 3",
+      "field": "필드 c",
+      "to": "오브젝트 1",
+      "cardinality": "N:N",
+      "origin": "standard",
+      "std_id": "std:principles.axes",
+      "locked": true
+    },
+    {
+      "from": "오브젝트 3",
+      "field": "필드 e",
+      "to": "오브젝트 4",
+      "cardinality": "N:1",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "from": "오브젝트 4",
+      "field": "필드 b",
+      "to": "record",
+      "cardinality": "N:1",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "from": "오브젝트 5",
+      "field": "필드 c",
+      "to": "오브젝트 2",
+      "cardinality": "N:N",
+      "origin": "template",
+      "std_id": null,
+      "locked": false
+    }
+  ],
+  "core": [
+    {
+      "kind": "record",
+      "origin": "core"
+    },
+    {
+      "kind": "candidate",
+      "origin": "core"
+    }
+  ]
+}

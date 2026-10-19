@@ -1,0 +1,192 @@
+{
+  "contract": 1,
+  "viewer": "self",
+  "std": {
+    "version": "std@1",
+    "state": "adopting",
+    "objects": {
+      "axes": "incorporated",
+      "decision_events": "deferred",
+      "principles": "none"
+    }
+  },
+  "counts": {
+    "objects": 3,
+    "fields": 6,
+    "relations": 3,
+    "sources": 1
+  },
+  "objects": [
+    {
+      "id": "od_axes",
+      "key": "axes",
+      "label": "주제 PLBL01",
+      "semantic_kind": "collection",
+      "origin": "standard",
+      "std_id": "std:axes",
+      "locked": true,
+      "fields": [
+        {
+          "key": "keywords",
+          "label": "검색 단어 PLBL02",
+          "value_type": "text_list",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:axes.keywords",
+          "locked": true,
+          "std_name": "검색어"
+        },
+        {
+          "key": "ukey_color",
+          "label": "색 PLBL03",
+          "value_type": "select",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [
+            {
+              "value": "uopt_red",
+              "label": "빨강 PLBL04"
+            }
+          ],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": "축"
+    },
+    {
+      "id": "od_mydecisions",
+      "key": "decision_events",
+      "label": "결정 PLBL05",
+      "semantic_kind": "event",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "key": "happened_on",
+          "label": "언제 PLBL06",
+          "value_type": "date",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "claims",
+          "label": "판단 PLBL07",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "candidate",
+          "target_object_id": null,
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": null
+    },
+    {
+      "id": "od_ubooks",
+      "key": "ukey_books",
+      "label": "읽은 책 PLBL08",
+      "semantic_kind": "collection",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false,
+      "fields": [
+        {
+          "key": "ukey_topics",
+          "label": "주제들 PLBL09",
+          "value_type": "reference",
+          "required": false,
+          "multiple": true,
+          "target_kind": "item",
+          "target_object_id": "od_axes",
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        },
+        {
+          "key": "ukey_decision",
+          "label": "관련 결정 PLBL10",
+          "value_type": "reference",
+          "required": false,
+          "multiple": false,
+          "target_kind": "item",
+          "target_object_id": "od_mydecisions",
+          "options": [],
+          "origin": "custom",
+          "std_id": null,
+          "locked": false,
+          "std_name": null
+        }
+      ],
+      "std_name": null
+    }
+  ],
+  "relations": [
+    {
+      "object_id": "od_mydecisions",
+      "field_key": "claims",
+      "target_kind": "candidate",
+      "target_object_id": null,
+      "cardinality": "N:N",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "object_id": "od_ubooks",
+      "field_key": "ukey_topics",
+      "target_kind": "item",
+      "target_object_id": "od_axes",
+      "cardinality": "N:N",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    },
+    {
+      "object_id": "od_ubooks",
+      "field_key": "ukey_decision",
+      "target_kind": "item",
+      "target_object_id": "od_mydecisions",
+      "cardinality": "N:1",
+      "origin": "custom",
+      "std_id": null,
+      "locked": false
+    }
+  ],
+  "core": [
+    {
+      "kind": "candidate",
+      "origin": "core"
+    }
+  ],
+  "sources": [
+    {
+      "id": "src_part1",
+      "kind": "url",
+      "name": "블로그 SRCNAME02",
+      "location": "https://SRCLOC02.example/feed"
+    }
+  ]
+}

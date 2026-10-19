@@ -20,6 +20,8 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+import contract
+
 SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 TEMPLATES_DIR = Path(__file__).parent / "templates"   # 동결 템플릿 정의(template_author.py 가 만든다)
 BACKFILL_TEMPLATE = "author@1"                         # template_slot 백필 기준 판 — 열이 생기기 전에 시드된 판은 이것뿐
@@ -1030,6 +1032,19 @@ def _bad_def(msg, action=""):
 
 def _bad_link(msg, action=""):
     return CrmError("LINK-INVALID", msg, action)
+
+
+# PR #20 신규 코드 — 문구는 contract 가 정본(고정 문구 + 표준 식별자·사유 코드만, 다른 사용자 정보 자리 없음). 발생 경로는 5·6단계
+def _std_locked(change, std_id):
+    return CrmError(contract.STANDARD_LOCKED, contract.locked_message(change, std_id), contract.LOCKED_ACT)
+
+
+def _cand_review(reason):
+    return CrmError(contract.CANDIDATE_REVIEW, contract.REVIEW_MSG[reason], contract.REVIEW_ACT[reason])
+
+
+def _scope_self():
+    return CrmError(contract.SCOPE_SELF_ONLY, contract.SCOPE_MSG, contract.SCOPE_ACT)
 
 
 # ── 정의 정규화·검증 (DB 없이 — 시드 --dry-run 도 같은 함수) ──
