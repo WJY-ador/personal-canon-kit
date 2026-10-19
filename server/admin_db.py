@@ -33,13 +33,6 @@ ALLOW = {
         "cols": ("id", "at", "action", "actor_id", "target_id", "actor_email", "target_email"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
-    # 관리자 띠 — open = 아직 확인 안 한 문의 · privacy_open = 종결 안 된 개인정보 요청.
-    "tickets.counts": {
-        "sql": "SELECT count(*) FILTER (WHERE status='open') AS open, "
-               "count(*) FILTER (WHERE kind='privacy' AND status NOT IN ('done','wontfix')) AS privacy_open FROM tickets",
-        "cols": ("open", "privacy_open"),
-        "viewer": VIEWER_ADMIN, "consent": None,
-    },
     # 문의 상세 — 원문(text)·운영자 메모(admin_note)를 읽는 유일한 조회.
     "tickets.detail": {
         "sql": "SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.ua_family,t.hint,t.admin_note,"
@@ -227,11 +220,6 @@ def users(role):
 def audit(role, limit=AUDIT_LIST):
     """감사 로그 최근 limit 건. datetime 그대로."""
     return _rows("audit.list", role, (limit,))
-
-
-def ticket_counts(role):
-    """관리자 띠 숫자 {open, privacy_open}."""
-    return dict(_row("tickets.counts", role))
 
 
 def ticket_detail(role, tid):

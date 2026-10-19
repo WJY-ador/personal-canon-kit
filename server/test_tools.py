@@ -34,7 +34,7 @@
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
    · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
-   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · [자리] 이름 공유 철회 뒤 /admin/schema·리포트에 이름 없음(B merge 뒤)
+   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -101,7 +101,7 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + tuple(f"oc{i}@example.com" for i in range(1, 5)) \
     + ("tk-owner@example.com", "tk-other@example.com", "tk-admin@example.com") \
     + ("tkv-admin@example.com", "<i>tkv</i>@example.com") \
-    + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com") \
+    + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com", "int-names@example.com") \
     + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
 # p4* = 운영 화면(개요·스키마·리포트)
@@ -1781,7 +1781,7 @@ async def test_feedback():
                        for t in ts), ts
             assert "운영자만 보는 메모" not in r.text and "privacy?" not in r.text and "다른 사람의 문의 글" not in r.text, r.text
             assert [t["status"] for t in ts if t["id"] == j["id"]] == ["doing"], ts
-            assert ts == sorted(ts, key=lambda t: t["created"], reverse=True), "최근 것부터"
+            assert ts == sorted(ts, key=lambda t: (t["public_updated"] or t["created"], t["created"]), reverse=True), "최근 공개 갱신(없으면 접수)부터"
             mine_other = db.tickets_mine(other)
             assert len(mine_other) == 1 and mine_other[0]["text"] == "다른 사람의 문의 글", mine_other
             assert 'id="desk-form"' in (await h.get("/app")).text, "/app 에 문의 절"
@@ -2953,7 +2953,8 @@ def test_admin_boundary_static():
     assert ADB_TEXT_COLS.search(sqls["tickets.detail"]), "상세는 원문을 읽는다"
     # 조회자·미구현 키 거절
     expect("FORBIDDEN", admin_db.users, "user")
-    expect("FORBIDDEN", admin_db.ticket_counts, None)
+    expect("FORBIDDEN", admin_db.ticket_history, None, "tk_x")
+    assert not hasattr(admin_db, "ticket_counts") and "tickets.counts" not in admin_db.ALLOW, "/app 띠 숫자는 P5 에서 뺐다(개요는 overview.band)"
     for fn, args in ((admin_db.ticket_status, ("ack",)), (admin_db.ticket_note, ("x",)), (admin_db.ticket_reply, ("x",)),
                      (admin_db.ticket_reclassify, ("bug", ""))):
         expect("FORBIDDEN", fn, "user", "u_x", "tk_x", *args)
@@ -3043,7 +3044,7 @@ async def test_admin_boundary():
         # 응답 키 스냅샷 — ALLOW 키별 행 키 = cols(/admin 은 HTML 이라 키는 함수 반환으로 본다)
         await call("POST", "/admin/signout", data={"uid": U})   # 감사 행 1개 이상
         snap = {"setup.users": admin_db.users("admin"), "audit.list": admin_db.audit("admin"),
-                "tickets.counts": [admin_db.ticket_counts("admin")], "tickets.detail": [admin_db.ticket_detail("admin", t["id"])],
+                "tickets.detail": [admin_db.ticket_detail("admin", t["id"])],
                 "tickets.history": admin_db.ticket_history("admin", t["id"]),
                 "tickets.list": admin_db.tickets_list("admin", "all")[0]}
         today = admin_db.kst_today()   # P4 키 — 개요·리포트 원행·스키마 트리·이름 분기(동의자 A)
@@ -3920,23 +3921,25 @@ async def test_app_account_menu():
 
 
 # ── 16) 통합(P5-6) — 운영 콘솔 묶음 최종 ─────────────────
-# /admin 의 GET 화면 전부. B(개요·스키마·리포트) merge 전에는 없는 경로라 404 가 당연하다 — merge 뒤엔 같은 단언이 실제 화면을 덮는다.
-INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com"}
+# /admin 의 GET 화면 전부(개요·Setup·재인증·문의·스키마·리포트).
+INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com",
+       "n": "int-names@example.com"}
 INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports")
 INT_TICKET_OPS = (("status", {"status": "doing"}), ("reply", {"reply": "공개 답변"}), ("note", {"admin_note": "내부 메모 INTNOTE"}),
                   ("reclassify", {"kind": "request", "reason": ""}))
 
 
 async def test_integration_p5():
-    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · [자리] 이름 공유 철회 뒤 /admin/schema·리포트에 이름 없음(B merge 뒤)
-    · 문의 소유권(웹·MCP) · 공개/내부 이력(사용자 쪽엔 공개만, 레코드 페이지엔 둘 다) · 파기 cascade(privacy_log 는 남음)
-    · 관리자 세션으로도 /app·/api/state·/api/feedback 에 관리자 데이터 0."""
+    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · 이름 공유: 동의자 이름은 /admin/schema 트리에만 보이고
+    리포트(프리셋·구조)엔 없음, 철회 뒤 다음 조회부터 트리에도 0 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 「내 문의」 순서(최근 공개 갱신,
+    없으면 접수 — 웹·MCP 같음) · 파기 cascade(privacy_log 는 남음) · 관리자 세션으로도 /app·/api/state·/api/feedback 에 관리자 데이터 0."""
     site = main.site
     A = db.user_by_subject("int_a_sub", INT["a"])["id"]
     B = db.user_by_subject("int_b_sub", INT["b"])["id"]
     O = db.user_by_subject("int_o_sub", INT["o"])["id"]
     X = db.user_by_subject("int_x_sub", INT["x"])["id"]
-    for u in (A, B, O, X):
+    N = db.user_by_subject("int_n_sub", INT["n"])["id"]
+    for u in (A, B, O, X, N):
         db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     _set_role(B, "admin")
@@ -3993,6 +3996,48 @@ async def test_integration_p5():
                 assert "INTTEXT" not in out and "INTNOTE" not in out and INT["o"] not in out, "남의 문의·메모·이메일 없음"
             for gone in ("admin-band", "admin_tickets", "/api/feedback/status", "/api/feedback/note", "문의함"):
                 assert gone not in app_.text, gone
+        # ── 이름 공유 — 동의자 이름은 /admin/schema 트리에만, 리포트엔 언제나 0 · 철회하면 다음 조회부터 트리에도 0 ──
+        from psycopg.types.json import Jsonb
+        nm = "INTNAME" + secrets.token_hex(3)
+        with db.tx() as c:
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES (%s,'od_int','intobj',%s,'collection',1)",
+                      (N, nm + "-obj"))
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,'od_int','f1',%s,'select',%s)",
+                      (N, nm + "-fld", Jsonb([{"value": "v", "label": nm + "-opt"}])))
+        tree = f"/admin/schema?u={site._opaque(N)}"
+        reports = [href for _, _, href in web.preset_links()] + ["/admin/reports?ds=structure",
+                                                                 "/admin/reports?ds=structure&g1=value_type&g2=origin"]
+
+        async def names_seen():
+            t_ = await req("GET", tree, ck_a)
+            assert t_.status_code == 200, (tree, t_.status_code)
+            for href in reports:
+                r_ = await req("GET", href, ck_a)
+                assert r_.status_code == 200 and nm not in r_.text, (href, r_.status_code, "리포트엔 이름이 없다")
+            for path in ("/admin", "/admin/schema", "/admin/setup", "/admin/tickets?status=all"):
+                assert nm not in (await req("GET", path, ck_a)).text, (path, "트리 밖엔 이름이 없다")
+            return [x for x in ("-obj", "-fld", "-opt") if nm + x in t_.text]
+        assert await names_seen() == [], "비동의 — 트리에 이름 0"
+        db.optional_consent_set(N, "struct_names", True)
+        assert await names_seen() == ["-obj", "-fld", "-opt"], "동의 — 오브젝트·필드·선택지 현재 이름"
+        r = await req("POST", "/api/optional-consent", site.session_value(N), json={"kind": "struct_names", "on": False})
+        assert r.status_code == 200 and r.json()["changed"] is True, r.text   # 사용자가 /app 계정 메뉴로 끈다
+        assert await names_seen() == [], "철회 뒤 다음 조회부터 이름 0"
+        # ── 「내 문의」 순서 — 최근 공개 갱신순, 없으면 접수 시각(웹 표·MCP 같음) ──
+        t_old = _tk_insert(O, text="오래된 문의, 오늘 답변", created_days_ago=5)
+        t_new = _tk_insert(O, text="어제 문의, 갱신 없음", created_days_ago=1)
+        t_mid = _tk_insert(O, text="사흘 전 문의, 갱신 없음", created_days_ago=3)
+        assert (await req("POST", f"/admin/tickets/{t_old}/reply", ck_a, data={"reply": "오늘 답했어요"})).status_code == 303
+        want = [t_old, t, t_new, t_mid]   # t = 맨 위 처리 4종으로 오늘 공개 갱신(답변보다 먼저)
+        web_ids = [x["id"] for x in (await req("GET", "/api/feedback", site.session_value(O))).json()["tickets"]]
+        assert [x for x in web_ids if x in want] == want, web_ids
+        os.environ["CRM_DEV_USER"] = INT["o"]
+        try:
+            async with Client(main.mcp) as c:
+                mcp_ids = [x["id"] for x in val(await c.call_tool("ticket_list_mine", {}))]
+        finally:
+            os.environ["CRM_DEV_USER"] = TESTER
+        assert [x for x in mcp_ids if x in want] == want and mcp_ids == web_ids, (mcp_ids, web_ids)
         # ── 권한 회수: B 가 A 를 회수 → A 의 옛 세션은 끊기고, 새 세션(role=user)도 /admin 전부 404·처리 POST 거절 ──
         assert db.admin_act(B, "role", A, "user") == {"changed": True}
         n_hist = len(_tk_hist(t))
@@ -4006,8 +4051,6 @@ async def test_integration_p5():
                 assert (await req("POST", path, cookie, data=form)).status_code == 404, path
         expect("FORBIDDEN", db.ticket_set_status, A, t, "ack")   # DB 단 실행자 재조회도 거절
         assert len(_tk_hist(t)) == n_hist and _urow(O)["role"] == "user", "회수된 관리자는 아무것도 못 바꾼다"
-        # ── [자리] 이름 공유 철회 뒤 /admin/schema·리포트에 이름 없음 — B(스키마·리포트) merge 뒤 채운다 ──
-        names_pending = not any(getattr(r, "path", "") == "/admin/schema" for r in site.routes())
         # ── 파기 cascade — 답변·이력은 함께 지워지고 privacy_log(FK 없음)는 남는다 ──
         db.ticket_set_status(B, t, "done")
         with db.tx() as c:
@@ -4020,8 +4063,8 @@ async def test_integration_p5():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM privacy_log WHERE ticket_id=%s", (t,))   # FK·cascade 밖
-    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 소유권 웹·MCP · 공개/내부 이력 · 파기 cascade · /app 관리자 데이터 0)"
-          + (" — 이름 공유 철회 시험은 자리만(B merge 전)" if names_pending else ""))
+    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 트리만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
+          " · 내 문의 공개 갱신순 웹=MCP · 파기 cascade · /app 관리자 데이터 0) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

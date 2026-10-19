@@ -1921,10 +1921,12 @@ def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
 
 
 def tickets_mine(uid, limit=50):
-    """「내 문의」 — 본인 글·상태·답변 유무·공개 갱신 시각. admin_note·hint·답변 본문은 넣지 않는다(본문은 ticket_get_mine). 최근 50건."""
+    """「내 문의」 — 본인 글·상태·답변 유무·공개 갱신 시각. admin_note·hint·답변 본문은 넣지 않는다(본문은 ticket_get_mine).
+    정렬 = 최근 공개 갱신순(공개 갱신이 없으면 접수 시각) — 웹 표와 MCP ticket_list_mine 이 같은 순서. 50건."""
     with tx() as c:
         return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated,(reply IS NOT NULL) AS has_reply,reply_at,"
-                                         "public_updated FROM tickets WHERE user_id=%s ORDER BY created DESC LIMIT %s", (uid, limit))]
+                                         "public_updated FROM tickets WHERE user_id=%s "
+                                         "ORDER BY COALESCE(public_updated, created) DESC, created DESC, id LIMIT %s", (uid, limit))]
 
 
 def ticket_get_mine(uid, tid):
