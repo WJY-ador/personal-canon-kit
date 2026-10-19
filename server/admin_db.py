@@ -17,12 +17,10 @@ VIEWER_ADMIN = "admin"
 
 # key → sql(리터럴 하나) · cols(응답 열 = 행 키) · viewer(조회자 role) · consent(필요한 선택 동의 kind, 없으면 None)
 ALLOW = {
-    # /admin/setup 사용자 표. consented = 현재 처리방침 버전 동의 여부(버전이 없으면 NULL).
+    # /admin/setup 사용자 표.
     "setup.users": {
-        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before,"
-               "CASE WHEN %s::text IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id "
-               "AND g.kind='privacy' AND g.version=%s) END AS consented FROM users u ORDER BY u.created, u.id",
-        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before", "consented"),
+        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before FROM users u ORDER BY u.created, u.id",
+        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # /admin/setup 감사 로그 — 실행자·대상 이메일(지워진 계정이면 NULL).
@@ -58,17 +56,16 @@ ALLOW = {
     },
     # ── 운영 화면 P4(개요·스키마·리포트) ─────────────────────
     # 오브젝트 id·필드 key 는 사용자가 지은 이름일 수 있어 그대로 꺼내지 않는다 — md5 불투명 참조(*_ref)로만 묶고 화면에 쓰지 않는다.
-    # 상태 띠 — args (privacy 버전, struct_names 버전, 임박 기준일, 개인정보 기한일, 개인정보 기한일). 미종결 = closed_at 없음.
+    # 상태 띠 — args (struct_names 버전, 임박 기준일, 개인정보 기한일, 개인정보 기한일). 미종결 = closed_at 없음.
     "overview.band": {
         "sql": "SELECT (SELECT count(*) FROM users) AS users, "
-               "(SELECT count(DISTINCT g.user_id) FROM agreements g WHERE g.kind='privacy' AND g.version=%s) AS consented, "
                "(SELECT count(*) FROM optional_consents oc WHERE oc.kind='struct_names' AND oc.state='granted' AND oc.version=%s) AS names, "
                "(SELECT count(*) FROM tickets t WHERE t.closed_at IS NULL) AS open_tickets, "
                "(SELECT count(DISTINCT t.id) FROM tickets t JOIN privacy_log p ON p.ticket_id=t.id WHERE t.kind='privacy' "
                "AND t.closed_at IS NULL AND p.received + %s::int - (now() AT TIME ZONE 'Asia/Seoul')::date BETWEEN 0 AND %s::int) AS privacy_soon, "
                "(SELECT count(DISTINCT t.id) FROM tickets t JOIN privacy_log p ON p.ticket_id=t.id WHERE t.kind='privacy' "
                "AND t.closed_at IS NULL AND p.received + %s::int < (now() AT TIME ZONE 'Asia/Seoul')::date) AS privacy_over",
-        "cols": ("users", "consented", "names", "open_tickets", "privacy_soon", "privacy_over"),
+        "cols": ("users", "names", "open_tickets", "privacy_soon", "privacy_over"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # 사용자별 마지막 활동일(usage_daily 의 가장 늦은 day, 전체 기간). user_id '' = 미연결.
@@ -77,19 +74,18 @@ ALLOW = {
         "cols": ("user_id", "last_day"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
-    # 리포트 「사용자」 — 가입 KST 날짜가 [from, to] 인 사용자. args (privacy 버전, struct_names 버전, from, to).
+    # 리포트 「사용자」 — 가입 KST 날짜가 [from, to] 인 사용자. args (struct_names 버전, from, to).
     "report.users": {
         "sql": "SELECT u.id, u.created, u.role, u.blocked_at IS NOT NULL AS blocked, "
-               "EXISTS (SELECT 1 FROM agreements g WHERE g.user_id=u.id AND g.kind='privacy' AND g.version=%s) AS consented, "
                "EXISTS (SELECT 1 FROM optional_consents oc WHERE oc.user_id=u.id AND oc.kind='struct_names' AND oc.state='granted' "
                "AND oc.version=%s) AS names, (SELECT max(d.day) FROM usage_daily d WHERE d.user_id=u.id) AS last_day "
                "FROM users u WHERE (u.created AT TIME ZONE 'Asia/Seoul')::date BETWEEN %s AND %s ORDER BY u.created, u.id",
-        "cols": ("id", "created", "role", "blocked", "consented", "names", "last_day"),
+        "cols": ("id", "created", "role", "blocked", "names", "last_day"),
         "viewer": VIEWER_ADMIN, "consent": None,
         "time": "가입 시각(users.created) 의 KST 날짜",
-        "dims": {"signup_month": "가입 월", "signup_week": "가입 주", "consent": "처리방침 현재 판 동의", "names": "구조 이름 공유",
+        "dims": {"signup_month": "가입 월", "signup_week": "가입 주", "names": "구조 이름 공유",
                  "role": "역할", "blocked": "차단", "active14": "14일 안 활동"},
-        "filters": {"consent": ("yes", "no"), "names": ("yes", "no"), "role": ("user", "admin"), "blocked": ("yes", "no"),
+        "filters": {"names": ("yes", "no"), "role": ("user", "admin"), "blocked": ("yes", "no"),
                     "active14": ("yes", "no")},
         "measures": {"users": {"label": "사용자 수", "src": "users", "time": "가입 시각(KST 날짜)",
                                "missing": "지운 계정은 없다(행째 삭제)", "agg": "행 수"}},
@@ -213,8 +209,7 @@ def _row(key, role, args=()):
 
 def users(role):
     """/admin/setup 사용자 표. datetime 그대로."""
-    ver = db.CONSENT_VERSIONS.get("privacy")
-    return _rows("setup.users", role, (ver, ver))
+    return _rows("setup.users", role)
 
 
 def audit(role, limit=AUDIT_LIST):
@@ -346,7 +341,7 @@ OBJECT_BUCKETS = ((0, 0, "0"), (1, 1, "1"), (2, 5, "2–5"), (6, 10, "6–10"), 
 FIELD_BUCKETS = ((0, 0, "0"), (1, 10, "1–10"), (11, 30, "11–30"), (31, 60, "31–60"), (61, None, "61+"))
 # 값 표시 이름(열거 값 → 화면 글자). 없는 값은 그대로 보인다.
 VALUE_LABELS = {
-    "consent": {"yes": "동의", "no": "미동의"}, "names": {"yes": "동의", "no": "안 함"},
+    "names": {"yes": "동의", "no": "안 함"},
     "blocked": {"yes": "차단", "no": "아님"}, "active14": {"yes": "활동", "no": "없음"},
     "role": {"user": "사용자", "admin": "관리자"},
     "result": {"ok": "정상", "error": "오류"}, "linked": {"yes": "연결", "no": "미연결"},
@@ -362,7 +357,6 @@ REPORT_PRESETS = (
     ("linked14", "연결·미연결 호출 14일", {"ds": "usage", "g1": "day", "g2": "linked", "days": RECENT_DAYS}),
     ("defs", "정의 분포", {"ds": "structure", "g1": "objects_bucket", "g2": "fields_bucket"}),
     ("types", "필드 타입 × 출처", {"ds": "structure", "g1": "value_type", "g2": "field_origin", "archived": "no"}),
-    ("consent", "사용자 동의", {"ds": "users", "g1": "consent", "g2": "names"}),
     ("tickets", "문의 종류 × 상태", {"ds": "tickets", "g1": "kind", "g2": "status"}),
 )
 VALUE_TYPES = db.VALUE_TYPES
@@ -415,8 +409,7 @@ def _named_rows(key, role, subject_uid):
 
 def overview_band(role):
     """개요 상태 띠 숫자."""
-    args = (db.CONSENT_VERSIONS.get("privacy"), db.OPTIONAL_VERSIONS["struct_names"], PRIVACY_DUE_DAYS, PRIVACY_SOON_DAYS,
-            PRIVACY_DUE_DAYS)
+    args = (db.OPTIONAL_VERSIONS["struct_names"], PRIVACY_DUE_DAYS, PRIVACY_SOON_DAYS, PRIVACY_DUE_DAYS)
     return dict(_row("overview.band", role, args))
 
 
@@ -435,7 +428,7 @@ def report_rows(role, ds, d_from=None, d_to=None):
     if d_from is None or d_to is None:
         raise _bad("기간이 필요해요.")
     if ds == "users":
-        return _rows(key, role, (db.CONSENT_VERSIONS.get("privacy"), db.OPTIONAL_VERSIONS["struct_names"], d_from, d_to))
+        return _rows(key, role, (db.OPTIONAL_VERSIONS["struct_names"], d_from, d_to))
     return _rows(key, role, (d_from, d_to))
 
 
@@ -506,7 +499,7 @@ def _facts(ds, r, today):
     if ds == "users":
         d = _kdate(r["created"])
         last = r["last_day"]
-        return {"signup_month": _month(d), "signup_week": _week(d), "consent": _yn(r["consented"]), "names": _yn(r["names"]),
+        return {"signup_month": _month(d), "signup_week": _week(d), "names": _yn(r["names"]),
                 "role": r["role"], "blocked": _yn(r["blocked"]),
                 "active14": _yn(last is not None and last >= today - _dt.timedelta(days=RECENT_DAYS - 1))}
     if ds == "usage":

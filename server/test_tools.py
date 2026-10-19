@@ -15,16 +15,16 @@
      · 상태 전이·closed_at · privacy_log 종결 기록 · 메모 2KB
 8) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
-9) α2: 동의 버전(guides 머리글)·게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로) · 일일 한도(기록·질문·후보·결정·제안)
-   · usage_daily(메모리만·flush 합산/접기/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
+9) α2: 처리방침 버전(guides 머리글) · 필수 동의 게이트 없음(미동의자 MCP·웹 쓰기·/app 200·/consent→/app·/api/consent 404) · 일일 한도(기록·질문·후보·결정·제안)
+   · usage_daily(메모리만·flush 합산/로그인 사용자는 그 uid/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
 10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 ra(콜백 같은 uid·auth_time·창 12h/15m·미래) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
    · 부여·회수·LAST-ADMIN·동시 회수 · 차단/해제(웹·MCP AUTH-BLOCKED/REVOKED) · 웹 끊기는 MCP 무관 · /app 에 관리자 데이터 없음
    · CSP·스크립트 0·이스케이프 · admin_cli grant · 감사 파기 · bootstrap(임시 스키마)·lifespan 배선
 11) 운영 경계(admin_db): 정적(/admin·관리자 문의 핸들러는 db 조회를 직접 안 부름 · admin_db SQL 은 ALLOW 리터럴만 · SELECT * 0 ·
    본문 열 0 · text·admin_note 는 문의 상세만 · label·options 는 이름 공유 분기만) · ALLOW 키별 행 키 = cols · 조회자·미구현 키 거절
    · 표식(금지 열 값이 /admin·/api 관리자 응답에 없음, 문의 상세엔 있음)
-12) 선택 동의·처리방침 v2: v1 동의자 쓰기 거절 · /consent 선택 체크 기본 해제 · 필수+선택 한 트랜잭션(실패 주입 롤백)
-   · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효 · /privacy v2 · 옛 사용량 삭제 표식 멱등(임시 스키마)
+12) 선택 동의·처리방침 v3: 옛 버전 동의자도 쓰기 통과 · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효
+   · /privacy v3(처리 근거 표) · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
 13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·재인증·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
@@ -451,7 +451,7 @@ async def test_web():
                 r = await h.get("/privacy")
                 assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
                 for word in ("개인정보 처리방침", 'id="privacy"', "<table>", "Render Services", "Supabase", "WorkOS", "싱가포르", "미국",
-                             "제28조의8", "v2 · 2026-10-19", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
+                             "제28조의8", "v3 · 2026-10-19", 'href="/help"', 'href="/login"', "--accent: #186A4B"):
                     assert word in r.text, word
                 assert "{{CONTACT" not in r.text and "「개인정보 요청」" in r.text and 'href="/app"' not in r.text and "|---|" not in r.text and "**" not in r.text
                 real_contact, real_privacy = os.environ.get("CRM_CONTACT"), site.privacy_html
@@ -1628,6 +1628,8 @@ async def test_start_assets():
                 assert {n for n, _ in urls} == set(ASSET_MAX), urls
                 assert all(web.ASSETS[n][2] == v for n, v in urls), urls
                 assert t.count('class="btn-login"') == 1 and t.count('href="/login') == 1, "로그인 버튼 하나"
+                assert '<p class="cta-note">시작하면 <a href="/privacy">개인정보 처리방침</a>이 적용돼요.</p>' in t, "버튼 아래 고지 한 줄"
+                assert not re.search(r"cta-note[^<]*<a[^>]*>[^<]*</a>[^<]*v\d", t), "고지 줄에 버전 문자열 없음"
                 assert t.index('class="btn-login"') < t.index('<section class="demo"'), "로그인 버튼이 데모보다 앞"
                 assert '<input type="checkbox" id="still">' in t and "움직임 멈추기" in t, "움직임 멈추기 체크박스"
                 assert t.count('alt=""') == 4 and 'class="demo" aria-label="사용 모습 미리 보기' in t, "데모 그림 alt 는 비우고 설명은 section 이름"
@@ -2054,7 +2056,7 @@ def _agreements(uid):
 def test_consent_versions():
     """버전 파싱 — 운영에서 게이트가 소리 없이 열리지 않게. 레포 guides 기준 privacy v2."""
     import tempfile
-    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v2", db.CONSENT_VERSIONS
+    assert db.CONSENT_VERSIONS and db.CONSENT_VERSIONS.get("privacy") == "v3", db.CONSENT_VERSIONS
     assert web.read_consent_versions(web.GUIDES_DIR, dev=False) == db.CONSENT_VERSIONS
     with tempfile.TemporaryDirectory() as t:
         d = Path(t)
@@ -2094,107 +2096,64 @@ def test_consent_versions():
         (d / web.PRIVACY_FILE).write_text("# 처리방침\n\n`v3 · 2027-01-01` 시행.\n", encoding="utf-8")
         (d / "12-terms.md").write_text("# 약관\n\n`v2 · 2027-01-01`\n", encoding="utf-8")
         assert web.read_consent_versions(d, dev=False) == {"privacy": "v3", "terms": "v2"}, "terms 문서가 생기면 자동으로 둘"
-    # 머리글 N 을 올리면 전원 재동의 — 캐시도 비워진다
-    tester = db.user_by_email(TESTER)["id"]
-    db.require_consent(tester)
-    real = dict(db.CONSENT_VERSIONS)
-    try:
-        db.set_consent_versions({**real, "privacy": f"v{int(real['privacy'][1:]) + 1}"})
-        expect("CONSENT-REQUIRED", db.require_consent, tester)
-        expect("ARG-INVALID", db.consent_grant, tester, real)   # 옛 버전으로는 동의 못 한다
-    finally:
-        db.set_consent_versions(real)
-    db.require_consent(tester)
-    print("OK — α2 동의 버전(guides 머리글 v2·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동·버전 올리면 재동의) 통과")
+    print("OK — α2 처리방침 버전(guides 머리글 v3·비DEV 기동 거부·privacy 필수·읽기 오류·줄 머리 정규식·머리글 둘·terms 자동) 통과")
 
 
 async def test_consent_gate():
-    """미동의 사용자: MCP·웹 쓰기 거절(문의는 면제), 읽기 정상 → /consent 동의(B5 경로) → 통과."""
+    """필수 동의 게이트 없음: agreements 행이 없는 사용자도 MCP·웹 쓰기 통과 · /app 200 · /consent 302 /app(세션 있든 없든)
+    · POST /api/consent 404 · 사용량은 그 uid 로 flush(로그인 전 요청만 '') · 코드·app.html 에 CONSENT-REQUIRED·/consent 링크 0."""
     site = main.site
     origin = {"origin": PUBLIC}
     nc = db.user_by_email(NOCONSENT)["id"]
-    assert not _agreements(nc) and nc not in db._consented
-    real_site, real_all = (site.dev, site.dev_user), db.TICKET_DAILY_ALL
+    assert not _agreements(nc)
+    real_site = (site.dev, site.dev_user)
+    today = db._dt.datetime.now(db.KST).date()
     try:
-        db.TICKET_DAILY_ALL = 10 ** 6   # 7) 절이 오늘 전역 문의 한도(100)를 채워 뒀다 — 여기선 동의 면제만 본다
         _as_user(site, NOCONSENT)
+        db.usage_flush()
+        u0, a0 = _usage_row(today, nc, "record_add", "OK"), _usage_row(today, "", "web:state", "UNAUTHORIZED")
         async with Client(main.mcp) as c, httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-            # 게이트 — MCP 쓰기
-            r = await c.call_tool("record_add", {"text": "동의 전 기록"})
-            msg = r.content[0].text
-            assert r.is_error and "[CONSENT-REQUIRED]" in msg and f"{PUBLIC}/consent" in msg, msg
-            r = await c.call_tool("question_add", {"text": "동의 전 질문"})
-            assert r.is_error and "[CONSENT-REQUIRED]" in r.content[0].text, r.content[0].text
-            assert db.records(nc) == [] and db.questions(nc) == []
-            # 게이트 — 웹 쓰기 API 는 403 JSON
-            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
-            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
-            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
-            assert r.status_code == 403 and r.json()["code"] == "CONSENT-REQUIRED", r.text
-            # 게이트 밖 — 읽기·도움말
-            for tool, args in (("state_get", {}), ("help_get", {"topic": "words"}), ("question_list", {})):
-                r = await c.call_tool(tool, args)
-                assert not r.is_error, (tool, r.content[0].text[:200])
-            assert (await h.get("/api/state")).status_code == 200
-            # 면제 — 개인정보 문의는 동의 전에도(MCP·웹)
-            r = await c.call_tool("feedback_send", {"kind": "privacy", "text": "동의 전 탈퇴 문의"})
+            # MCP 쓰기 — 동의 행 없이 통과
+            r = await c.call_tool("record_add", {"text": "동의 행 없이 기록"})
             assert not r.is_error, r.content[0].text
-            r = await h.post("/api/feedback", json={"kind": "question", "text": "동의 전 웹 문의"}, headers=origin)
-            assert r.status_code == 200, r.text
-            # /app → /consent, /consent 화면(스크립트 0·form POST·버전 라벨·no-store·보안 헤더)
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", (r.status_code, r.headers.get("location"))
+            r = await c.call_tool("question_add", {"text": "동의 행 없이 질문"})
+            assert not r.is_error, r.content[0].text
+            assert len(db.records(nc)) == 1 and len(db.questions(nc)) == 1
+            # 웹 쓰기 — 403 이 아니라 게이트를 지나 db 판정(없는 후보·항목 → 400)
+            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
+            r = await h.post("/api/item/decide", json={"item_id": "i_none", "expected_revision": 0, "action": "confirm"}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] != "CONSENT-REQUIRED", r.text
+            # /app 200 · /consent 302 /app · /api/consent 404
+            assert (await h.get("/app")).status_code == 200
             r = await h.get("/consent")
-            t = r.text
-            assert r.status_code == 200 and r.headers["cache-control"] == "no-store", r.status_code
-            csp = r.headers["content-security-policy"]
-            assert r.headers["x-frame-options"] == "DENY" and "frame-ancestors 'none'" in csp and "script-src 'self'" in csp, csp
-            assert "unsafe-inline" not in csp and "unsafe-eval" not in csp, csp
-            assert "<script" not in t and 'method="post" action="/api/consent"' in t, t[:500]
-            assert 'name="privacy" value="v2"' in t and 'href="/privacy"' in t and "(v2)" in t and "동의하고 시작" in t, t
-            assert "terms" not in t, "약관 문서가 없으면 체크박스도 없다"
-            # 세션 없음 → /consent 는 / 로
+            assert r.status_code == 302 and r.headers["location"] == "/app", r.headers.get("location")
+            r = await h.post("/api/consent", json={"privacy": "v3"}, headers=origin)
+            assert r.status_code == 404, r.status_code
+            u = (await h.get("/api/state")).json()["user"]
+            assert set(u) == {"email", "struct_names", "desk_hidden"}, u
+            # 세션 없음 — /consent 는 /app(→ /), 로그인 전 요청의 사용량은 ''
             site.dev, site.dev_user = False, ""
             r = await h.get("/consent")
-            assert r.status_code == 302 and r.headers["location"] == "/", r.headers.get("location")
-            r = await h.post("/api/consent", data={"privacy": "v2"}, headers=origin)
-            assert r.status_code == 401, r.status_code
-
-            # B5: MCP 거절 → 브라우저 로그인(세션 쿠키) → /app 이 /consent 로 → 동의 → MCP 다음 호출 통과
-            h.cookies.set("crm_session", site.session_value(nc))
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent"
-            r = await h.post("/api/consent", data={"privacy": "v2"})   # Origin 없음
-            assert r.status_code == 403 and r.json()["code"] == "ORIGIN", r.text
-            r = await h.post("/api/consent", json={"privacy": "v0"}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", data={}, headers=origin)   # 체크 안 함
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "terms": "v1"}, headers=origin)   # 없는 문서까지
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            assert not _agreements(nc)
-            assert (await c.call_tool("record_add", {"text": "아직 동의 전"})).is_error
-            r = await h.post("/api/consent", data={"privacy": "v2"}, headers=origin)   # form POST
-            assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
-            assert [(a["kind"], a["version"]) for a in _agreements(nc)] == [("privacy", "v2")]
-            r = await c.call_tool("record_add", {"text": "동의 뒤 기록"})
-            assert not r.is_error, r.content[0].text
-            r = await h.get("/consent")
-            assert r.status_code == 302 and r.headers["location"] == "/app"
-            assert (await h.get("/app")).status_code == 200
-            r = await h.post("/api/consent", json={"privacy": "v2"}, headers=origin)   # JSON 경로 · 다시 해도 한 행
-            assert r.status_code == 200 and r.json() == {"ok": True, "redirect": "/app"}, r.text
-            assert len(_agreements(nc)) == 1
-            r = await h.post("/api/candidate/decide", json={"candidate_id": "c_none", "action": "confirm"}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", "동의 뒤엔 게이트를 지나 db 판정"
-            h.cookies.clear()
-        # 캐시: 통과한 uid 는 메모리 집합에 — 다음 판정은 DB 를 안 본다
-        assert nc in db._consented
+            assert r.status_code == 302 and r.headers["location"] == "/app", r.headers.get("location")
+            assert (await h.get("/api/state")).status_code == 401
+        assert not _agreements(nc), "agreements 는 새로 쓰지 않는다"
+        db.usage_flush()
+        assert _usage_row(today, nc, "record_add", "OK") == u0 + 1, "동의 행 없는 로그인 사용자 사용량은 그 uid 로"
+        assert _usage_row(today, "", "web:state", "UNAUTHORIZED") == a0 + 1, "로그인 전 요청만 ''"
     finally:
         site.dev, site.dev_user = real_site
-        db.TICKET_DAILY_ALL = real_all
         os.environ["CRM_DEV_USER"] = TESTER
-    print("OK — α2 동의 게이트(MCP·웹 403·읽기/문의 면제·/app→/consent·B5 경로·Origin 403·버전 불일치 400) 통과")
+    # 정적: 코드·화면에 CONSENT-REQUIRED·/consent 링크 0(옛 주소 302 라우트만 남는다)
+    for f in [*HERE.glob("*.py"), *HERE.glob("*.html")]:
+        if f.name == "test_tools.py":
+            continue
+        t = f.read_text(encoding="utf-8")
+        assert "CONSENT-REQUIRED" not in t and "/api/consent" not in t and "consent_grant" not in t, f.name
+        hits = [ln for ln in t.splitlines() if "/consent" in ln]
+        assert hits == ([] if f.name != "web.py" else ['            Route("/consent", self.consent),']), (f.name, hits)
+    assert not hasattr(db, "require_consent") and not hasattr(db, "consent_grant") and not hasattr(db, "CONSENT_EXEMPT")
+    print("OK — 필수 동의 게이트 없음(동의 행 없이 MCP·웹 쓰기·/app 200·/consent→/app·/api/consent 404·사용량 그 uid·로그인 전 ''·정적 0) 통과")
 
 
 def _bulk(sql, args):
@@ -2358,7 +2317,7 @@ async def test_usage():
         assert delta(s0, (today, tester, "candidate_decide", "ARG-INVALID")) == 1
         assert delta(s0, (today, tester, "state_get", "OK")) == 1
         assert delta(s0, (today, "", "help_get", "OK")) == 1, "help_get 은 uid 를 풀지 않는다 — 추가 조회 없이 ''"
-        assert delta(s0, (today, tester, "candidates_propose", "EXC")) == 1, "쓰기 도구는 게이트(동의)에서 uid 를 이미 풀었다"
+        assert delta(s0, (today, tester, "candidates_propose", "EXC")) == 1, "쓰기 도구는 게이트(write_gate)에서 uid 를 이미 풀었다"
         # 웹: 경로 이름 · 응답 code · 401 은 '' · 200 본문의 code(항목 코드)는 읽지 않는다
         s0 = snap()
         assert (await h.get("/api/state")).status_code == 200
@@ -2377,30 +2336,29 @@ async def test_usage():
     assert all(re.fullmatch(r"[a-z_]+|web:[a-z_]+", n) for n in names), names
     assert all(re.fullmatch(r"OK|EXC|[A-Z][A-Z-]*", cd) for cd in codes), codes
 
-    # flush: 합산 upsert · 두 번이면 n 합산 · 미동의 uid 는 '' 로 접힘(같은 묶음의 여러 미동의 uid 가 한 키로 — 중복 키 오류 없음)
+    # flush: 합산 upsert · 두 번이면 n 합산 · 로그인 전(uid 없음·'') 요청만 '' — 로그인 사용자는 동의 행과 무관하게 그 uid
     db.usage_flush()
     assert snap() == {}, "flush 는 스냅샷을 뗀다"
     t0, a0 = _usage_row(today, tester, "record_add", "OK"), _usage_row(today, "", "state_get", "OK")
     for _ in range(2):
         db.usage_count(tester, "record_add", "OK")
-    db.usage_count("u_ghost_a", "state_get", "OK")
-    db.usage_count("u_ghost_b", "state_get", "OK")
-    assert db.usage_flush() == 3
+    db.usage_count(None, "state_get", "OK")
+    db.usage_count("", "state_get", "OK")
+    assert db.usage_flush() == 2, "None 과 '' 은 같은 키"
     assert _usage_row(today, tester, "record_add", "OK") == t0 + 2
     assert _usage_row(today, "", "state_get", "OK") == a0 + 2
-    assert _usage_row(today, "u_ghost_a", "state_get", "OK") == 0 and _usage_row(today, "u_ghost_b", "state_get", "OK") == 0
     for _ in range(3):
         db.usage_count(tester, "record_add", "OK")
     db.usage_flush()
     assert _usage_row(today, tester, "record_add", "OK") == t0 + 5, "두 번째 flush 는 n 에 더한다"
-    # privacy 키가 없으면 전원 ''
+    # 처리방침 버전이 없어도(동의 문서 없음) 로그인 사용자는 그 uid — 접기 없음
     real_v = dict(db.CONSENT_VERSIONS)
     try:
         db.set_consent_versions({})
         a1, t1 = _usage_row(today, "", "record_get", "OK"), _usage_row(today, tester, "record_get", "OK")
         db.usage_count(tester, "record_get", "OK")
         db.usage_flush()
-        assert _usage_row(today, "", "record_get", "OK") == a1 + 1 and _usage_row(today, tester, "record_get", "OK") == t1
+        assert _usage_row(today, "", "record_get", "OK") == a1 and _usage_row(today, tester, "record_get", "OK") == t1 + 1
     finally:
         db.set_consent_versions(real_v)
     # 풀 checkout 실패 → 묶음 버림, 예외 없음
@@ -2445,22 +2403,21 @@ async def test_usage():
     finally:
         db.usage_flush, db.close, main.USAGE_FLUSH_EVERY = real_flush, real_close, real_every
         del sm.run
-    print("OK — α2 usage_daily(메모리만·풀 checkout 0·MCP 전 도구·웹 래퍼·flush 합산/접기/실패 버림·종료 순서 flush→close) 통과")
+    print("OK — α2 usage_daily(메모리만·풀 checkout 0·MCP 전 도구·웹 래퍼·flush 합산/그 uid·로그인 전만 ''/실패 버림·종료 순서 flush→close) 통과")
 
 
 def test_alpha2_delete():
-    """user_delete 뒤 usage_daily·agreements 에 그 uid 행 0, 동의 캐시에서도 빠진다."""
+    """user_delete 뒤 usage_daily·agreements 에 그 uid 행 0."""
     nc = db.user_by_email(NOCONSENT)["id"]
     db.usage_count(nc, "record_add", "OK")
     db.usage_flush()
     today = db._dt.datetime.now(db.KST).date()
-    assert _usage_row(today, nc, "record_add", "OK") >= 1 and _agreements(nc), "동의한 사용자는 자기 uid 로 집계된다"
+    assert _usage_row(today, nc, "record_add", "OK") >= 1, "로그인 사용자는 동의 행이 없어도 자기 uid 로 집계된다"
     db.user_delete(nc)
     with db.tx() as c:
         left = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (nc,)).fetchone()["n"] for t in ("usage_daily", "agreements")}
     assert left == {"usage_daily": 0, "agreements": 0}, left
-    assert nc not in db._consented
-    print("OK — α2 계정 삭제(usage_daily·agreements 0·동의 캐시 제거) 통과")
+    print("OK — α2 계정 삭제(usage_daily·agreements 0) 통과")
 
 
 def test_alpha2_delete_lock():
@@ -2471,7 +2428,6 @@ def test_alpha2_delete_lock():
     uid = db.user_by_email(LIM_EMAIL["records"])["id"]
     today = db._dt.datetime.now(db.KST).date()
     db.usage_flush()
-    assert _agreements(uid), "동의한 사용자여야 flush 가 자기 uid 로 올린다"
     entered, go, errs = threading.Event(), threading.Event(), []
     real_conn = db._usage_conn
 
@@ -2564,8 +2520,6 @@ async def test_beta2():
     C = db.user_by_subject("b2c_sub", B2["c"])["id"]
     M = db.user_by_subject("b2m_sub", B2["m"])["id"]
     X = db.user_by_email(B2_XSS)["id"]
-    for u in (A, B, C, M, X):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     with db.tx() as c:   # 시험 밖 관리자(이전 실행·bootstrap)는 잠깐 내린다 — LAST-ADMIN·동시 회수는 전역 관리자 수를 본다
         others = [r["id"] for r in c.execute("SELECT id FROM users WHERE role='admin' AND NOT (email = ANY(%s))",
                                              (list(TEST_EMAILS),)).fetchall()]
@@ -2648,7 +2602,9 @@ async def test_beta2():
         # 창: view 12h · 위험 15m · 미래 거절
         assert (await call("GET", "/admin/setup", ck(A, now() - 13 * 3600))).headers.get("location") == "/admin/reauth", "ra 13h → view 거절"
         assert (await call("GET", "/admin/setup", ck(A, now() + 60))).headers.get("location") == "/admin/reauth", "ra 미래 → 거절"
-        assert (await call("GET", "/admin/setup", ck(A, now() - 16 * 60))).status_code == 200, "ra 16m → view 는 통과"
+        r = await call("GET", "/admin/setup", ck(A, now() - 16 * 60))
+        assert r.status_code == 200, "ra 16m → view 는 통과"
+        assert "<th>차단</th>" in r.text and "처리방침" not in r.text and "미동의" not in r.text, "사용자 표에 처리방침 동의 열 없음"
         r = await call("POST", "/admin/role", ck(A, now() - 16 * 60), data={"uid": C, "role": "admin"})
         assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text and 'href="/admin/reauth"' in r.text, (r.status_code, r.text[:200])
         assert _urow(C)["role"] == "user", "ra 16m → role 거절"
@@ -2894,7 +2850,7 @@ async def test_beta2_bootstrap():
 ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
 ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets")
 # P4: 리포트는 프리셋 전부 + 데이터셋별 차원 하나씩, 스키마는 사용자 트리(?u=)까지 — 동적 URL 이라 admin_report_urls() 가 만든다
-ADB_ALLOWED_DB = {"CrmError", "CONSENT_VERSIONS"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외·상수만, 조회 함수 없음
+ADB_ALLOWED_DB = {"CrmError"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외만, 조회 함수 없음(처리방침 동의 표시는 뺐다)
 ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value|questions|records|"
                            r"candidates|tabs|items)\b", re.I)
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
@@ -2981,8 +2937,6 @@ async def test_admin_boundary():
     tmark, nmark = "MARKT" + secrets.token_hex(4), "MARKN" + secrets.token_hex(4)   # 문의 원문·메모 — 상세에만
     A = db.user_by_subject("adb_admin_sub", ADB["admin"])["id"]
     U = db.user_by_subject("adb_user_sub", ADB["user"])["id"]
-    for u in (A, U):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     with db.tx() as c:
         c.execute("INSERT INTO questions (id,user_id,text) VALUES ('q_adb',%s,%s)", (U, mark + "-q"))
@@ -3073,8 +3027,8 @@ async def test_admin_boundary():
     print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세·레코드 페이지에만 원문·메모 · ALLOW 행 키 = cols) 통과")
 
 
-# ── 12) 선택 동의 · 처리방침 v2 · 옛 사용량 삭제 ──────────
-OC = {k: f"oc{k}@example.com" for k in ("1", "2", "3", "4")}   # 1 = v1 동의자 · 2 = 선택 포함 동의 · 3 = 선택 없이 동의 · 4 = 실패 주입·동시
+# ── 12) 선택 동의 · 처리방침 v3 · 옛 사용량 삭제 ──────────
+OC = {k: f"oc{k}@example.com" for k in ("1", "2", "3", "4")}   # 1 = 옛 버전(v1) 동의 행 · 3 = 왕복 · 4 = 실패 주입·동시
 
 
 def _optional_rows(uid):
@@ -3085,18 +3039,15 @@ def _optional_rows(uid):
 
 
 async def test_optional_consent():
-    """v1 동의자 쓰기 거절 · /consent 선택 체크(기본 해제) · 필수+선택 한 트랜잭션(실패 주입 → 필수 롤백) · 선택 없이 → 행 없음
+    """옛 버전 동의 행만 있는 사용자도 쓰기·/app 통과 · 계정 메뉴 경로(/api/optional-consent)로 켜기 · 실패 주입 → 행 0
     · /api/optional-consent 401·403·400 · 켜기/끄기 왕복과 로그 · 같은 상태 무동작 · 미동의자도 끔 · 동시 두 요청 → 행 1개
-    · 옛 버전 동의는 무효 · /privacy v2(비로그인) · 사용량 삭제 표식 멱등."""
+    · 옛 버전 동의는 무효 · /privacy v3 처리 근거 표(비로그인) · 사용량 삭제 표식 멱등."""
     import threading
     site = main.site
     U = {k: db.user_by_subject(f"oc{k}_sub", e)["id"] for k, e in OC.items()}
-    with db.tx() as c:   # consent_setup 이 시험 사용자 전부를 v2 로 동의시켜 둔다 — 이 절은 미동의에서 시작
+    with db.tx() as c:
         c.execute("DELETE FROM agreements WHERE user_id = ANY(%s)", (list(U.values()),))
-    for u in U.values():
-        db._consented.discard(u)
-    v2 = dict(db.CONSENT_VERSIONS)
-    assert v2.get("privacy") == "v2" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (v2, db.OPTIONAL_VERSIONS)
+    assert db.CONSENT_VERSIONS.get("privacy") == "v3" and db.OPTIONAL_VERSIONS == {"struct_names": "s1"}, (db.CONSENT_VERSIONS, db.OPTIONAL_VERSIONS)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     origin = {"origin": PUBLIC}
@@ -3107,52 +3058,36 @@ async def test_optional_consent():
             h.cookies.set("crm_session", site.session_value(uid))
         return h
     try:
-        # v1 동의자 — v2 를 읽은 뒤엔 쓰기 거절(CONSENT-REQUIRED)
+        # 옛 버전(v1) 동의 행만 있어도 — 처리방침 버전과 무관하게 쓰기·/app 통과(재동의 없음)
         with db.tx() as c:
             c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,'privacy','v1')", (U["1"],))
-        db._consented.discard(U["1"])
-        expect("CONSENT-REQUIRED", db.write_gate, "record_add", {"text": "v1 동의자"}, U["1"])
+        db.write_gate("record_add", {"text": "v1 동의 행"}, U["1"])   # 통과
         async with client(U["1"]) as h:
-            r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", r.status_code
-            r = await h.get("/consent")
-            t = r.text
-            assert r.status_code == 200 and "<script" not in t and 'name="privacy" value="v2"' in t, t[:300]
-            assert 'name="optional" value="struct_names"' in t and "안 해도 모든 기능을 써요" in t and 'href="/privacy#privacy-1"' in t, t
-            assert not re.search(r'name="optional"[^>]*checked', t), "선택 동의는 기본 해제"
-            # 필수 + 선택(form) → 한 트랜잭션
-            r = await h.post("/api/consent", data={"privacy": "v2", "optional": "struct_names"}, headers=origin)
-            assert r.status_code == 302 and r.headers["location"] == "/app", r.text[:200]
-        assert ("privacy", "v2") in [(a["kind"], a["version"]) for a in _agreements(U["1"])]
+            assert (await h.get("/app")).status_code == 200
+            u = (await h.get("/api/state")).json()["user"]
+            assert u["struct_names"] is False, "이름 공유는 기본 꺼짐"
+            # 이름 공유는 계정 메뉴 경로로만 켠다
+            r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
+            assert r.status_code == 200 and r.json()["changed"] is True, r.text
+        assert [(a["kind"], a["version"]) for a in _agreements(U["1"])] == [("privacy", "v1")], "agreements 는 새로 쓰지 않는다"
         assert _optional_rows(U["1"]) == ([{"kind": "struct_names", "version": "s1", "state": "granted"}],
                                           [{"kind": "struct_names", "version": "s1", "action": "grant"}]), _optional_rows(U["1"])
         assert db.optional_consent_ok(U["1"], "struct_names")
-        db.write_gate("record_add", {"text": "v2 동의 뒤"}, U["1"])   # 통과
-        # 선택 없이 동의(JSON) → optional 행 없음
-        async with client(U["3"]) as h:
-            r = await h.post("/api/consent", json={"privacy": "v2"}, headers=origin)
-            assert r.status_code == 200, r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "optional": ["nope"]}, headers=origin)
-            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", r.text
-            r = await h.post("/api/consent", json={"privacy": "v2", "optional": "struct_names"}, headers=origin)
-            assert r.status_code == 400, "optional 은 목록"
         assert _optional_rows(U["3"]) == ([], []) and not db.optional_consent_ok(U["3"], "struct_names")
-        # 실패 주입 — 선택 저장이 터지면 필수도 롤백(db·웹 둘 다)
+        # 실패 주입 — 선택 저장이 터지면 행도 로그도 없다(한 트랜잭션)
         real_apply = db._optional_apply
 
         def boom(*a, **k):
             raise db.CrmError("INJECTED", "선택 저장 실패 주입")
         db._optional_apply = boom
         try:
-            expect("INJECTED", db.consent_grant, U["4"], v2, ["struct_names"])
+            expect("INJECTED", db.optional_consent_set, U["4"], "struct_names", True)
             async with client(U["4"]) as h:
-                r = await h.post("/api/consent", data={"privacy": "v2", "optional": "struct_names"}, headers=origin)
+                r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
                 assert r.status_code == 400 and r.json()["code"] == "INJECTED", r.text
         finally:
             db._optional_apply = real_apply
-        assert not _agreements(U["4"]) and _optional_rows(U["4"]) == ([], []), "하나만 저장되지 않는다"
-        db._consented.discard(U["4"])
-        assert not db.has_consent(U["4"])
+        assert not _agreements(U["4"]) and _optional_rows(U["4"]) == ([], []), "실패하면 아무것도 저장되지 않는다"
         # /api/optional-consent — 401 · 403 · 400
         async with client() as h:
             r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": True}, headers=origin)
@@ -3174,7 +3109,7 @@ async def test_optional_consent():
         assert cur == [{"kind": "struct_names", "version": "s1", "state": "withdrawn"}] and [x["action"] for x in log] == ["grant", "withdraw"], (cur, log)
         assert not db.optional_consent_ok(U["3"], "struct_names")
         # 미동의자도 끌 수 있다(게이트 밖) — 행 없음 + 끄기 = 무동작, 켜기·끄기도 된다
-        assert not db.has_consent(U["4"])
+        assert not _agreements(U["4"])
         async with client(U["4"]) as h:
             r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": False}, headers=origin)
             assert r.status_code == 200 and r.json()["changed"] is False, r.text
@@ -3201,13 +3136,18 @@ async def test_optional_consent():
         assert db.optional_consent_set(U["4"], "struct_names", True)["changed"] is True and db.optional_consent_ok(U["4"], "struct_names")
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "names", True)
         expect("ARG-INVALID", db.optional_consent_set, U["4"], "struct_names", 1)
-        # /privacy v2 — 로그인 없이
+        # /privacy v3 — 로그인 없이 · 처리 근거 표(제15조①4호 계약 이행 · ⑥ 정당한 이익 · ① 선택 동의)
         async with client() as h:
             r = await h.get("/privacy")
-        for word in ("v2 · 2026-10-19", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
-                     "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"'):
+        for word in ("v3 · 2026-10-19", "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
+                     "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"',
+                     "처리 근거", "제15조 제1항 제4호", "제15조 제1항 제6호", "제15조 제1항 제1호",
+                     "로그인 전 요청의 이용 기록은 사용자와 연결하지 않습니다"):
             assert word in r.text, word
+        basis = r.text[r.text.index("처리 근거"):r.text.index('id="privacy-2"')]
+        assert "<table>" in basis and basis.count("<tr>") == 4, basis
         assert r.status_code == 200 and "지금은 모으지 않습니다" not in r.text and "v1 · 2026-10-18" not in r.text
+        assert "v2 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
     finally:
         site.dev, site.dev_user = real
     # 사용량 삭제 표식 — 임시 스키마: 새 DB 는 표식만 · 두 번째 init 은 안 지움 · 표식 없는 옛 DB 는 1회 전부 삭제
@@ -3231,7 +3171,7 @@ async def test_optional_consent():
             assert c.execute("SELECT count(*) AS n FROM usage_daily").fetchone()["n"] == 1, "삭제는 1회만"
     finally:
         drop_schema(name)
-    print("OK — 선택 동의(v1 거절·/consent 선택 기본 해제·한 트랜잭션·실패 주입 롤백·왕복 로그 2·무동작·미동의자 끄기·동시 1행·옛 버전 무효)"
+    print("OK — 선택 동의(옛 버전 행도 통과·계정 메뉴로만 켬·실패 주입 행 0·왕복 로그 2·무동작·미동의자 끄기·동시 1행·옛 버전 무효)"
           "·/privacy v2·사용량 삭제 표식 멱등 통과")
 
 
@@ -3263,8 +3203,6 @@ async def test_ticket_p3():
     O = db.user_by_subject("tk_owner_sub", TK["owner"])["id"]
     X = db.user_by_subject("tk_other_sub", TK["other"])["id"]
     A = db.user_by_subject("tk_admin_sub", TK["admin"])["id"]
-    for u in (O, X, A):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
@@ -3470,8 +3408,6 @@ async def test_ticket_pages():
     site = main.site
     A = db.user_by_subject("tkv_admin_sub", TKV["admin"])["id"]
     U = db.user_by_subject("tkv_user_sub", TKV["u"])["id"]
-    for u in (A, U):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     xss = "<script>alert(1)</script>"
     # 앞 절 문의(오늘 접수)가 많아 기본 목록이 상한에 걸릴 수 있다 — 이 절의 비개인정보 문의는 접수일을 앞당겨 앞쪽에 둔다
@@ -3661,6 +3597,16 @@ async def test_admin_screens():
         t = clean(r, "/admin")
         assert all(e in t for e in P4.values()) and "미연결 사용량" in t and "RATE-LIMIT" in t and "record_add" in t, t[-1500:]
         assert "G-RENAMED" not in t and "G-OBJ" not in t, "개요엔 이름이 없다"
+        bar = t[t.index('<div class="bar">'):]
+        bar = bar[:bar.index("</div>")]
+        assert "이름 공유 동의" in bar and "처리방침" not in bar and bar.count("동의") == 1, ("상태 띠: 처리방침 동의 항목 없음", bar)
+        assert "consent" not in admin_db.ALLOW["report.users"]["dims"] and "consent" not in admin_db.ALLOW["report.users"]["filters"]
+        assert "consented" not in admin_db.ALLOW["report.users"]["cols"] + admin_db.ALLOW["setup.users"]["cols"] + admin_db.ALLOW["overview.band"]["cols"]
+        assert [k for k, _, _ in admin_db.REPORT_PRESETS] == ["errors14", "linked14", "defs", "types", "tickets"], "프리셋 「사용자 동의」 없음"
+        assert "consent" not in admin_db.VALUE_LABELS
+        assert all("agreements" not in (v["sql"] or "") for v in admin_db.ALLOW.values()), "운영 조회는 agreements 를 읽지 않는다"
+        r = await get("/admin/reports?ds=users&g1=consent")
+        assert r.status_code == 400, "사용자 동의 차원은 없다"
         for k, _, href in web.preset_links(today):   # 개요 표의 리포트 링크 = 프리셋
             if k in ("errors14", "defs"):
                 assert f'href="{web._esc(href)}"' in t or f'href="{href}"' in t, (k, href)
@@ -3756,17 +3702,9 @@ async def test_admin_screens():
     print("OK — 운영 화면(개요·스키마·리포트: 404·재인증·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
 
 
-def consent_setup():
-    """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
-    for email in TEST_EMAILS:
-        if email != NOCONSENT:
-            db.consent_grant(db.user_by_email(email)["id"], dict(db.CONSENT_VERSIONS))
-
-
 async def run():
     db.init_schema()   # 서버 시작과 같은 멱등 마이그레이션 — 시험 DB 가 직전 코드의 스키마여도 새 열·admin_audit 를 깐다(cleanup 이 쓴다)
     cleanup()
-    consent_setup()
     try:
         test_migration()
         test_core_pr1()
@@ -3819,7 +3757,7 @@ async def run():
 
 # ── 15) /app 계정 메뉴(P5) ─────────────────────────────
 
-AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user = 동의자 · nocon = 미동의(게이트 밖 확인)
+AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user = 일반 · nocon = 동의 행 없음
 
 
 async def test_app_account_menu():
@@ -3840,7 +3778,6 @@ async def test_app_account_menu():
 
     wipe()
     U = {k: db.user_by_subject(f"am-{k}_sub", e)["id"] for k, e in AM.items()}
-    db.consent_grant(U["user"], dict(db.CONSENT_VERSIONS))
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     origin = {"origin": PUBLIC}
@@ -3899,11 +3836,11 @@ async def test_app_account_menu():
             u = (await h.get("/api/state")).json()["user"]
             assert u["desk_hidden"] is True and u["struct_names"] is False, u
             assert set(u) == {"email", "struct_names", "desk_hidden"}, "비관리자 user 키는 셋"
-        # 동의 게이트 밖 — 미동의자도 바꾼다(/app 은 /consent 로 보낸다)
+        # 동의 행이 없는 사용자도 /app 200 · 바꾼다
         async with client(U["nocon"]) as h:
-            assert not db.has_consent(U["nocon"])
+            assert not _agreements(U["nocon"])
             r = await h.get("/app")
-            assert r.status_code == 302 and r.headers["location"] == "/consent", r.status_code
+            assert r.status_code == 200, r.status_code
             r = await h.post("/api/desk-visibility", json={"hidden": True}, headers=origin)
             assert r.status_code == 200 and hidden_of(U["nocon"]) is True, r.text
         # MCP state_get(db.state)에는 두 키가 없다
@@ -3958,8 +3895,6 @@ async def test_integration_p5():
     O = db.user_by_subject("int_o_sub", INT["o"])["id"]
     X = db.user_by_subject("int_x_sub", INT["x"])["id"]
     N = db.user_by_subject("int_n_sub", INT["n"])["id"]
-    for u in (A, B, O, X, N):
-        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
     _set_role(A, "admin")
     _set_role(B, "admin")
     real = (site.dev, site.dev_user)

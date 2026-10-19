@@ -46,10 +46,8 @@ _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md":
 # 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
 # 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CRM_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
-# 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
+# 처리방침(·약관) 버전 — 첫 20줄 머리글 `vN · 날짜` 에서 뽑아 db.CONSENT_VERSIONS 에(/privacy·화면 표시용, 쓰기 게이트 없음). terms 는 파일이 있을 때만.
 CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
-CONSENT_LABELS = {"privacy": ("개인정보 처리방침", "/privacy"), "terms": ("이용약관", "/terms")}
-OPTIONAL_CONSENT_HREF = "/privacy#privacy-1"   # 「구조 이름 공유」 설명 — 처리방침 1절(처리 목적) 안
 _VERSION_RE = re.compile(r"^`v(\d+) · ")   # 줄 머리 고정 — 본문 중간의 예시(`v9`)는 머리글이 아니다
 _PRIVACY_ANCHORS = {**{f: f"/help#{k}" for k, f in HELP_FILES.items()}, PRIVACY_FILE: "#privacy"}
 
@@ -103,7 +101,7 @@ def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-# 웹 HTML 응답(/, /app, /help, /privacy, /consent, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
+# 웹 HTML 응답(/, /app, /help, /privacy, _page)에만 붙인다. MCP·/health·JSON API·리다이렉트는 그대로.
 # script-src 'self' — 외부(self) theme.js 만. /app 은 응답 본문의 인라인 스크립트 1개 해시를 더한다(app_csp).
 # 'unsafe-inline'·'unsafe-eval' 은 어떤 경우에도 넣지 않는다. style-src·default-src 는 아직 없다(인라인 style).
 CSP_BASE = "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; script-src 'self'"
@@ -151,11 +149,6 @@ def ua_family(ua: str | None) -> str:
         if mark in ua:
             return fam
     return "other"
-
-
-def _write_status(e) -> int:
-    """웹 쓰기 API 의 CrmError → HTTP 상태. 동의 필요는 403, 나머지는 400(기존 그대로)."""
-    return 403 if e.code == "CONSENT-REQUIRED" else 400
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -816,7 +809,7 @@ class Web:
         self.privacy_html = render_privacy(md.replace("{{CONTACT_LINE}}", privacy_contact_line())) if md else None
 
     def load_consent(self, d: Path):
-        """동의 문서 버전(α2)을 시작 때 한 번 읽어 db 에 넣는다. 버전이 바뀔 때만 db 의 동의 통과 캐시가 비워진다."""
+        """처리방침(·약관) 버전을 시작 때 한 번 읽어 db 에 넣는다(/privacy·화면 표시용)."""
         db.set_consent_versions(read_consent_versions(d, self.dev))
 
     @property
@@ -903,8 +896,6 @@ class Web:
         uid = await self.uid_of(request)
         if uid is None:
             return RedirectResponse("/", status_code=302)
-        if not await run_in_threadpool(db.has_consent, uid):   # 미동의 — 동의 화면 먼저(MCP 전용 사용자도 여기로 온다)
-            return RedirectResponse("/consent", status_code=302)
         html = _fill_assets(APP_HTML.read_text(encoding="utf-8"))   # 요청마다 읽는다 — 헤더 해시와 본문이 같은 내용에서 나온다
         return _html_resp(html, headers={"cache-control": "no-store", "content-security-policy": app_csp(html)})
 
@@ -946,59 +937,14 @@ class Web:
         signed_in = bool(s and s.get("uid")) or bool(self.dev and self.dev_user)
         return '<a class="btn" href="/app">대시보드로</a>' if signed_in else '<a class="btn primary" href="/login">로그인</a>'
 
-    # ── 동의 (α2) ─────────────────────────────────────
+    # ── 동의 ─────────────────────────────────────────
     async def consent(self, request):
-        """동의 화면. 세션 없으면 /, 이미 동의했으면 /app. 스크립트 없이 form POST(/api/consent)."""
-        uid = await self.uid_of(request)
-        if uid is None:
-            return RedirectResponse("/", status_code=302)
-        if await run_in_threadpool(db.has_consent, uid):
-            return RedirectResponse("/app", status_code=302)
-        rows = "".join(
-            f'<p><label><input type="checkbox" name="{_esc(kind)}" value="{_esc(ver)}" required> '
-            f'<a href="{CONSENT_LABELS[kind][1]}">{CONSENT_LABELS[kind][0]}</a>({_esc(ver)})에 동의합니다.</label></p>'
-            for kind, ver in db.CONSENT_VERSIONS.items())
-        opt = ('<p><label><input type="checkbox" name="optional" value="struct_names"> (선택) 「구조 이름 공유」에 동의합니다.</label><br>'
-               f'<small>안 해도 모든 기능을 써요. <a href="{OPTIONAL_CONSENT_HREF}">무엇을 보나요</a></small></p>')
-        body = f'<form method="post" action="/api/consent">{rows}{opt}<p><button type="submit">동의하고 시작</button></p></form>'
-        resp = _page("시작하기 전에 동의해 주세요", body)
-        resp.headers["cache-control"] = "no-store"
-        return resp
-
-    async def api_consent(self, request):
-        """동의 기록. 세션(401) → Origin(403) → form 또는 JSON {kind: version, optional?: [선택 동의 kind]} → db.consent_grant
-        (필수·선택 한 트랜잭션) → 302 /app(form) 또는 {ok, redirect}(JSON). 문서·버전이 맞지 않으면 400 ARG-INVALID.
-        form 의 선택 체크는 optional=<kind>(체크한 것만 온다). write_gate 를 지나지 않는다(동의 전 사용자가 부른다)."""
-        uid, err = await self._need(request)
-        if err:
-            return err
-        if not self.same_origin(request):
-            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
-        is_json = request.headers.get("content-type", "").split(";")[0].strip().lower() == "application/json"
-        try:
-            if is_json:
-                body = await request.json()
-                assert isinstance(body, dict)
-                optional = body.pop("optional", [])
-            else:
-                pairs = parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True)
-                optional = [v for k, v in pairs if k == "optional"]
-                body = dict((k, v) for k, v in pairs if k != "optional")
-            assert isinstance(optional, list) and all(isinstance(v, str) for v in optional)
-            assert all(isinstance(v, str) for v in body.values())
-        except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "동의할 문서·버전이 필요해요."}, status_code=400)
-        try:
-            await run_in_threadpool(db.consent_grant, uid, body, optional)
-        except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
-        if is_json:
-            return JSONResponse({"ok": True, "redirect": "/app"})
+        """옛 동의 화면 주소(북마크·옛 안내) — 필수 동의 게이트는 없앴다. 항상 302 /app."""
         return RedirectResponse("/app", status_code=302)
 
     async def api_optional_consent(self, request):
         """선택 동의 켜기/끄기. 세션(401) → Origin(403) → JSON {kind, on(bool)} → db.optional_consent_set(한 트랜잭션·로그).
-        동의 게이트 밖(미동의자도 끌 수 있다). 같은 상태로 다시 보내면 changed=false(로그 없음)."""
+        같은 상태로 다시 보내면 changed=false(로그 없음)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1017,7 +963,7 @@ class Web:
 
     async def api_desk_visibility(self, request):
         """문의 섹션 숨김(계정 메뉴). 세션(401) → Origin(403) → JSON {hidden(bool)}(400) → db.desk_hidden_set.
-        동의 게이트 밖(미동의자도 바꿀 수 있다). 숨겨도 메뉴에서 문의를 열 수 있다(화면 쪽)."""
+        숨겨도 메뉴에서 문의를 열 수 있다(화면 쪽)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1170,7 +1116,7 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
     async def api_item(self, request):
@@ -1211,7 +1157,7 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
     async def api_feedback(self, request):
@@ -1284,14 +1230,12 @@ class Web:
         for r in usage:
             calls[r["user_id"]] = calls.get(r["user_id"], 0) + r["n"]
         links = {k: href for k, _, href in preset_links(today)}
-        ver = db.CONSENT_VERSIONS.get("privacy")
 
         def num(label, n, warn=False, href=None):
             v = f'<b class="warn">{_esc(n)}</b>' if warn and n else f"<b>{_esc(n)}</b>"
             inner = f"{_esc(label)} {v}"
             return f'<span><a href="{_esc(href)}">{inner}</a></span>' if href else f"<span>{inner}</span>"
-        bar = ('<div class="bar">' + num("사용자", band["users"], href=links["consent"])
-               + num(f"처리방침 {ver or '—'} 동의", band["consented"]) + num("이름 공유 동의", band["names"])
+        bar = ('<div class="bar">' + num("사용자", band["users"]) + num("이름 공유 동의", band["names"])
                + num("미종결 문의", band["open_tickets"], href="/admin/tickets")
                + num(f"개인정보 기한 임박(≤{admin_db.PRIVACY_SOON_DAYS}일)", band["privacy_soon"], True)
                + num("기한 초과", band["privacy_over"], True) + "</div>")
@@ -1303,7 +1247,7 @@ class Web:
                          f'<td>{_esc(ld.isoformat() if ld else "—")}</td><td class="num">{_esc(calls.get(u["id"], 0))}</td>'
                          f'<td class="num">{_esc(no)}</td></tr>')
         ld = lastd.get("")
-        urows.append(f'<tr><td class="muted">미연결 사용량(로그인 전·미동의)</td><td>—</td><td>{_esc(ld.isoformat() if ld else "—")}</td>'
+        urows.append(f'<tr><td class="muted">미연결 사용량(로그인 전)</td><td>—</td><td>{_esc(ld.isoformat() if ld else "—")}</td>'
                      f'<td class="num">{_esc(calls.get("", 0))}</td><td class="num">—</td></tr>')
         user_t = _table(['<th>이메일</th><th>가입일</th><th>최근 활동일</th><th class="num">14일 호출</th><th class="num">정의 수</th>'],
                         urows)
@@ -1344,7 +1288,6 @@ class Web:
         risky_txt = f"위험 동작 {_left(risky)} 남음" if risky >= 0 else '<span class="warn">위험 동작(부여·회수·끊기·차단)은 다시 로그인해야 해요</span>'
         bar = (f'<div class="bar"><span>재인증: {risky_txt} · 화면 {_left(view)} 남음</span>'
                f'<a href="/admin/reauth">다시 로그인</a><a href="/app">대시보드로</a></div>')
-        ver = db.CONSENT_VERSIONS.get("privacy")
 
         def btn(action, label, fields, danger=False):
             hidden = "".join(f'<input type="hidden" name="{_esc(k)}" value="{_esc(v)}">' for k, v in fields.items())
@@ -1355,7 +1298,6 @@ class Web:
         for u in users:
             is_admin = u["role"] == "admin"
             role_tag = '<span class="tag admin">관리자</span>' if is_admin else '<span class="tag">사용자</span>'
-            consent = "—" if u["consented"] is None else ("동의" if u["consented"] else '<span class="muted">미동의</span>')
             blocked = f'<span class="tag blocked">차단 {_esc(_kst(u["blocked_at"]))}</span>' if u["blocked_at"] else ""
             acts = [btn("/admin/role", "관리자 회수", {"uid": u["id"], "role": "user"}, True) if is_admin
                     else btn("/admin/role", "관리자 부여", {"uid": u["id"], "role": "admin"}),
@@ -1363,7 +1305,7 @@ class Web:
                     btn("/admin/unblock", "차단 해제", {"uid": u["id"]}) if u["blocked_at"]
                     else btn("/admin/block", "차단", {"uid": u["id"]}, True)]
             rows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td>{_esc(_kst(u["created"]))}</td><td>{role_tag}</td>'
-                        f'<td>{consent}</td><td>{blocked}</td><td>{_esc(_kst(u["web_revoked_before"]))}</td>'
+                        f'<td>{blocked}</td><td>{_esc(_kst(u["web_revoked_before"]))}</td>'
                         f'<td><div class="acts">{"".join(acts)}</div></td></tr>')
 
         def who(email, uid_):
@@ -1376,7 +1318,7 @@ class Web:
                         for a in audit)
         body = (f'<h1>관리 — Setup</h1>{bar}'
                 f'<h2>사용자 {len(users)}명</h2><div class="tbl"><table><thead><tr><th>이메일</th><th>가입일</th><th>역할</th>'
-                f'<th>처리방침{" " + _esc(ver) if ver else ""}</th><th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
+                f'<th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
                 f'<h2>감사 로그 최근 {admin_db.AUDIT_LIST}건</h2><div class="tbl"><table><thead><tr><th>시각</th><th>실행자</th><th>동작</th>'
                 f'<th>대상</th></tr></thead><tbody>{arows or "<tr><td colspan=4 class=muted>없음</td></tr>"}</tbody></table></div>')
@@ -1736,7 +1678,6 @@ class Web:
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
-            Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
             Route("/api/desk-visibility", u("web:desk_visibility", self.api_desk_visibility), methods=["POST"]),
             Route("/admin", self.admin_index),

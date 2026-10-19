@@ -80,17 +80,11 @@ QUOTA_EXEMPT = frozenset({"feedback_send"})
 
 # 관리자 = users.role='admin'(β2). ③ 전역 DB 크기 거절의 예외 판정도 is_admin(DB 조회)이다. env 는 첫 지정(admin_bootstrap)에만 쓴다.
 
-# ── 동의 게이트 (α2) ───────────────────────────────────
-# 처리방침(·약관)에 동의하지 않은 사용자의 쓰기를 막는다. MCP guard·웹 쓰기 API 가 부르는 write_gate 안에서.
-# 동의 문서·버전: web.Web.load_consent 가 시작 때 guides 머리글(`vN · 날짜`)에서 채운다 — {"privacy": "v1"(, "terms": …)}.
-# 비어 있으면 게이트가 열린 채다(동의 문서 없음). 관리자 면제 없음.
+# ── 처리방침 버전 ──────────────────────────────────────
+# 필수 동의 게이트는 없다(처리 근거는 처리방침 「처리 근거」 표 — 계약 이행·정당한 이익). 동의는 선택 동의(아래)만.
+# 문서·버전: web.Web.load_consent 가 시작 때 guides 머리글(`vN · 날짜`)에서 채운다 — {"privacy": "v3"(, "terms": …)}. /privacy·화면 표시용.
+# agreements 테이블·옛 행은 이력으로 남긴다(새로 쓰지 않는다).
 CONSENT_VERSIONS: dict = {}
-# 동의 안 한 사용자도 보낼 수 있어야 하는 쓰기 — 개인정보 문의. 읽기 도구·help_get·state_get·웹 GET 은 원래 게이트 밖.
-CONSENT_EXEMPT = frozenset({"feedback_send"})
-# CONSENT-REQUIRED 메시지의 /consent 주소. main 이 시작 때 CRM_PUBLIC_URL 로 채운다.
-PUBLIC_URL = ""
-_consent_lock = threading.Lock()
-_consented: set = set()   # 통과한 uid — 다음부턴 DB 를 안 본다. 버전이 바뀌면(= 재시작·set_consent_versions) 비운다
 
 # ── 선택 동의 (운영 콘솔) ───────────────────────────────
 # 게이트 밖 — 동의하지 않아도 모든 기능을 쓴다. 지금은 「구조 이름 공유」 하나: 운영자 조회에 현재 이름(오브젝트·필드·선택지)을 보인다.
@@ -189,65 +183,9 @@ def check_global_quota(uid):
 
 
 def set_consent_versions(versions: dict):
-    """동의 문서 버전을 바꾼다(web.Web.load_consent 가 시작 때). 내용이 바뀔 때만 통과 집합을 비운다 — 같은 값으로 다시 불러도 그대로."""
+    """처리방침(·약관) 버전을 바꾼다(web.Web.load_consent 가 시작 때). /privacy·화면 표시용 — 쓰기 게이트는 없다."""
     global CONSENT_VERSIONS
-    with _consent_lock:
-        if dict(versions) != CONSENT_VERSIONS:
-            _consented.clear()
-        CONSENT_VERSIONS = dict(versions)
-
-
-def _has_all_consents(c, uid) -> bool:
-    for kind, ver in CONSENT_VERSIONS.items():
-        if not _one(c, "SELECT 1 AS x FROM agreements WHERE user_id=%s AND kind=%s AND version=%s", (uid, kind, ver)):
-            return False
-    return True
-
-
-def require_consent(uid):
-    """CONSENT_VERSIONS 의 모든 (kind, version) 에 agreements 행이 있어야 통과. 없으면 CONSENT-REQUIRED.
-    uid 는 문자열 또는 함수(호출해 푼다). 통과한 uid 는 메모리 집합에 넣어 다음부턴 DB 를 안 본다."""
-    if not CONSENT_VERSIONS:
-        return
-    uid = uid() if callable(uid) else uid
-    with _consent_lock:
-        if uid in _consented:
-            return
-    with tx() as c:
-        ok = _has_all_consents(c, uid)
-    if not ok:
-        raise CrmError("CONSENT-REQUIRED", "개인정보 처리방침에 동의한 뒤 쓸 수 있어요.",
-                         f"브라우저에서 {PUBLIC_URL}/consent 를 열어 로그인하고 동의해 주세요.")
-    with _consent_lock:
-        _consented.add(uid)
-
-
-def has_consent(uid) -> bool:
-    """웹 /app·/consent 분기용. require_consent 와 같은 판정(같은 캐시)."""
-    try:
-        require_consent(uid)
-        return True
-    except CrmError as e:
-        if e.code == "CONSENT-REQUIRED":
-            return False
-        raise
-
-
-def consent_grant(uid, versions: dict, optional=()):
-    """동의 기록. versions 가 CONSENT_VERSIONS 와 정확히 같을 때만(빠지거나 다른 버전이면 ARG-INVALID).
-    optional = 같이 켤 선택 동의 kind 목록(체크한 것만). 필수·선택을 한 트랜잭션으로 — 선택 저장이 실패하면 필수도 롤백."""
-    if not isinstance(versions, dict) or {str(k): v for k, v in versions.items()} != CONSENT_VERSIONS:
-        raise CrmError("ARG-INVALID", "동의할 문서·버전이 지금 문서와 맞지 않아요.", "동의 화면을 새로 고쳐 다시 동의해 주세요.")
-    optional = list(optional or ())
-    if any(k not in OPTIONAL_VERSIONS for k in optional):
-        raise CrmError("ARG-INVALID", "그런 선택 동의는 없어요.")
-    with tx() as c:
-        for kind, ver in CONSENT_VERSIONS.items():
-            c.execute("INSERT INTO agreements (user_id,kind,version) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING", (uid, kind, ver))
-        for kind in optional:
-            _optional_apply(c, uid, kind, True)
-    with _consent_lock:
-        _consented.add(uid)
+    CONSENT_VERSIONS = dict(versions)
 
 
 def _optional_apply(c, uid, kind, on):
@@ -278,7 +216,7 @@ def _optional_apply(c, uid, kind, on):
 
 
 def optional_consent_set(uid, kind, on):
-    """선택 동의 켜기/끄기 — 한 트랜잭션. 동의 게이트 밖(미동의자도 끌 수 있다). 반환 {kind, on(유효 동의), changed}."""
+    """선택 동의 켜기/끄기 — 한 트랜잭션. 반환 {kind, on(유효 동의), changed}."""
     if kind not in OPTIONAL_VERSIONS or not isinstance(on, bool):
         raise CrmError("ARG-INVALID", f"선택 동의는 {', '.join(OPTIONAL_VERSIONS)} 중 하나, on 은 true·false 예요.")
     with tx() as c:
@@ -294,11 +232,11 @@ def optional_consent_ok(uid, kind) -> bool:
 
 
 def write_gate(op: str, args: dict, uid, quota: bool = True):
-    """쓰기 진입 한 곳 — ② 길이 → 동의(α2, CONSENT_EXEMPT 는 빼고) → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    """쓰기 진입 한 곳 — ② 길이 → uid 풀기 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    uid 는 문자열 또는 함수 — 여기서 푼다(MCP 사용 집계가 도구 본문이 실패해도 그 uid 로 센다. 옛 동의 검사가 하던 조회 1회).
     quota=False 는 QUOTA_EXEMPT(문의) 만 — 호출하는 쪽이 넘긴다."""
     check_lengths(op, args)
-    if op not in CONSENT_EXEMPT:
-        require_consent(uid)
+    uid = uid() if callable(uid) else uid
     if quota:
         check_global_quota(uid)
 
@@ -357,7 +295,7 @@ def _usage_conn():
 def usage_flush() -> int:
     """스냅샷을 떼고(lock 안에서 dict 교체) usage_daily 에 합산 upsert. 반환 = 올린 키 수.
     실패하면 그 묶음을 버리고 로그에 건수만 — 예외를 밖으로 내지 않는다.
-    현재 privacy 버전에 동의하지 않은 uid 는 '' 로 접는다(privacy 키가 없으면 전원 '')."""
+    로그인 사용자는 항상 그 uid 로 올린다. '' 는 로그인 전(uid 없는) 요청만."""
     global _usage
     with _usage_lock:
         batch, _usage = _usage, {}
@@ -366,20 +304,16 @@ def usage_flush() -> int:
     keys = list(batch)
     days, uids, names, codes = ([k[i] for k in keys] for i in range(4))
     ns = [batch[k] for k in keys]
-    ver = CONSENT_VERSIONS.get("privacy")
-    if ver is None:
-        uids = [""] * len(uids)
     try:
         with _flush_lock, _usage_conn() as c:
             with c.transaction():
                 c.execute(
                     "INSERT INTO usage_daily (day,user_id,name,code,n) "
-                    "SELECT d, CASE WHEN EXISTS (SELECT 1 FROM agreements a WHERE a.user_id = t.u AND a.kind = 'privacy' "
-                    "AND a.version = %s) THEN t.u ELSE '' END, nm, cd, sum(n)::integer "
+                    "SELECT d, u, nm, cd, sum(n)::integer "
                     "FROM unnest(%s::date[], %s::text[], %s::text[], %s::text[], %s::integer[]) AS t(d, u, nm, cd, n) "
                     "GROUP BY 1, 2, 3, 4 "
                     "ON CONFLICT (day,user_id,name,code) DO UPDATE SET n = usage_daily.n + EXCLUDED.n",
-                    (ver or "", days, uids, names, codes, ns))
+                    (days, uids, names, codes, ns))
     except Exception:
         print(f"[usage] flush 실패 — {len(keys)}건 버림", flush=True)
         return 0
@@ -679,7 +613,7 @@ def user_get(uid):
 
 
 def desk_hidden_set(uid, hidden):
-    """/app 문의 섹션 숨김 저장(계정 메뉴). 동의 게이트 밖. 반환 {hidden}."""
+    """/app 문의 섹션 숨김 저장(계정 메뉴). 반환 {hidden}."""
     if not isinstance(hidden, bool):
         raise CrmError("ARG-INVALID", "hidden 은 true·false 예요.")
     with tx() as c:
@@ -708,8 +642,6 @@ def user_delete(uid):
         with _usage_lock:
             for k in [k for k in _usage if k[1] == uid]:
                 del _usage[k]
-    with _consent_lock:
-        _consented.discard(uid)
 
 
 # ── 질문 ───────────────────────────────────────────────

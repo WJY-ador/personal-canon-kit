@@ -60,7 +60,6 @@ if not DEV and not ISSUER:
     raise SystemExit("AUTHKIT_ISSUER 가 없어요. 운영은 인증 없이 뜨지 않아요 (개발은 CRM_DEV=1).")
 if not DEV and env("DEV_USER"):
     raise SystemExit("CRM_DEV_USER 는 CRM_DEV=1 일 때만 쓸 수 있어요.")
-db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
 USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
 PURGE_EVERY = 24 * 3600      # 파기(문의·감사) 주기(초) — 실행 중 매일 1회, 시작 때 1회는 따로
 
@@ -76,7 +75,7 @@ if ISSUER:
 mcp = MCPServer("my-crm", instructions=INSTRUCTIONS, **_auth_kwargs)
 
 
-# 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(동의·전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
+# 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
 _call_uid: contextvars.ContextVar = contextvars.ContextVar("crm_call_uid", default=None)
 
@@ -99,7 +98,7 @@ def uid_of(ctx: Context) -> str:
 
 def guard(fn):
     """CrmError 를 모델이 읽을 수 있는 ToolError 로 바꾼다. wraps 로 서명을 보존해야 입력 스키마가 유지된다.
-    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)·동의(CONSENT-REQUIRED, CONSENT_EXEMPT 는 빼고)
+    쓰기 도구(db.WRITE_LIMITS 의 키)는 실행 전에 db.write_gate — 인자 길이(PAYLOAD-LIMIT)
     ·전역 DB 크기(QUOTA-GLOBAL, QUOTA_EXEMPT 는 빼고). 모든 도구(읽기 포함)를 db.usage_count 로 센다 — 정상 OK, CrmError 는 그 code,
     그 밖 예외(ToolError 포함)는 EXC. uid 는 이 호출 안에서 이미 푼 것만 쓴다(못 풀었으면 '')."""
     sig = inspect.signature(fn)
