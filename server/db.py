@@ -449,6 +449,12 @@ def _init_schema(c):
         for n, ddl in _USERS_B2_COLS:   # β2 — 옛 users 에 역할·차단·끊기 열. schema.sql 최종형과 같은 모양(CHECK 이름 users_role_check)
             if not _has_col(c, "users", n):
                 c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
+        for n, ddl in _TICKETS_P3_COLS:   # P3 — 옛 tickets 에 답변·공개 갱신 열. schema.sql 최종형과 같은 모양
+            if not _has_col(c, "tickets", n):
+                c.execute(f"ALTER TABLE tickets ADD COLUMN IF NOT EXISTS {n} {ddl}")
+        for n, ddl in _USERS_P5_COLS:   # P5 — 옛 users 에 문의 섹션 숨김 열. schema.sql 최종형과 같은 모양
+            if not _has_col(c, "users", n):
+                c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
         for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
@@ -458,7 +464,10 @@ def _init_schema(c):
             c.execute("DELETE FROM usage_daily")
 
 
+_TICKETS_P3_COLS = (("reply", "text CHECK (octet_length(reply) <= 4096)"), ("reply_at", "timestamptz"),
+                    ("public_updated", "timestamptz"))
 USAGE_RESET_MARK = "usage_daily_reset_privacy_v2"   # schema_marks 키 — 옛 사용량 1회 삭제
+_USERS_P5_COLS = (("desk_hidden", "boolean NOT NULL DEFAULT false"),)
 
 
 _USERS_B2_COLS = (("role", "text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))"), ("blocked_at", "timestamptz"),
@@ -667,6 +676,22 @@ def user_get(uid):
     if not r:
         raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
     return _iso(r)
+
+
+def desk_hidden_set(uid, hidden):
+    """/app 문의 섹션 숨김 저장(계정 메뉴). 동의 게이트 밖. 반환 {hidden}."""
+    if not isinstance(hidden, bool):
+        raise CrmError("ARG-INVALID", "hidden 은 true·false 예요.")
+    with tx() as c:
+        c.execute("UPDATE users SET desk_hidden=%s WHERE id=%s", (hidden, uid))
+    return {"hidden": hidden}
+
+
+def app_user_flags(uid) -> dict:
+    """/api/state 의 user 에 붙는 /app 전용 값 — 이름 공유 유효 동의(optional_consent_ok)·문의 섹션 숨김. MCP state_get 에는 넣지 않는다."""
+    with tx() as c:
+        r = _one(c, "SELECT desk_hidden FROM users WHERE id=%s", (uid,))
+    return {"struct_names": optional_consent_ok(uid, "struct_names"), "desk_hidden": bool(r and r["desk_hidden"])}
 
 
 def user_delete(uid):
@@ -1896,10 +1921,22 @@ def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
 
 
 def tickets_mine(uid, limit=50):
-    """「내 문의」 — 본인 글과 상태만. admin_note·hint 는 넣지 않는다. 최근 50건."""
+    """「내 문의」 — 본인 글·상태·답변 유무·공개 갱신 시각. admin_note·hint·답변 본문은 넣지 않는다(본문은 ticket_get_mine). 최근 50건."""
     with tx() as c:
-        return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated FROM tickets WHERE user_id=%s "
-                                         "ORDER BY created DESC LIMIT %s", (uid, limit))]
+        return [_iso(r) for r in _all(c, "SELECT id,kind,text,status,via,created,updated,(reply IS NOT NULL) AS has_reply,reply_at,"
+                                         "public_updated FROM tickets WHERE user_id=%s ORDER BY created DESC LIMIT %s", (uid, limit))]
+
+
+def ticket_get_mine(uid, tid):
+    """본인 문의 하나 — 글·답변·공개 이력만. 다른 사람 문의·없는 id 는 NOT-FOUND(같은 모양). internal 사건·admin_note·hint 는 없다."""
+    with tx() as c:
+        t = _one(c, "SELECT id,kind,text,status,via,created,updated,reply,reply_at,public_updated FROM tickets WHERE id=%s AND user_id=%s",
+                 (str(tid), uid))
+        if not t:
+            raise CrmError(*_TICKET_NF)
+        hist = _all(c, "SELECT at,kind,from_val,to_val FROM ticket_history WHERE ticket_id=%s AND visibility='public' ORDER BY at, id",
+                    (t["id"],))
+    return {**_iso(t), "history": [_iso(h) for h in hist]}
 
 
 def is_admin(uid) -> bool:
@@ -1910,38 +1947,106 @@ def is_admin(uid) -> bool:
         return _one(c, "SELECT 1 AS x FROM users WHERE id=%s AND role='admin' AND blocked_at IS NULL", (uid,)) is not None
 
 
-def ticket_set_status(tid, status):
-    """관리자 상태 변경. 다섯 상태 사이 어느 쪽으로든 옮긴다. 종결(done·wontfix)이면 closed_at = 처음 종결한 때(종결끼리 옮겨도 유지),
-    다시 열면 NULL(파기 대상에서 빠진다). updated 갱신. 감사 테이블은 β.
+TICKET_RECLASS_REASONS = ("not_privacy", "duplicate", "other")   # privacy 에서 다른 kind 로 바꿀 때의 사유
+PRIVACY_DAYS = 10                  # 개인정보 요청 처리 기한(받은 날부터, KST 날짜)
+_TICKET_NF = ("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
+
+
+def _ticket_lock(c, actor_id, tid):
+    """문의 처리 공통 — 실행자 재조회(관리자·차단 아님, 아니면 FORBIDDEN) → 문의 행 FOR UPDATE(없으면 NOT-FOUND)."""
+    a = _one(c, "SELECT role,blocked_at FROM users WHERE id=%s", (str(actor_id or ""),))
+    if not a or a["role"] != "admin" or a["blocked_at"] is not None:
+        raise CrmError("FORBIDDEN", "관리자만 할 수 있어요.")
+    t = _one(c, "SELECT id,kind,status,reply,created FROM tickets WHERE id=%s FOR UPDATE", (str(tid),))
+    if not t:
+        raise CrmError(*_TICKET_NF)
+    return t
+
+
+def _ticket_event(c, tid, actor_id, visibility, kind, from_val=None, to_val=None, reason=None):
+    c.execute("INSERT INTO ticket_history (ticket_id,actor_id,visibility,kind,from_val,to_val,reason) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+              (tid, actor_id, visibility, kind, from_val, to_val, reason))
+
+
+def ticket_set_status(actor_id, tid, status):
+    """관리자 상태 변경 + 공개 사건(status, from→to) — 한 트랜잭션. 같은 상태면 무동작(사건 없음).
+    종결(done·wontfix)이면 closed_at = 처음 종결한 때(종결끼리 옮겨도 유지), 다시 열면 NULL(파기 대상에서 빠진다). updated·public_updated 갱신.
     kind=privacy 면 같은 트랜잭션에서 privacy_log(ticket_id) — 종결: notified=KST 오늘(없을 때만)·result done→done/wontfix→refused,
     다시 열면 result 만 NULL(notified 유지). 티켓이 파기돼도 처리 사실은 privacy_log 에 남는다.
-    반환 {id} — 바뀐 상세는 admin_db.ticket_detail 이 읽는다(운영 경계)."""
+    반환 {id, changed} — 바뀐 상세는 admin_db.ticket_detail 이 커밋 뒤 읽는다(운영 경계)."""
     if status not in TICKET_STATUSES:
         raise CrmError("ARG-INVALID", f"상태는 {', '.join(TICKET_STATUSES)} 중 하나예요.")
     with tx() as c:
-        r = _one(c, "UPDATE tickets SET status=%s, updated=now(), closed_at = CASE WHEN %s IN ('done','wontfix') "
-                    "THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=%s RETURNING kind", (status, status, str(tid)))
-        if not r:
-            raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
-        if r["kind"] == "privacy":
+        t = _ticket_lock(c, actor_id, tid)
+        if t["status"] == status:
+            return {"id": t["id"], "changed": False}
+        c.execute("UPDATE tickets SET status=%s, updated=now(), public_updated=now(), closed_at = CASE WHEN %s IN ('done','wontfix') "
+                  "THEN COALESCE(closed_at, now()) ELSE NULL END WHERE id=%s", (status, status, t["id"]))
+        if t["kind"] == "privacy":
             if status in ("done", "wontfix"):
                 c.execute("UPDATE privacy_log SET notified = COALESCE(notified, (now() AT TIME ZONE 'Asia/Seoul')::date), result=%s "
-                          "WHERE ticket_id=%s", ("done" if status == "done" else "refused", str(tid)))
+                          "WHERE ticket_id=%s", ("done" if status == "done" else "refused", t["id"]))
             else:
-                c.execute("UPDATE privacy_log SET result=NULL WHERE ticket_id=%s", (str(tid),))
-        return {"id": str(tid)}
+                c.execute("UPDATE privacy_log SET result=NULL WHERE ticket_id=%s", (t["id"],))
+        _ticket_event(c, t["id"], actor_id, "public", "status", t["status"], status)
+        return {"id": t["id"], "changed": True}
 
 
-def ticket_set_note(tid, note):
-    """관리자 메모(사용자에게 안 보인다). 2KB(바이트) 상한. updated 갱신. 반환 {id} — 상세는 admin_db.ticket_detail."""
+def ticket_set_reply(actor_id, tid, reply):
+    """공개 답변 쓰기·고치기·지우기(빈 문자열 = 지움) + 공개 사건(reply, 값 없음) — 한 트랜잭션. reply·reply_at·public_updated·updated.
+    4KB(바이트) 상한. 같은 값이면 무동작(사건 없음)."""
+    if not isinstance(reply, str):
+        raise CrmError("ARG-INVALID", "답변은 문자열이에요.")
+    check_len("reply", reply, LIMIT_TICKET)
+    new = reply if reply.strip() else None
+    with tx() as c:
+        t = _ticket_lock(c, actor_id, tid)
+        if t["reply"] == new:
+            return {"id": t["id"], "changed": False}
+        c.execute("UPDATE tickets SET reply=%s, reply_at = CASE WHEN %s::text IS NULL THEN NULL ELSE now() END, "
+                  "public_updated=now(), updated=now() WHERE id=%s", (new, new, t["id"]))
+        _ticket_event(c, t["id"], actor_id, "public", "reply")
+        return {"id": t["id"], "changed": True}
+
+
+def ticket_set_note(actor_id, tid, note):
+    """관리자 메모(사용자에게 안 보인다) + 내부 사건(note, 값 없음) — 한 트랜잭션. 2KB(바이트) 상한. updated 갱신, public_updated 는 그대로.
+    같은 값이면 무동작. 반환 {id, changed} — 상세는 admin_db.ticket_detail."""
     if not isinstance(note, str):
         raise CrmError("ARG-INVALID", "메모는 문자열이에요.")
     check_len("admin_note", note, LIMIT_ADMIN_NOTE)
     with tx() as c:
-        n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s", (note, str(tid))).rowcount
-        if not n:
-            raise CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
-        return {"id": str(tid)}
+        t = _ticket_lock(c, actor_id, tid)
+        n = c.execute("UPDATE tickets SET admin_note=%s, updated=now() WHERE id=%s AND admin_note IS DISTINCT FROM %s",
+                      (note, t["id"], note)).rowcount
+        if n:
+            _ticket_event(c, t["id"], actor_id, "internal", "note")
+        return {"id": t["id"], "changed": bool(n)}
+
+
+def ticket_reclassify(actor_id, tid, kind, reason=None):
+    """문의 종류(kind) 바꾸기 + 내부 사건(reclassify, from→to, reason) — 한 트랜잭션. 종결된 문의도 된다. 같은 kind 면 무동작.
+    → privacy: 이 문의의 privacy_log 행을 재사용(있으면 그대로), 없으면 만든다(received = tickets.created 의 KST 날짜 — 10일 시계 기산점).
+    privacy →: 사유(TICKET_RECLASS_REASONS) 필수. privacy_log 는 남기고 result 는 건드리지 않는다(활성 요청 목록은 kind 로 거른다).
+    그 밖의 바꿈엔 사유를 받지 않는다(빈 값만)."""
+    if kind not in TICKET_KINDS:
+        raise CrmError("ARG-INVALID", f"문의 종류는 {', '.join(TICKET_KINDS)} 중 하나예요.")
+    reason = reason or None
+    with tx() as c:
+        t = _ticket_lock(c, actor_id, tid)
+        if t["kind"] == kind:
+            return {"id": t["id"], "changed": False}
+        if t["kind"] == "privacy":
+            if reason not in TICKET_RECLASS_REASONS:
+                raise CrmError("ARG-INVALID", f"개인정보 요청에서 빼는 사유는 {', '.join(TICKET_RECLASS_REASONS)} 중 하나예요.")
+        elif reason is not None:
+            raise CrmError("ARG-INVALID", "사유는 개인정보 요청에서 뺄 때만 받아요.")
+        c.execute("UPDATE tickets SET kind=%s, updated=now() WHERE id=%s", (kind, t["id"]))
+        if kind == "privacy" and not _one(c, "SELECT 1 AS x FROM privacy_log WHERE ticket_id=%s", (t["id"],)):
+            c.execute("INSERT INTO privacy_log (id,kind,via,ticket_id,received) "
+                      "VALUES (%s,'other','form',%s,(%s::timestamptz AT TIME ZONE 'Asia/Seoul')::date)", (new_id("pl"), t["id"], t["created"]))
+        _ticket_event(c, t["id"], actor_id, "internal", "reclassify", t["kind"], kind, reason)
+        return {"id": t["id"], "changed": True}
 
 
 def tickets_purge():

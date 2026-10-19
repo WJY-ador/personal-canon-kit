@@ -62,6 +62,7 @@ if not DEV and env("DEV_USER"):
     raise SystemExit("CRM_DEV_USER 는 CRM_DEV=1 일 때만 쓸 수 있어요.")
 db.PUBLIC_URL = PUBLIC_URL   # CONSENT-REQUIRED 메시지의 /consent 주소
 USAGE_FLUSH_EVERY = 300      # usage_daily flush 주기(초). 수면·재배포 때 ≤5분치 유실 허용
+PURGE_EVERY = 24 * 3600      # 파기(문의·감사) 주기(초) — 실행 중 매일 1회, 시작 때 1회는 따로
 
 _auth_kwargs = {}
 if ISSUER:
@@ -379,6 +380,24 @@ def feedback_send(
             "notice": f"{db.NOTICE} 처리 상태는 대시보드 「내 문의」에서 볼 수 있어요. 개인정보 처리방침: {PUBLIC_URL}/privacy"}
 
 
+@mcp.tool()
+@guard
+def ticket_list_mine(ctx: Context) -> list[dict]:
+    """내가 보낸 문의 목록(최근 50건) — id·종류·상태·접수 시각·답변 유무·공개 갱신 시각. 글·답변 본문은 ticket_get_mine 으로 하나씩 본다.
+    사용자가 「내 문의 어떻게 됐어?」 류를 물을 때 부른다."""
+    return [{k: t[k] for k in ("id", "kind", "status", "created", "has_reply", "public_updated")} for t in db.tickets_mine(uid_of(ctx))]
+
+
+@mcp.tool()
+@guard
+def ticket_get_mine(
+    ticket_id: Annotated[str, Field(description="ticket_list_mine 의 id")],
+    ctx: Context,
+) -> dict:
+    """내 문의 하나 — 보낸 글·운영자 답변·공개 이력(상태 변경·답변 시각). 내 문의가 아니면 NOT-FOUND."""
+    return db.ticket_get_mine(uid_of(ctx), ticket_id)
+
+
 # ── 웹 ─────────────────────────────────────────────────
 
 async def health(request):
@@ -470,30 +489,44 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
             print(f"[admin] 첫 관리자 지정(bootstrap) — {n}명 승격", flush=True)
     except Exception as e:
         print(f"[admin] bootstrap 실패 — 기동은 계속: {type(e).__name__}", flush=True)
-    try:   # 종결 180일 지난 문의 파기 — 실패해도 기동은 계속한다(다음 시작 때 다시)
-        n = await run_in_threadpool(db.tickets_purge)
-        if n:
-            print(f"[desk] 종결 {db.TICKET_KEEP_DAYS}일 지난 문의 {n}건 파기", flush=True)
-    except Exception as e:
-        print(f"[desk] 문의 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
-    try:   # β2 감사 1년 지난 행 파기 — 같은 자리·같은 방식
-        n = await run_in_threadpool(db.admin_audit_purge)
-        if n:
-            print(f"[admin] {db.AUDIT_KEEP_DAYS}일 지난 감사 {n}건 파기", flush=True)
-    except Exception as e:
-        print(f"[admin] 감사 파기 실패 — 기동은 계속: {type(e).__name__}", flush=True)
+    await purge_once()   # 시작 때 1회 — 그 뒤는 _purger 가 PURGE_EVERY 마다
     flusher = asyncio.create_task(_usage_flusher())
+    purger = asyncio.create_task(_purger())
     try:
         async with mcp.session_manager.run():
             yield
     finally:   # 순서 고정: 주기 태스크 취소 → 마지막 flush 1회 → db.close()
-        flusher.cancel()
-        try:
-            await flusher
-        except asyncio.CancelledError:
-            pass
+        for task in (flusher, purger):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await run_in_threadpool(db.usage_flush)
         db.close()
+
+
+async def purge_once():
+    """파기 2종 — 종결 180일 지난 문의(답변·이력은 cascade) · 1년 지난 감사. 각자 실패해도 예외를 내지 않는다(다음 회차에 다시)."""
+    try:
+        n = await run_in_threadpool(db.tickets_purge)
+        if n:
+            print(f"[desk] 종결 {db.TICKET_KEEP_DAYS}일 지난 문의 {n}건 파기", flush=True)
+    except Exception as e:
+        print(f"[desk] 문의 파기 실패 — 계속: {type(e).__name__}", flush=True)
+    try:
+        n = await run_in_threadpool(db.admin_audit_purge)
+        if n:
+            print(f"[admin] {db.AUDIT_KEEP_DAYS}일 지난 감사 {n}건 파기", flush=True)
+    except Exception as e:
+        print(f"[admin] 감사 파기 실패 — 계속: {type(e).__name__}", flush=True)
+
+
+async def _purger():
+    """실행 중 매일 1회 파기(P3). 시작 때 1회는 lifespan 이 따로 부른다."""
+    while True:
+        await asyncio.sleep(PURGE_EVERY)
+        await purge_once()
 
 
 async def _usage_flusher():

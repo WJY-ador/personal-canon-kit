@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   role               text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
   blocked_at         timestamptz,                 -- 차단(웹·MCP 둘 다 거절). 해제 = NULL
   web_revoked_before timestamptz,                 -- 이 시각 전에 발급한 웹 세션 쿠키(iat) 무효
-  mcp_revoked_before timestamptz                  -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
+  mcp_revoked_before timestamptz,                 -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
+  desk_hidden        boolean NOT NULL DEFAULT false -- P5: /app 문의 섹션 숨김(계정 메뉴). 옛 DB 는 db._init_schema 가 더한다
 );
 
 CREATE TABLE IF NOT EXISTS agreements (
@@ -252,6 +253,9 @@ CREATE TABLE IF NOT EXISTS tickets (
   created     timestamptz NOT NULL DEFAULT now(),
   updated     timestamptz NOT NULL DEFAULT now(),
   closed_at   timestamptz,
+  reply          text CHECK (octet_length(reply) <= 4096),   -- 운영자 공개 답변(P3). NULL = 답변 없음. 옛 DB 는 init_schema ADD COLUMN
+  reply_at       timestamptz,                                -- 답변을 쓰거나 고친 때
+  public_updated timestamptz,                                -- 사용자에게 보이는 변경(상태·답변)의 마지막 시각. 내부 메모는 안 바꾼다
   CHECK ((status IN ('done','wontfix')) = (closed_at IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS ix_tickets_user ON tickets(user_id, created DESC);
@@ -320,3 +324,19 @@ CREATE TABLE IF NOT EXISTS schema_marks (
   key  text PRIMARY KEY,
   at   timestamptz NOT NULL DEFAULT now()
 );
+
+-- 문의 이력(P3, 2026-10-19). public = 사용자에게 보이는 사건(상태·답변), internal = 운영자만(메모·재분류).
+-- from_val·to_val 에는 열거값만(상태·kind). reply·note 사건은 값 없이 「바뀜」만. reason = privacy 에서 다른 kind 로 재분류한 사유.
+-- 문의 파기 = cascade 로 함께 지운다.
+CREATE TABLE IF NOT EXISTS ticket_history (
+  id          bigserial PRIMARY KEY,
+  ticket_id   text NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  at          timestamptz NOT NULL DEFAULT now(),
+  actor_id    text,                                -- 실행한 관리자 user id(FK 없음 — 계정이 지워져도 남는다)
+  visibility  text NOT NULL CHECK (visibility IN ('public','internal')),
+  kind        text NOT NULL CHECK (kind IN ('status','reply','note','reclassify')),
+  from_val    text CHECK (from_val IS NULL OR from_val IN ('open','ack','doing','done','wontfix','bug','request','question','privacy')),
+  to_val      text CHECK (to_val IS NULL OR to_val IN ('open','ack','doing','done','wontfix','bug','request','question','privacy')),
+  reason      text CHECK (reason IS NULL OR reason IN ('not_privacy','duplicate','other'))
+);
+CREATE INDEX IF NOT EXISTS ix_ticket_history_ticket ON ticket_history (ticket_id, at, id);

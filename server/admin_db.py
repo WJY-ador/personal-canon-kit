@@ -9,6 +9,8 @@
 - 별표(전체 열) 조회 금지. 시험(test_tools 「11) 운영 경계」)이 이 파일과 ALLOW 를 정적으로 검사한다.
 쓰기는 db 의 트랜잭션 함수를 얇게 감싼다(규칙·감사는 db 에 있다).
 """
+import datetime as _dt
+
 import db
 
 VIEWER_ADMIN = "admin"
@@ -40,10 +42,19 @@ ALLOW = {
     },
     # 문의 상세 — 원문(text)·운영자 메모(admin_note)를 읽는 유일한 조회.
     "tickets.detail": {
-        "sql": "SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.hint,t.admin_note,"
-               "t.created,t.updated,t.closed_at,u.email FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=%s",
-        "cols": ("id", "kind", "text", "status", "via", "page", "tool", "hint", "admin_note", "created", "updated", "closed_at",
-                 "email"),
+        "sql": "SELECT t.id,t.kind,t.text,t.status,t.via,t.page,t.tool,t.ua_family,t.hint,t.admin_note,"
+               "t.created,t.updated,t.closed_at,t.reply,t.reply_at,t.public_updated,u.email,"
+               "CASE WHEN t.kind='privacy' THEN (SELECT min(p.received) FROM privacy_log p WHERE p.ticket_id=t.id) END AS privacy_received "
+               "FROM tickets t JOIN users u ON u.id=t.user_id WHERE t.id=%s",
+        "cols": ("id", "kind", "text", "status", "via", "page", "tool", "ua_family", "hint", "admin_note", "created", "updated",
+                 "closed_at", "reply", "reply_at", "public_updated", "email", "privacy_received"),
+        "viewer": VIEWER_ADMIN, "consent": None,
+    },
+    # 문의 이력 전부(공개·내부) — 운영자 레코드 페이지용. 값은 열거값(상태·kind·사유)뿐.
+    "tickets.history": {
+        "sql": "SELECT h.id,h.at,h.actor_id,u.email AS actor_email,h.visibility,h.kind,h.from_val,h.to_val,h.reason "
+               "FROM ticket_history h LEFT JOIN users u ON u.id=h.actor_id WHERE h.ticket_id=%s ORDER BY h.at, h.id",
+        "cols": ("id", "at", "actor_id", "actor_email", "visibility", "kind", "from_val", "to_val", "reason"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # 이행용(P5 삭제) — /app 관리자 「문의함」(GET /api/feedback 관리자 분기) 최근 100건. 원문·메모를 그리는 옛 화면이라 text·admin_note 를 읽는다.
@@ -242,7 +253,27 @@ def ticket_detail(role, tid):
     r = _row("tickets.detail", role, (str(tid),))
     if not r:
         raise db.CrmError("NOT-FOUND", "그 문의를 찾지 못했어요.", "새로 고침한 뒤 다시 해 보세요.")
-    return db._iso(r)
+    out = db._iso(r)
+    if out["privacy_received"] is not None:   # date — JSON 으로 나가게 ISO 날짜 문자열
+        out["privacy_received"] = out["privacy_received"].isoformat()
+    return out
+
+
+def ticket_history(role, tid):
+    """문의 이력 전부(공개·내부 배지용 visibility 포함), 오래된 순."""
+    return [db._iso(r) for r in _rows("tickets.history", role, (str(tid),))]
+
+
+def privacy_deadline(received, today=None):
+    """개인정보 요청 기한 — (기한 날짜, 초과 여부). received = 받은 KST 날짜(date·ISO 문자열) 또는 None.
+    기한 = received + 10일. 오늘(KST)이 기한을 지났으면 초과."""
+    if received is None:
+        return None, False
+    if isinstance(received, str):
+        received = _dt.date.fromisoformat(received)
+    due = received + _dt.timedelta(days=db.PRIVACY_DAYS)
+    today = today or _dt.datetime.now(db.KST).date()
+    return due, today > due
 
 
 # ── 쓰기(db 트랜잭션 함수를 감싼다) ────────────────────
@@ -252,27 +283,82 @@ def act(actor_id, op, target_id, role=None):
     return db.admin_act(actor_id, op, target_id, role)
 
 
-def ticket_status(role, tid, status):
-    """문의 상태 바꾸기 → 바뀐 상세."""
+def _admin_only(role):
     if role != VIEWER_ADMIN:
         raise db.CrmError("FORBIDDEN", "운영자만 할 수 있어요.")
-    db.ticket_set_status(tid, status)
+
+
+def ticket_status(role, actor_id, tid, status):
+    """문의 상태 바꾸기(공개 사건) → 바뀐 상세(커밋 뒤 다시 읽음)."""
+    _admin_only(role)
+    db.ticket_set_status(actor_id, tid, status)
     return ticket_detail(role, tid)
 
 
-def ticket_note(role, tid, note):
-    """운영자 메모 바꾸기 → 바뀐 상세."""
-    if role != VIEWER_ADMIN:
-        raise db.CrmError("FORBIDDEN", "운영자만 할 수 있어요.")
-    db.ticket_set_note(tid, note)
+def ticket_note(role, actor_id, tid, note):
+    """운영자 메모(내부 사건, public_updated 그대로) → 바뀐 상세."""
+    _admin_only(role)
+    db.ticket_set_note(actor_id, tid, note)
     return ticket_detail(role, tid)
+
+
+def ticket_reply(role, actor_id, tid, reply):
+    """공개 답변 쓰기·고치기·지우기(빈 문자열) → 바뀐 상세."""
+    _admin_only(role)
+    db.ticket_set_reply(actor_id, tid, reply)
+    return ticket_detail(role, tid)
+
+
+def ticket_reclassify(role, actor_id, tid, kind, reason=None):
+    """문의 종류 바꾸기(내부 사건). privacy 에서 뺄 때 사유 필수 → 바뀐 상세."""
+    _admin_only(role)
+    db.ticket_reclassify(actor_id, tid, kind, reason)
+    return ticket_detail(role, tid)
+
+
+# ── 문의 리스트(P4-4) ───────────────────────────────────
+# 리스트엔 원문·메모·화면·도구·UA 가 없다(원문은 상세 화면에서만). 필터·정렬은 열거 키 → 바인드 파라미터(고정 SQL 하나).
+TICKET_LIST_MAX = 200
+TICKET_LIST_STATUS = ("active", "all", "closed") + db.TICKET_STATUSES   # active = 미종결(기본)
+TICKET_LIST_KIND = ("all",) + db.TICKET_KINDS
+TICKET_LIST_SORT = ("deadline", "new", "updated")   # deadline = 개인정보 기한 오름차순(초과 최우선) → 나머지 접수순(기본)
+ALLOW["tickets.list"] = {
+    "sql": "SELECT t.id,t.kind,t.status,t.via,t.hint,t.created,t.updated,t.closed_at,(t.reply IS NOT NULL) AS has_reply,t.reply_at,"
+           "u.email,CASE WHEN t.kind='privacy' THEN (SELECT min(p.received) FROM privacy_log p WHERE p.ticket_id=t.id) END AS privacy_received "
+           "FROM tickets t JOIN users u ON u.id=t.user_id "
+           "WHERE (%(kind)s = 'all' OR t.kind = %(kind)s) "
+           "AND (CASE %(status)s WHEN 'all' THEN true WHEN 'active' THEN t.status NOT IN ('done','wontfix') "
+           "WHEN 'closed' THEN t.status IN ('done','wontfix') ELSE t.status = %(status)s END) "
+           "ORDER BY CASE WHEN %(sort)s = 'deadline' AND t.kind = 'privacy' "
+           "THEN (SELECT min(p.received) FROM privacy_log p WHERE p.ticket_id=t.id) END ASC NULLS LAST, "
+           "CASE WHEN %(sort)s = 'updated' THEN t.updated END DESC NULLS LAST, "
+           "CASE WHEN %(sort)s = 'new' THEN t.created END DESC NULLS LAST, t.created ASC, t.id "
+           "LIMIT %(lim)s",
+    "cols": ("id", "kind", "status", "via", "hint", "created", "updated", "closed_at", "has_reply", "reply_at", "email",
+             "privacy_received"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+
+
+def tickets_list(role, status="active", kind="all", sort="deadline"):
+    """/admin/tickets — (행 ≤ TICKET_LIST_MAX, 넘쳤는지). 모르는 키는 ARG-INVALID(다른 목록으로 대체하지 않는다). datetime·date 그대로."""
+    if status not in TICKET_LIST_STATUS or kind not in TICKET_LIST_KIND or sort not in TICKET_LIST_SORT:
+        raise db.CrmError("ARG-INVALID", "모르는 필터·정렬이에요.")
+    rows = _rows("tickets.list", role, {"status": status, "kind": kind, "sort": sort, "lim": TICKET_LIST_MAX + 1})
+    return rows[:TICKET_LIST_MAX], len(rows) > TICKET_LIST_MAX
+
+
+def privacy_days_left(received, today=None):
+    """화면용 — (기한 날짜, 남은 일수(음수 = 초과 일수), 초과 여부). received 없으면 (None, None, False)."""
+    due, over = privacy_deadline(received, today)
+    if due is None:
+        return None, None, False
+    return due, (due - (today or _dt.datetime.now(db.KST).date())).days, over
 
 
 # ── 운영 화면 P4 — 개요 · 스키마 · 리포트 ─────────────────
 # 조회는 위 ALLOW 키(평평한 행)만. 묶기·세기는 아래 파이썬이 한다 — SQL 은 고정 문장 + 바인드, 차원·필터는 열거 키로만 받는다.
-import datetime as _dt  # noqa: E402
-
-PRIVACY_DUE_DAYS = 10        # 개인정보 요청 처리 기한(받은 날부터, 처리방침 「10일 안에」)
+PRIVACY_DUE_DAYS = db.PRIVACY_DAYS   # 개인정보 요청 처리 기한(받은 날부터) — privacy_deadline 과 같은 상수
 PRIVACY_SOON_DAYS = 3        # 기한 임박 = 남은 날 0~3
 REPORT_MAX_DAYS = 180        # 리포트 기간 상한(양끝 포함)
 REPORT_ROWS = 200            # 결과 행 상한 — 넘으면 「상위 200」
