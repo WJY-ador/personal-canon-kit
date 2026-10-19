@@ -189,3 +189,43 @@ def ticket_reclassify(role, actor_id, tid, kind, reason=None):
     _admin_only(role)
     db.ticket_reclassify(actor_id, tid, kind, reason)
     return ticket_detail(role, tid)
+
+
+# ── 문의 리스트(P4-4) ───────────────────────────────────
+# 리스트엔 원문·메모·화면·도구·UA 가 없다(원문은 상세 화면에서만). 필터·정렬은 열거 키 → 바인드 파라미터(고정 SQL 하나).
+TICKET_LIST_MAX = 200
+TICKET_LIST_STATUS = ("active", "all", "closed") + db.TICKET_STATUSES   # active = 미종결(기본)
+TICKET_LIST_KIND = ("all",) + db.TICKET_KINDS
+TICKET_LIST_SORT = ("deadline", "new", "updated")   # deadline = 개인정보 기한 오름차순(초과 최우선) → 나머지 접수순(기본)
+ALLOW["tickets.list"] = {
+    "sql": "SELECT t.id,t.kind,t.status,t.via,t.hint,t.created,t.updated,t.closed_at,(t.reply IS NOT NULL) AS has_reply,t.reply_at,"
+           "u.email,CASE WHEN t.kind='privacy' THEN (SELECT min(p.received) FROM privacy_log p WHERE p.ticket_id=t.id) END AS privacy_received "
+           "FROM tickets t JOIN users u ON u.id=t.user_id "
+           "WHERE (%(kind)s = 'all' OR t.kind = %(kind)s) "
+           "AND (CASE %(status)s WHEN 'all' THEN true WHEN 'active' THEN t.status NOT IN ('done','wontfix') "
+           "WHEN 'closed' THEN t.status IN ('done','wontfix') ELSE t.status = %(status)s END) "
+           "ORDER BY CASE WHEN %(sort)s = 'deadline' AND t.kind = 'privacy' "
+           "THEN (SELECT min(p.received) FROM privacy_log p WHERE p.ticket_id=t.id) END ASC NULLS LAST, "
+           "CASE WHEN %(sort)s = 'updated' THEN t.updated END DESC NULLS LAST, "
+           "CASE WHEN %(sort)s = 'new' THEN t.created END DESC NULLS LAST, t.created ASC, t.id "
+           "LIMIT %(lim)s",
+    "cols": ("id", "kind", "status", "via", "hint", "created", "updated", "closed_at", "has_reply", "reply_at", "email",
+             "privacy_received"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+
+
+def tickets_list(role, status="active", kind="all", sort="deadline"):
+    """/admin/tickets — (행 ≤ TICKET_LIST_MAX, 넘쳤는지). 모르는 키는 ARG-INVALID(다른 목록으로 대체하지 않는다). datetime·date 그대로."""
+    if status not in TICKET_LIST_STATUS or kind not in TICKET_LIST_KIND or sort not in TICKET_LIST_SORT:
+        raise db.CrmError("ARG-INVALID", "모르는 필터·정렬이에요.")
+    rows = _rows("tickets.list", role, {"status": status, "kind": kind, "sort": sort, "lim": TICKET_LIST_MAX + 1})
+    return rows[:TICKET_LIST_MAX], len(rows) > TICKET_LIST_MAX
+
+
+def privacy_days_left(received, today=None):
+    """화면용 — (기한 날짜, 남은 일수(음수 = 초과 일수), 초과 여부). received 없으면 (None, None, False)."""
+    due, over = privacy_deadline(received, today)
+    if due is None:
+        return None, None, False
+    return due, (due - (today or _dt.datetime.now(db.KST).date())).days, over

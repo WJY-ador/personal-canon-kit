@@ -26,6 +26,7 @@
    · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효 · /privacy v2 · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
+13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·재인증·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -90,7 +91,8 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + ("b2a@example.com", "b2b@example.com", "b2c@example.com", "b2m@example.com", "<b>esc</b>@example.com") \
     + ("adb-admin@example.com", "adb-user@example.com") \
     + tuple(f"oc{i}@example.com" for i in range(1, 5)) \
-    + ("tk-owner@example.com", "tk-other@example.com", "tk-admin@example.com")
+    + ("tk-owner@example.com", "tk-other@example.com", "tk-admin@example.com") \
+    + ("tkv-admin@example.com", "<i>tkv</i>@example.com")
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
@@ -2996,6 +2998,12 @@ async def test_admin_boundary():
             assert mark not in out, f"{path} 응답에 금지 열 값"
         r, out = await call("GET", "/admin/setup")
         assert r.status_code == 200 and ADB["user"] in out and tmark not in out and nmark not in out, "Setup 엔 이메일만, 문의 원문 없음"
+        # 문의 화면(P4) — 리스트엔 원문·메모 없음, 레코드 페이지(허용 응답)엔 원문·메모가 있다. 둘 다 금지 열 값 없음
+        for q in ("?sort=new", "?status=all&sort=new", "?status=all&kind=bug&sort=new&cols=via,closed"):   # 최근순 — 앞 절 문의가 많아도 상한 안
+            r, out = await call("GET", "/admin/tickets" + q)
+            assert r.status_code == 200 and ADB["user"] in out and mark not in out and tmark not in out and nmark not in out, q
+        r, out = await call("GET", f"/admin/tickets/{t['id']}")
+        assert r.status_code == 200 and tmark in out and nmark in out and mark not in out, "레코드 페이지 = 문의 상세 허용 응답"
         r, out = await call("GET", "/api/state")
         assert r.status_code == 200 and "admin_tickets" in r.json() and tmark not in out, "관리자 띠는 숫자만"
         # 허용 응답 — 문의 상세(상태·메모 POST 의 응답, admin_db.ticket_detail)
@@ -3016,7 +3024,8 @@ async def test_admin_boundary():
         snap = {"setup.users": admin_db.users("admin"), "audit.list": admin_db.audit("admin"),
                 "tickets.counts": [admin_db.ticket_counts("admin")], "tickets.detail": [admin_db.ticket_detail("admin", t["id"])],
                 "tickets.legacy_inbox": admin_db.tickets_legacy_inbox("admin"),
-                "tickets.history": admin_db.ticket_history("admin", t["id"])}
+                "tickets.history": admin_db.ticket_history("admin", t["id"]),
+                "tickets.list": admin_db.tickets_list("admin", "all")[0]}
         assert set(snap) == {k for k, v in admin_db.ALLOW.items() if v["sql"]}, "ALLOW 키가 늘면 스냅샷도 늘린다"
         for k, rows in snap.items():
             assert rows, k
@@ -3025,7 +3034,7 @@ async def test_admin_boundary():
                 assert mark not in json.dumps(row, default=str, ensure_ascii=False), k
     finally:
         site.dev, site.dev_user = real
-    print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세에만 원문·메모 · ALLOW 행 키 = cols) 통과")
+    print(f"OK — 운영 경계 표식(관리자 응답 {len(seen)}개에 금지 열 값 0 · 문의 상세·레코드 페이지에만 원문·메모 · ALLOW 행 키 = cols) 통과")
 
 
 # ── 12) 선택 동의 · 처리방침 v2 · 옛 사용량 삭제 ──────────
@@ -3413,6 +3422,120 @@ async def test_ticket_p3():
           "·해제 사유·종결 재분류·실행자 재조회·/admin/tickets 사다리·회수 관리자 거절·파기 cascade·정기 파기) 통과")
 
 
+# ── 13b) 문의 화면 (P4-4·5) ────────────────────────────
+TKV = {"admin": "tkv-admin@example.com", "u": "<i>tkv</i>@example.com"}
+
+
+async def test_ticket_pages():
+    """/admin/tickets 리스트·/admin/tickets/<id> 레코드: 비관리자·무세션 404 · 재인증 창 밖 → /admin/reauth · CSP·스크립트 0·이벤트 속성 0
+    · escape(text·reply·memo·email 의 <script>) · 기본 필터(미종결)·기한 정렬(초과 최우선 → 기한 → 접수순) · 모르는 키 400 · 행 상한
+    · 리스트에 원문·메모·화면·도구 없음 · 레코드에 원문·Path(현재 강조)·답변·메모·재분류·이력(공개/내부) · form action 이 P3 POST 를 가리킴."""
+    import admin_db
+    site = main.site
+    A = db.user_by_subject("tkv_admin_sub", TKV["admin"])["id"]
+    U = db.user_by_subject("tkv_user_sub", TKV["u"])["id"]
+    for u in (A, U):
+        db.consent_grant(u, dict(db.CONSENT_VERSIONS))
+    _set_role(A, "admin")
+    xss = "<script>alert(1)</script>"
+    # 앞 절 문의(오늘 접수)가 많아 기본 목록이 상한에 걸릴 수 있다 — 이 절의 비개인정보 문의는 접수일을 앞당겨 앞쪽에 둔다
+    t_new = _tk_insert(U, kind="bug", text="새 버그 " + xss, created_days_ago=29)
+    t_old = _tk_insert(U, kind="question", text="옛 질문", created_days_ago=30)
+    t_over = _tk_insert(U, kind="bug", text="초과될 개인정보", created_days_ago=12)
+    db.ticket_reclassify(A, t_over, "privacy")                      # 받은 날 = 12일 전 → 기한 초과
+    t_due = _tk_insert(U, kind="bug", text="기한 남은 개인정보", created_days_ago=2)
+    db.ticket_reclassify(A, t_due, "privacy")                       # 받은 날 = 2일 전 → 8일 남음
+    t_done = _tk_insert(U, kind="bug", text="끝난 문의")
+    db.ticket_set_status(A, t_done, "done")
+    db.ticket_set_reply(A, t_new, "답변 " + xss)
+    db.ticket_set_note(A, t_new, "메모 " + xss)
+    with db.tx() as c:
+        c.execute("UPDATE tickets SET page='record', tool='record_add', ua_family='safari', hint='privacy?' WHERE id=%s", (t_new,))
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    now = int(time.time())
+    ck_admin, ck_stale = site.session_value(A, ra=now), site.session_value(A, ra=now - 13 * 3600)
+
+    async def get(path, cookie=ck_admin):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("crm_session", cookie)
+            return await h.get(path)
+    pages = ("/admin/tickets", f"/admin/tickets/{t_new}")
+    try:
+        for path in pages:
+            for cookie in (None, site.session_value(U, ra=now)):
+                r = await get(path, cookie)
+                assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
+            r = await get(path, ck_stale)
+            assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+            r = await get(path)
+            t = r.text
+            csp = r.headers["content-security-policy"]
+            assert r.status_code == 200 and r.headers["cache-control"] == "no-store", (path, r.status_code)
+            assert "script-src 'self'" in csp and "unsafe-inline" not in csp and r.headers["x-frame-options"] == "DENY", csp
+            assert "<script" not in t and not re.search(r"\son[a-z]+\s*=", t), (path, "스크립트·이벤트 속성 0")
+            assert "&lt;i&gt;tkv&lt;/i&gt;@example.com" in t and "<i>tkv" not in t, (path, "이메일 escape")
+        site.dev, site.dev_user = True, TKV["admin"]   # DEV 는 404
+        try:
+            for path in pages:
+                assert (await get(path)).status_code == 404, ("DEV", path)
+        finally:
+            site.dev, site.dev_user = False, ""
+        # 리스트 — 기본 = 미종결, 기한 정렬(초과 → 남은 기한 → 나머지 접수순), 원문·메모·화면·도구 없음
+        r = await get("/admin/tickets")
+        t = r.text
+        mine = [x for x in re.findall(r'href="/admin/tickets/(tk_[^"]+)"', t) if x in {t_new, t_old, t_over, t_due, t_done}]
+        assert mine[:2] == [t_over, t_due] and mine.index(t_old) < mine.index(t_new) and t_done not in mine, mine
+        assert "기한 초과 2일" in t and "8일 남음" in t and "개인정보?" in t, "기한·의심 표시"
+        for word in ("새 버그", "메모 &lt;script", "답변 &lt;script", "record_add", "safari", "초과될 개인정보"):
+            assert word not in t, ("리스트에 원문·메모·화면·도구가 없다", word)
+        r = await get("/admin/tickets?status=closed&kind=bug&sort=updated&cols=via,closed")
+        assert r.status_code == 200 and t_done in r.text and t_new not in r.text and "<th>종결일</th>" in r.text, r.status_code
+        r = await get("/admin/tickets?status=all&kind=privacy&sort=new")
+        ids = [x for x in re.findall(r'href="/admin/tickets/(tk_[^"]+)"', r.text) if x in {t_new, t_old, t_over, t_due, t_done}]
+        assert ids == [t_due, t_over], ids
+        for bad in ("?status=nope", "?kind=nope", "?sort=nope", "?cols=text", "?x=1", "?cols=via,admin_note"):
+            r = await get("/admin/tickets" + bad)
+            assert r.status_code == 400 and "ARG-INVALID" in r.text and "새 버그" not in r.text, bad
+        real_max = admin_db.TICKET_LIST_MAX
+        admin_db.TICKET_LIST_MAX = 2
+        try:
+            rows, more = admin_db.tickets_list("admin", "all")
+            assert len(rows) == 2 and more is True
+            assert "상위 2건만" in (await get("/admin/tickets?status=all")).text
+        finally:
+            admin_db.TICKET_LIST_MAX = real_max
+        expect("ARG-INVALID", admin_db.tickets_list, "admin", "nope")
+        expect("FORBIDDEN", admin_db.tickets_list, "user")
+        # 레코드 — 원문 전문·메타·Path(현재 강조)·form 4종·이력 배지
+        r = await get(f"/admin/tickets/{t_new}")
+        t = r.text
+        assert "새 버그 &lt;script&gt;" in t and "record_add" in t and "safari" in t and "record" in t and "개인정보?" in t, "원문·화면·도구·UA·의심"
+        assert 'class="cur" disabled aria-current="step">확인<' not in t and 'aria-current="step">접수<' in t, "현재 단계 = 접수"
+        for op in ("status", "reply", "note", "reclassify"):
+            assert f'action="/admin/tickets/{t_new}/{op}"' in t, op
+        assert ">답변 &lt;script&gt;alert(1)&lt;/script&gt;</textarea>" in t and ">메모 &lt;script&gt;alert(1)&lt;/script&gt;</textarea>" in t
+        assert t.count('<span class="tag pub">공개</span>') == 1 and t.count('<span class="tag int">내부</span>') == 1, "답변=공개 · 메모=내부"
+        r = await get(f"/admin/tickets/{t_over}")
+        assert "기한 초과 2일" in r.text and "재분류" in r.text and "버그 → 개인정보 요청" in r.text, "재분류 이력 from→to"
+        r = await get(f"/admin/tickets/{t_done}")
+        assert 'aria-current="step">완료<' in r.text and "종결" in r.text
+        r = await get("/admin/tickets/tk_nope")
+        assert r.status_code == 404 and "NOT-FOUND" in r.text
+        # POST → 303 → 레코드 페이지가 바뀐 값을 보인다
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", ck_admin)
+            r = await h.post(f"/admin/tickets/{t_old}/status", data={"status": "doing"}, headers={"origin": PUBLIC})
+            assert r.status_code == 303
+            r = await h.get(r.headers["location"])
+            assert r.status_code == 200 and 'aria-current="step">처리중<' in r.text and "접수 → 처리중" in r.text
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 문의 화면(404·재인증·DEV · CSP·스크립트 0·escape · 기본 미종결·기한 정렬·초과 표시 · 리스트에 원문·메모 없음 · 400 · 상한"
+          " · 레코드 Path·form 4종·공개/내부 배지 · POST→303→반영) 통과")
+
+
 def consent_setup():
     """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
     for email in TEST_EMAILS:
@@ -3453,6 +3576,7 @@ async def run():
         await test_admin_boundary()
         await test_optional_consent()
         await test_ticket_p3()
+        await test_ticket_pages()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]

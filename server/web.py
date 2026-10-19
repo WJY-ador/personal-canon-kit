@@ -9,6 +9,7 @@
 환경변수: AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
 """
 import base64
+import datetime as _dt
 import hashlib
 import hmac
 import html as _html
@@ -486,7 +487,16 @@ th{font-size:12px;color:#6B635A;font-weight:600}td.email{white-space:normal;word
 .acts{display:flex;flex-wrap:wrap;gap:4px}form{margin:0}
 button{font:inherit;font-size:12px;padding:3px 8px;border:1px solid #CFC4B7;border-radius:5px;background:#FBF8F4;color:#2B2824;cursor:pointer}
 button.danger{border-color:#D9A496;color:#9A3520}.tag{font-size:12px;padding:1px 6px;border-radius:4px;background:#EEE7DE}
-.tag.admin{background:#DCEBE3;color:#186A4B}.tag.blocked{background:#F6DDD6;color:#9A3520}.muted{color:#8A8178}"""
+.tag.admin{background:#DCEBE3;color:#186A4B}.tag.blocked{background:#F6DDD6;color:#9A3520}.muted{color:#8A8178}
+.tag.over{background:#F6DDD6;color:#9A3520}.tag.due{background:#FBEBD0;color:#8A5A12}.tag.pub{background:#DCEBE3;color:#186A4B}
+.tag.int{background:#E6E1F2;color:#4D3F86}.tag.st-done,.tag.st-wontfix{background:#EEE7DE;color:#6B635A}.tag.st-open{background:#FBEBD0;color:#8A5A12}
+dl.meta{display:grid;grid-template-columns:max-content 1fr;gap:4px 16px;margin:12px 0;padding:10px 12px;background:#fff;border:1px solid #E4DCD2;border-radius:8px}
+dl.meta dt{color:#6B635A;font-size:12px}dl.meta dd{margin:0;word-break:break-all}
+pre.txt{white-space:pre-wrap;word-break:break-word;background:#fff;border:1px solid #E4DCD2;border-radius:8px;padding:12px;font:inherit;margin:0}
+.path{display:flex;flex-wrap:wrap;gap:4px}.path button{font-size:13px;padding:5px 12px}
+.path button.cur{background:#186A4B;border-color:#186A4B;color:#fff;cursor:default}
+form.edit textarea{width:100%;box-sizing:border-box;font:inherit;padding:8px;border:1px solid #CFC4B7;border-radius:6px}
+form.edit div{display:flex;gap:12px;align-items:center;justify-content:flex-end;margin-top:4px}form.bar label{font-size:13px}"""
 
 
 def _admin_page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -1181,6 +1191,148 @@ class Web:
     async def admin_unblock(self, request):
         return await self._admin_post(request, "unblock")
 
+    # ── /admin/tickets — 문의 리스트·레코드(P4-4·5) ─────────────
+    # 서버 렌더·form 만(스크립트 0). 리스트엔 원문·메모·화면·도구·UA 가 없다 — 원문은 레코드 페이지에서만. 재인증 창 = admin.view(12h).
+    _TK_KIND = {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"}
+    _TK_STATUS = {"open": "접수", "ack": "확인", "doing": "처리중", "done": "완료", "wontfix": "보류"}
+    _TK_LIST_STATUS = {"active": "미종결", "all": "전체", "closed": "종결", **_TK_STATUS}
+    _TK_SORT = {"deadline": "기한·접수순", "new": "최근 접수", "updated": "최근 갱신"}
+    _TK_COLS = {"via": "경로", "closed": "종결일"}   # 선택 컬럼(cols=via,closed)
+    _TK_REASON = {"not_privacy": "개인정보 요청이 아님", "duplicate": "중복", "other": "그 밖"}
+    _TK_HIST = {"status": "상태", "reply": "답변", "note": "메모", "reclassify": "재분류"}
+
+    @staticmethod
+    def _tk_time(v) -> str:
+        if not v:
+            return ""
+        d = v if isinstance(v, _dt.datetime) else _dt.datetime.fromisoformat(str(v))
+        return _kst(d)
+
+    @staticmethod
+    def _tk_deadline(received) -> str:
+        """개인정보 기한 칸 — 남은 일수·오늘까지·N일 초과(KST 날짜). received 없으면 빈 칸."""
+        due, left, over = admin_db.privacy_days_left(received)
+        if due is None:
+            return ""
+        if over:
+            return f'<span class="tag over">기한 초과 {-left}일</span>'
+        return f'<span class="tag due">{"오늘까지" if left == 0 else f"{left}일 남음"}</span> <span class="muted">{_esc(due.isoformat())}</span>'
+
+    async def _admin_view(self, request):
+        """GET /admin/tickets* 공통 — 관리자 세션(아니면 None·404) → 화면 창 admin.view(밖이면 /admin/reauth 302)."""
+        uid = await self._admin_who(request)
+        if uid is None:
+            return None, _not_found()
+        if not reauth_ok(request.state.ra, "admin.view"):
+            return None, RedirectResponse("/admin/reauth", status_code=302)
+        return uid, None
+
+    async def admin_tickets(self, request):
+        """/admin/tickets 리스트 — 쿼리 status·kind·sort·cols(열거 키만, 모르면 400). 기본 = 미종결 · 개인정보 기한 오름차순 → 접수순."""
+        uid, resp = await self._admin_view(request)
+        if resp is not None:
+            return resp
+        q = request.query_params
+        status, kind, sort = q.get("status", "active"), q.get("kind", "all"), q.get("sort", "deadline")
+        cols = [c for c in q.get("cols", "").split(",") if c]
+        if any(c not in self._TK_COLS for c in cols) or set(q) - {"status", "kind", "sort", "cols"}:
+            return _admin_page("요청이 틀렸어요", "<h1>요청이 틀렸어요</h1><p>ARG-INVALID — 모르는 필터·열이에요.</p>"
+                               '<p><a href="/admin/tickets">문의 목록으로</a></p>', 400)
+        role = request.state.role
+        try:
+            rows, more = await run_in_threadpool(admin_db.tickets_list, role, status, kind, sort)
+        except db.CrmError as e:
+            return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>{_esc(e.code)} — {_esc(e.message)}</p>"
+                               '<p><a href="/admin/tickets">문의 목록으로</a></p>', 400)
+
+        def sel(name, opts, cur):
+            o = "".join(f'<option value="{_esc(k)}"{" selected" if k == cur else ""}>{_esc(v)}</option>' for k, v in opts.items())
+            return f'<label>{_esc({"status": "상태", "kind": "종류", "sort": "정렬"}[name])} <select name="{name}">{o}</select></label>'
+        boxes = "".join(f'<label><input type="checkbox" name="cols" value="{_esc(k)}"{" checked" if k in cols else ""}> {_esc(v)}</label>'
+                        for k, v in self._TK_COLS.items())
+        filt = (f'<form method="get" action="/admin/tickets" class="bar">{sel("status", self._TK_LIST_STATUS, status)}'
+                f'{sel("kind", {"all": "전체", **self._TK_KIND}, kind)}{sel("sort", self._TK_SORT, sort)}'
+                f'<span class="muted">선택 열</span>{boxes}<button type="submit">보기</button></form>')
+        head = ["접수일", "종류", "상태", "보낸 사람", "답변", "최근 갱신", "개인정보 기한", "의심"] + [self._TK_COLS[c] for c in cols]
+        trs, hint_tag = [], '<span class="tag over">개인정보?</span>'
+        for t in rows:
+            href = f"/admin/tickets/{quote(t['id'], safe='')}"
+            reply = f'있음 <span class="muted">{_esc(self._tk_time(t["reply_at"]))}</span>' if t["has_reply"] else '<span class="muted">없음</span>'
+            deadline = self._tk_deadline(t["privacy_received"]) if t["status"] not in ("done", "wontfix") else \
+                ('<span class="muted">종결</span>' if t["privacy_received"] else "")
+            extra = {"via": _esc(t["via"]), "closed": _esc(self._tk_time(t["closed_at"]))}
+            trs.append(f'<tr><td><a href="{_esc(href)}">{_esc(self._tk_time(t["created"]))}</a></td>'
+                       f'<td>{_esc(self._TK_KIND.get(t["kind"], t["kind"]))}</td>'
+                       f'<td><span class="tag st-{_esc(t["status"])}">{_esc(self._TK_STATUS.get(t["status"], t["status"]))}</span></td>'
+                       f'<td class="email">{_esc(t["email"])}</td><td>{reply}</td><td>{_esc(self._tk_time(t["updated"]))}</td>'
+                       f'<td>{deadline}</td><td>{hint_tag if t["hint"] else ""}</td>'
+                       + "".join(f"<td>{extra[c]}</td>" for c in cols) + "</tr>")
+        empty = f'<tr><td colspan="{len(head)}" class="muted">조건에 맞는 문의가 없어요.</td></tr>'
+        note = f'<p class="muted">상위 {admin_db.TICKET_LIST_MAX}건만 보여요. 필터를 좁혀 보세요.</p>' if more else ""
+        body = (f'<h1>문의</h1><p class="muted">원문과 메모는 레코드 페이지에서만 보여요. 행의 접수일을 누르면 열려요.</p>{filt}'
+                f'<h2>{_esc(self._TK_LIST_STATUS[status])} {len(rows)}건</h2>{note}<div class="tbl"><table><thead><tr>'
+                + "".join(f"<th>{_esc(h)}</th>" for h in head) + f'</tr></thead><tbody>{"".join(trs) or empty}</tbody></table></div>')
+        return _admin_page("관리 — 문의", body)
+
+    async def admin_ticket(self, request):
+        """/admin/tickets/{tid} 레코드 — 원문 전문·보낸 사람·화면·도구·UA·의심·기한 · Path · 답변·메모·재분류 form · 이력(공개/내부)."""
+        uid, resp = await self._admin_view(request)
+        if resp is not None:
+            return resp
+        role, tid = request.state.role, request.path_params["tid"]
+        try:
+            t, hist = await run_in_threadpool(lambda: (admin_db.ticket_detail(role, tid), admin_db.ticket_history(role, tid)))
+        except db.CrmError as e:
+            status = 404 if e.code == "NOT-FOUND" else 400
+            return _admin_page("문의를 찾지 못했어요", f"<h1>문의를 찾지 못했어요</h1><p>{_esc(e.code)}</p>"
+                               '<p><a href="/admin/tickets">문의 목록으로</a></p>', status)
+        base = f"/admin/tickets/{quote(t['id'], safe='')}"
+        closed = t["status"] in ("done", "wontfix")
+        deadline = self._tk_deadline(t["privacy_received"]) if not closed else ""
+        meta = [("종류", _esc(self._TK_KIND.get(t["kind"], t["kind"]))), ("보낸 사람", f'<span class="email">{_esc(t["email"])}</span>'),
+                ("접수", _esc(self._tk_time(t["created"]))), ("경로", _esc(t["via"])), ("화면", _esc(t["page"])),
+                ("도구", _esc(t["tool"]) or '<span class="muted">—</span>'), ("브라우저", _esc(t["ua_family"]) or '<span class="muted">—</span>'),
+                ("개인정보 의심", '<span class="tag over">개인정보?</span>' if t["hint"] else '<span class="muted">아님</span>')]
+        if t["privacy_received"]:
+            meta.append(("개인정보 기한", f'받은 날 {_esc(t["privacy_received"])} · {deadline or "종결"}'))
+        if t["closed_at"]:
+            meta.append(("종결", _esc(self._tk_time(t["closed_at"]))))
+        dl = "".join(f"<dt>{_esc(k)}</dt><dd>{v}</dd>" for k, v in meta)
+        path = "".join(
+            f'<form method="post" action="{_esc(base)}/status"><input type="hidden" name="status" value="{_esc(k)}">'
+            + (f'<button type="submit" class="cur" disabled aria-current="step">{_esc(v)}</button>' if k == t["status"]
+               else f'<button type="submit">{_esc(v)}</button>') + "</form>"
+            for k, v in self._TK_STATUS.items())
+        reply_at = f'<span class="muted">마지막 답변 {_esc(self._tk_time(t["reply_at"]))}</span>' if t["reply_at"] else \
+            '<span class="muted">아직 답변이 없어요.</span>'
+        kinds = "".join(f'<option value="{_esc(k)}"{" selected" if k == t["kind"] else ""}>{_esc(v)}</option>' for k, v in self._TK_KIND.items())
+        reasons = '<option value="">—</option>' + "".join(f'<option value="{_esc(k)}">{_esc(v)}</option>' for k, v in self._TK_REASON.items())
+        rows = []
+        for h in hist:
+            chg = f'{_esc(self._TK_STATUS.get(h["from_val"]) or self._TK_KIND.get(h["from_val"]) or "")} → ' \
+                  f'{_esc(self._TK_STATUS.get(h["to_val"]) or self._TK_KIND.get(h["to_val"]) or "")}' if h["to_val"] else '<span class="muted">바뀜</span>'
+            badge = '<span class="tag pub">공개</span>' if h["visibility"] == "public" else '<span class="tag int">내부</span>'
+            who = _esc(h["actor_email"]) if h["actor_email"] else f'<span class="muted">{_esc((h["actor_id"] or "—")[:8])}</span>'
+            rows.append(f'<tr><td>{_esc(self._tk_time(h["at"]))}</td><td>{badge}</td><td>{_esc(self._TK_HIST.get(h["kind"], h["kind"]))}</td>'
+                        f'<td>{chg}</td><td>{_esc(self._TK_REASON.get(h["reason"], "")) if h["reason"] else ""}</td>'
+                        f'<td class="email">{who}</td></tr>')
+        body = (f'<p><a href="/admin/tickets">← 문의 목록</a></p><h1>문의 {_esc(self._TK_KIND.get(t["kind"], t["kind"]))}</h1>'
+                f'<dl class="meta">{dl}</dl>'
+                f'<h2>원문</h2><pre class="txt">{_esc(t["text"])}</pre>'
+                f'<h2>상태</h2><div class="path" role="group" aria-label="상태 단계">{path}</div>'
+                f'<h2>공개 답변</h2><p class="muted">사용자의 「내 문의」에 보여요. 빈 칸으로 저장하면 답변을 지워요.</p>'
+                f'<form method="post" action="{_esc(base)}/reply" class="edit"><textarea name="reply" rows="5" maxlength="4096">'
+                f'{_esc(t["reply"] or "")}</textarea><div>{reply_at} <button type="submit">답변 저장</button></div></form>'
+                f'<h2>내부 메모</h2><p class="muted">운영자만 봐요. 사용자의 갱신 시각을 바꾸지 않아요.</p>'
+                f'<form method="post" action="{_esc(base)}/note" class="edit"><textarea name="admin_note" rows="3" maxlength="2048">'
+                f'{_esc(t["admin_note"])}</textarea><div><button type="submit">메모 저장</button></div></form>'
+                f'<h2>재분류</h2><form method="post" action="{_esc(base)}/reclassify" class="bar"><label>종류 <select name="kind">{kinds}</select></label>'
+                f'<label>사유 <select name="reason">{reasons}</select></label><span class="muted">사유는 개인정보 요청에서 뺄 때만 골라요.</span>'
+                f'<button type="submit">바꾸기</button></form>'
+                f'<h2>이력</h2><div class="tbl"><table><thead><tr><th>시각</th><th>보임</th><th>사건</th><th>변경</th><th>사유</th><th>실행자</th>'
+                f'</tr></thead><tbody>{"".join(rows) or "<tr><td colspan=6 class=muted>없음</td></tr>"}</tbody></table></div>')
+        return _admin_page("관리 — 문의", body)
+
     def routes(self) -> list[Route]:
         u = _usage
         return [
@@ -1211,6 +1363,8 @@ class Web:
             Route("/admin/signout", self.admin_signout, methods=["POST"]),
             Route("/admin/block", self.admin_block, methods=["POST"]),
             Route("/admin/unblock", self.admin_unblock, methods=["POST"]),
+            Route("/admin/tickets", self.admin_tickets),
+            Route("/admin/tickets/{tid}", self.admin_ticket),
             Route("/admin/tickets/{tid}/status", self.admin_ticket_status, methods=["POST"]),
             Route("/admin/tickets/{tid}/reply", self.admin_ticket_reply, methods=["POST"]),
             Route("/admin/tickets/{tid}/note", self.admin_ticket_note, methods=["POST"]),
