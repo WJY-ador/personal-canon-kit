@@ -485,14 +485,37 @@ th{font-size:12px;color:#6B635A;font-weight:600}td.email{white-space:normal;word
 .acts{display:flex;flex-wrap:wrap;gap:4px}form{margin:0}
 button{font:inherit;font-size:12px;padding:3px 8px;border:1px solid #CFC4B7;border-radius:5px;background:#FBF8F4;color:#2B2824;cursor:pointer}
 button.danger{border-color:#D9A496;color:#9A3520}.tag{font-size:12px;padding:1px 6px;border-radius:4px;background:#EEE7DE}
-.tag.admin{background:#DCEBE3;color:#186A4B}.tag.blocked{background:#F6DDD6;color:#9A3520}.muted{color:#8A8178}"""
+.tag.admin{background:#DCEBE3;color:#186A4B}.tag.blocked{background:#F6DDD6;color:#9A3520}.muted{color:#8A8178}
+nav.menu{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;padding:0 0 10px;margin:0 0 16px;border-bottom:1px solid #E4DCD2}
+nav.menu a{text-decoration:none;color:#2B2824;padding:2px 0;border-bottom:2px solid transparent}
+nav.menu a[aria-current=page]{color:#B4462F;font-weight:600;border-bottom-color:#B4462F}nav.menu a.home{margin-left:auto;color:#B4462F}
+.bar b{font-variant-numeric:tabular-nums}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.barw{display:inline-block;width:160px;max-width:30vw;height:10px;background:#EEE7DE;border-radius:3px;vertical-align:middle}
+.barf{display:block;height:100%;background:#D98B76;border-radius:3px}
+.chips{display:flex;flex-wrap:wrap;gap:6px 8px;margin:8px 0}.chips a{padding:3px 9px;border:1px solid #E4DCD2;border-radius:5px;background:#fff;text-decoration:none}
+.chips a[aria-current=page]{border-color:#B4462F;color:#B4462F;font-weight:600}
+form.rq{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;margin:12px 0;padding:10px 12px;border:1px solid #E4DCD2;border-radius:8px;background:#fff}
+form.rq label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:#6B635A}
+select,input{font:inherit;font-size:13px;padding:3px 6px;border:1px solid #CFC4B7;border-radius:5px;background:#fff;color:#2B2824}
+ul.tree{list-style:none;padding:0;margin:0}ul.tree>li{margin:0 0 10px;padding:8px 10px;border:1px solid #E4DCD2;border-radius:8px;background:#fff}
+ul.tree ul{margin:6px 0 0;padding-left:18px}ul.tree ul li{margin:2px 0}.nm{font-family:ui-monospace,Menlo,monospace;font-weight:600}
+.lbl{color:#186A4B}.note{font-size:12px;color:#6B635A}.note.warn{color:#B4462F;font-weight:600}"""
+
+# 공통 상단 메뉴(P4) — (현재 표시 키, 경로, 글자). 문의 화면은 P3·P4 문의 몫(없으면 404).
+ADMIN_MENU = (("overview", "/admin", "개요"), ("schema", "/admin/schema", "스키마"), ("reports", "/admin/reports", "리포트"),
+              ("tickets", "/admin/tickets", "문의"), ("setup", "/admin/setup", "Setup"))
 
 
-def _admin_page(title: str, body: str, status: int = 200) -> HTMLResponse:
+def _admin_nav(cur: str = "") -> str:
+    links = "".join(f'<a href="{href}"{" aria-current=page" if key == cur else ""}>{_esc(text)}</a>' for key, href, text in ADMIN_MENU)
+    return f'<nav class="menu">{links}<a class="home" href="/app">내 대시보드로</a></nav>'
+
+
+def _admin_page(title: str, body: str, status: int = 200, cur: str = "") -> HTMLResponse:
     """/admin 껍데기 — 스크립트 0(인라인·외부·이벤트 속성 없음). 보안 헤더(CSP script-src 'self')는 _html_resp 가 붙인다.
-    title 은 escape 한다. body 는 HTML 조각 — 동적 값은 호출하는 쪽이 _esc 로 감싼다."""
+    title 은 escape 한다. body 는 HTML 조각 — 동적 값은 호출하는 쪽이 _esc 로 감싼다. 맨 위에 공통 메뉴(cur = 현재 화면 키)."""
     return _html_resp(f"""<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{_esc(title)}</title><style>{_ADMIN_CSS}</style></head><body><main class="wrap">{body}</main></body></html>""",
+<title>{_esc(title)}</title><style>{_ADMIN_CSS}</style></head><body><main class="wrap">{_admin_nav(cur)}{body}</main></body></html>""",
                       status, headers={"cache-control": "no-store"})
 
 
@@ -503,6 +526,234 @@ def _kst(d) -> str:
 def _left(sec: float) -> str:
     sec = int(sec)
     return f"{sec // 3600}시간 {sec % 3600 // 60}분" if sec >= 3600 else f"{max(sec, 0) // 60}분"
+
+
+# ── /admin 개요·스키마·리포트 (P4) — 화면 조립. DB 접근은 admin_db 만 ─────────────
+import datetime as _dt  # noqa: E402
+
+import template_author  # noqa: E402
+
+SCHEMA_SQL = Path(__file__).parent / "schema.sql"
+# 코어 표준 오브젝트 — 사용자가 쓰는 코어 테이블(정의 층이 아닌 것). 근거: db.TARGET_KINDS(record·candidate)·records.question_id·
+# app.html LABELS(질문·기록·후보). 필드·관계는 schema.sql 에서 읽는다. 설정(profile·tabs)·이력·DB 내부(감사·사용량·동의)는 뺀다.
+CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"))
+CORE_LABEL = {"questions": "질문", "records": "기록", "candidates": "후보", "items": "항목"}
+TARGET_LABEL = {"record": "기록", "candidate": "후보"}
+_FK_RE = re.compile(r"FOREIGN KEY\s*\(([^)]*)\)\s*REFERENCES\s+(\w+)\s*\(([^)]*)\)(.*)", re.I)
+_COL_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s+([a-z][a-z0-9_]*)\b")   # 열 정의 줄(소문자 이름·타입). 제약·이어지는 줄은 대문자로 시작한다
+
+
+def core_schema(sql_text: str) -> list[dict]:
+    """schema.sql 에서 CORE_OBJECTS 의 열·관계를 뽑는다. [{table, label, fields: [{name, type, required}], links: [{field, target, kind}]}].
+    user_id(소유자 열)·users 참조는 뺀다. 관계 kind = ON DELETE CASCADE 면 M-D, 아니면 Lookup."""
+    out = []
+    for table, label in CORE_OBJECTS:
+        m = re.search(rf"CREATE TABLE IF NOT EXISTS {table} \((.*?)\n\);", sql_text, re.S)
+        if not m:
+            raise ValueError(f"schema.sql 에 {table} 이 없어요")
+        fields, links = [], []
+        for line in m.group(1).splitlines():
+            line = line.split("--", 1)[0].strip().rstrip(",")
+            if not line:
+                continue
+            fk = _FK_RE.search(line)
+            col = _COL_RE.match(line)
+            if not col:
+                if fk and fk.group(2) != "users":
+                    cols = [c.strip() for c in fk.group(1).split(",") if c.strip() != "user_id"]
+                    links.append({"field": ", ".join(cols), "target": fk.group(2),
+                                  "kind": "M-D" if "ON DELETE CASCADE" in fk.group(4).upper() else "Lookup"})
+                continue
+            name, typ = col.group(1), col.group(2)
+            if name == "user_id":
+                continue
+            fields.append({"name": name, "type": typ, "required": "NOT NULL" in line.upper() or "PRIMARY KEY" in line.upper()})
+        if table == "records":   # 기록 출발 관계는 item_links(field_key = attach_to·axes) — db.RECORD_LINK_KEYS
+            links.append({"field": " · ".join(db.RECORD_LINK_KEYS), "target": "items", "kind": "Lookup(item_links)"})
+        out.append({"table": table, "label": label, "fields": fields, "links": links})
+    return out
+
+
+def template_schema() -> dict:
+    """동결 템플릿(author@1.json) — 코드 정의. 이름(label)은 코드에 있는 기본 이름이다(사용자가 바꾼 이름이 아니다)."""
+    return json.loads(template_author.FROZEN_PATH.read_text(encoding="utf-8"))
+
+
+def _slot_key(slot: str | None) -> str | None:
+    """템플릿 계보 슬롯 `author@1:<obj>` · `author@1:<obj>.<field>` → 표시 key(<obj> 또는 <field>). 읽기만 한다."""
+    if not slot or ":" not in slot:
+        return None
+    rest = slot.split(":", 1)[1]
+    return rest.split(".", 1)[1] if "." in rest else rest
+
+
+def _yn_mark(v) -> str:
+    return "예" if v else ""
+
+
+def _vlabel(dim: str, v) -> str:
+    """리포트 차원 값 → 화면 글자(escape 전)."""
+    if v is None:
+        return "—"
+    if dim.endswith("week"):
+        return f"{v} 주"
+    return admin_db.VALUE_LABELS.get(dim, {}).get(v, str(v))
+
+
+def _bar(v: int, mx: int) -> str:
+    pct = 0 if not mx else max(1, round(100 * v / mx)) if v else 0
+    return f'<span class="barw"><span class="barf" style="width:{pct}%"></span></span>'
+
+
+def _report_href(q: dict) -> str:
+    return "/admin/reports?" + urlencode(q)
+
+
+def preset_links(today=None) -> list[tuple[str, str, str]]:
+    """[(키, 글자, URL)] — 개요·리포트 상단 프리셋. 날짜 창은 오늘 기준."""
+    return [(k, label, _report_href(admin_db.preset_params(p, today))) for k, label, p in admin_db.REPORT_PRESETS]
+
+
+def _preset(key: str) -> dict:
+    return next(p for k, _, p in admin_db.REPORT_PRESETS if k == key)
+
+
+def _table(head: list[str], rows: list[str], empty: str = "없음") -> str:
+    """head 는 이미 HTML(<th> 조각) · rows 는 <tr> 조각."""
+    body = "".join(rows) or f'<tr><td colspan="{len(head)}" class="muted">{_esc(empty)}</td></tr>'
+    return f'<div class="tbl"><table><thead><tr>{"".join(head)}</tr></thead><tbody>{body}</tbody></table></div>'
+
+
+def render_report_table(out: dict) -> str:
+    """aggregate 결과 → 표 + CSS 막대(첫 측정, 최대값 대비). 출력은 전부 _esc."""
+    spec = admin_db.report_spec(out["ds"])
+    dims, ms = out["dims"], out["measures"]
+    mx = max((r["values"][ms[0]] for r in out["rows"]), default=0)
+    head = [f"<th>{_esc(spec['dims'][d])}</th>" for d in dims] or ["<th>범위</th>"]
+    head += [f'<th class="num">{_esc(spec["measures"][m]["label"])}</th>' for m in ms] + ["<th></th>"]
+    rows = []
+    for r in out["rows"]:
+        keys = "".join(f"<td>{_esc(_vlabel(d, k))}</td>" for d, k in zip(dims, r["keys"])) or "<td>전체</td>"
+        vals = "".join(f'<td class="num">{_esc(r["values"][m])}</td>' for m in ms)
+        rows.append(f"<tr>{keys}{vals}<td>{_bar(r['values'][ms[0]], mx)}</td></tr>")
+    cap = (f'<p class="note warn">상위 {admin_db.REPORT_ROWS}행만 보여요(전체 {_esc(out["total"])}행).</p>' if out["capped"]
+           else f'<p class="note">{_esc(out["total"])}행</p>')
+    return cap + _table(head, rows, "해당하는 행이 없어요")
+
+
+def render_measure_notes(ds: str) -> str:
+    """지표 정의 표 — 출처·기준 시각·결측·집계식."""
+    spec = admin_db.report_spec(ds)
+    rows = [f'<tr><td>{_esc(m["label"])}</td><td>{_esc(m["src"])}</td><td>{_esc(m["time"])}</td><td>{_esc(m["missing"])}</td>'
+            f'<td>{_esc(m["agg"])}</td></tr>' for m in spec["measures"].values()]
+    t = spec["time"] or "지금 상태(기간 없음)"
+    return (f'<h2>지표 정의</h2><p class="note">기간 기준: {_esc(t)}</p>'
+            + _table(["<th>측정</th><th>출처</th><th>기준 시각</th><th>결측</th><th>집계식</th>"], rows))
+
+
+def render_report_form(ds: str, spec: dict, q: dict, out: dict) -> str:
+    """리포트 form(GET, 스크립트 0) — 그 데이터셋의 허용 차원·필터만 고를 수 있다."""
+    def sel(name, label, opts, cur, blank):
+        o = f'<option value="">{_esc(blank)}</option>' + "".join(
+            f'<option value="{_esc(v)}"{" selected" if v == cur else ""}>{_esc(t)}</option>' for v, t in opts)
+        return f'<label>{_esc(label)}<select name="{_esc(name)}">{o}</select></label>'
+    dims = list(spec["dims"].items())
+    parts = [f'<input type="hidden" name="ds" value="{_esc(ds)}">', sel("g1", "묶기 1", dims, q.get("g1"), "—"),
+             sel("g2", "묶기 2", dims, q.get("g2"), "—")]
+    parts += [sel(k, spec["dims"][k], [(v, _vlabel(k, v)) for v in vals], q.get(k), "전체") for k, vals in spec["filters"].items()]
+    if spec["time"]:
+        parts += [f'<label>from<input type="date" name="from" value="{_esc(out["from"])}"></label>',
+                  f'<label>to<input type="date" name="to" value="{_esc(out["to"])}"></label>']
+    return f'<form class="rq" method="get" action="/admin/reports">{"".join(parts)}<button type="submit">보기</button></form>'
+
+
+def _field_li(name: str, vt: str, required, multiple, target: str = "", label: str | None = None, opts=None, archived=False) -> str:
+    """필드 한 줄 — 이름(표시용) · value_type · 필수 · 다중 · → 관계 대상 · (이름 · 선택지 이름)."""
+    bits = [f'<span class="nm">{_esc(name)}</span>', _esc(vt)]
+    bits += ['<span class="tag">필수</span>'] if required else []
+    bits += ['<span class="tag">다중</span>'] if multiple else []
+    bits += [f"→ {_esc(target)}"] if target else []
+    bits += ['<span class="tag">보관</span>'] if archived else []
+    if label is not None:
+        bits.append(f'<span class="lbl">「{_esc(label)}」</span>')
+    if opts:
+        bits.append(f'<span class="lbl">선택지 {_esc(" · ".join(str(o) for o in opts))}</span>')
+    return f"<li>{' '.join(bits)}</li>"
+
+
+def render_standard() -> str:
+    """서비스 표준 구조 — 템플릿(동결 v1)의 오브젝트·필드·관계 + 코어 표준 오브젝트(schema.sql)의 필드·관계. 코드 정의라 이름을 보인다."""
+    tpl = template_schema()
+    keys = {o["id"]: o["key"] for o in tpl["objects"]}
+    objs = []
+    for o in tpl["objects"]:
+        fl = []
+        for f in o["fields"]:
+            tk = f.get("target_kind")
+            target = (f"tpl:{keys.get(f.get('target_object_id'), '?')}" if f.get("target_object_id") else CORE_LABEL["items"]) \
+                if tk == "item" else TARGET_LABEL.get(tk, "")
+            fl.append(_field_li(f"tpl:{f['key']}", f["value_type"], f["required"], f["multiple"], target, f["label"],
+                                [x["label"] for x in f.get("options") or []]))
+        objs.append(f'<li><span class="nm">tpl:{_esc(o["key"])}</span> <span class="lbl">「{_esc(o["label"])}」</span> '
+                    f'<span class="tag">{_esc(o["semantic_kind"])}</span><ul>{"".join(fl)}</ul></li>')
+    core = []
+    for t in core_schema(SCHEMA_SQL.read_text(encoding="utf-8")):
+        fl = [_field_li(f["name"], f["type"], f["required"], False) for f in t["fields"]]
+        fl += [f'<li>관계 <span class="nm">{_esc(ln["field"])}</span> → {_esc(ln["target"])}({_esc(CORE_LABEL.get(ln["target"], ""))}) '
+               f'<span class="tag">{_esc(ln["kind"])}</span></li>' for ln in t["links"]]
+        core.append(f'<li><span class="nm">{_esc(t["table"])}</span> <span class="lbl">「{_esc(t["label"])}」</span><ul>{"".join(fl)}</ul></li>')
+    return (f'<h2>서비스 표준 구조</h2><p class="note">템플릿 {_esc(template_author.TEMPLATE_NAME)}(server/templates) · 코어 표준 오브젝트'
+            f'(server/schema.sql). 이름은 코드 정의 그대로다. DB 내부 테이블(감사·사용량·동의·설정)은 뺐다. 소유자 열(user_id)은 생략.</p>'
+            f'<h3>템플릿 {_esc(template_author.TEMPLATE_NAME)}</h3><ul class="tree">{"".join(objs)}</ul>'
+            f'<h3>코어 표준 오브젝트</h3><ul class="tree">{"".join(core)}</ul>')
+
+
+def render_user_tree(email: str, opaque: str, rows: list, onames: list, fnames: list) -> str:
+    """사용자 한 명의 트리. 표시 이름: 템플릿 유래 tpl:<key>(계보 슬롯), 사용자 것 u<n>((created_at, id) 순, 보관 포함)·
+    오브젝트 안 f<n>((position, key) 순). onames·fnames 가 비면(유효 동의 없음) 이름을 보이지 않는다."""
+    objs, byref = [], {}
+    for r in rows:
+        o = byref.get(r["object_ref"])
+        if o is None:
+            o = byref[r["object_ref"]] = {**r, "fields": []}
+            objs.append(o)
+        if r["value_type"] is not None:
+            o["fields"].append(r)
+    n = 0
+    for o in objs:
+        k = _slot_key(o["object_slot"])
+        if k:
+            o["disp"] = f"tpl:{k}"
+        else:
+            n += 1
+            o["disp"] = f"u{n}"
+    olabel = {r["object_ref"]: r["label"] for r in onames}
+    flabel = {(r["object_ref"], r["field_ref"]): (r["label"], r["option_labels"]) for r in fnames}
+    named = bool(onames)
+    items = []
+    for o in objs:
+        fl, m = [], 0
+        for f in o["fields"]:
+            k = _slot_key(f["field_slot"])
+            if not k:
+                m += 1
+            tk = f["target_kind"]
+            target = (byref[f["target_ref"]]["disp"] if f["target_ref"] in byref else CORE_LABEL["items"]) if tk == "item" \
+                else TARGET_LABEL.get(tk, "")
+            lab, opts = flabel.get((o["object_ref"], f["field_ref"]), (None, None))
+            fl.append(_field_li(f"tpl:{k}" if k else f"f{m}", f["value_type"], f["required"], f["multiple"], target, lab, opts,
+                                f["field_archived"] is not None))
+        lab = olabel.get(o["object_ref"])
+        items.append(f'<li><span class="nm">{_esc(o["disp"])}</span> <span class="tag">{_esc(o["semantic_kind"])}</span>'
+                     f'{" <span class=tag>보관</span>" if o["object_archived"] is not None else ""}'
+                     f'{f" <span class=lbl>「{_esc(lab)}」</span>" if lab is not None else ""}'
+                     f'<ul>{"".join(fl) or "<li class=muted>필드 없음</li>"}</ul></li>')
+    state = ("유효 동의 — 현재 이름(오브젝트·필드·선택지)을 함께 보여요" if named
+             else "유효 동의 없음 — 이름 없이 구조만 보여요")
+    return (f'<h1>구조 — {_esc(email)}</h1><p class="note">불투명 id {_esc(opaque)} · 이름 공유: {_esc(state)} · '
+            f'tpl:&lt;key&gt; = 템플릿 유래, u&lt;n&gt;·f&lt;n&gt; = 사용자 것(순번은 표시용)</p>'
+            f'<p><a href="/admin/schema">← 스키마</a></p>'
+            f'<ul class="tree">{"".join(items) or "<li class=muted>적용된 오브젝트 없음</li>"}</ul>')
 
 
 class Web:
@@ -1005,12 +1256,64 @@ class Web:
         return uid if uid is not None and getattr(request.state, "role", None) == "admin" else None
 
     async def admin_index(self, request):
-        """/admin → /admin/setup(overview 는 PR 4). 화면 창(admin.view) 밖이면 바로 /admin/reauth."""
+        """/admin 개요 — 상태 띠 · 사용자 표(+미연결 행) · 오류 표 14일 · 정의 분포. 표 정의는 리포트 프리셋과 같다(admin_db.aggregate).
+        화면 창(admin.view) 밖이면 /admin/reauth."""
         if await self._admin_who(request) is None:
             return _not_found()
         if not reauth_ok(request.state.ra, "admin.view"):
             return RedirectResponse("/admin/reauth", status_code=302)
-        return RedirectResponse("/admin/setup", status_code=302)
+        role = request.state.role
+        today = admin_db.kst_today()
+        since = today - _dt.timedelta(days=admin_db.RECENT_DAYS - 1)
+        band, users, last, usage, struct = await run_in_threadpool(lambda: (
+            admin_db.overview_band(role), admin_db.users(role), admin_db.last_active(role),
+            admin_db.report_rows(role, "usage", since, today), admin_db.report_rows(role, "structure")))
+        err_def = {k: v for k, v in _preset("errors14").items() if k not in ("ds", "g1", "g2", "days")}
+        errors = admin_db.aggregate("usage", usage, ("day", "name", "code"), err_def, today)
+        dist = admin_db.aggregate("structure", struct, ("objects_bucket", "fields_bucket"), {}, today)
+        counts = admin_db.structure_counts(struct)
+        calls, lastd = {}, {r["user_id"]: r["last_day"] for r in last}
+        for r in usage:
+            calls[r["user_id"]] = calls.get(r["user_id"], 0) + r["n"]
+        links = {k: href for k, _, href in preset_links(today)}
+        ver = db.CONSENT_VERSIONS.get("privacy")
+
+        def num(label, n, warn=False, href=None):
+            v = f'<b class="warn">{_esc(n)}</b>' if warn and n else f"<b>{_esc(n)}</b>"
+            inner = f"{_esc(label)} {v}"
+            return f'<span><a href="{_esc(href)}">{inner}</a></span>' if href else f"<span>{inner}</span>"
+        bar = ('<div class="bar">' + num("사용자", band["users"], href=links["consent"])
+               + num(f"처리방침 {ver or '—'} 동의", band["consented"]) + num("이름 공유 동의", band["names"])
+               + num("미종결 문의", band["open_tickets"], href="/admin/tickets")
+               + num(f"개인정보 기한 임박(≤{admin_db.PRIVACY_SOON_DAYS}일)", band["privacy_soon"], True)
+               + num("기한 초과", band["privacy_over"], True) + "</div>")
+        urows = []
+        for u in users:
+            no, _nf = counts.get(u["id"], (0, 0))
+            ld = lastd.get(u["id"])
+            urows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td>{_esc(_kst(u["created"])[:10])}</td>'
+                         f'<td>{_esc(ld.isoformat() if ld else "—")}</td><td class="num">{_esc(calls.get(u["id"], 0))}</td>'
+                         f'<td class="num">{_esc(no)}</td></tr>')
+        ld = lastd.get("")
+        urows.append(f'<tr><td class="muted">미연결 사용량(로그인 전·미동의)</td><td>—</td><td>{_esc(ld.isoformat() if ld else "—")}</td>'
+                     f'<td class="num">{_esc(calls.get("", 0))}</td><td class="num">—</td></tr>')
+        user_t = _table(['<th>이메일</th><th>가입일</th><th>최근 활동일</th><th class="num">14일 호출</th><th class="num">정의 수</th>'],
+                        urows)
+        erows = sorted(errors["rows"], key=lambda r: (r["keys"][0], r["values"]["calls"]), reverse=True)
+        err_t = _table(['<th>일자</th><th>도구·화면</th><th>코드</th><th class="num">n</th>'],
+                       [f'<tr><td>{_esc(r["keys"][0])}</td><td>{_esc(r["keys"][1])}</td><td>{_esc(r["keys"][2])}</td>'
+                        f'<td class="num">{_esc(r["values"]["calls"])}</td></tr>' for r in erows], "14일 동안 오류 없음")
+        dmx = max((r["values"]["users"] for r in dist["rows"]), default=0)
+        dist_t = _table(['<th>오브젝트 수</th><th>필드 수</th><th class="num">사용자</th><th></th>'],
+                        [f'<tr><td>{_esc(r["keys"][0])}</td><td>{_esc(r["keys"][1])}</td><td class="num">{_esc(r["values"]["users"])}</td>'
+                         f'<td>{_bar(r["values"]["users"], dmx)}</td></tr>' for r in dist["rows"]])
+        more = lambda key: f' <a class="note" href="{_esc(links[key])}">리포트로</a>'   # noqa: E731
+        body = (f'<h1>개요</h1>{bar}'
+                f'<h2>사용자 {len(users)}명</h2><p class="note">최근 활동일 = usage_daily 마지막 날 · 14일 = 오늘(KST) 포함 '
+                f'{admin_db.RECENT_DAYS}일 · 정의 수 = 적용된 오브젝트(보관 제외)</p>{user_t}'
+                f'<h2>오류 14일{more("errors14")}</h2><p class="note">usage_daily 에서 code ≠ OK</p>{err_t}'
+                f'<h2>정의 분포{more("defs")}</h2><p class="note">사용자별 오브젝트·필드 개수 구간(보관 제외, 이름 없음)</p>{dist_t}')
+        return _admin_page("관리 — 개요", body, cur="overview")
 
     async def admin_reauth(self, request):
         """재인증 시작 — 로그인 폼을 강제(fresh=1)하고 콜백이 같은 uid 면 ra 를 준다."""
@@ -1069,7 +1372,7 @@ class Web:
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
                 f'<h2>감사 로그 최근 {admin_db.AUDIT_LIST}건</h2><div class="tbl"><table><thead><tr><th>시각</th><th>실행자</th><th>동작</th>'
                 f'<th>대상</th></tr></thead><tbody>{arows or "<tr><td colspan=4 class=muted>없음</td></tr>"}</tbody></table></div>')
-        return _admin_page("관리 — Setup", body)
+        return _admin_page("관리 — Setup", body, cur="setup")
 
     async def _admin_form(self, request) -> dict | None:
         """form-urlencoded 본문만, ADMIN_FORM_MAX 바이트까지. 아니면 None."""
@@ -1123,6 +1426,106 @@ class Web:
     async def admin_unblock(self, request):
         return await self._admin_post(request, "unblock")
 
+    # ── /admin 스키마·리포트 (P4) ──────────────────────
+    def _opaque(self, uid: str) -> str:
+        """사용자 불투명 id — HMAC(서버 비밀, 내부 id) 앞 12자. URL 에만 쓴다."""
+        return hmac.new(self.secret, str(uid).encode(), hashlib.sha256).hexdigest()[:12]
+
+    async def _admin_view(self, request):
+        """GET /admin 화면 공통 → (role, None) 또는 (None, 응답). 비관리자·무세션·DEV 404 · 열람 창(admin.view) 밖 302 /admin/reauth."""
+        if await self._admin_who(request) is None:
+            return None, _not_found()
+        if not reauth_ok(request.state.ra, "admin.view"):
+            return None, RedirectResponse("/admin/reauth", status_code=302)
+        return request.state.role, None
+
+    @staticmethod
+    def _admin_bad(title: str, msg: str, back: str, cur: str) -> HTMLResponse:
+        """400 화면 — 모르는 키·조합. 다른 화면으로 대체하지 않는다."""
+        return _admin_page(title, f'<h1>{_esc(title)}</h1><p>ARG-INVALID — {_esc(msg)}</p><p><a href="{back}">처음으로</a></p>', 400,
+                           cur=cur)
+
+    async def admin_schema(self, request):
+        """/admin/schema — 서비스 표준 구조(템플릿 + 코어 표준 오브젝트, 코드 정의) + 사용자 목록.
+        ?u=<불투명 id> — 그 사용자의 트리(이름 없음). 유효 이름 공유 동의자면 현재 이름을 함께 보인다(admin_db 이름 분기)."""
+        role, err = await self._admin_view(request)
+        if err:
+            return err
+        items = request.query_params.multi_items()
+        if len(items) > 1 or any(k != "u" for k, _ in items):
+            return self._admin_bad("스키마를 열 수 없어요", "모르는 쿼리 키예요(u 하나만 받아요).", "/admin/schema", "schema")
+        if not items:
+            today = admin_db.kst_today()
+            users, struct, flags = await run_in_threadpool(lambda: (
+                admin_db.users(role), admin_db.report_rows(role, "structure"),
+                admin_db.report_rows(role, "users", _dt.date(2000, 1, 1), today)))
+            counts = admin_db.structure_counts(struct)
+            names = {r["id"]: r["names"] for r in flags}
+            rows = []
+            for u in users:
+                no, nf = counts.get(u["id"], (0, 0))
+                rows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td class="num">{_esc(no)}</td><td class="num">{_esc(nf)}</td>'
+                            f'<td>{"동의" if names.get(u["id"]) else "—"}</td>'
+                            f'<td><a href="/admin/schema?u={_esc(self._opaque(u["id"]))}">트리</a></td></tr>')
+            body = (f'<h1>스키마</h1>{render_standard()}<h2>사용자별 구조</h2>'
+                    f'<p class="note">개수는 적용된 오브젝트·필드(보관 제외). 이름 공유 = 유효 선택 동의(현재 버전).</p>'
+                    + _table(['<th>이메일</th><th class="num">오브젝트</th><th class="num">필드</th><th>이름 공유</th><th></th>'], rows))
+            return _admin_page("관리 — 스키마", body, cur="schema")
+        users = await run_in_threadpool(admin_db.users, role)
+        u = next((x for x in users if self._opaque(x["id"]) == items[0][1]), None)
+        if u is None:
+            return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/schema">스키마로</a></p>',
+                               404, cur="schema")
+        rows, (onames, fnames) = await run_in_threadpool(lambda: (admin_db.schema_tree(role, u["id"]),
+                                                                  admin_db.schema_names(role, u["id"])))
+        body = render_user_tree(u["email"], self._opaque(u["id"]), rows, onames, fnames)
+        return _admin_page("관리 — 스키마", body, cur="schema")
+
+    async def admin_reports(self, request):
+        """/admin/reports — GET 쿼리스트링(ds·g1·g2·필터·from·to)만. 열거 키·허용 조합은 admin_db 허용표. 모르는 키·조합은 400 화면."""
+        role, err = await self._admin_view(request)
+        if err:
+            return err
+        items = request.query_params.multi_items()
+        keys = [k for k, _ in items]
+
+        def bad(msg):
+            return self._admin_bad("리포트를 만들 수 없어요", msg, "/admin/reports", "reports")
+        if len(keys) != len(set(keys)):
+            return bad("같은 키를 두 번 보냈어요.")
+        q = dict(items)
+        ds = q.get("ds") or None
+        today = admin_db.kst_today()
+        tabs = "".join(f'<a href="{_report_href({"ds": k})}"{" aria-current=page" if k == ds else ""}>{_esc(t)}</a>'
+                       for k, t in admin_db.REPORT_DS_LABELS.items())
+        pres = "".join(f'<a href="{_esc(href)}">{_esc(label)}</a>' for _, label, href in preset_links(today))
+        top = (f'<h1>리포트</h1><p class="note">데이터셋</p><div class="chips">{tabs}</div>'
+               f'<p class="note">프리셋(개요의 표와 같은 정의)</p><div class="chips">{pres}</div>')
+        if ds is None:
+            if set(q) - {"ds"}:
+                return bad("데이터셋(ds)을 먼저 골라요.")
+            return _admin_page("관리 — 리포트", top + '<p class="muted">데이터셋이나 프리셋을 고르세요.</p>', cur="reports")
+        try:
+            spec = admin_db.report_spec(ds)
+        except db.CrmError as e:
+            return bad(e.message)
+        unknown = sorted(set(q) - ({"ds", "g1", "g2", "from", "to"} | set(spec["filters"])))
+        if unknown:
+            return bad("이 데이터셋에서 모르는 키예요: " + ", ".join(unknown))
+        q = {k: v for k, v in q.items() if v != ""}   # form 의 빈 칸 = 안 고름
+        if "g2" in q and "g1" not in q:
+            return bad("g2 는 g1 과 같이 써요.")
+        dims = tuple(q[k] for k in ("g1", "g2") if k in q)
+        filters = {k: q[k] for k in spec["filters"] if k in q}
+        try:
+            out = await run_in_threadpool(admin_db.report, role, ds, dims, filters, q.get("from"), q.get("to"), today)
+        except db.CrmError as e:
+            return bad(e.message)
+        span = f'기간 {out["from"]} ~ {out["to"]}(KST)' if out["from"] else "지금 상태"
+        body = (top + render_report_form(ds, spec, q, out) + f'<h2>{_esc(admin_db.REPORT_DS_LABELS[ds])} — {_esc(span)}</h2>'
+                + render_report_table(out) + render_measure_notes(ds))
+        return _admin_page("관리 — 리포트", body, cur="reports")
+
     def routes(self) -> list[Route]:
         u = _usage
         return [
@@ -1152,4 +1555,6 @@ class Web:
             Route("/admin/signout", self.admin_signout, methods=["POST"]),
             Route("/admin/block", self.admin_block, methods=["POST"]),
             Route("/admin/unblock", self.admin_unblock, methods=["POST"]),
+            Route("/admin/schema", self.admin_schema),
+            Route("/admin/reports", self.admin_reports),
         ]

@@ -24,6 +24,8 @@
    · 표식(금지 열 값이 /admin·/api 관리자 응답에 없음, 문의 상세엔 있음)
 12) 선택 동의·처리방침 v2: v1 동의자 쓰기 거절 · /consent 선택 체크 기본 해제 · 필수+선택 한 트랜잭션(실패 주입 롤백)
    · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효 · /privacy v2 · 옛 사용량 삭제 표식 멱등(임시 스키마)
+14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·재인증·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
+   · escape · 리포트 400(모르는 키·조합·기간) · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -87,7 +89,8 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + tuple(LIM_EMAIL.values()) \
     + ("b2a@example.com", "b2b@example.com", "b2c@example.com", "b2m@example.com", "<b>esc</b>@example.com") \
     + ("adb-admin@example.com", "adb-user@example.com") \
-    + tuple(f"oc{i}@example.com" for i in range(1, 5))
+    + tuple(f"oc{i}@example.com" for i in range(1, 5)) \
+    + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
@@ -2886,13 +2889,27 @@ async def test_beta2_bootstrap():
 # 운영 화면·운영 POST 의 DB 접근은 admin_db 한 모듈. 「본문」은 운영 경로에서 SELECT 하지 않는다.
 # 표식 시험이 도는 관리자 응답 — 새 /admin 페이지·리포트는 여기에 더한다(P4). (method, path, form/json)
 ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
-ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback")
+ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports")
+# P4: 리포트는 프리셋 전부 + 데이터셋별 차원 하나씩, 스키마는 사용자 트리(?u=)까지 — 동적 URL 이라 admin_report_urls() 가 만든다
 ADB_ALLOWED_DB = {"CrmError", "CONSENT_VERSIONS"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외·상수만, 조회 함수 없음
 ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value|questions|records|"
                            r"candidates|tabs|items)\b", re.I)
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
 ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
 ADB_TEXT_KEYS = ("tickets.detail", "tickets.legacy_inbox")   # legacy_inbox = /app 문의함 이행용, P5 에서 키와 함께 뺀다
+
+
+def admin_report_urls():
+    """리포트 GET 전부 — 프리셋 + 데이터셋별 모든 차원(g1) + 데이터셋별 모든 필터 값. 표식 시험·운영 화면 시험이 같이 쓴다."""
+    import admin_db
+    urls = [href for _, _, href in web.preset_links()] + ["/admin/reports"]
+    for ds in admin_db.REPORT_DATASETS:
+        spec = admin_db.report_spec(ds)
+        urls.append(web._report_href({"ds": ds}))
+        urls += [web._report_href({"ds": ds, "g1": d}) for d in spec["dims"]]
+        urls += [web._report_href({"ds": ds, "g1": next(iter(spec["dims"])), k: v}) for k, vals in spec["filters"].items() for v in vals
+                 if next(iter(spec["dims"])) not in spec.get("user_dims", ())]
+    return urls
 
 
 def _web_admin_block():
@@ -2971,6 +2988,14 @@ async def test_admin_boundary():
     t = {"id": "tk_adb" + secrets.token_hex(3)}   # SQL 로 — desk 시험이 전역 하루 한도를 채워 둔다
     with db.tx() as c:
         c.execute("INSERT INTO tickets (id,user_id,kind,text,via,admin_note) VALUES (%s,%s,'bug',%s,'web',%s)", (t["id"], U, tmark, nmark))
+        # P4: 사용량 1행(개요·리포트 스냅샷) · 이름 공유 동의자(A)의 표식 없는 정의 — 허용 응답(동의자 현재 이름) 대조용
+        c.execute("INSERT INTO usage_daily (day,user_id,name,code,n) VALUES ((now() AT TIME ZONE 'Asia/Seoul')::date,%s,'record_add','OK',1) "
+                  "ON CONFLICT DO NOTHING", (U,))
+        c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES (%s,'od_adbn','adbn','이름공유오브젝트','collection',1)",
+                  (A,))
+        c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,'od_adbn','f1','이름공유필드','select',%s)",
+                  (A, Jsonb([{"value": "v", "label": "이름공유선택지"}])))
+    db.optional_consent_set(A, "struct_names", True)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     cookie = site.session_value(A, ra=int(time.time()))
@@ -2983,10 +3008,13 @@ async def test_admin_boundary():
         seen.append((method, path, r.status_code))
         return r, r.text + json.dumps(dict(r.headers), ensure_ascii=False)
     try:
-        for path in ADMIN_GETS:
+        for path in ADMIN_GETS + tuple(admin_report_urls()) + (f"/admin/schema?u={site._opaque(U)}",):
             r, out = await call("GET", path)
             assert r.status_code in (200, 302), (path, r.status_code)
             assert mark not in out, f"{path} 응답에 금지 열 값"
+        # 허용 응답 — 이름 공유 동의자(A)의 현재 이름은 트리에 보인다(비동의 U 의 이름은 위에서 0)
+        r, out = await call("GET", f"/admin/schema?u={site._opaque(A)}")
+        assert r.status_code == 200 and all(w in out for w in ("이름공유오브젝트", "이름공유필드", "이름공유선택지")) and mark not in out, out[-600:]
         r, out = await call("GET", "/admin/setup")
         assert r.status_code == 200 and ADB["user"] in out and tmark not in out and nmark not in out, "Setup 엔 이메일만, 문의 원문 없음"
         r, out = await call("GET", "/api/state")
@@ -3009,6 +3037,13 @@ async def test_admin_boundary():
         snap = {"setup.users": admin_db.users("admin"), "audit.list": admin_db.audit("admin"),
                 "tickets.counts": [admin_db.ticket_counts("admin")], "tickets.detail": [admin_db.ticket_detail("admin", t["id"])],
                 "tickets.legacy_inbox": admin_db.tickets_legacy_inbox("admin")}
+        today = admin_db.kst_today()   # P4 키 — 개요·리포트 원행·스키마 트리·이름 분기(동의자 A)
+        names = admin_db.schema_names("admin", A)
+        snap.update({"overview.band": [admin_db.overview_band("admin")], "overview.last_active": admin_db.last_active("admin"),
+                     **{admin_db.REPORT_DATASETS[ds]: admin_db.report_rows("admin", ds, *(() if ds == "structure" else (today, today)))
+                        for ds in admin_db.REPORT_DATASETS},
+                     "schema.tree": admin_db.schema_tree("admin", U), "schema.object_names": names[0], "schema.field_names": names[1]})
+        assert admin_db.schema_names("admin", U) == ([], []), "비동의자는 이름 분기 0행"
         assert set(snap) == {k for k, v in admin_db.ALLOW.items() if v["sql"]}, "ALLOW 키가 늘면 스냅샷도 늘린다"
         for k, rows in snap.items():
             assert rows, k
@@ -3182,6 +3217,179 @@ async def test_optional_consent():
           "·/privacy v2·사용량 삭제 표식 멱등 통과")
 
 
+# ── 14) 운영 화면 (P4: 개요 · 스키마 · 리포트) ───────────
+P4 = {k: f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o")}
+
+
+async def test_admin_screens():
+    """/admin 개요·/admin/schema·/admin/reports — 404(무세션·비관리자·DEV) · 재인증 창 · CSP·스크립트 0·no-store·공통 메뉴
+    · 이름 공유: 동의자만 현재 이름(템플릿 이름 바꾼 것 포함), 비동의·철회·옛 버전은 0 · 출력 escape · 리포트 잘못된 키·조합 400
+    · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)."""
+    import datetime
+    import admin_db
+    import template_author
+    from psycopg.types.json import Jsonb
+    site = main.site
+    U = {k: db.user_by_email(e)["id"] for k, e in P4.items()}
+    A = U["a"]
+    _set_role(A, "admin")
+    mark = "P4MARK" + secrets.token_hex(4)   # 비동의·철회·옛 버전 사용자의 이름 — 어떤 운영 응답에도 없어야 한다
+    xss = "<script>alert(1)</script>"
+    today = admin_db.kst_today()
+    for k in ("g", "n", "w", "o"):
+        template_author.seed(U[k], log=lambda *a: None)
+        lab = f"{xss}G-OBJ" if k == "g" else f"{mark}-{k}-obj"
+        opt = "<b>G-OPT</b>" if k == "g" else f"{mark}-{k}-opt"
+        with db.tx() as c:
+            c.execute("UPDATE object_defs SET label=%s WHERE user_id=%s AND key='axes'", ("G-RENAMED" if k == "g" else f"{mark}-{k}-tpl", U[k]))
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES (%s,'od_p4u','p4u',%s,'collection',1)",
+                      (U[k], lab))
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options,position) VALUES (%s,'od_p4u','pick',%s,'select',%s,0)",
+                      (U[k], f"{mark}-{k}-fld" if k != "g" else "G-FLD", Jsonb([{"value": "v1", "label": opt}])))
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,target_kind,target_object_id,multiple,position) "
+                      "VALUES (%s,'od_p4u','link',%s,'reference','item','od_axes',true,1)", (U[k], f"{mark}-{k}-ref" if k != "g" else "G-REF"))
+    db.optional_consent_set(U["g"], "struct_names", True)
+    db.optional_consent_set(U["w"], "struct_names", True)
+    db.optional_consent_set(U["w"], "struct_names", False)
+    db.optional_consent_set(U["o"], "struct_names", True)
+    with db.tx() as c:
+        c.execute("UPDATE optional_consents SET version='s0' WHERE user_id=%s", (U["o"],))
+        c.execute("INSERT INTO usage_daily (day,user_id,name,code,n) VALUES (%s,%s,'record_add','RATE-LIMIT',3),(%s,%s,'state_get','OK',7),"
+                  "(%s,'','p4:unlinked','OK',2) ON CONFLICT DO NOTHING", (today, U["g"], today, U["g"], today))
+        c.execute("INSERT INTO usage_daily (day,user_id,name,code,n) SELECT %s,%s,'p4cap-'||g,'OK',1 FROM generate_series(1,205) g "
+                  "ON CONFLICT DO NOTHING", (today, U["n"]))
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    now = int(time.time())
+    good = site.session_value(A, ra=now)
+    pages = ("/admin", "/admin/schema", "/admin/reports")
+
+    async def get(path, cookie=good):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("crm_session", cookie)
+            return await h.get(path)
+
+    def clean(r, path):
+        """스크립트 0 · 이벤트 속성 0 · CSP · no-store · 금지 이름 0."""
+        t = r.text
+        assert "script-src 'self'" in r.headers["content-security-policy"] and "unsafe-inline" not in r.headers["content-security-policy"], path
+        assert r.headers["cache-control"] == "no-store", path
+        assert "<script" not in t.lower() and not re.search(r"\son[a-z]+\s*=", t, re.I), (path, "스크립트·이벤트 속성 0")
+        assert mark not in t, (path, "비동의·철회·옛 버전 이름이 보인다")
+        return t
+    try:
+        # ── 404 · 재인증 ──
+        for cookie in (None, site.session_value(U["g"], ra=now)):
+            for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage"):
+                r = await get(path, cookie)
+                assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
+        site.dev, site.dev_user = True, P4["a"]
+        try:
+            for path in pages:
+                assert (await get(path)).status_code == 404, ("DEV", path)
+        finally:
+            site.dev, site.dev_user = False, ""
+        for cookie in (site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)):
+            for path in pages + ("/admin/reports?ds=usage&g1=day",):
+                r = await get(path, cookie)
+                assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+        # ── 공통 메뉴 · 개요 ──
+        for path, cur in (("/admin", "/admin"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
+                          ("/admin/setup", "/admin/setup")):
+            r = await get(path)
+            t = clean(r, path)
+            assert r.status_code == 200 and all(f'href="{h}"' in t for h in ("/admin", "/admin/schema", "/admin/reports",
+                                                                            "/admin/tickets", "/admin/setup", "/app")), path
+            assert f'<a href="{cur}" aria-current=page>' in t and len(re.findall(r"<a [^>]*aria-current", t)) == 1, (path, "현재 메뉴 하나")
+        r = await get("/admin")
+        t = clean(r, "/admin")
+        assert all(e in t for e in P4.values()) and "미연결 사용량" in t and "RATE-LIMIT" in t and "record_add" in t, t[-1500:]
+        assert "G-RENAMED" not in t and "G-OBJ" not in t, "개요엔 이름이 없다"
+        for k, _, href in web.preset_links(today):   # 개요 표의 리포트 링크 = 프리셋
+            if k in ("errors14", "defs"):
+                assert f'href="{web._esc(href)}"' in t or f'href="{href}"' in t, (k, href)
+        pq = admin_db.preset_params(web._preset("errors14"), today)
+        ov = admin_db.report("admin", "usage", (pq["g1"], pq["g2"]), {"result": pq["result"]}, pq["from"], pq["to"], today)
+        assert ("record_add", "RATE-LIMIT") in [r_["keys"] for r_ in ov["rows"]], "프리셋 「오류 14일」 = 개요 오류 표"
+        assert not any(r_["keys"][1] == "OK" for r_ in ov["rows"])
+        dist = admin_db.report("admin", "structure", ("objects_bucket", "fields_bucket"), {}, today=today)
+        cnt = admin_db.structure_counts(admin_db.report_rows("admin", "structure"))
+        assert cnt[U["g"]] == (7, sum(len(o["fields"]) for o in web.template_schema()["objects"]) + 2), cnt[U["g"]]
+        assert sum(r_["values"]["users"] for r_ in dist["rows"]) == len(cnt), "구간 = 사용자 전원(0 구간 포함)"
+        # ── 스키마: 표준 구조 · 사용자 목록 ──
+        r = await get("/admin/schema")
+        t = clean(r, "/admin/schema")
+        assert "tpl:axes" in t and "tpl:principles" in t and "author@1" in t, "템플릿 구조"
+        for w in ("questions", "records", "candidates", "record_id", "provenance_history", "M-D", "attach_to"):
+            assert w in t, ("코어 표준 오브젝트", w)
+        assert "G-RENAMED" not in t and "G-FLD" not in t and "admin_audit" not in t and "usage_daily" not in t, "목록엔 사용자 이름·DB 내부 테이블 없음"
+        for k in ("g", "n", "w", "o"):
+            assert f'href="/admin/schema?u={site._opaque(U[k])}"' in t, k
+        # ── 스키마: 사용자 트리 — 동의자만 현재 이름 ──
+        r = await get(f"/admin/schema?u={site._opaque(U['g'])}")
+        t = clean(r, "/admin/schema?u=g")
+        assert r.status_code == 200 and "&lt;script&gt;alert(1)&lt;/script&gt;G-OBJ" in t and "&lt;b&gt;G-OPT&lt;/b&gt;" in t, t[-1500:]
+        assert "G-RENAMED" in t and "G-FLD" in t and "G-REF" in t and "유효 동의 —" in t, "템플릿 유래라도 바꾼 이름은 동의자만"
+        assert "u1" in t and "f1" in t and "f2" in t and "tpl:axes" in t and "tpl:keywords" in t and "→ tpl:axes" in t, "표시 이름·관계"
+        assert "p4u" not in t and "pick" not in t, "사용자가 지은 id·key 는 보이지 않는다"
+        for k in ("n", "w", "o"):
+            r = await get(f"/admin/schema?u={site._opaque(U[k])}")
+            t = clean(r, f"/admin/schema?u={k}")
+            assert r.status_code == 200 and "u1" in t and "tpl:axes" in t and 'class="lbl"' not in t and "유효 동의 없음" in t, (k, t[-800:])
+            assert admin_db.schema_names("admin", U[k]) == ([], []), k
+        # 철회하면 그 뒤 조회부터 이름이 빠진다
+        db.optional_consent_set(U["g"], "struct_names", False)
+        t = (await get(f"/admin/schema?u={site._opaque(U['g'])}")).text
+        assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, "철회 뒤 이름 0"
+        db.optional_consent_set(U["g"], "struct_names", True)
+        expect("FORBIDDEN", admin_db._rows, "schema.object_names", "admin", (U["g"], "s1"))   # 이름 키는 일반 조회 경로로 못 연다
+        expect("FORBIDDEN", admin_db.schema_names, "user", U["g"])
+        for path, code in ((f"/admin/schema?u={'0' * 12}", 404), ("/admin/schema?u=x&u=y", 400), ("/admin/schema?x=1", 400),
+                           (f"/admin/schema?u={site._opaque(U['g'])}&zz=1", 400)):
+            r = await get(path)
+            assert r.status_code == code and "<script" not in r.text.lower(), (path, r.status_code)
+        # ── 리포트: 프리셋 · 모든 차원·필터 200, 이름 0 ──
+        urls = admin_report_urls()
+        assert len([u for u in urls if "ds=" in u]) > 40, len(urls)
+        for path in urls + [web._report_href({"ds": "structure", "g1": "objects_bucket", "g2": "fields_bucket"}),
+                            "/admin/reports?ds=usage&g1=day&g2=&result=&from=&to="]:
+            r = await get(path)
+            t = clean(r, path)
+            assert r.status_code == 200, (path, r.status_code, t[-300:])
+            assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, (path, "리포트에 이름 없음")
+        r = await get(web._report_href({"ds": "usage", "g1": "name", "g2": "code", "result": "error",
+                                        "from": today.isoformat(), "to": today.isoformat()}))
+        assert "RATE-LIMIT" in r.text and "출처" in r.text and "집계식" in r.text and "sum(n)" in r.text, "지표 정의 표"
+        # 행 상한 — 이름 205개 → 상위 200
+        out = admin_db.report("admin", "usage", ("name",), {}, today.isoformat(), today.isoformat(), today)
+        assert out["capped"] and len(out["rows"]) == admin_db.REPORT_ROWS and out["total"] >= 205, (out["total"], len(out["rows"]))
+        r = await get(web._report_href({"ds": "usage", "g1": "name", "from": today.isoformat(), "to": today.isoformat()}))
+        assert r.status_code == 200 and "상위 200행만" in r.text and r.text.count('class="barf"') == admin_db.REPORT_ROWS, r.text.count('class="barf"')
+        # ── 리포트: 모르는 키·조합 400(다른 리포트로 대체하지 않는다) ──
+        far = (today - datetime.timedelta(days=180)).isoformat()
+        bads = ["ds=nope", "ds=usage&g1=nope", "ds=usage&g1=kind", "ds=usage&kind=bug", "ds=usage&result=maybe", "ds=usage&zzz=1",
+                "ds=usage&g2=day", "ds=usage&g1=day&g2=day", "ds=structure&from=2026-01-01", "ds=usage&from=2026-13-01",
+                f"ds=usage&from={far}&to={today.isoformat()}", f"ds=usage&from={today.isoformat()}&to={far}",
+                "ds=structure&g1=objects_bucket&g2=value_type", "ds=structure&g1=objects_bucket&archived=no", "ds=usage&ds=users",
+                "g1=day", "ds=users&g1=signup_month&g2=signup_week&g3=role", "ds=usage&%3Cscript%3E=1", "ds=%3Cscript%3Ex"]
+        for qs in bads:
+            r = await get(f"/admin/reports?{qs}")
+            assert r.status_code == 400 and "ARG-INVALID" in r.text and "<script" not in r.text.lower(), (qs, r.status_code, r.text[-300:])
+            assert 'class="barf"' not in r.text, (qs, "400 은 결과 표를 그리지 않는다")
+        r = await get("/admin/reports?ds=usage&%3Cscript%3E=1")
+        assert "&lt;script&gt;" in r.text, "모르는 키 이름은 escape 해서 보인다"
+        # 함수 단위 — 기간 경계
+        assert admin_db.report_window("usage", None, None, today) == (today - datetime.timedelta(days=179), today)
+        expect("ARG-INVALID", admin_db.report_window, "usage", far, today.isoformat(), today)
+        expect("ARG-INVALID", admin_db.report_check, "tickets", ("kind", "status", "via"), {})
+    finally:
+        site.dev, site.dev_user = real
+        with db.tx() as c:
+            c.execute("DELETE FROM usage_daily WHERE user_id='' AND name='p4:unlinked'")
+    print("OK — 운영 화면(개요·스키마·리포트: 404·재인증·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
+
+
 def consent_setup():
     """α2: 시험 사용자 전부(TEST_EMAILS, 미동의 전용 NOCONSENT 빼고) 동의 — 게이트는 DEV 에도 같다."""
     for email in TEST_EMAILS:
@@ -3221,6 +3429,7 @@ async def run():
         test_admin_boundary_static()
         await test_admin_boundary()
         await test_optional_consent()
+        await test_admin_screens()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
