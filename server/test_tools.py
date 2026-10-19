@@ -1,4 +1,4 @@
-"""서버 시험 — Supabase(DATABASE_URL, server/.env)에 붙어 돈다. 비밀값은 출력하지 않는다.
+"""서버 시험 — 로컬 Postgres(DATABASE_URL)에 붙어 돈다. 원격(server/.env)은 CRM_TEST_ALLOW_REMOTE=1 + CRM_TEST_SCHEMA 일 때만. 비밀값은 출력하지 않는다.
 
 1) 인증 단위 시험: 가짜 RSA 키로 만든 JWT 를 AuthKitVerifier 가 거르는지 (JWKS 는 가짜 키 주입)
 2) 도구 흐름 시험: SDK 내장 클라이언트로 서버를 직접 부른다 (HTTP·인증 없이, CRM_DEV 사용자)
@@ -38,7 +38,8 @@
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
-운영 DB(옛 스키마)에 붙어 새 코드를 시험할 땐 CRM_TEST_SCHEMA=<이름> — 그 이름의 임시 스키마를 만들어
+운영 DB(옛 스키마)에 붙어 새 코드를 시험할 땐 CRM_TEST_ALLOW_REMOTE=1 + CRM_TEST_SCHEMA=<이름> — 둘 중 하나라도 없으면
+로컬 아닌 호스트에선 시작 전에 멈춘다. 그 이름의 임시 스키마를 만들어
 최종형을 init_schema 로 깔고 그 안에서만 돈 뒤 끝에 지운다(운영 테이블은 안 건드린다). CI 는 빈 Postgres 라 안 쓴다.
 """
 import asyncio
@@ -49,6 +50,7 @@ import re
 import secrets
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -70,6 +72,12 @@ def load_env(path):
 
 load_env(HERE / ".env")
 assert os.environ.get("DATABASE_URL"), "DATABASE_URL 이 없어요 (server/.env)"
+# 로컬 아닌 DB 는 명시 허용 + 임시 스키마일 때만 (운영 public 보호). 호스트·URL 은 출력하지 않는다
+if urllib.parse.urlsplit(os.environ["DATABASE_URL"]).hostname not in ("localhost", "127.0.0.1", "::1", None) \
+        and not (os.environ.get("CRM_TEST_ALLOW_REMOTE") == "1" and os.environ.get("CRM_TEST_SCHEMA", "").strip()):
+    raise SystemExit("중단: DATABASE_URL 호스트가 로컬이 아니에요(server/.env 를 읽었을 수 있어요). "
+                     "로컬 DB 를 DATABASE_URL 로 export 하세요. "
+                     "원격 임시 스키마 시험은 CRM_TEST_ALLOW_REMOTE=1 + CRM_TEST_SCHEMA=<이름>.")
 FAKE_ISSUER = "https://fake.authkit.test"
 PUBLIC = "http://127.0.0.1:8800"
 os.environ["CRM_DEV"] = "1"
