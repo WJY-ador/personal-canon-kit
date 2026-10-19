@@ -71,7 +71,7 @@ from mcp.client import Client  # noqa: E402
 
 import auth  # noqa: E402
 import db  # noqa: E402
-import envcompat  # noqa: E402
+import envnames  # noqa: E402
 import main  # noqa: E402
 import web  # noqa: E402
 
@@ -1968,7 +1968,7 @@ def test_feedback_units():
                     ("curl/8.7.1", "other")):
         assert web.ua_family(ua) == fam, (ua, fam, web.ua_family(ua))
     # 비DEV 에서 CRM_CONTACT 는 선택 — 없음·공백만·있음 모두 import 성공
-    env = {k: v for k, v in os.environ.items() if k not in {n for x in ("DEV", "DEV_USER", "CONTACT") for n in envcompat.names(x)}}
+    env = {k: v for k, v in os.environ.items() if k not in {"CRM_DEV", "CRM_DEV_USER", "CRM_CONTACT"}}
     env["AUTHKIT_ISSUER"] = FAKE_ISSUER
 
     def boot(extra):
@@ -2967,7 +2967,7 @@ def isolate(name):
 
 
 def main_():
-    name = (envcompat.env("TEST_SCHEMA") or "").strip()
+    name = (envnames.env("TEST_SCHEMA") or "").strip()
     if not name:
         asyncio.run(run())
         return

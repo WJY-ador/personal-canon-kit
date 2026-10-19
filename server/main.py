@@ -36,7 +36,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 import auth
 import db
 import web
-from envcompat import env
+from envnames import env
 
 INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. 사용자의 기록에서 판단 후보를 찾고, 사용자가 원문과 대조해 남길지 정한다.
 
