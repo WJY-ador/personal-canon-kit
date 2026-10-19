@@ -43,7 +43,7 @@ Blueprint 는 `server/render.yaml`(대시보드 Blueprint Path 에 지정). root
 - `CANON_SESSION_SECRET` — 세션·PKCE 쿠키 서명 키(비밀, 32바이트 이상 임의 문자열). render.yaml 은 `generateValue: true` — Blueprint 동기화 때 Render 가 만든다.
   둘 중 하나라도 없으면 웹 로그인만 503 이고 MCP 는 정상 — 자동 배포로 서버가 죽지 않게.
 - `CANON_CONTACT` — (선택) 처리방침 보조 메일. 있으면 처리방침에 메일 한 줄로 보이고, 없으면 보이지 않는다. 없어도 서버는 뜬다. 문의·개인정보 요청 경로는 대시보드 「문의」 하나다.
-- `CANON_ADMIN_USER_IDS` — (선택) 쉼표 구분 내부 user id(`u_…`). DB 가 400MB 를 넘어 비관리자 쓰기를 `QUOTA-GLOBAL` 로 막을 때 이 계정만 쓴다. 웹 대시보드에서 이 계정만 「새 문의 N건 · 개인정보 요청 M건」 띠와 「문의함」(전체 문의·상태·메모)을 본다. 시작 때 한 번 읽는다(바꾸면 재시작). 상한 값은 `db.py` 「전역 상한」 상수.
+- `CANON_ADMIN_USER_IDS` — (선택, **첫 배포 1회만**) 쉼표 구분 내부 user id(`u_…`). β2 부터 관리자 판정은 DB `users.role` 이다. 이 env 는 감사 기록에 `bootstrap`·`recover` 행이 없을 때 한 번만 읽혀 그 계정을 관리자로 옮긴다(아래 「관리자」 운영 절). 그 뒤엔 바꿔도 효과 없음 — 관리자 부여·회수는 `/admin/setup`, 잠기면 `admin_cli.py grant <email>`.
 
 운영엔 `CANON_DEV`·`CANON_DEV_USER` 를 넣지 않는다 — 넣으면 시작을 거부한다.
 확인: `curl https://<주소>/health` → `{"ok":true,"db":true}` · 토큰 없이 `POST /mcp` → 401 + `WWW-Authenticate` · `GET /.well-known/oauth-protected-resource/mcp` → 200.
@@ -59,6 +59,17 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - **usage_daily**: 도구·`/api/*` 호출 수를 (KST 날짜, 사용자, 이름, 코드)별로 메모리에 세고 5분마다 DB 에 합산한다. 요청 경로에 DB 비용이 없다. 대신 **수면·재배포 때 마지막 통상 약 5분치, DB 장애로 flush 가 연속 실패하면 그만큼 더 유실**된다(정상 종료면 종료 직전 1회 flush). 동의하지 않은 사용자·익명은 `user_id=''` 로 합쳐진다. 사용자별 집계는 flush 시점(5분 주기) 의 동의 상태로 접는다 — 동의 직전 5분 안 호출은 사용자별로 남고, 버전을 올리면 재동의 전까지 익명으로 접힌다.
 - `CANON_SESSION_SECRET` 교체 = 전원 로그아웃.
 - **배포 직후**: 원작자가 `/consent` 를 한 번 지난다 · 지인에게 「다음 쓰기부터 동의 화면 1회」 공지 · 운영 실측 = 동의 전 MCP 쓰기 1건 거절 → `/consent` 동의 → 같은 쓰기 1건 통과.
+
+## 운영 — 관리자·재인증·감사·웹 끊기·차단 (β2, 초안)
+
+- **관리자 = DB 역할**(`users.role='admin'`). env 로 판정하지 않는다. 화면은 `/admin/setup`(스크립트 없는 서버 렌더 + form) — 사용자 표(이메일·가입일·역할·처리방침 동의·차단·웹 끊은 시각)와 행마다 [관리자 부여|회수] [웹 로그인 끊기] [차단|해제], 감사 로그 최근 100건. 비관리자·로그인 안 함·DEV 는 404.
+- **첫 지정은 배포 때 한 번**: 서버 시작 때 감사(`admin_audit`)에 `bootstrap`·`recover` 행이 하나도 없으면 env `CANON_ADMIN_USER_IDS` 의 id 중 있는 계정을 관리자로 하고 `bootstrap` 행을 남긴다(0명이어도 남긴다). 그 뒤로 env 는 읽지 않는다 — 바꿔도 효과 없음. 대상 계정이 먼저 로그인해 있어야 승격된다.
+- **잠기면(관리자 0명·자기 차단)** 원작자 Mac 에서: `DATABASE_URL=… .venv/bin/python admin_cli.py grant <email>` → 관리자 + 차단 해제 + 감사 `recover`. `admin_cli.py list` 는 관리자 목록. `.env` 는 읽지 않는다(어느 DB 인지 명령 줄에서 보이게).
+- **재인증**: `/admin` 은 최근에 다시 로그인한 세션에서만 열린다. [다시 로그인] = `/admin/reauth` → 로그인 폼 강제(`prompt=login`) → 같은 계정으로 돌아오면 세션에 재인증 시각이 붙는다. 위험 동작(부여·회수·끊기·차단·해제) 15분, 화면·감사 로그와 `/app` 문의함(전체 조회·상태·메모) 12시간. 창이 지나면 `/app` 문의함은 일반 사용자 화면처럼 보이고 상태·메모 변경은 `REAUTH-REQUIRED`. **한계**: Google 로그인은 세션이 살아 있으면 폼 없이 자동 통과할 수 있다 — 토큰에 `auth_time` 이 있으면 재인증 시작 60초 전 이후의 로그인만 인정하고, 없으면 같은 계정으로 돌아온 것만 본다. 운영 첫 로그인 때 로그 `[web] 로그인 토큰 claims 키` 에 `auth_time`·`iat` 가 있는지 확인한다(값은 남기지 않는다).
+- **웹 로그인 끊기** = 그 계정의 지금까지 웹 세션 쿠키 무효(다음 로그인부터 다시 된다). MCP 커넥터에는 영향 없음. 관리자 회수도 대상의 웹 세션을 끊는다. 마지막 관리자는 회수할 수 없다(`LAST-ADMIN`).
+- **차단** = 웹 세션·웹 로그인·MCP 호출 모두 거절(`AUTH-BLOCKED`). 마지막 관리자 차단(자기 자신 포함)도 허용 — 복구는 CLI. **해제** 뒤 차단 전 웹 쿠키·MCP 토큰은 살아나지 않는다 — 사용자는 웹에 다시 로그인하고 MCP 커넥터를 한 번 다시 연결한다(옛 토큰은 `AUTH-REVOKED`). 토큰에 `iat` 가 없으면 MCP 끊기 검사는 건너뛰고 로그 1줄(차단 검사는 그대로).
+- **감사** `admin_audit`: 첫 지정·복구·부여·회수·웹 끊기·차단·해제. 실행자·대상 id 와 열거 키만(이메일·자유 텍스트 없음), 계정이 지워져도 남는다(화면엔 id 앞 8자). 1년 지난 행은 서버 시작 때 파기 — 단 `bootstrap`·`recover` 행은 남긴다(지우면 다음 시작 때 env 로 다시 승격한다).
+- **배포 직후 전원 1회 재로그인** — 세션 쿠키 형식이 바뀌어(v2: 발급 시각·재인증 시각) 옛 쿠키는 무효다. 원작자는 재로그인 → `/admin/reauth` → `/admin/setup` 이 열리는지 확인.
 
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
@@ -81,7 +92,7 @@ WorkOS 대시보드 등록은 DCR 클라이언트라 Redirect URI 가 필요 없
 - 도구: state_get · question_add · question_list · record_add · record_get · candidates_propose · candidate_decide · candidate_list · profile_set.
   2단계(정의 층) 5+1: definitions_get · definition_propose · definition_apply · item_propose · item_decide + record_attach(「어디에 붙나」: 기준·결정·후보 연결, 관심 축, 쓸 자리·아직 안 붙는 것). 동적 내용은 JSON 문자열(`definition_json`·`data_json`).
   도움말 help_get(`topic`: start·words·all, 기본 words) — `/help` 와 같은 guides 원문을 `{topic, text}` 로. INSTRUCTIONS 끝 줄: 해당 topic 하나만 읽고, 같은 대화에서 다시 부르지 않고, 문서에 없으면 "문서에서 확인되지 않아요" + 가장 가까운 절, 제품 밖 질문엔 적용 안 함. 
-  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」). 관리자(`CANON_ADMIN_USER_IDS`)면 `GET /api/feedback` 이 전체 문의 최근 100건(이메일·메모 포함)과 `admin_tickets`(open·privacy_open)를, `GET /api/state` 도 `admin_tickets` 를 준다(비관리자 응답엔 키 없음, MCP state_get 에도 없음). `POST /api/feedback/status {id, status}` · `POST /api/feedback/note {id, admin_note ≤2KB}` 는 관리자만(세션·Origin, 아니면 403) — 종결이면 `closed_at`, 다시 열면 NULL, `updated` 갱신(감사 테이블은 β). 도구는 모두 17개.
+  문의 feedback_send(kind·text·tool) — 사용자가 글을 확인한 뒤 호출, 응답에 보낸 글 그대로·고지(desk-0). 웹은 `GET·POST /api/feedback`(「문의」 폼·「내 문의」). 관리자(`users.role=admin`, 재인증 12시간 안 — 아니면 비관리자 응답과 같은 모양)면 `GET /api/feedback` 이 전체 문의 최근 100건(이메일·메모 포함)과 `admin_tickets`(open·privacy_open)를, `GET /api/state` 도 `admin_tickets` 를 준다(비관리자 응답엔 키 없음, MCP state_get 에도 없음). `POST /api/feedback/status {id, status}` · `POST /api/feedback/note {id, admin_note ≤2KB}` 는 관리자만(세션·Origin, 아니면 403) — 종결이면 `closed_at`, 다시 열면 NULL, `updated` 갱신(감사 테이블은 β). 도구는 모두 17개.
   이미 붙여 둔 Claude 커넥터는 새 도구(help_get 등)를 보려면 커넥터를 다시 연결하거나 새 대화를 연다.
   웹 `/api/state` 는 같은 `db.state` 에 `user.email` 만 얹는다(2단계 키: definitions · items · item_proposals · record_links, journal 행에 notes). 이름·인자는 고정(ChatGPT 는 승인된 스키마를 고정하므로 바꾸면 재승인).
   `candidates_propose` 의 `question_id=""` = 질문 없음(NULL). 화면은 기록별 묶음, 대조 경로 `#today/review/r:<기록ID>/<후보ID>`.
