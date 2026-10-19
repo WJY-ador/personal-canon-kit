@@ -1126,8 +1126,9 @@ class Web:
         return JSONResponse(out, headers={"cache-control": "no-store"})
 
     async def api_std_choose(self, request):
-        """표준 오브젝트 보류·거절 기록. 세션(401) → Origin(403) → JSON {std_key, state} 문자열(400) → write_gate → db.std_choose
-        (ARG-INVALID·FEATURE-OFF·STANDARD-LOCKED 등 400). 대상 사용자 = 세션 uid 뿐."""
+        """표준 오브젝트 선택 — 보류·거절 기록 · 편입 적용. 세션(401) → Origin(403) → JSON {std_key, state 문자열,
+        confirmed_meaning bool?, expected_revision 정수|null?}(400) → write_gate → db.std_choose(ARG-INVALID·FEATURE-OFF·STANDARD-LOCKED·
+        CONFLICT·DEF-INVALID 400). 편입은 confirmed_meaning=true 와 미리보기에서 본 revision 을 들고 온다. 대상 사용자 = 세션 uid 뿐."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1136,13 +1137,17 @@ class Web:
         try:
             body = await request.json()
             assert isinstance(body, dict) and isinstance(body.get("std_key"), str) and isinstance(body.get("state"), str)
+            assert isinstance(body.get("confirmed_meaning", False), bool)
+            rev = body.get("expected_revision")
+            assert rev is None or (isinstance(rev, int) and not isinstance(rev, bool))
         except Exception:
-            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(std_key·state 문자열)이 필요해요."}, status_code=400)
-        key, state = body["std_key"], body["state"]
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(std_key·state 문자열, confirmed_meaning true/false, "
+                                 "expected_revision 정수 또는 null)이 필요해요."}, status_code=400)
+        key, state, meant = body["std_key"], body["state"], body.get("confirmed_meaning", False)
 
         def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
             db.write_gate("std_choose", {"std_key": key, "state": state}, uid)
-            return db.std_choose(uid, key, state)
+            return db.std_choose(uid, key, state, meant, rev)
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
