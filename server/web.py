@@ -744,6 +744,22 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out, headers={"cache-control": "no-store"})
 
+    async def api_desk_visibility(self, request):
+        """문의 섹션 숨김(계정 메뉴). 세션(401) → Origin(403) → JSON {hidden(bool)}(400) → db.desk_hidden_set.
+        동의 게이트 밖(미동의자도 바꿀 수 있다). 숨겨도 메뉴에서 문의를 열 수 있다(화면 쪽)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict) and isinstance(body.get("hidden"), bool)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(hidden true/false)이 필요해요."}, status_code=400)
+        out = await run_in_threadpool(db.desk_hidden_set, uid, body["hidden"])
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
         if not self.login_ready:
@@ -839,8 +855,8 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid)))
-        st["user"] = {"email": me["email"]}
+        st, me, flags = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid)))
+        st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
         if self._ticket_admin(request, "ticket.read_all"):   # 관리자 + 재인증 12시간 안만 키가 있다 — 아니면 비관리자와 같은 모양. MCP state_get 에는 넣지 않는다
@@ -1204,6 +1220,7 @@ class Web:
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
             Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
+            Route("/api/desk-visibility", u("web:desk_visibility", self.api_desk_visibility), methods=["POST"]),
             Route("/admin", self.admin_index),
             Route("/admin/reauth", self.admin_reauth),
             Route("/admin/setup", self.admin_setup),

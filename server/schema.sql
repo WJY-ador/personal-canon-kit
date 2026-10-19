@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   role               text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin')),
   blocked_at         timestamptz,                 -- 차단(웹·MCP 둘 다 거절). 해제 = NULL
   web_revoked_before timestamptz,                 -- 이 시각 전에 발급한 웹 세션 쿠키(iat) 무효
-  mcp_revoked_before timestamptz                  -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
+  mcp_revoked_before timestamptz,                 -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
+  desk_hidden        boolean NOT NULL DEFAULT false -- P5: /app 문의 섹션 숨김(계정 메뉴). 옛 DB 는 db._init_schema 가 더한다
 );
 
 CREATE TABLE IF NOT EXISTS agreements (

@@ -26,6 +26,9 @@
    · /api/optional-consent 왕복·로그·무동작·미동의자·동시 · 옛 버전 무효 · /privacy v2 · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
+15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖
+   · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
+   · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -3453,6 +3456,7 @@ async def run():
         await test_admin_boundary()
         await test_optional_consent()
         await test_ticket_p3()
+        await test_app_account_menu()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3468,6 +3472,128 @@ async def run():
     assert left == 0, left
     assert not any(rest.values()), rest
     print("OK — 시험 사용자 삭제(cascade)")
+
+
+# ── 15) /app 계정 메뉴(P5) ─────────────────────────────
+
+AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user = 동의자 · nocon = 미동의(게이트 밖 확인)
+
+
+async def test_app_account_menu():
+    """users.desk_hidden · POST /api/desk-visibility(401 → 403 → 400 → 저장, no-store, 게이트 밖) · /api/state user 두 키
+    · MCP state_get 에는 없음 · app.html 정적. 시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
+    site = main.site
+    emails = list(AM.values())
+
+    def wipe():
+        with db.tx() as c:
+            ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (emails,)).fetchall()]
+        for i in ids:
+            db.user_delete(i)
+
+    def hidden_of(uid):
+        with db.tx() as c:
+            return c.execute("SELECT desk_hidden FROM users WHERE id=%s", (uid,)).fetchone()["desk_hidden"]
+
+    wipe()
+    U = {k: db.user_by_subject(f"am-{k}_sub", e)["id"] for k, e in AM.items()}
+    db.consent_grant(U["user"], dict(db.CONSENT_VERSIONS))
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    origin = {"origin": PUBLIC}
+
+    def client(uid=None):
+        h = httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC)
+        if uid:
+            h.cookies.set("crm_session", site.session_value(uid))
+        return h
+    try:
+        # 열: schema.sql 최종형 = boolean NOT NULL DEFAULT false (옛 DB 마이그레이션 모양은 test_migration 의 users 비교가 본다)
+        with db.tx() as c:
+            col = c.execute("SELECT data_type,is_nullable,column_default FROM information_schema.columns "
+                            "WHERE table_schema=current_schema() AND table_name='users' AND column_name='desk_hidden'").fetchone()
+        assert col == {"data_type": "boolean", "is_nullable": "NO", "column_default": "false"}, col
+        assert hidden_of(U["user"]) is False, "새 사용자는 보임"
+        # 401 — 세션 없음(Origin 이 맞아도)
+        async with client() as h:
+            r = await h.post("/api/desk-visibility", json={"hidden": True}, headers=origin)
+            assert r.status_code == 401 and r.json()["code"] == "UNAUTHORIZED", r.text
+        async with client(U["user"]) as h:
+            u = (await h.get("/api/state")).json()["user"]
+            assert u["email"] == AM["user"] and u["desk_hidden"] is False and u["struct_names"] is False, u
+            # 403 — Origin 없음·다른 Origin (본문이 틀려도 403 이 먼저)
+            for hd in ({}, {"origin": "https://evil.example"}):
+                r = await h.post("/api/desk-visibility", json={"hidden": True}, headers=hd)
+                assert r.status_code == 403 and r.json()["code"] == "ORIGIN", (hd, r.text)
+            r = await h.post("/api/desk-visibility", json={"hidden": "x"})
+            assert r.status_code == 403, "Origin 이 본문 검사보다 먼저"
+            # 400 — JSON {hidden: bool} 만
+            for bad in ({"hidden": "true"}, {"hidden": 1}, {"hidden": None}, {}, [True], "hidden"):
+                r = await h.post("/api/desk-visibility", json=bad, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (bad, r.text)
+            r = await h.post("/api/desk-visibility", content=b"hidden=1", headers={**origin, "content-type": "application/x-www-form-urlencoded"})
+            assert r.status_code == 400, "JSON 이 아니면 400"
+            assert hidden_of(U["user"]) is False, "거절된 요청은 저장하지 않는다"
+            # 저장 왕복
+            for want in (True, True, False):
+                r = await h.post("/api/desk-visibility", json={"hidden": want}, headers=origin)
+                assert r.status_code == 200 and r.json() == {"hidden": want}, r.text
+                assert r.headers.get("cache-control") == "no-store", r.headers
+                assert hidden_of(U["user"]) is want
+                st = await h.get("/api/state")
+                assert st.json()["user"]["desk_hidden"] is want and st.headers.get("cache-control") == "no-store"
+            # struct_names = 유효 동의(optional_consent_ok) — 비동의 → 동의 → 철회 → 옛 버전
+            for on in (True, False, True):
+                r = await h.post("/api/optional-consent", json={"kind": "struct_names", "on": on}, headers=origin)
+                assert r.status_code == 200, r.text
+                u = (await h.get("/api/state")).json()["user"]
+                assert u["struct_names"] is on and u["struct_names"] == db.optional_consent_ok(U["user"], "struct_names"), (on, u)
+            with db.tx() as c:   # 옛 버전 동의는 유효하지 않다
+                c.execute("UPDATE optional_consents SET version='s0' WHERE user_id=%s AND kind='struct_names'", (U["user"],))
+            assert (await h.get("/api/state")).json()["user"]["struct_names"] is False
+            # 두 값은 서로 독립
+            await h.post("/api/desk-visibility", json={"hidden": True}, headers=origin)
+            u = (await h.get("/api/state")).json()["user"]
+            assert u["desk_hidden"] is True and u["struct_names"] is False, u
+            assert set(u) == {"email", "struct_names", "desk_hidden"}, "비관리자 user 키는 셋"
+        # 동의 게이트 밖 — 미동의자도 바꾼다(/app 은 /consent 로 보낸다)
+        async with client(U["nocon"]) as h:
+            assert not db.has_consent(U["nocon"])
+            r = await h.get("/app")
+            assert r.status_code == 302 and r.headers["location"] == "/consent", r.status_code
+            r = await h.post("/api/desk-visibility", json={"hidden": True}, headers=origin)
+            assert r.status_code == 200 and hidden_of(U["nocon"]) is True, r.text
+        # MCP state_get(db.state)에는 두 키가 없다
+        for uid in U.values():
+            st = db.state(uid)
+            assert "desk_hidden" not in st and "struct_names" not in st and not ({"desk_hidden", "struct_names"} & set(st.get("user") or {})), st.keys()
+        site.dev, site.dev_user = real
+        async with Client(main.mcp) as mc:
+            st = val(await mc.call_tool("state_get", {}))
+        assert "desk_hidden" not in json.dumps(st) and "struct_names" not in json.dumps(st), "MCP state_get 응답에 두 키 없음"
+        # app.html 정적: 인라인 스크립트 1개(CSP 해시 = 보낸 본문) · 인라인 이벤트 속성 0 · 메뉴 항목 · ⚙ 유지 · #who 말줄임
+        html = (HERE / "app.html").read_text(encoding="utf-8")
+        assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
+        assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
+        menu = html[html.index('<details class="acct" id="acct">'):html.index("</details>")]
+        for act in ("send", "mine", "privacy", "names", "desk", "logout"):
+            assert f'data-acct="{act}"' in menu, act
+        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', 'id="acct-desk"', "구조 이름 공유", "로그아웃"):
+            assert w in menu, w
+        assert 'id="setup-link"' not in menu and 'id="setup-link"' in html, "⚙ 는 메뉴 밖에 그대로"
+        assert re.search(r"#who \{[^}]*text-overflow: ellipsis[^}]*\}", html) and re.search(r"#who \{[^}]*min-width: 0", html), "#who 말줄임"
+        for w in ('fetch(url, {method: "POST"', '"/api/desk-visibility", {hidden}', '"/api/optional-consent", {kind: "struct_names"',
+                  '[name="kind"][value="privacy"]', '$("desk").hidden = hidden && !deskPeek;'):
+            assert w in html, w
+        async with client(U["user"]) as h:
+            r = await h.get("/app")
+            assert r.status_code == 200 and f"'sha256-{web.inline_script_hashes(r.text)[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
+    finally:
+        site.dev, site.dev_user = real
+        wipe()
+    with db.tx() as c:
+        assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
+    print("OK — /app 계정 메뉴(desk_hidden·/api/desk-visibility·state 두 키·MCP 없음·app.html 정적) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
