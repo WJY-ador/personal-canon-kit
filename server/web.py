@@ -18,7 +18,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 
 import httpx
 from starlette.concurrency import run_in_threadpool
@@ -444,7 +444,7 @@ def _usage(name: str, handler):
 REAUTH_WINDOWS = {
     "admin.view": 12 * 3600,        # /admin 화면·감사 로그
     "ticket.read_all": 12 * 3600,   # /app 문의함 전체 조회(GET /api/state 의 admin_tickets · GET /api/feedback 전체)
-    "ticket.update": 12 * 3600,     # /app 문의 상태·메모(POST /api/feedback/status·note)
+    "ticket.update": 12 * 3600,     # 문의 처리 — /admin/tickets/<id>/* POST · /app 문의 상태·메모(POST /api/feedback/status·note)
     "role.grant": 15 * 60,
     "role.revoke": 15 * 60,
     "user.web_signout": 15 * 60,
@@ -452,6 +452,7 @@ REAUTH_WINDOWS = {
     "user.unblock": 15 * 60,
 }
 AUTH_TIME_SKEW = 60                 # 콜백 토큰 auth_time 은 재인증 시작(t0) − 60초 이후여야 ra 를 준다
+TICKET_FORM_MAX = 16 * 1024         # /admin/tickets POST — 답변 4KB(UTF-8 바이트)를 퍼센트 인코딩하면 최대 3배라 따로 둔다
 ADMIN_FORM_MAX = 4 * 1024           # /admin POST form 본문 상한(바이트) — BodyLimit(/mcp·/api/*) 밖이라 핸들러가 직접 센다
 
 
@@ -961,9 +962,20 @@ class Web:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse({**out, "notice": db.NOTICE})
 
+    async def api_feedback_one(self, request):
+        """본인 문의 하나 — 글·답변·공개 이력. 다른 사람 것·없는 id 는 404(같은 모양). 내부 이력·운영자 메모는 없다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.ticket_get_mine, uid, request.path_params["tid"])
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message}, status_code=404 if e.code == "NOT-FOUND" else 400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
     async def _admin_write(self, request, fields, fn):
         """관리자 문의 쓰기 공통 — 세션(401) → Origin(403) → 관리자(403 FORBIDDEN) → 재인증 ticket.update 창(403 REAUTH-REQUIRED)
-        → JSON 본문 문자열 필드 → fn(role, ...)(admin_db). 문의 변경은 감사 동작이 아니다 — tickets.updated 만 바뀐다."""
+        → JSON 본문 문자열 필드 → fn(role, 실행자, ...)(admin_db). 문의 변경은 감사(admin_audit) 동작이 아니다 — ticket_history 에 사건이 남는다."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -982,7 +994,7 @@ class Web:
         except Exception:
             return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
         try:
-            out = await run_in_threadpool(fn, request.state.role, *args)
+            out = await run_in_threadpool(fn, request.state.role, uid, *args)
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
         return JSONResponse(out)
@@ -1071,14 +1083,14 @@ class Web:
                 f'<th>대상</th></tr></thead><tbody>{arows or "<tr><td colspan=4 class=muted>없음</td></tr>"}</tbody></table></div>')
         return _admin_page("관리 — Setup", body)
 
-    async def _admin_form(self, request) -> dict | None:
-        """form-urlencoded 본문만, ADMIN_FORM_MAX 바이트까지. 아니면 None."""
+    async def _admin_form(self, request, limit: int = ADMIN_FORM_MAX) -> dict | None:
+        """form-urlencoded 본문만, limit(기본 ADMIN_FORM_MAX) 바이트까지. 아니면 None."""
         if request.headers.get("content-type", "").split(";")[0].strip().lower() != "application/x-www-form-urlencoded":
             return None
         raw = b""
         async for chunk in request.stream():
             raw += chunk
-            if len(raw) > ADMIN_FORM_MAX:
+            if len(raw) > limit:
                 return None
         try:
             return dict(parse_qsl(raw.decode("utf-8"), keep_blank_values=True))
@@ -1110,6 +1122,52 @@ class Web:
             return _admin_page("처리하지 못했어요", f"<h1>처리하지 못했어요</h1><p>{_esc(e.code)} — {_esc(e.message)}</p>"
                                f"{'<p>' + _esc(e.action) + '</p>' if e.action else ''}{back}", status)
         return RedirectResponse("/admin/setup", status_code=303)
+
+    # 문의 처리(P3) — form POST 4개. 화면(/admin/tickets/<id>)은 P4. 사다리는 _admin_post 와 같고 재인증 창은 ticket.update(12h).
+    _TICKET_OPS = {   # op → (form 필드, admin_db 함수 이름)
+        "status": (("status",), "ticket_status"),
+        "reply": (("reply",), "ticket_reply"),
+        "note": (("admin_note",), "ticket_note"),
+        "reclassify": (("kind", "reason"), "ticket_reclassify"),
+    }
+
+    async def _admin_ticket_post(self, request, op: str):
+        """/admin/tickets/{tid}/{op} — 관리자 세션(아니면 404) → Origin(403) → form(400) → 재인증 ticket.update(403)
+        → admin_db(변경+사건 한 트랜잭션) → 303 /admin/tickets/{tid}."""
+        uid = await self._admin_who(request)
+        if uid is None:
+            return _not_found()
+        tid = request.path_params["tid"]
+        home = f"/admin/tickets/{quote(tid, safe='')}"
+        back = f'<p><a href="{_esc(home)}">문의로</a></p>'
+        if not self.same_origin(request):
+            return _admin_page("다른 사이트에서 온 요청이에요", f"<h1>다른 사이트에서 온 요청이에요</h1><p>ORIGIN</p>{back}", 403)
+        fields, fn = self._TICKET_OPS[op]
+        form = await self._admin_form(request, TICKET_FORM_MAX)
+        if form is None or fields[0] not in form:
+            return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>ARG-INVALID</p>{back}", 400)
+        if not reauth_ok(request.state.ra, "ticket.update"):
+            return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 문의 처리는 12시간 안에 다시 로그인한 '
+                               '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403)
+        args = [form.get(f, "") for f in fields]
+        try:
+            await run_in_threadpool(getattr(admin_db, fn), request.state.role, uid, tid, *args)
+        except db.CrmError as e:
+            status = {"NOT-FOUND": 404, "FORBIDDEN": 403}.get(e.code, 400)
+            return _admin_page("처리하지 못했어요", f"<h1>처리하지 못했어요</h1><p>{_esc(e.code)} — {_esc(e.message)}</p>{back}", status)
+        return RedirectResponse(home, status_code=303)
+
+    async def admin_ticket_status(self, request):
+        return await self._admin_ticket_post(request, "status")
+
+    async def admin_ticket_reply(self, request):
+        return await self._admin_ticket_post(request, "reply")
+
+    async def admin_ticket_note(self, request):
+        return await self._admin_ticket_post(request, "note")
+
+    async def admin_ticket_reclassify(self, request):
+        return await self._admin_ticket_post(request, "reclassify")
 
     async def admin_role(self, request):
         return await self._admin_post(request, "role")
@@ -1143,6 +1201,7 @@ class Web:
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
             Route("/api/feedback/status", u("web:feedback_status", self.api_feedback_status), methods=["POST"]),
             Route("/api/feedback/note", u("web:feedback_note", self.api_feedback_note), methods=["POST"]),
+            Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
             Route("/api/consent", u("web:consent", self.api_consent), methods=["POST"]),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
             Route("/admin", self.admin_index),
@@ -1152,4 +1211,8 @@ class Web:
             Route("/admin/signout", self.admin_signout, methods=["POST"]),
             Route("/admin/block", self.admin_block, methods=["POST"]),
             Route("/admin/unblock", self.admin_unblock, methods=["POST"]),
+            Route("/admin/tickets/{tid}/status", self.admin_ticket_status, methods=["POST"]),
+            Route("/admin/tickets/{tid}/reply", self.admin_ticket_reply, methods=["POST"]),
+            Route("/admin/tickets/{tid}/note", self.admin_ticket_note, methods=["POST"]),
+            Route("/admin/tickets/{tid}/reclassify", self.admin_ticket_reclassify, methods=["POST"]),
         ]
