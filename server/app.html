@@ -381,11 +381,8 @@ dialog .dh b { font-size: 1rem; }
 dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 .foot { color: var(--soft); font-size: .72rem; padding: .4rem 1.4rem 2.4rem; }
 
-/* 문의 데스크(desk-0) — #view 밖, 푸터 위. 보드 토큰 그대로 */
-.desk { margin-top: 1.6rem; }
-.desk .paper { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.2rem 2.2rem; }
-.desk h2.sh { margin: 0 0 .35rem; }
-.desk .hint { margin: 0 0 .7rem; }
+/* 문의 데스크(desk-0) — 계정 메뉴에서 여는 대화창(desk-dlg, Q1b). 보드 토큰 그대로 */
+#desk-dlg .hint { margin: 0 0 .7rem; }
 .deskkinds { border: 0; padding: 0; margin: 0 0 .5rem; display: flex; flex-wrap: wrap; gap: .1rem 1rem; font-size: .84rem; }
 .deskkinds label { display: inline-flex; align-items: center; gap: .35rem; cursor: pointer; min-height: 32px; }
 .deskkinds input { accent-color: var(--accent); margin: 0; }
@@ -396,7 +393,7 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 #desk-count.over { color: var(--fail); font-weight: 600; }
 .desknote { font-size: .76rem; color: var(--muted); margin: .6rem 0 0; line-height: 1.6; }
 #desk-status { font-size: .82rem; color: var(--muted); margin: .4rem 0 0; }
-#desk-status:empty, #desk-error:empty { margin: 0; }
+#desk-status:empty, #desk-error:empty, #desk-list-error:empty { margin: 0; }
 .desktbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .desktbl { border-collapse: collapse; width: 100%; font-size: .82rem; }
 .desktbl th, .desktbl td { text-align: left; padding: .4rem .5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -409,7 +406,6 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 .desktk h3:first-child { margin-top: 0; }
 .desktk .desktxt { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: .9rem; line-height: 1.65; }
 .desktk ul { margin: 0; padding-left: 1.1rem; font-size: .84rem; }
-@media (min-width: 1000px) { .desk .paper { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); } }
 @media (max-width: 700px) { #desk-text { font-size: 16px; } .desktbl th, .desktbl td { padding: .4rem .3rem; } }
 
 @media (max-width: 900px) {
@@ -453,13 +449,12 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <div class="acct-menu" id="acct-menu">
       <!--admin--><a class="btn" href="/admin" id="acct-console">운영 콘솔</a>
       <hr><!--/admin-->
-      <!--user--><button type="button" data-acct="send">문의 보내기</button>
-      <button type="button" data-acct="mine">내 문의</button>
-      <button type="button" data-acct="privacy">개인정보 요청</button>
+      <!--user--><button type="button" data-acct="send" aria-haspopup="dialog">문의 보내기</button>
+      <button type="button" data-acct="mine" aria-haspopup="dialog">내 문의</button>
+      <button type="button" data-acct="privacy" aria-haspopup="dialog">개인정보 요청</button>
       <hr>
       <button type="button" data-acct="names" id="acct-names" aria-pressed="false">구조 이름 공유 <span class="st" id="acct-names-st">꺼짐</span></button>
       <p class="acct-note">안 해도 모든 기능을 써요. <a href="/privacy#privacy-1">무엇을 보나요</a></p>
-      <button type="button" data-acct="desk" id="acct-desk">문의 섹션 숨기기</button>
       <hr><!--/user-->
       <button type="button" data-acct="logout" id="logout">로그아웃</button>
       <p class="acct-msg" id="acct-msg" role="status"></p>
@@ -469,9 +464,10 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
 <main id="view" class="wrap"></main>
-<!--user--><section class="wrap desk" id="desk" aria-labelledby="desk-title"><div class="paper">
+<footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></footer>
+<!--user--><dialog id="desk-dlg" aria-labelledby="desk-dlg-title"><div class="dh"><b id="desk-dlg-title">문의</b>
+  <button class="small" type="button" id="desk-dlg-close">닫기</button></div><div class="db">
   <form id="desk-form" novalidate>
-    <h2 class="sh" id="desk-title">문의</h2>
     <p class="hint">안 되는 것·바라는 것·궁금한 것을 운영자에게 보내요. 처리 상태는 「내 문의」에서 보여요.</p>
     <fieldset class="deskkinds"><legend class="sr">문의 종류</legend>
       <label><input type="radio" name="kind" value="bug" checked> 버그</label>
@@ -486,15 +482,14 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
     <p id="desk-notice" class="desknote">이 글은 서버에 저장되고 운영자가 직접 읽어요. 기록 원문이나 다른 사람 정보는 넣지 마세요. <a href="/privacy">개인정보 처리방침</a></p>
     <p id="desk-status" role="status"></p><p id="desk-error" role="alert" class="blocked"></p>
   </form>
-  <div>
-    <h2 class="sh" id="desk-list-title">내 문의</h2>
+  <div id="desk-mine">
     <p class="hint" id="desk-list-hint">처리 상태와 운영자 답변을 볼 수 있어요. 접수일을 누르면 열려요.</p>
     <div class="desktbl-wrap"><table class="desktbl" id="desk-tbl"><thead id="desk-head"><tr><th scope="col">접수일</th><th scope="col">종류</th><th scope="col">상태</th><th scope="col">답변</th><th scope="col">최근 갱신</th><th scope="col">글</th></tr></thead>
       <tbody id="desk-list"></tbody></table></div>
     <p id="desk-empty" class="empty" hidden>아직 보낸 문의가 없어요.</p>
+    <p id="desk-list-error" role="alert" class="blocked"></p>
   </div>
-</div></section><!--/user-->
-<footer class="wrap foot"><span id="foot"></span> · <a href="/help">도움말</a> · <a href="/privacy">개인정보 처리방침</a></footer>
+</div></dialog><!--/user-->
 <dialog id="dlg" aria-labelledby="dlg-title"><div class="dh"><div><b id="dlg-title"></b><div id="dlg-meta" class="recmeta" style="margin:2px 0 0"></div></div>
   <button class="small" id="dlg-close">닫기</button></div><div class="db" id="dlg-body"></div></dialog>
 <script>
@@ -1439,30 +1434,29 @@ document.addEventListener("keydown", e => {
 });
 $("dlg-close").onclick = () => $("dlg").close();
 window.addEventListener("hashchange", () => { if (S) { render(); window.scrollTo(0, 0); } });
-$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); deskLoad(); };
+$("reload").onclick = () => { for (const k in recCache) delete recCache[k]; load(); };
 $("logout").onclick = async () => {
   let to = "/?out=1";
   try { const j = await (await fetch("/logout", {method: "POST"})).json(); if (j && j.ok && j.redirect) to = j.redirect; } catch (e) {}
   location.href = to;
 };
-// ── 계정 메뉴 (P5) — 문의 열기 · 이름 공유 · 문의 섹션 숨김 · 로그아웃(위 핸들러) ──
-// 관리자(Q1)는 서버가 사용자 전용 구간(문의·이름 공유 메뉴, 문의 섹션)을 빼고 「운영 콘솔」을 넣어 보낸다 — 요소가 없으면 건너뛴다.
-let deskPeek = false;   // 숨긴 문의 섹션을 메뉴에서 이번 화면에만 연 상태(저장값은 그대로)
+// ── 계정 메뉴 (P5) — 문의 대화창 열기(Q1b) · 이름 공유 · 로그아웃(위 핸들러) ──
+// 관리자(Q1)는 서버가 사용자 전용 구간(문의·이름 공유 메뉴, 문의 대화창)을 빼고 「운영 콘솔」을 넣어 보낸다 — 요소가 없으면 건너뛴다.
 function acctApply() {
-  if (!$("desk")) return;
-  const u = S && S.user || {}, names = u.struct_names === true, hidden = u.desk_hidden === true;
+  if (!$("acct-names")) return;
+  const names = (S && S.user || {}).struct_names === true;
   $("acct-names").setAttribute("aria-pressed", names ? "true" : "false");
   $("acct-names-st").textContent = names ? "켜짐" : "꺼짐";
-  $("acct-desk").textContent = hidden ? "문의 섹션 보이기" : "문의 섹션 숨기기";
-  $("desk").hidden = hidden && !deskPeek;
 }
 function acctClose() { $("acct").open = false; }
+// 「문의 보내기」·「개인정보 요청」은 보내기 폼, 「내 문의」는 목록 — 한 대화창에서 한쪽만 보인다. 상세는 그 위에 dlg 로 겹쳐 연다
 function deskOpen(where) {
-  deskPeek = true;
-  $("desk").hidden = false;
-  const target = where === "mine" ? $("desk-list-title") : $("desk-form");
-  target.scrollIntoView({block: "start"});
-  if (where !== "mine") $("desk-text").focus({preventScroll: true});
+  const mine = where === "mine";
+  $("desk-dlg-title").textContent = mine ? "내 문의" : "문의 보내기";
+  $("desk-form").hidden = mine;
+  $("desk-mine").hidden = !mine;
+  if (!$("desk-dlg").open) $("desk-dlg").showModal();
+  if (mine) deskLoad(); else $("desk-text").focus();
 }
 async function acctPost(url, body) {
   $("acct-msg").textContent = "";
@@ -1490,9 +1484,6 @@ $("acct-menu").addEventListener("click", async e => {
   try {
     if (act === "names") {
       if (await acctPost("/api/optional-consent", {kind: "struct_names", on: S.user.struct_names !== true})) await load();
-    } else if (act === "desk") {
-      const hidden = S.user.desk_hidden !== true;
-      if (await acctPost("/api/desk-visibility", {hidden})) { S.user.desk_hidden = hidden; deskPeek = false; acctApply(); acctClose(); }
     }
   } finally { b.disabled = false; }
 });
@@ -1507,7 +1498,7 @@ const DESK_MAX = 4096;   // 서버 db.LIMIT_TICKET 과 같은 단위(UTF-8 바�
 const DESK_CHIP = {open: "st-wait", ack: "", doing: "flag", done: "st-mine", wontfix: "st-off"};
 const DESK_PAGE = {today: "today", question: "question", record: "record", structure: "structure", map: "map"};
 const deskBytes = s => new TextEncoder().encode(s).length;
-// 운영자 처리는 /admin/tickets(서버 렌더) — 관리자 /app 엔 문의 섹션이 없다(Q1, 서버가 사용자 전용 구간을 뺀다).
+// 운영자 처리는 /admin/tickets(서버 렌더) — 관리자 /app 엔 문의 대화창이 없다(Q1, 서버가 사용자 전용 구간을 뺀다).
 function deskPage() {
   if (!S) return "other";
   const R = route();
@@ -1556,7 +1547,8 @@ async function deskLoad() {
   let r, j;
   try { r = await fetch("/api/feedback", {cache: "no-store"}); j = await r.json(); } catch (e) { r = null; }
   if (r && r.status === 401) return;   // 로그인이 풀렸으면 load() 가 시작 화면으로 보낸다
-  if (!r || !r.ok) { $("desk-error").textContent = "내 문의를 불러오지 못했어요. 새로 고침해 주세요."; return; }
+  if (!r || !r.ok) { $("desk-list-error").textContent = "내 문의를 불러오지 못했어요. 새로 고침해 주세요."; return; }
+  $("desk-list-error").textContent = "";
   const list = j.tickets || [];
   $("desk-list").replaceChildren(...list.map(deskRow));
   $("desk-empty").hidden = list.length > 0;
@@ -1586,14 +1578,14 @@ async function deskSend(e) {
   $("desk-status").textContent = "보냈어요. 처리 상태는 「내 문의」에서 볼 수 있어요.";
   deskLoad();
 }
-if ($("desk")) {   // 관리자 응답엔 문의 섹션이 없다(Q1)
+if ($("desk-dlg")) {   // 관리자 응답엔 문의 대화창이 없다(Q1)
+  $("desk-dlg-close").addEventListener("click", () => $("desk-dlg").close());
   $("desk-text").addEventListener("input", deskCount);
   $("desk-form").addEventListener("submit", deskSend);
   $("desk-list").addEventListener("click", e => { const b = e.target.closest("button[data-tk]"); if (b) deskShow(b.dataset.tk); });
 }
 // ── /문의 데스크 ──
 load();
-if ($("desk")) deskLoad();
 </script>
 </body>
 </html>

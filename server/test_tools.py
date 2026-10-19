@@ -30,13 +30,14 @@
 13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·옛 ra 쿠키 통과·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
 14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·옛 ra 쿠키 통과·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
    · escape · 리포트 400(모르는 키·조합·기간) · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)
-15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖
+15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖(화면은 안 씀 — Q1b)
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
    · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
    · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
 17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
-   · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 섹션은 보내지 않음), 일반 사용자는 그대로
+   · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 대화창은 보내지 않음)
+   · Q1b 일반 사용자 /app = 하단 문의 섹션 없음 · 「문의 보내기」·「내 문의」는 대화창(desk-dlg) · 「문의 섹션 숨기기」 없음
 18) R2(PR #20 3단계, DB 없이): 기능 플래그 해석(on 만 켬) · render.yaml sync:false 선언 · 수신자별 응답(본인·운영자 비동의·동의) 허용 목록
    · 이름 누출 0(비동의: label·key·선택지·출처 name·location·id / 동의: key·선택지 값·출처·id) · origin·관계 파생 · std 모양 · 오류 코드 문구 · 예제 동결 일치
 
@@ -2024,8 +2025,9 @@ def test_feedback_units():
         assert rest.startswith("`"), rest[:60]
         end = rest.index("`", 1)
         assert rest[end + 1:].lstrip().startswith(";"), rest[end:end + 40]
-    sec = html[html.index('<section class="wrap desk"'):html.index("</section>")]
-    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 절 — 고지 문장·처리방침 링크"
+    i = html.index('<dialog id="desk-dlg"')   # Q1b: 문의 폼·목록은 계정 메뉴에서 여는 대화창
+    sec = html[i:html.index("</dialog>", i)]
+    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 대화창 — 고지 문장·처리방침 링크"
     for w in ('value="bug"', 'value="request"', 'value="question"', 'value="privacy"', "개인정보 요청", "내 문의", "4096"):
         assert w in sec, w
     assert 'ticketStatus: {open: "접수", ack: "확인", doing: "처리중", done: "완료", wontfix: "보류"}' in html
@@ -3860,15 +3862,19 @@ async def test_app_account_menu():
         assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
         assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
         menu = html[html.index('<details class="acct" id="acct">'):html.index("</details>")]
-        for act in ("send", "mine", "privacy", "names", "desk", "logout"):
+        for act in ("send", "mine", "privacy", "names", "logout"):
             assert f'data-acct="{act}"' in menu, act
-        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', 'id="acct-desk"', "구조 이름 공유", "로그아웃"):
+        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', "구조 이름 공유", "로그아웃"):
             assert w in menu, w
+        for w in ('data-acct="desk"', 'id="acct-desk"', "문의 섹션"):   # Q1b: 숨기기 메뉴 없음(서버 API·열은 남는다)
+            assert w not in menu, w
         assert 'id="setup-link"' not in menu and 'id="setup-link"' in html, "⚙ 는 메뉴 밖에 그대로"
         assert re.search(r"#who \{[^}]*text-overflow: ellipsis[^}]*\}", html) and re.search(r"#who \{[^}]*min-width: 0", html), "#who 말줄임"
-        for w in ('fetch(url, {method: "POST"', '"/api/desk-visibility", {hidden}', '"/api/optional-consent", {kind: "struct_names"',
-                  '[name="kind"][value="privacy"]', '$("desk").hidden = hidden && !deskPeek;'):
+        for w in ('fetch(url, {method: "POST"', '"/api/optional-consent", {kind: "struct_names"',
+                  '[name="kind"][value="privacy"]', '$("desk-dlg").showModal()'):
             assert w in html, w
+        for w in ("/api/desk-visibility", "desk_hidden", "deskPeek", 'id="desk"'):   # Q1b: 화면은 숨김 상태를 안 쓴다
+            assert w not in html, w
         async with client(U["user"]) as h:
             r = await h.get("/app")
             assert r.status_code == 200 and f"'sha256-{web.inline_script_hashes(r.text)[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
@@ -4029,15 +4035,17 @@ async def test_integration_p5():
 # 플래그 코드는 3단계 몫이다. 이 절은 두 env 를 지운 상태(= off, 명세 §7)에서 로그인·/admin·문의 처리·Q1 이 되는지를 고정한다.
 R1 = {"a": "r1-admin@example.com", "u": "r1-user@example.com"}
 R1_FLAGS = ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")
-R1_USER_ONLY = ('data-acct="send"', 'data-acct="mine"', 'data-acct="privacy"', 'data-acct="names"', 'data-acct="desk"',
-                'id="acct-names"', 'id="acct-desk"', 'id="desk"', 'id="desk-form"', 'id="desk-list"', "구조 이름 공유")
+R1_USER_ONLY = ('data-acct="send"', 'data-acct="mine"', 'data-acct="privacy"', 'data-acct="names"',
+                'id="acct-names"', 'id="desk-dlg"', 'id="desk-form"', 'id="desk-list"', "구조 이름 공유")
+R1_GONE = ('id="desk"', '<section class="wrap desk"', 'data-acct="desk"', 'id="acct-desk"', "문의 섹션", "deskPeek", "/api/desk-visibility")   # Q1b — 둘 다
 R1_ADMIN_ONLY = ('id="acct-console"', '<a class="btn" href="/admin" id="acct-console">운영 콘솔</a>')
 
 
 async def test_r1_flags_off():
     """두 플래그 미설정에서: 웹 로그인(/login → 콜백 → /app)·DEV 경로 · /admin 무세션·일반·DEV 404, 관리자 GET 화면 전부 바로(재인증 없음,
     /admin/reauth → /admin) · 문의 처리 POST(상태·답변, 일반 사용자 404) → 소유자 「내 문의」에 반영 · Q1: 관리자 /app 계정 메뉴 = 운영 콘솔·로그아웃,
-    문의·이름 공유 메뉴·문의 섹션은 본문에 없음(서버가 안 보냄), 일반 사용자는 그대로 · 표식 0 · CSP 해시 = 보낸 본문 · API 모양은 그대로."""
+    문의·이름 공유 메뉴·문의 대화창은 본문에 없음(서버가 안 보냄) · Q1b: 일반 사용자는 하단 문의 섹션 없이 「문의 보내기」·「내 문의」 메뉴가
+    대화창(desk-dlg)을 연다, 숨기기 메뉴 없음 · 표식 0 · CSP 해시 = 보낸 본문 · API 모양은 그대로."""
     from urllib.parse import parse_qs, urlparse
     site = main.site
     fake_jwks(main._auth_kwargs["token_verifier"])
@@ -4070,7 +4078,7 @@ async def test_r1_flags_off():
             return await h.request(method, path, headers={"origin": PUBLIC}, **kw)
 
     def q1(r, admin):
-        """Q1 — /app 본문. 관리자 = ⚙ + 운영 콘솔·로그아웃만, 일반 = 지금 메뉴 그대로. 표식은 어느 쪽에도 남지 않는다."""
+        """Q1·Q1b — /app 본문. 관리자 = ⚙ + 운영 콘솔·로그아웃만, 일반 = 문의 메뉴 + 문의 대화창(하단 섹션 없음). 표식은 어느 쪽에도 남지 않는다."""
         assert r.status_code == 200 and r.headers.get("cache-control") == "no-store", r.status_code
         hs = web.inline_script_hashes(r.text)
         assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
@@ -4081,6 +4089,16 @@ async def test_r1_flags_off():
             assert (w in r.text) is not admin, (admin, w)
         for w in R1_ADMIN_ONLY:
             assert (w in r.text) is admin, (admin, w)
+        for w in R1_GONE:
+            assert w not in r.text, (admin, w)
+        if not admin:   # Q1b: 문의 폼·목록은 대화창 안에만 있다
+            i = r.text.index('<dialog id="desk-dlg"')
+            dlg = r.text[i:r.text.index("</dialog>", i)]
+            for w in ('id="desk-form"', 'id="desk-list"', 'id="desk-text"', 'id="desk-send"'):
+                assert r.text.count(w) == 1 and w in dlg, w
+            menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
+            for act in ("send", "mine"):
+                assert f'data-acct="{act}" aria-haspopup="dialog"' in menu, act
         if admin:
             menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
             assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "로그아웃"], menu
@@ -4130,7 +4148,7 @@ async def test_r1_flags_off():
         for k, v in saved.items():
             if v is not None:
                 os.environ[k] = v
-    print("OK — R1 플래그 off 기준선(로그인 웹·DEV · /admin 일반 404·관리자 바로·재인증 없음 · 문의 처리 · Q1 관리자 /app 메뉴) 통과")
+    print("OK — R1 플래그 off 기준선(로그인 웹·DEV · /admin 일반 404·관리자 바로·재인증 없음 · 문의 처리 · Q1 관리자 /app 메뉴 · Q1b 문의 대화창) 통과")
 
 
 # ── 18) R2 — 응답 계약 · 플래그 해석 · 오류 코드 (DB 없음) ─────────
