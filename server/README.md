@@ -9,8 +9,8 @@ cd server
 uv venv .venv && uv pip install --python .venv/bin/python -r requirements.txt
 # .env 에 DATABASE_URL (Supabase Session pooler, 5432) — gitignored
 CRM_DEV=1 CRM_DEV_USER=you@example.com .venv/bin/python main.py   # http://127.0.0.1:8800
-.venv/bin/python test_tools.py   # Supabase 에 붙어 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제
-CRM_TEST_SCHEMA=crm_test .venv/bin/python test_tools.py   # 운영 DB 가 아직 옛 스키마일 때: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
+DATABASE_URL=postgresql://localhost/crm_test .venv/bin/python test_tools.py   # 로컬 Postgres 에서 인증·도구·HTTP 시험. 시험 사용자는 끝에 삭제. 로컬 아닌 호스트면 시작 전에 멈춘다
+CRM_TEST_ALLOW_REMOTE=1 CRM_TEST_SCHEMA=crm_test .venv/bin/python test_tools.py   # 원격(server/.env) DB 가 아직 옛 스키마일 때만: 임시 스키마에 최종형을 깔고 그 안에서만 시험, 끝에 삭제
 ```
 
 원작자 템플릿(기준·결정·숙제·발행·축·접근 방식 정의, 라벨은 파일 맨 위 `LABELS`) 넣기 — 대상 사용자가 먼저 로그인해 계정이 있어야 한다:
