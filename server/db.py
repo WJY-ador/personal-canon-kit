@@ -1807,7 +1807,7 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
 # ── 문의 데스크 (desk-0) ────────────────────────────────
 # 사용자가 운영자에게 보내는 글. 「본문 0」 원칙의 예외 — 운영자가 직접 읽는다(NOTICE 로 고지).
 # 사용자는 「내 문의」에서 상태·공개 답변·공개 이력을 본다(ticket_get_mine). 운영자 메모(admin_note)·hint·내부 이력은 사용자 응답에 없다.
-# 관리자(users.role='admin', β2)는 /admin/tickets 에서 문의를 처리한다(재인증 12시간 안, admin_db 경유). 문의 변경은 감사(admin_audit)가 아니라
+# 관리자(users.role='admin', β2)는 /admin/tickets 에서 문의를 처리한다(admin_db 경유). 문의 변경은 감사(admin_audit)가 아니라
 # ticket_history 사건으로 남는다.
 
 TICKET_KINDS = ("bug", "request", "question", "privacy")
@@ -2074,7 +2074,7 @@ def admins():
 
 
 def admin_act(actor_id, op, target_id, role=None):
-    """/admin POST 한 건 — 한 트랜잭션. op: role(role=admin|user)·signout·block·unblock. 재인증 창은 호출하는 쪽(요청 단계)이 본다.
+    """/admin POST 한 건 — 한 트랜잭션. op: role(role=admin|user)·signout·block·unblock.
     규칙: 부여 = 이미 admin 이면 무동작 · 회수 = role=admin 이 1명뿐이면 LAST-ADMIN, 회수하면 대상 웹 세션도 끊는다 ·
     끊기 = web_revoked_before · 차단 = blocked_at·web·mcp revoked_before 모두 now()(마지막 관리자도 허용 — 복구는 CLI) ·
     해제 = blocked_at 만 NULL(revoked_before 는 그대로 — 차단 전 쿠키·토큰은 살아나지 않는다).

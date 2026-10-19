@@ -5,7 +5,7 @@
 웹 사용자 = MCP 사용자(같은 sub). 클라이언트는 AuthKit DCR 로 한 번 등록한 공개 클라이언트(AUTHKIT_WEB_CLIENT_ID).
 
 상태는 서버 메모리에 두지 않는다(Render Free 는 유휴 때 죽는다). PKCE verifier·state 는 10분짜리 서명 쿠키, 세션은 7일 서명 쿠키.
-세션 쿠키 v2(β2): {uid, iat, ra?} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. ra = 마지막 재인증 시각.
+세션 쿠키 v2(β2): {uid, iat, exp} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. 옛 쿠키에 남은 ra 키는 읽지 않는다.
 환경변수: AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
 """
 import base64
@@ -432,33 +432,13 @@ def _usage(name: str, handler):
     return run
 
 
-# ── 재인증 창 (β2) ─────────────────────────────────────
-# 경로가 아니라 동작에 붙인다. 세션 쿠키의 ra(마지막 재인증 시각, 정수 초)로 0 ≤ now − ra ≤ 창 일 때만 통과.
-# ra 는 /admin/reauth → /login?fresh=1&reauth=1 → 콜백(같은 uid)에서만 생긴다. 일반 로그인 쿠키엔 없다.
-REAUTH_WINDOWS = {
-    "admin.view": 12 * 3600,        # /admin 화면·감사 로그
-    "ticket.update": 12 * 3600,     # 문의 처리 — /admin/tickets/<id>/* POST
-    "role.grant": 15 * 60,
-    "role.revoke": 15 * 60,
-    "user.web_signout": 15 * 60,
-    "user.block": 15 * 60,
-    "user.unblock": 15 * 60,
-}
-AUTH_TIME_SKEW = 60                 # 콜백 토큰 auth_time 은 재인증 시작(t0) − 60초 이후여야 ra 를 준다
+# ── /admin form 상한 (β2) ─────────────────────────────
 TICKET_FORM_MAX = 16 * 1024         # /admin/tickets POST — 답변 4KB(UTF-8 바이트)를 퍼센트 인코딩하면 최대 3배라 따로 둔다
 ADMIN_FORM_MAX = 4 * 1024           # /admin POST form 본문 상한(바이트) — BodyLimit(/mcp·/api/*) 밖이라 핸들러가 직접 센다
 
 
 def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
-
-
-def reauth_ok(ra, action: str, now: float | None = None) -> bool:
-    """ra(정수 초)가 그 동작의 창 안인지. ra 없음·정수 아님·미래·창 밖이면 False(닫는 쪽)."""
-    if not _is_int(ra):
-        return False
-    d = (time.time() if now is None else now) - ra
-    return 0 <= d <= REAUTH_WINDOWS[action]
 
 
 def _not_found() -> Response:
@@ -524,11 +504,6 @@ def _admin_page(title: str, body: str, status: int = 200, cur: str = "") -> HTML
 
 def _kst(d) -> str:
     return d.astimezone(db.KST).strftime("%Y-%m-%d %H:%M") if d else ""
-
-
-def _left(sec: float) -> str:
-    sec = int(sec)
-    return f"{sec // 3600}시간 {sec % 3600 // 60}분" if sec >= 3600 else f"{max(sec, 0) // 60}분"
 
 
 # ── /admin 개요·스키마·리포트 (P4) — 화면 조립. DB 접근은 admin_db 만 ─────────────
@@ -843,12 +818,9 @@ class Web:
         resp.delete_cookie(name, path="/")
 
     # ── 세션 ───────────────────────────────────────────
-    def session_value(self, uid: str, ra: int | None = None) -> str:
-        """세션 쿠키 v2 값 {uid, iat, ra?}. exp 는 sign 이 붙인다(7일). ra 는 재인증 콜백만 넘긴다."""
-        data = {"uid": uid, "iat": int(time.time())}
-        if ra is not None:
-            data["ra"] = ra
-        return self.sign(data, SESSION_TTL)
+    def session_value(self, uid: str) -> str:
+        """세션 쿠키 v2 값 {uid, iat}. exp 는 sign 이 붙인다(7일)."""
+        return self.sign({"uid": uid, "iat": int(time.time())}, SESSION_TTL)
 
     async def _session_row(self, s: dict):
         """서명 통과한 세션 쿠키의 users 행 — iat 정수·미래 아님 → 행 있음 → 차단 아님 → iat ≥ web_revoked_before.
@@ -870,16 +842,15 @@ class Web:
 
     async def uid_of(self, request) -> str | None:
         """세션 uid. 찾으면 request.state.uid 에도 둔다 — /api/* 사용 집계 래퍼가 DB 조회 없이 읽는다.
-        request.state.role·ra 도 둔다(관리자 판정·재인증 창은 이 값만 읽는다 — 두 번째 조회 없음).
-        DEV(dev_user) 경로는 쿠키 없이 그대로 — 단 차단이면 None. ra 는 없다."""
-        request.state.role, request.state.ra = None, None
+        request.state.role 도 둔다(관리자 판정은 이 값만 읽는다 — 두 번째 조회 없음). 옛 쿠키에 남은 ra 키는 읽지 않는다.
+        DEV(dev_user) 경로는 쿠키 없이 그대로 — 단 차단이면 None."""
+        request.state.role = None
         s = self.unsign(request.cookies.get(SESSION_COOKIE))
         uid = None
         if s and s.get("uid"):
             row = await self._session_row(s)
             if row:
                 uid, request.state.role = row["id"], row["role"]
-                request.state.ra = s.get("ra") if _is_int(s.get("ra")) else None
         elif self.dev and self.dev_user:
             u = await run_in_threadpool(db.user_by_email, self.dev_user)
             if not u.get("blocked_at"):
@@ -990,24 +961,9 @@ class Web:
         if request.query_params.get("fresh") == "1":   # 로그아웃 직후 — AuthKit 세션이 살아 있어도 로그인 폼을 띄운다
             q["prompt"] = "login"
         flow = {"v": verifier, "s": state}
-        if request.query_params.get("reauth") == "1":   # β2 재인증 — 지금 세션 uid 를 r 로. 돌아갈 곳 URL 은 담지 않는다(콜백이 /admin 고정)
-            uid = await self.uid_of(request)
-            if uid is not None:
-                flow.update(r=uid, t0=int(time.time()))
         resp = RedirectResponse(f"{self.issuer}/oauth2/authorize?{urlencode(q)}", status_code=302)
         self.set_cookie(resp, FLOW_COOKIE, self.sign(flow, FLOW_TTL), FLOW_TTL)
         return resp
-
-    @staticmethod
-    def _reauth_fresh(claims: dict, t0) -> bool:
-        """재인증 콜백 토큰이 새 로그인인지. auth_time 이 있으면 t0 − 60초 이후여야, 없으면 통과(Google 자동 통과 한계 — README).
-        t0 가 정수가 아니면 False."""
-        if not _is_int(t0):
-            return False
-        if "auth_time" not in claims:
-            return True
-        at = claims["auth_time"]
-        return isinstance(at, (int, float)) and not isinstance(at, bool) and at >= t0 - AUTH_TIME_SKEW
 
     async def token_post(self, data: dict) -> tuple[int, dict]:
         """토큰 교환. 시험에서 바꿔 끼운다."""
@@ -1042,14 +998,8 @@ class Web:
         except Exception as e:   # ToolError·CrmError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
             return _page("사용자를 연결하지 못했어요", f"<p>{_esc(msg)}</p>{again}", 502)
-        claims = verified.claims or {}
-        print(f"[web] 로그인 토큰 claims 키: {sorted(str(k) for k in claims)}", flush=True)   # 키 이름만 — 값 금지(auth_time·iat 실측용)
-        r = flow.get("r")
-        ra = None
-        if r is not None and r == uid and self._reauth_fresh(claims, flow.get("t0")):
-            ra = int(time.time())   # 재인증 = 같은 사람이 방금 다시 로그인. 다른 uid 면 일반 로그인(ra 없음)
-        resp = RedirectResponse("/admin" if r is not None else "/app", status_code=302)
-        self.set_cookie(resp, SESSION_COOKIE, self.session_value(uid, ra), SESSION_TTL)
+        resp = RedirectResponse("/app", status_code=302)
+        self.set_cookie(resp, SESSION_COOKIE, self.session_value(uid), SESSION_TTL)
         self.clear_cookie(resp, FLOW_COOKIE)
         return resp
 
@@ -1074,7 +1024,7 @@ class Web:
             return err
         st, me, flags = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid)))
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
-        if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용 — 재인증 창과 무관(누르면 /admin 이 재인증을 건다). 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
+        if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
@@ -1201,7 +1151,7 @@ class Web:
         return JSONResponse(out, headers={"cache-control": "no-store"})
 
     # ── /admin (β2) ────────────────────────────────────
-    # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 재인증 창은 REAUTH_WINDOWS(동작 기준).
+    # 서버 렌더 + form POST 만(스크립트 0). 비관리자·무세션·DEV → 404. 관리자 세션이면 모든 화면·동작을 바로 연다.
     async def _admin_who(self, request) -> str | None:
         """관리자 세션 uid. DEV·무세션·비관리자(차단 포함 — uid_of 가 이미 거른다)면 None."""
         if self.dev:
@@ -1210,12 +1160,9 @@ class Web:
         return uid if uid is not None and getattr(request.state, "role", None) == "admin" else None
 
     async def admin_index(self, request):
-        """/admin 개요 — 상태 띠 · 사용자 표(+미연결 행) · 오류 표 14일 · 정의 분포. 표 정의는 리포트 프리셋과 같다(admin_db.aggregate).
-        화면 창(admin.view) 밖이면 /admin/reauth."""
+        """/admin 개요 — 상태 띠 · 사용자 표(+미연결 행) · 오류 표 14일 · 정의 분포. 표 정의는 리포트 프리셋과 같다(admin_db.aggregate)."""
         if await self._admin_who(request) is None:
             return _not_found()
-        if not reauth_ok(request.state.ra, "admin.view"):
-            return RedirectResponse("/admin/reauth", status_code=302)
         role = request.state.role
         today = admin_db.kst_today()
         since = today - _dt.timedelta(days=admin_db.RECENT_DAYS - 1)
@@ -1268,26 +1215,17 @@ class Web:
         return _admin_page("관리 — 개요", body, cur="overview")
 
     async def admin_reauth(self, request):
-        """재인증 시작 — 로그인 폼을 강제(fresh=1)하고 콜백이 같은 uid 면 ra 를 준다."""
+        """옛 링크 호환 — 관리자 세션이면 302 /admin. 비관리자·무세션·DEV 는 다른 /admin 경로와 같은 404."""
         if await self._admin_who(request) is None:
             return _not_found()
-        return RedirectResponse("/login?fresh=1&reauth=1", status_code=302)
+        return RedirectResponse("/admin", status_code=302)
 
     async def admin_setup(self, request):
         uid = await self._admin_who(request)
         if uid is None:
             return _not_found()
-        ra = request.state.ra
-        if not reauth_ok(ra, "admin.view"):
-            return RedirectResponse("/admin/reauth", status_code=302)
         role = request.state.role
         users, audit = await run_in_threadpool(lambda: (admin_db.users(role), admin_db.audit(role)))
-        now = time.time()
-        risky = REAUTH_WINDOWS["role.grant"] - (now - ra)
-        view = REAUTH_WINDOWS["admin.view"] - (now - ra)
-        risky_txt = f"위험 동작 {_left(risky)} 남음" if risky >= 0 else '<span class="warn">위험 동작(부여·회수·끊기·차단)은 다시 로그인해야 해요</span>'
-        bar = (f'<div class="bar"><span>재인증: {risky_txt} · 화면 {_left(view)} 남음</span>'
-               f'<a href="/admin/reauth">다시 로그인</a><a href="/app">대시보드로</a></div>')
 
         def btn(action, label, fields, danger=False):
             hidden = "".join(f'<input type="hidden" name="{_esc(k)}" value="{_esc(v)}">' for k, v in fields.items())
@@ -1316,7 +1254,7 @@ class Web:
         arows = "".join(f'<tr><td>{_esc(_kst(a["at"]))}</td><td class="email">{who(a["actor_email"], a["actor_id"])}</td>'
                         f'<td>{_esc(ADMIN_LABELS.get(a["action"], a["action"]))}</td><td class="email">{who(a["target_email"], a["target_id"])}</td></tr>'
                         for a in audit)
-        body = (f'<h1>관리 — Setup</h1>{bar}'
+        body = (f'<h1>관리 — Setup</h1>'
                 f'<h2>사용자 {len(users)}명</h2><div class="tbl"><table><thead><tr><th>이메일</th><th>가입일</th><th>역할</th>'
                 f'<th>차단</th><th>웹 끊은 시각</th><th>동작</th></tr></thead>'
                 f'<tbody>{"".join(rows)}</tbody></table></div>'
@@ -1339,7 +1277,7 @@ class Web:
             return None
 
     async def _admin_post(self, request, op: str):
-        """/admin POST 공통 — 관리자 세션(아니면 404) → Origin 정확히 일치(403) → form(400) → 재인증 창(403 REAUTH-REQUIRED)
+        """/admin POST 공통 — 관리자 세션(아니면 404) → Origin 정확히 일치(403) → form(400)
         → admin_db.act(한 트랜잭션·감사) → 303 /admin/setup."""
         uid = await self._admin_who(request)
         if uid is None:
@@ -1351,11 +1289,6 @@ class Web:
         role = (form or {}).get("role") if op == "role" else None
         if not form or not form.get("uid") or (op == "role" and role not in ("admin", "user")):
             return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>ARG-INVALID</p>{back}", 400)
-        action = {"signout": "user.web_signout", "block": "user.block", "unblock": "user.unblock"}.get(op) \
-            or ("role.grant" if role == "admin" else "role.revoke")
-        if not reauth_ok(request.state.ra, action):
-            return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 이 동작은 15분 안에 다시 로그인한 '
-                               '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403)
         try:
             await run_in_threadpool(admin_db.act, uid, op, form["uid"], role)
         except db.CrmError as e:
@@ -1364,7 +1297,7 @@ class Web:
                                f"{'<p>' + _esc(e.action) + '</p>' if e.action else ''}{back}", status)
         return RedirectResponse("/admin/setup", status_code=303)
 
-    # 문의 처리(P3) — form POST 4개. 화면(/admin/tickets/<id>)은 P4. 사다리는 _admin_post 와 같고 재인증 창은 ticket.update(12h).
+    # 문의 처리(P3) — form POST 4개. 화면(/admin/tickets/<id>)은 P4. 사다리는 _admin_post 와 같다.
     _TICKET_OPS = {   # op → (form 필드, admin_db 함수 이름)
         "status": (("status",), "ticket_status"),
         "reply": (("reply",), "ticket_reply"),
@@ -1373,7 +1306,7 @@ class Web:
     }
 
     async def _admin_ticket_post(self, request, op: str):
-        """/admin/tickets/{tid}/{op} — 관리자 세션(아니면 404) → Origin(403) → form(400) → 재인증 ticket.update(403)
+        """/admin/tickets/{tid}/{op} — 관리자 세션(아니면 404) → Origin(403) → form(400)
         → admin_db(변경+사건 한 트랜잭션) → 303 /admin/tickets/{tid}."""
         uid = await self._admin_who(request)
         if uid is None:
@@ -1387,9 +1320,6 @@ class Web:
         form = await self._admin_form(request, TICKET_FORM_MAX)
         if form is None or fields[0] not in form:
             return _admin_page("요청이 틀렸어요", f"<h1>요청이 틀렸어요</h1><p>ARG-INVALID</p>{back}", 400, cur="tickets")
-        if not reauth_ok(request.state.ra, "ticket.update"):
-            return _admin_page("다시 로그인이 필요해요", '<h1>다시 로그인이 필요해요</h1><p>REAUTH-REQUIRED — 문의 처리는 12시간 안에 다시 로그인한 '
-                               '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403, cur="tickets")
         args = [form.get(f, "") for f in fields]
         try:
             await run_in_threadpool(getattr(admin_db, fn), request.state.role, uid, tid, *args)
@@ -1517,7 +1447,7 @@ class Web:
         return _admin_page("관리 — 리포트", body, cur="reports")
 
     # ── /admin/tickets — 문의 리스트·레코드(P4-4·5) ─────────────
-    # 서버 렌더·form 만(스크립트 0). 리스트엔 원문·메모·화면·도구·UA 가 없다 — 원문은 레코드 페이지에서만. 재인증 창 = admin.view(12h).
+    # 서버 렌더·form 만(스크립트 0). 리스트엔 원문·메모·화면·도구·UA 가 없다 — 원문은 레코드 페이지에서만.
     _TK_KIND = {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"}
     _TK_STATUS = {"open": "접수", "ack": "확인", "doing": "처리중", "done": "완료", "wontfix": "보류"}
     _TK_LIST_STATUS = {"active": "미종결", "all": "전체", "closed": "종결", **_TK_STATUS}
@@ -1544,13 +1474,11 @@ class Web:
         return f'<span class="tag due">{"오늘까지" if left == 0 else f"{left}일 남음"}</span> <span class="muted">{_esc(due.isoformat())}</span>'
 
     async def _admin_view(self, request):
-        """GET /admin 화면 공통(스키마·리포트·문의) — 관리자 세션(아니면 None·404) → 화면 창 admin.view(밖이면 /admin/reauth 302).
+        """GET /admin 화면 공통(스키마·리포트·문의) — 관리자 세션(아니면 None·404).
         반환 (uid, None) 또는 (None, 응답). role 은 request.state.role."""
         uid = await self._admin_who(request)
         if uid is None:
             return None, _not_found()
-        if not reauth_ok(request.state.ra, "admin.view"):
-            return None, RedirectResponse("/admin/reauth", status_code=302)
         return uid, None
 
     async def admin_tickets(self, request):

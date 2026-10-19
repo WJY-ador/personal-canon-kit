@@ -17,7 +17,7 @@
    외부 셰이더 문자열 0 · 용량 상한(라이트·다크) · 기본 밝은 화면(OS 미추종)+☀/☾ 토글 · 데모가 낡았으면(app.html 바뀜) 경고만
 9) α2: 처리방침 버전(guides 머리글) · 필수 동의 게이트 없음(미동의자 MCP·웹 쓰기·/app 200·/consent→/app·/api/consent 404) · 일일 한도(기록·질문·후보·결정·제안)
    · usage_daily(메모리만·flush 합산/로그인 사용자는 그 uid/실패 버림·lifespan 종료 flush→close) · 계정 삭제 뒤 usage_daily·agreements 0
-10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 ra(콜백 같은 uid·auth_time·창 12h/15m·미래) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
+10) β2: /admin 404(무세션·비관리자·DEV) · 재인증 없음(관리자 세션이면 화면·POST 바로, /admin/reauth→/admin, 콜백→/app, 옛 ra 무시) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류)
    · 부여·회수·LAST-ADMIN·동시 회수 · 차단/해제(웹·MCP AUTH-BLOCKED/REVOKED) · 웹 끊기는 MCP 무관 · /app 에 관리자 데이터 없음
    · CSP·스크립트 0·이스케이프 · admin_cli grant · 감사 파기 · bootstrap(임시 스키마)·lifespan 배선
 11) 운영 경계(admin_db): 정적(/admin·관리자 문의 핸들러는 db 조회를 직접 안 부름 · admin_db SQL 은 ALLOW 리터럴만 · SELECT * 0 ·
@@ -27,8 +27,8 @@
    · /privacy v3(처리 근거 표) · 옛 사용량 삭제 표식 멱등(임시 스키마)
 13) 문의 완결(P3): 공개/내부 이력 분리(웹 GET /api/feedback/<id>·MCP ticket_*_mine) · 남의 문의 404 · 답변 한 트랜잭션 · 메모 public_updated 불변
    · 재분류(기산점 created·즉시 초과·재진입 1행·해제 사유) · /admin/tickets/<id>/* POST 사다리 · 실행자 재조회 · 파기 cascade · 정기 파기
-13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·재인증·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
-14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·재인증·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
+13b) 문의 화면(P4-4·5): /admin/tickets 리스트·레코드 404·옛 ra 쿠키 통과·CSP·escape · 기본 필터·기한 정렬 · 400 · 상한 · Path·form·이력 배지
+14) 운영 화면(P4): /admin 개요·/admin/schema·/admin/reports — 404·옛 ra 쿠키 통과·CSP·스크립트 0·공통 메뉴 · 이름 공유(동의자만, 철회·옛 버전 0)
    · escape · 리포트 400(모르는 키·조합·기간) · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)
 15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
@@ -140,7 +140,7 @@ def make_token(key=KEY, aud=RESOURCE, iss=FAKE_ISSUER, exp_in=600, sub="user_tes
         claims["scp"] = scp
     if sid is not None:
         claims["sid"] = sid
-    claims.update(extra or {})   # β2: auth_time 등
+    claims.update(extra or {})   # β2: 임의 클레임
     return jwt.encode(claims, key, algorithm=alg, headers={"kid": kid})
 
 
@@ -1906,10 +1906,10 @@ async def test_feedback_admin():
                 r = await h.post(url, json={"id": ids["bug"], "status": "ack", "admin_note": "x"}, headers=origin)
                 assert r.status_code == 404, (url, r.status_code)   # 라우트 없음 — /api/feedback/{tid} 는 GET 만, 나머지는 Mount("/") 의 404
             assert _ticket(ids["bug"])["status"] == "open" and _ticket(ids["bug"])["admin_note"] == "", "비관리자 쓰기는 반영 안 됨"
-            # 관리자 — β2: role=admin + 재인증(ra) 쿠키 세션. DEV 폴백엔 ra 가 없어 관리자 경로가 닫힌다
+            # 관리자 — β2: role=admin 쿠키 세션. DEV 폴백에선 관리자 경로가 닫힌다
             _set_role(uid, "admin")
             site.dev, site.dev_user = False, ""
-            h.cookies.set("crm_session", site.session_value(uid, int(time.time()) - 3600))
+            h.cookies.set("crm_session", site.session_value(uid))
             for hd in ({}, {"origin": "https://evil.example"}):   # Origin 없음·다름 → 403 (관리자여도)
                 for op, data in (("status", {"status": "ack"}), ("note", {"admin_note": "x"})):
                     r = await post(ids["bug"], op, data, hd)
@@ -2471,7 +2471,7 @@ def test_alpha2_delete_lock():
     print("OK — α2 삭제 잠금(flush 가 잠금 잡은 동안 user_delete 블록·삭제 uid 행 0·메모리 키 0) 통과")
 
 
-# ── 10) β2 — 관리자 역할 · 재인증 · 감사 · 웹 끊기 · 차단 · Setup ─────────
+# ── 10) β2 — 관리자 역할 · 감사 · 웹 끊기 · 차단 · Setup (재인증 없음) ─────────
 
 B2 = {k: f"b2{k}@example.com" for k in ("a", "b", "c", "m")}   # a·b = 관리자 후보, c = 사용자, m = MCP(차단 시험)
 B2_XSS = "<b>esc</b>@example.com"
@@ -2505,7 +2505,7 @@ def _tok(sub, iat="now"):
 
 
 async def test_beta2():
-    """β2: /admin 404(무세션·비관리자·DEV) · 재인증(ra) 흐름·창 · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류) · 부여·회수·LAST-ADMIN·동시 회수
+    """β2: /admin 404(무세션·비관리자·DEV) · 재인증 없음(ra 없이 화면·POST, /admin/reauth→/admin, 콜백→/app, 옛 ra 무시) · 쿠키 v2(옛 쿠키·끊기·차단·DB 오류) · 부여·회수·LAST-ADMIN·동시 회수
     · 차단/해제(웹·MCP) · 웹 끊기는 MCP 무관 · /app 관리자 경로 창 · CSP·이스케이프 · CLI · 감사 파기 · lifespan 배선."""
     import datetime
     import threading
@@ -2528,8 +2528,8 @@ async def test_beta2():
     real = (site.dev, site.dev_user, site.client_id, site.token_post, db.session_user)
     site.dev, site.dev_user, site.client_id = False, "", "client_test"
     now = lambda: int(time.time())   # noqa: E731
-    ck = lambda uid, ra=None, iat=None: site.sign({"uid": uid, "iat": now() if iat is None else iat,   # noqa: E731
-                                                   **({} if ra is None else {"ra": ra})}, 600)
+    ck = lambda uid, iat=None: site.sign({"uid": uid, "iat": now() if iat is None else iat}, 600)   # noqa: E731
+    ck_ra = lambda uid, ra: site.sign({"uid": uid, "iat": now(), "ra": ra}, 600)   # 옛 쿠키 — ra 는 무시돼야 한다  # noqa: E731
 
     async def call(method, path, cookie=None, origin=True, data=None):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -2544,7 +2544,7 @@ async def test_beta2():
     site.token_post = fake_token_post
 
     async def login(cookie, reauth, sub, extra=None):
-        """쿠키 세션으로 /login(?fresh=1&reauth=1) → 콜백. (콜백 응답, 새 세션 쿠키 내용)."""
+        """쿠키 세션으로 /login(옛 링크 ?fresh=1&reauth=1 포함) → 콜백. (콜백 응답, 새 세션 쿠키 내용)."""
         tok_next.update(sub=sub, extra=extra)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
             if cookie:
@@ -2560,16 +2560,16 @@ async def test_beta2():
              ("/admin/unblock", {"uid": C}))
     try:
         # ── 404: 무세션 · 비관리자 · DEV ──
-        for cookie in (None, ck(C, now()), ck(C)):
+        for cookie in (None, ck_ra(C, now()), ck(C)):
             for path in ("/admin", "/admin/setup", "/admin/reauth"):
                 r = await call("GET", path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code, r.text[:80])
             for path, data in posts:
                 r = await call("POST", path, cookie, data=data)
                 assert r.status_code == 404, (path, r.status_code)
-        site.dev, site.dev_user = True, B2["a"]   # DEV: 관리자 dev_user 여도, ra 쿠키가 있어도 404
+        site.dev, site.dev_user = True, B2["a"]   # DEV: 관리자 dev_user 여도, 관리자 쿠키가 있어도 404
         try:
-            for cookie in (None, ck(A, now())):
+            for cookie in (None, ck(A)):
                 for path in ("/admin", "/admin/setup", "/admin/reauth"):
                     assert (await call("GET", path, cookie)).status_code == 404, ("DEV", path)
                 for path, data in posts:
@@ -2578,41 +2578,37 @@ async def test_beta2():
             site.dev, site.dev_user = False, ""
         assert _urow(C)["role"] == "user" and not _audit_rows(C), "404 경로는 아무것도 안 바꾼다"
 
-        # ── 재인증 ──
-        r = await call("GET", "/admin", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (r.status_code, r.headers.get("location"))
-        r = await call("GET", "/admin/setup", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/admin/reauth"
+        # ── 재인증 없음 — 관리자 세션이면 화면·POST 바로 ──
+        for path in ("/admin", "/admin/setup", "/admin/tickets", "/admin/schema", "/admin/reports"):
+            r = await call("GET", path, ck(A))
+            assert r.status_code == 200, (path, r.status_code, r.headers.get("location"))
+            assert "재인증" not in r.text and "다시 로그인" not in r.text and "/admin/reauth" not in r.text, (path, "재인증 문구 0")
         r = await call("GET", "/admin/reauth", ck(A))
-        assert r.status_code == 302 and r.headers["location"] == "/login?fresh=1&reauth=1", r.headers.get("location")
-        t0 = now()
-        r, s = await login(ck(A), True, "b2a_sub")   # 같은 uid → ra
-        assert r.status_code == 302 and r.headers["location"] == "/admin" and s["uid"] == A and _is_int(s.get("ra")), (r.headers, s)
-        assert t0 <= s["ra"] <= now(), s
-        r, s = await login(ck(A), True, "b2c_sub")   # 콜백 uid 다름 → 일반 로그인(ra 없음)
-        assert s["uid"] == C and "ra" not in s and r.headers["location"] == "/admin", s
-        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 61 - 60})   # auth_time < t0 − 60 → ra 없음
-        assert s["uid"] == A and "ra" not in s, s
-        r, s = await login(ck(A), True, "b2a_sub", {"auth_time": now() - 30})        # auth_time ≥ t0 − 60 → ra
-        assert s["uid"] == A and _is_int(s.get("ra")), s
-        r, s = await login(ck(A, now()), False, "b2a_sub")   # 일반 로그인 — 이전 ra 도 버린다
-        assert r.headers["location"] == "/app" and s["uid"] == A and "ra" not in s, (r.headers, s)
-        r, s = await login(None, True, "b2a_sub")   # 세션 없이 reauth=1 → r 없음 → 일반 로그인
-        assert r.headers["location"] == "/app" and "ra" not in s, s
-        # 창: view 12h · 위험 15m · 미래 거절
-        assert (await call("GET", "/admin/setup", ck(A, now() - 13 * 3600))).headers.get("location") == "/admin/reauth", "ra 13h → view 거절"
-        assert (await call("GET", "/admin/setup", ck(A, now() + 60))).headers.get("location") == "/admin/reauth", "ra 미래 → 거절"
-        r = await call("GET", "/admin/setup", ck(A, now() - 16 * 60))
-        assert r.status_code == 200, "ra 16m → view 는 통과"
+        assert r.status_code == 302 and r.headers["location"] == "/admin", r.headers.get("location")
+        for ra in (now() - 13 * 3600, now() + 60, "x", True):   # 옛 쿠키의 ra — 값이 무엇이든 무시(무효로 만들지 않는다)
+            r = await call("GET", "/admin/setup", ck_ra(A, ra))
+            assert r.status_code == 200, ("옛 ra", ra, r.status_code)
+            assert (await call("GET", "/api/state", ck_ra(A, ra))).status_code == 200, ("옛 ra /api", ra)
+        r = await call("GET", "/admin/setup", ck(A))
         assert "<th>차단</th>" in r.text and "처리방침" not in r.text and "미동의" not in r.text, "사용자 표에 처리방침 동의 열 없음"
-        r = await call("POST", "/admin/role", ck(A, now() - 16 * 60), data={"uid": C, "role": "admin"})
-        assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text and 'href="/admin/reauth"' in r.text, (r.status_code, r.text[:200])
-        assert _urow(C)["role"] == "user", "ra 16m → role 거절"
-        assert web.reauth_ok(now() - 14 * 60, "role.grant") and not web.reauth_ok(now() - 16 * 60, "role.grant")
-        assert web.reauth_ok(now() - 11 * 3600, "admin.view") and not web.reauth_ok(now() - 13 * 3600, "ticket.update")
-        assert "ticket.read_all" not in web.REAUTH_WINDOWS, "/app 문의함 창은 P5 에서 뺐다"
-        assert not web.reauth_ok(None, "admin.view") and not web.reauth_ok(str(now()), "admin.view") and not web.reauth_ok(True, "admin.view")
-        assert not web.reauth_ok(now() + 5, "admin.view") and web.reauth_ok(now(), "user.block")
+        # 콜백은 항상 /app, 쿠키 = {uid, iat, exp}. 옛 링크(reauth=1)·옛 ra 쿠키·auth_time 클레임도 같다
+        for cookie, reauth, sub, extra in ((ck_ra(A, now()), True, "b2a_sub", None), (ck(A), True, "b2c_sub", None),
+                                           (ck(A), True, "b2a_sub", {"auth_time": now() - 3600}), (ck_ra(A, now()), False, "b2a_sub", None),
+                                           (None, True, "b2a_sub", None), (None, False, "b2a_sub", None)):
+            r, s = await login(cookie, reauth, sub, extra)
+            assert r.status_code == 302 and r.headers["location"] == "/app", (sub, reauth, r.headers.get("location"))
+            assert set(s) == {"uid", "iat", "exp"} and s["uid"] == (C if sub == "b2c_sub" else A), s
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:   # flow 쿠키에 r·t0 없음
+            h.cookies.set("crm_session", ck(A))
+            r = await h.get("/login", params={"fresh": "1", "reauth": "1"})
+            flow = site.unsign(r.cookies.get(web.FLOW_COOKIE))
+            assert r.status_code == 302 and set(flow) == {"v", "s", "exp"}, flow
+        assert not hasattr(web, "reauth_ok") and not hasattr(web, "REAUTH_WINDOWS") and not hasattr(web, "AUTH_TIME_SKEW")
+        assert not hasattr(web.Web, "_reauth_fresh")
+        code = "\n".join(Path(__file__).with_name(n).read_text(encoding="utf-8") for n in
+                         ("web.py", "admin_db.py", "db.py", "auth.py", "main.py", "admin_cli.py", "app.html", "start.html"))
+        for word in ("REAUTH", "reauth_ok", "auth_time", "_reauth_fresh", "state.ra", "재인증"):
+            assert word not in code, f"정적: {word} 0"
 
         # ── 쿠키 v2 ──
         assert (await call("GET", "/api/state", site.sign({"uid": A}, 600))).status_code == 401, "옛 쿠키(iat 없음) 무효"
@@ -2738,8 +2734,8 @@ async def test_beta2():
         assert rc[0]["detail"] == {"from": "admin", "to": "admin", "unblocked": True}, rc
         assert admin_cli.main(["list"]) == 0 and A in {r["id"] for r in db.admins()}
 
-        # ── /app 에 관리자 데이터 없음(P5) — 재인증 창과 무관하게 같은 모양, ⚙ 링크용 admin 만 ──
-        for cookie in (ck(A), ck(A, now() - 13 * 3600), ck(A, now() - 3600), ck(A, now())):
+        # ── /app 에 관리자 데이터 없음(P5) — 옛 ra 쿠키여도 같은 모양, ⚙ 링크용 admin 만 ──
+        for cookie in (ck(A), ck_ra(A, now() - 13 * 3600), ck_ra(A, now())):
             st = (await call("GET", "/api/state", cookie)).json()
             assert "admin_tickets" not in st and st["user"].get("admin") is True, list(st)
             r = await call("GET", "/api/feedback", cookie)
@@ -2749,7 +2745,7 @@ async def test_beta2():
                 for path in ("/api/feedback/status", "/api/feedback/note"):
                     r = await h.post(path, json={"id": "tk_nope", "status": "ack", "admin_note": "x"}, headers={"origin": PUBLIC})
                     assert r.status_code == 404, (path, r.status_code)
-        assert "admin" not in (await call("GET", "/api/state", ck(C, now()))).json()["user"], "비관리자는 ra 가 있어도 admin 키 없음"
+        assert "admin" not in (await call("GET", "/api/state", ck(C, now()))).json()["user"], "비관리자는 admin 키 없음"
 
         # ── /admin/setup: CSP · 스크립트 0 · 이스케이프 · 감사 표 ──
         r = await call("GET", "/admin/setup", ck(A, now()))
@@ -2758,8 +2754,10 @@ async def test_beta2():
         assert "<script" not in r.text.lower() and not re.search(r"\son[a-z]+\s*=", r.text, re.I), "스크립트·이벤트 속성 0"
         assert "&lt;b&gt;esc&lt;/b&gt;@example.com" in r.text and "<b>esc" not in r.text, "이메일 이스케이프"
         for word in (B2["m"], "관리자 부여", "관리자 회수", "웹 로그인 끊기", "차단", 'action="/admin/role"', 'action="/admin/block"',
-                     'name="uid"', "재인증", 'href="/admin/reauth"', "감사 로그", "복구(CLI)", "웹 로그인 끊기"):
+                     'name="uid"', "감사 로그", "복구(CLI)", "웹 로그인 끊기"):
             assert word in r.text, word
+        for word in ("재인증", "다시 로그인", "/admin/reauth", "REAUTH", "남음"):
+            assert word not in r.text, ("Setup 에 재인증 문구 0", word)
         db.admin_act(A, "signout", X)
         db.user_delete(X)   # 지워진 계정 → 감사 표엔 id 앞 8자
         r = await call("GET", "/admin/setup", ck(A, now()))
@@ -2777,7 +2775,7 @@ async def test_beta2():
         site.dev, site.dev_user, site.client_id, site.token_post, db.session_user = real
         site.dev, site.dev_user = True, TESTER
         _sql("UPDATE users SET role='admin' WHERE id = ANY(%s)", (others,))
-    print("OK — β2 /admin 404·재인증 흐름·창(12h·15m·미래)·쿠키 v2·끊기·차단/해제(웹·MCP)·부여/회수·LAST-ADMIN·동시 회수·CLI·/app 창·CSP·이스케이프·감사 파기 통과")
+    print("OK — β2 /admin 404·재인증 없음(ra 없이 화면·POST·/admin/reauth→/admin·콜백→/app·옛 ra 무시·정적 0)·쿠키 v2·끊기·차단/해제(웹·MCP)·부여/회수·LAST-ADMIN·동시 회수·CLI·/app 창·CSP·이스케이프·감사 파기 통과")
 
 
 async def test_beta2_bootstrap():
@@ -2961,7 +2959,7 @@ async def test_admin_boundary():
     db.optional_consent_set(A, "struct_names", True)
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
-    cookie = site.session_value(A, ra=int(time.time()))
+    cookie = site.session_value(A)
     seen = []
 
     async def call(method, path, **kw):
@@ -3197,7 +3195,7 @@ def _tk_hist(tid):
 async def test_ticket_p3():
     """공개/내부 분리(웹·MCP) · 남의 문의 404 · 답변 한 트랜잭션(사건 실패 주입 → 답변 롤백) · 메모는 public_updated 그대로
     · 재분류 기산점 = created(11일 전 → 즉시 초과) · privacy 재진입 privacy_log 1행 · 해제 사유 필수·저장 · 종결 문의 재분류
-    · 파기 cascade · 정기 파기 태스크 · /admin/tickets POST 사다리(404·403 Origin·400·403 재인증·303) · 회수된 관리자·재인증 밖 거절."""
+    · 파기 cascade · 정기 파기 태스크 · /admin/tickets POST 사다리(404·403 Origin·400·303 — 옛 ra 쿠키도 303) · 회수된 관리자 거절."""
     import admin_db
     site = main.site
     O = db.user_by_subject("tk_owner_sub", TK["owner"])["id"]
@@ -3207,7 +3205,7 @@ async def test_ticket_p3():
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    ck_admin, ck_stale = site.session_value(A, ra=now), site.session_value(A, ra=now - 13 * 3600)
+    ck_admin, ck_stale = site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)   # ck_stale = 옛 ra 쿠키(무시)
 
     async def req(method, path, cookie=None, origin=True, **kw):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3307,16 +3305,14 @@ async def test_ticket_p3():
         n0 = len(_tk_hist(t1))
         for op, form in ops:
             p = f"/admin/tickets/{t1}/{op}"
-            for cookie in (None, site.session_value(O, ra=now)):           # 무세션·비관리자 → 404
+            for cookie in (None, site.session_value(O)):           # 무세션·비관리자 → 404
                 assert (await req("POST", p, cookie, data=form)).status_code == 404, (op, "404")
             r = await req("POST", p, ck_admin, origin=False, data=form)
             assert r.status_code == 403 and "ORIGIN" in r.text, (op, r.status_code)
             r = await req("POST", p, ck_admin, json=form)
             assert r.status_code == 400 and "ARG-INVALID" in r.text, (op, r.status_code)
-            r = await req("POST", p, ck_stale, data=form)
-            assert r.status_code == 403 and "REAUTH-REQUIRED" in r.text, (op, r.status_code)
             assert len(_tk_hist(t1)) == n0, (op, "거절은 아무것도 안 바꾼다")
-            r = await req("POST", p, ck_admin, data=form)
+            r = await req("POST", p, ck_stale, data=form)   # 재인증 없음 — 옛 ra(13h 전) 쿠키도 그대로 처리
             assert r.status_code == 303 and r.headers["location"] == f"/admin/tickets/{t1}", (op, r.status_code, r.text[:200])
             n0 = len(_tk_hist(t1))
         row = _ticket(t1)
@@ -3401,7 +3397,7 @@ TKV = {"admin": "tkv-admin@example.com", "u": "<i>tkv</i>@example.com"}
 
 
 async def test_ticket_pages():
-    """/admin/tickets 리스트·/admin/tickets/<id> 레코드: 비관리자·무세션 404 · 재인증 창 밖 → /admin/reauth · CSP·스크립트 0·이벤트 속성 0
+    """/admin/tickets 리스트·/admin/tickets/<id> 레코드: 비관리자·무세션 404 · 옛 ra 쿠키도 200 · CSP·스크립트 0·이벤트 속성 0
     · escape(text·reply·memo·email 의 <script>) · 기본 필터(미종결)·기한 정렬(초과 최우선 → 기한 → 접수순) · 모르는 키 400 · 행 상한
     · 리스트에 원문·메모·화면·도구 없음 · 레코드에 원문·Path(현재 강조)·답변·메모·재분류·이력(공개/내부) · form action 이 P3 POST 를 가리킴."""
     import admin_db
@@ -3426,7 +3422,7 @@ async def test_ticket_pages():
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    ck_admin, ck_stale = site.session_value(A, ra=now), site.session_value(A, ra=now - 13 * 3600)
+    ck_admin, ck_stale = site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)   # ck_stale = 옛 ra 쿠키(무시)
 
     async def get(path, cookie=ck_admin):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3436,11 +3432,11 @@ async def test_ticket_pages():
     pages = ("/admin/tickets", f"/admin/tickets/{t_new}")
     try:
         for path in pages:
-            for cookie in (None, site.session_value(U, ra=now)):
+            for cookie in (None, site.session_value(U)):
                 r = await get(path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
             r = await get(path, ck_stale)
-            assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+            assert r.status_code == 200, (path, r.status_code)
             r = await get(path)
             t = r.text
             csp = r.headers["content-security-policy"]
@@ -3504,7 +3500,7 @@ async def test_ticket_pages():
             assert r.status_code == 200 and 'aria-current="step">처리중<' in r.text and "접수 → 처리중" in r.text
     finally:
         site.dev, site.dev_user = real
-    print("OK — 문의 화면(404·재인증·DEV · CSP·스크립트 0·escape · 기본 미종결·기한 정렬·초과 표시 · 리스트에 원문·메모 없음 · 400 · 상한"
+    print("OK — 문의 화면(404·옛 ra 통과·DEV · CSP·스크립트 0·escape · 기본 미종결·기한 정렬·초과 표시 · 리스트에 원문·메모 없음 · 400 · 상한"
           " · 레코드 Path·form 4종·공개/내부 배지 · POST→303→반영) 통과")
 
 
@@ -3513,7 +3509,7 @@ P4 = {k: f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o")}
 
 
 async def test_admin_screens():
-    """/admin 개요·/admin/schema·/admin/reports — 404(무세션·비관리자·DEV) · 재인증 창 · CSP·스크립트 0·no-store·공통 메뉴
+    """/admin 개요·/admin/schema·/admin/reports — 404(무세션·비관리자·DEV) · 옛 ra 쿠키도 200 · CSP·스크립트 0·no-store·공통 메뉴
     · 이름 공유: 동의자만 현재 이름(템플릿 이름 바꾼 것 포함), 비동의·철회·옛 버전은 0 · 출력 escape · 리포트 잘못된 키·조합 400
     · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)."""
     import datetime
@@ -3552,7 +3548,7 @@ async def test_admin_screens():
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     now = int(time.time())
-    good = site.session_value(A, ra=now)
+    good = site.session_value(A)
     pages = ("/admin", "/admin/schema", "/admin/reports")
 
     async def get(path, cookie=good):
@@ -3570,8 +3566,8 @@ async def test_admin_screens():
         assert mark not in t, (path, "비동의·철회·옛 버전 이름이 보인다")
         return t
     try:
-        # ── 404 · 재인증 ──
-        for cookie in (None, site.session_value(U["g"], ra=now)):
+        # ── 404 · 재인증 없음 ──
+        for cookie in (None, site.session_value(U["g"])):
             for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage"):
                 r = await get(path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
@@ -3584,7 +3580,7 @@ async def test_admin_screens():
         for cookie in (site.session_value(A), site.sign({"uid": A, "iat": now, "ra": now - 13 * 3600}, 600)):
             for path in pages + ("/admin/reports?ds=usage&g1=day",):
                 r = await get(path, cookie)
-                assert r.status_code == 302 and r.headers["location"] == "/admin/reauth", (path, r.status_code)
+                assert r.status_code == 200, (path, r.status_code)
         # ── 공통 메뉴 · 개요 ──
         for path, cur in (("/admin", "/admin"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
                           ("/admin/setup", "/admin/setup"), ("/admin/tickets", "/admin/tickets")):
@@ -3699,7 +3695,7 @@ async def test_admin_screens():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM usage_daily WHERE user_id='' AND name='p4:unlinked'")
-    print("OK — 운영 화면(개요·스키마·리포트: 404·재인증·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
+    print("OK — 운영 화면(개요·스키마·리포트: 404·옛 ra 통과·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
 
 
 async def run():
@@ -3877,7 +3873,7 @@ async def test_app_account_menu():
 
 
 # ── 16) 통합(P5-6) — 운영 콘솔 묶음 최종 ─────────────────
-# /admin 의 GET 화면 전부(개요·Setup·재인증·문의·스키마·리포트).
+# /admin 의 GET 화면 전부(개요·Setup·옛 재인증 링크·문의·스키마·리포트).
 INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com",
        "n": "int-names@example.com"}
 INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports")
@@ -3912,7 +3908,7 @@ async def test_integration_p5():
                   (db.new_id("pl"), t))
     try:
         # ── 공개/내부 이력 — 관리자가 웹으로 처리 4종 ──
-        ck_a = site.session_value(A, ra=now())
+        ck_a = site.session_value(A)
         for op, form in INT_TICKET_OPS:
             if op == "reclassify":
                 form = {"kind": "request", "reason": "not_privacy"}
@@ -3926,7 +3922,7 @@ async def test_integration_p5():
         assert r.status_code == 200 and j["reply"] == "공개 답변" and [h["kind"] for h in j["history"]] == ["status", "reply"], j
         assert "INTNOTE" not in r.text and "admin_note" not in j and "reclassify" not in r.text and "not_privacy" not in r.text, r.text
         assert (await req("GET", f"/api/feedback/{t}", site.session_value(X))).status_code == 404, "남의 문의는 404"
-        assert (await req("GET", f"/api/feedback/{t}", site.session_value(A, ra=now()))).status_code == 404, "관리자도 /api 로는 남의 문의 404"
+        assert (await req("GET", f"/api/feedback/{t}", site.session_value(A))).status_code == 404, "관리자도 /api 로는 남의 문의 404"
         try:
             for email, ok in ((INT["o"], True), (INT["x"], False)):
                 os.environ["CRM_DEV_USER"] = email
@@ -3995,7 +3991,7 @@ async def test_integration_p5():
         # ── 권한 회수: B 가 A 를 회수 → A 의 옛 세션은 끊기고, 새 세션(role=user)도 /admin 전부 404·처리 POST 거절 ──
         assert db.admin_act(B, "role", A, "user") == {"changed": True}
         n_hist = len(_tk_hist(t))
-        for cookie in (ck_a, site.session_value(A, ra=now() + 1)):
+        for cookie in (ck_a, site.session_value(A)):
             for path in INT_ADMIN_GETS + (f"/admin/tickets/{t}",):
                 r = await req("GET", path, cookie)
                 assert r.status_code == 404, (path, r.status_code)
