@@ -34,7 +34,7 @@
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
    · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
-   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(트리에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
+   · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(사용자 상세에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
 17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
    · /admin 문의 처리(상태·답변) · Q1 관리자 /app = ⚙ + 「운영 콘솔」·로그아웃만(문의·이름 공유 메뉴·문의 대화창은 보내지 않음)
    · Q1b 일반 사용자 /app = 하단 문의 섹션 없음 · 「문의 보내기」·「내 문의」는 대화창(desk-dlg) · 「문의 섹션 숨기기」 없음
@@ -2872,11 +2872,16 @@ async def test_beta2_bootstrap():
 # 운영 화면·운영 POST 의 DB 접근은 admin_db 한 모듈. 「본문」은 운영 경로에서 SELECT 하지 않는다.
 # 표식 시험이 도는 관리자 응답 — 새 /admin 페이지·리포트는 여기에 더한다(P4). (method, path, form/json)
 ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
-ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets")
+ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets",
+              "/admin/users")
 # P4: 리포트는 프리셋 전부 + 데이터셋별 차원 하나씩, 스키마는 사용자 트리(?u=)까지 — 동적 URL 이라 admin_report_urls() 가 만든다
 ADB_ALLOWED_DB = {"CrmError"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외만, 조회 함수 없음(처리방침 동의 표시는 뺐다)
-ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value|questions|records|"
-                           r"candidates|tabs|items)\b", re.I)
+ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value)\b", re.I)
+ADB_BODY_TABLES = re.compile(r"\b(questions|records|candidates|tabs|items)\b", re.I)
+# PR #20 Q5: 연결·무결성 조회만 본문 테이블을 이름으로 부른다 — 대신 SQL 의 한정 열(별칭.열)은 상태·식별 열뿐(ADB_STATE_COLS)
+ADB_STATE_KEYS = ("userview.counts", "userview.links")
+ADB_STATE_COLS = {"id", "user_id", "created", "kind", "state", "version", "std_key", "record_id", "object_id", "revision", "archived_at",
+                  "deleted_at", "source_item_id", "source_object_id", "source_record_id", "field_key", "target_item_id", "target_record_id"}
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
 ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
 ADB_TEXT_KEYS = ("tickets.detail",)   # text·admin_note 를 읽는 유일한 조회(P5 에서 /app 문의함 이행 키를 뺐다)
@@ -2934,6 +2939,11 @@ def test_admin_boundary_static():
         if not sql:
             continue
         assert not ADB_BODY_COLS.search(sql), (k, ADB_BODY_COLS.search(sql).group(0))
+        if k in ADB_STATE_KEYS:
+            cols = set(re.findall(r"\b[a-z]{1,3}\.([a-z_]+)\b", sql))
+            assert cols <= ADB_STATE_COLS, (k, "상태·식별 열만", sorted(cols - ADB_STATE_COLS))
+        else:
+            assert not ADB_BODY_TABLES.search(sql), (k, ADB_BODY_TABLES.search(sql).group(0))
         if k not in ADB_TEXT_KEYS:
             assert not ADB_TEXT_COLS.search(sql), (k, "text·admin_note 는 문의 상세만")
         if v["consent"] != "struct_names":
@@ -2972,6 +2982,11 @@ async def test_admin_boundary():
                   (U, mark + "-fl", Jsonb([{"value": "v", "label": mark + "-opt"}])))
         c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,body,data,revision) "
                   "VALUES (%s,'i_adb','od_adb',1,%s,%s,%s,1)", (U, mark + "-it", mark + "-ib", Jsonb({"f1": mark + "-data"})))
+        # PR #20 Q5: 참조 필드 + 연결 1개(자기 참조) — /admin/users 상세의 관계·연결 집계가 도는 자리
+        c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,target_kind,target_object_id,position) "
+                  "VALUES (%s,'od_adb','f2',%s,'reference','item','od_adb',1)", (U, mark + "-rl"))
+        c.execute("INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_item_id) "
+                  "VALUES (%s,'i_adb','od_adb','f2','i_adb')", (U,))
     t = {"id": "tk_adb" + secrets.token_hex(3)}   # SQL 로 — desk 시험이 전역 하루 한도를 채워 둔다
     with db.tx() as c:
         c.execute("INSERT INTO tickets (id,user_id,kind,text,via,admin_note) VALUES (%s,%s,'bug',%s,'web',%s)", (t["id"], U, tmark, nmark))
@@ -2995,12 +3010,12 @@ async def test_admin_boundary():
         seen.append((method, path, r.status_code))
         return r, r.text + json.dumps(dict(r.headers), ensure_ascii=False)
     try:
-        for path in ADMIN_GETS + tuple(admin_report_urls()) + (f"/admin/schema?u={site._opaque(U)}",):
+        for path in ADMIN_GETS + tuple(admin_report_urls()) + (f"/admin/schema?u={site._opaque(U)}", f"/admin/users/{site._opaque(U)}"):
             r, out = await call("GET", path)
             assert r.status_code in (200, 302), (path, r.status_code)
             assert mark not in out, f"{path} 응답에 금지 열 값"
-        # 허용 응답 — 이름 공유 동의자(A)의 현재 이름은 트리에 보인다(비동의 U 의 이름은 위에서 0)
-        r, out = await call("GET", f"/admin/schema?u={site._opaque(A)}")
+        # 허용 응답 — 이름 공유 동의자(A)의 현재 이름은 사용자 상세에 보인다(비동의 U 의 이름은 위에서 0)
+        r, out = await call("GET", f"/admin/users/{site._opaque(A)}")
         assert r.status_code == 200 and all(w in out for w in ("이름공유오브젝트", "이름공유필드", "이름공유선택지")) and mark not in out, out[-600:]
         r, out = await call("GET", "/admin/setup")
         assert r.status_code == 200 and ADB["user"] in out and tmark not in out and nmark not in out, "Setup 엔 이메일만, 문의 원문 없음"
@@ -3038,7 +3053,8 @@ async def test_admin_boundary():
         snap.update({"overview.band": [admin_db.overview_band("admin")], "overview.last_active": admin_db.last_active("admin"),
                      **{admin_db.REPORT_DATASETS[ds]: admin_db.report_rows("admin", ds, *(() if ds == "structure" else (today, today)))
                         for ds in admin_db.REPORT_DATASETS},
-                     "schema.tree": admin_db.schema_tree("admin", U), "schema.object_names": names[0], "schema.field_names": names[1]})
+                     "schema.tree": admin_db.schema_tree("admin", U), "schema.object_names": names[0], "schema.field_names": names[1],
+                     **admin_db.userview_rows("admin", U)})
         assert admin_db.schema_names("admin", U) == ([], []), "비동의자는 이름 분기 0행"
         assert set(snap) == {k for k, v in admin_db.ALLOW.items() if v["sql"]}, "ALLOW 키가 늘면 스냅샷도 늘린다"
         for k, rows in snap.items():
@@ -3575,7 +3591,7 @@ async def test_admin_screens():
     site.dev, site.dev_user = False, ""
     now = int(time.time())
     good = site.session_value(A)
-    pages = ("/admin", "/admin/schema", "/admin/reports")
+    pages = ("/admin", "/admin/schema", "/admin/reports", "/admin/users")
 
     async def get(path, cookie=good):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
@@ -3594,7 +3610,7 @@ async def test_admin_screens():
     try:
         # ── 404 · 재인증 없음 ──
         for cookie in (None, site.session_value(U["g"])):
-            for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage"):
+            for path in pages + (f"/admin/schema?u={site._opaque(U['g'])}", "/admin/reports?ds=usage", f"/admin/users/{site._opaque(U['g'])}"):
                 r = await get(path, cookie)
                 assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
         site.dev, site.dev_user = True, P4["a"]
@@ -3608,11 +3624,11 @@ async def test_admin_screens():
                 r = await get(path, cookie)
                 assert r.status_code == 200, (path, r.status_code)
         # ── 공통 메뉴 · 개요 ──
-        for path, cur in (("/admin", "/admin"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
+        for path, cur in (("/admin", "/admin"), ("/admin/users", "/admin/users"), ("/admin/schema", "/admin/schema"), ("/admin/reports", "/admin/reports"),
                           ("/admin/setup", "/admin/setup"), ("/admin/tickets", "/admin/tickets")):
             r = await get(path)
             t = clean(r, path)
-            assert r.status_code == 200 and all(f'href="{h}"' in t for h in ("/admin", "/admin/schema", "/admin/reports",
+            assert r.status_code == 200 and all(f'href="{h}"' in t for h in ("/admin", "/admin/users", "/admin/schema", "/admin/reports",
                                                                             "/admin/tickets", "/admin/setup", "/app")), path
             assert f'<a href="{cur}" aria-current=page>' in t and len(re.findall(r"<a [^>]*aria-current", t)) == 1, (path, "현재 메뉴 하나")
         r = await get("/admin")
@@ -3659,28 +3675,31 @@ async def test_admin_screens():
         assert "admin_note" not in std_html and ">hint<" not in std_html, "표준 구조 화면에도 운영자 전용 열이 없다"
         assert "G-RENAMED" not in t and "G-FLD" not in t and "admin_audit" not in t and "usage_daily" not in t, "목록엔 사용자 이름·DB 내부 테이블 없음"
         for k in ("g", "n", "w", "o"):
-            assert f'href="/admin/schema?u={site._opaque(U[k])}"' in t, k
-        # ── 스키마: 사용자 트리 — 동의자만 현재 이름 ──
+            assert f'href="/admin/users/{site._opaque(U[k])}"' in t, k
+        # ── 옛 사용자 트리(/admin/schema?u=) → 새 상세로 302. 상세: 동의자만 현재 이름(PR #20 Q5 — 계약 출력) ──
         r = await get(f"/admin/schema?u={site._opaque(U['g'])}")
-        t = clean(r, "/admin/schema?u=g")
+        assert r.status_code == 302 and r.headers["location"] == f"/admin/users/{site._opaque(U['g'])}", (r.status_code, r.headers)
+        r = await get(f"/admin/users/{site._opaque(U['g'])}")
+        t = clean(r, "/admin/users/g")
         assert r.status_code == 200 and "&lt;script&gt;alert(1)&lt;/script&gt;G-OBJ" in t and "&lt;b&gt;G-OPT&lt;/b&gt;" in t, t[-1500:]
-        assert "G-RENAMED" in t and "G-FLD" in t and "G-REF" in t and "유효 동의 —" in t, "템플릿 유래라도 바꾼 이름은 동의자만"
-        assert "u1" in t and "f1" in t and "f2" in t and "tpl:axes" in t and "tpl:keywords" in t and "→ tpl:axes" in t, "표시 이름·관계"
-        assert "p4u" not in t and "pick" not in t, "사용자가 지은 id·key 는 보이지 않는다"
+        assert "G-RENAMED" in t and "G-FLD" in t and "G-REF" in t and "동의 — 현재 이름" in t, "템플릿 유래라도 바꾼 이름은 동의자만"
+        assert "오브젝트 1" in t and "필드 a" in t and "N:N" in t, "자리표·관계"
+        assert "p4u" not in t and "pick" not in t and "tpl:" not in t and "v1" not in t, "사용자가 지은 id·key·선택지 값·tpl 표시 이름은 보이지 않는다"
         for k in ("n", "w", "o"):
-            r = await get(f"/admin/schema?u={site._opaque(U[k])}")
-            t = clean(r, f"/admin/schema?u={k}")
-            assert r.status_code == 200 and "u1" in t and "tpl:axes" in t and 'class="lbl"' not in t and "유효 동의 없음" in t, (k, t[-800:])
+            r = await get(f"/admin/users/{site._opaque(U[k])}")
+            t = clean(r, f"/admin/users/{k}")
+            assert r.status_code == 200 and "오브젝트 1" in t and 'class="lbl"' not in t and "동의 없음" in t, (k, t[-800:])
             assert admin_db.schema_names("admin", U[k]) == ([], []), k
         # 철회하면 그 뒤 조회부터 이름이 빠진다
         db.optional_consent_set(U["g"], "struct_names", False)
-        t = (await get(f"/admin/schema?u={site._opaque(U['g'])}")).text
+        t = (await get(f"/admin/users/{site._opaque(U['g'])}")).text
         assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, "철회 뒤 이름 0"
         db.optional_consent_set(U["g"], "struct_names", True)
         expect("FORBIDDEN", admin_db._rows, "schema.object_names", "admin", (U["g"], "s1"))   # 이름 키는 일반 조회 경로로 못 연다
         expect("FORBIDDEN", admin_db.schema_names, "user", U["g"])
         for path, code in ((f"/admin/schema?u={'0' * 12}", 404), ("/admin/schema?u=x&u=y", 400), ("/admin/schema?x=1", 400),
-                           (f"/admin/schema?u={site._opaque(U['g'])}&zz=1", 400)):
+                           (f"/admin/schema?u={site._opaque(U['g'])}&zz=1", 400), (f"/admin/users/{'0' * 12}", 404), ("/admin/users?x=1", 400),
+                           (f"/admin/users/{site._opaque(U['g'])}?zz=1", 400)):
             r = await get(path)
             assert r.status_code == code and "<script" not in r.text.lower(), (path, r.status_code)
         # ── 리포트: 프리셋 · 모든 차원·필터 200, 이름 0 ──
@@ -3765,6 +3784,7 @@ async def run():
         await test_r3_std()
         await test_q2_std()
         await test_q3()
+        await test_q5_admin()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3912,14 +3932,14 @@ async def test_app_account_menu():
 # /admin 의 GET 화면 전부(개요·Setup·옛 재인증 링크·문의·스키마·리포트).
 INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com",
        "n": "int-names@example.com"}
-INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports")
+INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports", "/admin/users")
 INT_TICKET_OPS = (("status", {"status": "doing"}), ("reply", {"reply": "공개 답변"}), ("note", {"admin_note": "내부 메모 INTNOTE"}),
                   ("reclassify", {"kind": "request", "reason": ""}))
 
 
 async def test_integration_p5():
-    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · 이름 공유: 동의자 이름은 /admin/schema 트리에만 보이고
-    리포트(프리셋·구조)엔 없음, 철회 뒤 다음 조회부터 트리에도 0 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 「내 문의」 순서(최근 공개 갱신,
+    """권한 회수 뒤 /admin 전부 404·문의 POST 거절(세션 끊김·새 세션 둘 다) · 이름 공유: 동의자 이름은 /admin/users 상세에만 보이고
+    리포트(프리셋·구조)엔 없음, 철회 뒤 다음 조회부터 상세에도 0 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 「내 문의」 순서(최근 공개 갱신,
     없으면 접수 — 웹·MCP 같음) · 파기 cascade(privacy_log 는 남음) · 관리자 세션으로도 /app·/api/state·/api/feedback 에 관리자 데이터 0."""
     site = main.site
     A = db.user_by_subject("int_a_sub", INT["a"])["id"]
@@ -3982,7 +4002,7 @@ async def test_integration_p5():
                 assert "INTTEXT" not in out and "INTNOTE" not in out and INT["o"] not in out, "남의 문의·메모·이메일 없음"
             for gone in ("admin-band", "admin_tickets", "/api/feedback/status", "/api/feedback/note", "문의함"):
                 assert gone not in app_.text, gone
-        # ── 이름 공유 — 동의자 이름은 /admin/schema 트리에만, 리포트엔 언제나 0 · 철회하면 다음 조회부터 트리에도 0 ──
+        # ── 이름 공유 — 동의자 이름은 /admin/users 상세에만, 리포트엔 언제나 0 · 철회하면 다음 조회부터 상세에도 0 ──
         from psycopg.types.json import Jsonb
         nm = "INTNAME" + secrets.token_hex(3)
         with db.tx() as c:
@@ -3990,7 +4010,7 @@ async def test_integration_p5():
                       (N, nm + "-obj"))
             c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,'od_int','f1',%s,'select',%s)",
                       (N, nm + "-fld", Jsonb([{"value": "v", "label": nm + "-opt"}])))
-        tree = f"/admin/schema?u={site._opaque(N)}"
+        tree = f"/admin/users/{site._opaque(N)}"
         reports = [href for _, _, href in web.preset_links()] + ["/admin/reports?ds=structure",
                                                                  "/admin/reports?ds=structure&g1=value_type&g2=origin"]
 
@@ -4000,8 +4020,8 @@ async def test_integration_p5():
             for href in reports:
                 r_ = await req("GET", href, ck_a)
                 assert r_.status_code == 200 and nm not in r_.text, (href, r_.status_code, "리포트엔 이름이 없다")
-            for path in ("/admin", "/admin/schema", "/admin/setup", "/admin/tickets?status=all"):
-                assert nm not in (await req("GET", path, ck_a)).text, (path, "트리 밖엔 이름이 없다")
+            for path in ("/admin", "/admin/schema", "/admin/setup", "/admin/tickets?status=all", "/admin/users"):
+                assert nm not in (await req("GET", path, ck_a)).text, (path, "상세 밖엔 이름이 없다")
             return [x for x in ("-obj", "-fld", "-opt") if nm + x in t_.text]
         assert await names_seen() == [], "비동의 — 트리에 이름 0"
         db.optional_consent_set(N, "struct_names", True)
@@ -4049,7 +4069,7 @@ async def test_integration_p5():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM privacy_log WHERE ticket_id=%s", (t,))   # FK·cascade 밖
-    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 트리만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
+    print("OK — 통합(회수 뒤 /admin 404·처리 거절 · 이름 공유 상세만·리포트 0·철회 뒤 0 · 소유권 웹·MCP · 공개/내부 이력"
           " · 내 문의 공개 갱신순 웹=MCP · 파기 cascade · /app 관리자 데이터 0) 통과")
 
 
@@ -5328,6 +5348,181 @@ async def test_q3():
     print("OK — Q3 축소(출처 off 기록만·on 찾거나 만들기·검사·사용자별·FK·옛 기록 미확인·본인만·MCP 인자 · 역할 이관·초안 제외·거절 유지·멱등"
           "·시드 표준 축·늦은 축·record_attach 역할 경유·CLASSIFY-OFF·항목 필드 무관 · 확정 재검사 4사유·edit_confirm 롤백·다른 결정 허용"
           "·확정 불변·review 웹=MCP·정정 해제 · external 거절·정정 허용·PROVENANCE-LOCKED · init_schema 2회) 통과")
+
+
+# ── 22a) Q5 운영자 화면 — /admin/users · /admin/users/<불투명 id> · structure_svg ─────────
+Q5A = {k: f"q5a{k}@example.com" for k in ("a", "n", "c", "r", "x")}   # a 관리자 · n 비동의 · c 이름 공유 동의 · r 철회 · x 일반 사용자
+TEST_EMAILS += tuple(Q5A.values())
+
+
+def _q5a_fixture(uid, m, h):
+    """표준 편입 2(축·결정) · 사용자 오브젝트(N:1·N:N·대상 미지정 참조·select) · 템플릿·사용자 고립 노드 · 출처 1 ·
+    연결: 정상 3 · 없는 대상(보관 항목) 1 · 대상 오브젝트 불일치 1 · 검사 불가(대상 미지정) 1 · M-D 위반(지워진 근거 기록의 후보) 1.
+    사용자 문자열은 m(label·선택지 label·출처·본문), key·id·선택지 값은 h 를 품는다 — 누출 전문 검색용."""
+    from psycopg.types.json import Jsonb
+    o = [f"od_q5{h}_{i}" for i in range(1, 6)]   # 같은 created_at → id 순 = 오브젝트 1..5
+    with db.tx() as c:
+        for oid, key, lab, kind, std, slot in ((o[0], "axes", "축", "collection", "std:axes", None),
+                                               (o[1], "decision_events", "결정", "event", "std:decision_events", None),
+                                               (o[2], f"q5key{h}c", "사용자", "collection", None, None),
+                                               (o[3], f"q5key{h}t", "템플릿", "collection", None, "author@1:craft"),
+                                               (o[4], f"q5key{h}i", "고립", "collection", None, None)):
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision,std_id,template_slot) VALUES (%s,%s,%s,%s,%s,1,%s,%s)",
+                      (uid, oid, key, f"{m}-L-{lab}", kind, std, slot))
+        fd = "INSERT INTO field_defs (user_id,object_id,key,label,value_type,options,target_kind,target_object_id,multiple,position,std_id) " \
+             "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+        for row in ((o[0], "keywords", "kw", "text_list", [], None, None, False, 0, "std:axes.keywords"),
+                    (o[1], "happened_on", "날짜", "date", [], None, None, False, 0, "std:decision_events.happened_on"),
+                    (o[1], "claims", "판단", "reference", [], "candidate", None, True, 1, "std:decision_events.claims"),
+                    (o[2], f"q5key{h}sel", "고르기", "select", [{"value": f"q5val{h}", "label": f"{m}-OPT"}], None, None, False, 0, None),
+                    (o[2], f"q5key{h}one", "하나", "reference", [], "item", o[0], False, 1, None),
+                    (o[2], f"q5key{h}many", "여럿", "reference", [], "item", o[1], True, 2, None),
+                    (o[2], f"q5key{h}any", "아무", "reference", [], "item", None, True, 3, None)):
+            c.execute(fd, (uid, row[0], row[1], f"{m}-F-{row[2]}", row[3], Jsonb(row[4]), *row[5:]))
+        it = "INSERT INTO items (user_id,id,object_id,schema_revision,title,body,revision,archived_at) VALUES (%s,%s,%s,1,%s,%s,1,%s)"
+        for iid, oid, gone in (("i1", o[0], False), ("i2", o[1], False), ("i3", o[2], False), ("i4", o[0], True), ("i5", o[2], False)):
+            c.execute(it, (uid, f"i_q5{h}{iid}", oid, f"{m}-T", f"{m}-B", "2026-01-01" if gone else None))
+        c.execute("INSERT INTO records (id,user_id,title,body,deleted_at) VALUES (%s,%s,%s,%s,now())", (f"r_q5{h}", uid, f"{m}-RT", "abcdef"))
+        c.execute("INSERT INTO candidates (id,user_id,record_id,text,quote,quote_start,quote_end,origin) VALUES (%s,%s,%s,%s,'abc',0,3,'self')",
+                  (f"c_q5{h}", uid, f"r_q5{h}", f"{m}-CT"))
+        ln = "INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_item_id,target_candidate_id) VALUES (%s,%s,%s,%s,%s,%s)"
+        for src, oid, fk, ti, tc in (("i2", o[1], "claims", None, f"c_q5{h}"),       # 정상(코어 후보)
+                                     ("i3", o[2], f"q5key{h}one", "i1", None),         # 정상 N:1
+                                     ("i3", o[2], f"q5key{h}many", "i2", None),        # 정상 N:N
+                                     ("i3", o[2], f"q5key{h}many", "i4", None),        # 없는 대상(보관 항목)
+                                     ("i5", o[2], f"q5key{h}many", "i1", None),        # 대상 오브젝트 불일치
+                                     ("i5", o[2], f"q5key{h}any", "i1", None)):        # 검사 불가(대상 미지정)
+            c.execute(ln, (uid, f"i_q5{h}{src}", oid, fk, f"i_q5{h}{ti}" if ti else None, tc))
+        c.execute("INSERT INTO sources (user_id,id,kind,name,location) VALUES (%s,%s,'file',%s,%s)", (uid, f"s_q5{h}", f"{m}-SRCNAME", f"{m}-SRCLOC"))
+        c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,'std@1','adopting')", (uid,))
+        for k, stt in (("axes", "incorporated"), ("decision_events", "incorporated"), ("principles", "deferred")):
+            c.execute("INSERT INTO std_choices (user_id,std_key,state) VALUES (%s,%s,%s)", (uid, k, stt))
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via) VALUES (%s,%s,'bug',%s,'web')", (f"tk_q5{h}", uid, f"{m}-TK"))
+
+
+async def test_q5_admin():
+    """Q5 운영자 화면: structure_svg 결정성 · 비동의·철회 사용자 — 목록·상세 HTML·SVG 속성·aria·URL·302 Location·404 본문에 label·key·선택지 값·
+    출처 name·location·id 0 · 동의 사용자 — 현재 label 보임·key·선택지 값 0 · 위조 불투명 id 404 · 일반 사용자 404 · 연결 있음 M ·
+    무결성 오류 3종 ≠ 검사 불가 · cardinality · 표준 상태 코드 · 고립 노드 · 표준 정의 보호."""
+    import admin_db
+    import structure_svg
+    site = main.site
+    U = {k: db.user_by_email(e)["id"] for k, e in Q5A.items()}
+    A = U["a"]
+    _set_role(A, "admin")
+    M = {k: f"Q5M{k.upper()}" + secrets.token_hex(4) for k in ("n", "c", "r")}
+    H = {k: secrets.token_hex(4) for k in ("n", "c", "r")}
+    for k in ("n", "c", "r"):
+        _q5a_fixture(U[k], M[k], H[k])
+    db.optional_consent_set(U["c"], "struct_names", True)
+    db.optional_consent_set(U["r"], "struct_names", True)
+    db.optional_consent_set(U["r"], "struct_names", False)
+    secret = [M["n"], M["r"]] + [f"{p}{H[k]}" for k in ("n", "c", "r") for p in ("q5key", "q5val", "od_q5", "i_q5", "r_q5", "c_q5", "s_q5", "tk_q5")]
+    secret += [M["c"] + x for x in ("-SRCNAME", "-SRCLOC", "-T", "-B", "-RT", "-CT", "-TK")] + list(U.values())
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+
+    async def get(path, cookie=None):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            h.cookies.set("crm_session", cookie or site.session_value(A))
+            return await h.get(path)
+
+    def leak_free(r, path):
+        out = r.text + json.dumps(dict(r.headers), ensure_ascii=False)
+        hit = [s for s in secret if s in out]
+        assert not hit, (path, "누출", hit)
+        if r.status_code == 200:
+            assert "<script" not in r.text.lower() and not re.search(r"\son[a-z]+\s*=", r.text, re.I), (path, "스크립트·이벤트 속성 0")
+        return r.text
+
+    def svg_of(t):
+        i = t.index("<svg")
+        return t[i:t.index("</svg>", i) + 6]
+    try:
+        # ── structure_svg: 결정성 · 고정 예제 · 본인 응답도 그린다 ──
+        for name in contract.EXAMPLES:
+            for v in contract.VIEWERS:
+                resp = contract.respond(contract.EXAMPLES[name], v)
+                a, b = structure_svg.render(resp), structure_svg.render(json.loads(json.dumps(resp)))
+                assert a == b and a.startswith("<svg") and a.endswith("</svg>"), (name, v)
+                banned = {"self": None, "admin_noconsent": r"ULBL|PLBL|SRC|ukey|uopt|od_|src_", "admin_consent": r"SRC|ukey|uopt|od_|src_"}[v]
+                assert banned is None or not re.search(banned, a), (name, v, "운영자 SVG 에 key·선택지 값·출처·id(비동의는 label 도) 0")
+        # 대조 — 심은 이름·key·선택지 값·출처는 본인 응답에선 보인다(읽히는 자리에 있다는 증거)
+        own = (await get("/api/state", site.session_value(U["n"]))).text
+        for w in (f"{M['n']}-L-사용자", f"{M['n']}-OPT", f"q5key{H['n']}sel", f"q5val{H['n']}", f"{M['n']}-SRCNAME", f"{M['n']}-SRCLOC"):
+            assert w in own, ("대조 실패 — 본인 state 에 없다", w)
+        # 운영 화면은 밝게 고정(OS 미추종) — 다크 미디어 쿼리 0
+        assert "prefers-color-scheme" not in web._ADMIN_CSS and "prefers-color-scheme" not in (await get("/admin/users")).text
+        # ── 일반 사용자·무세션 404 ──
+        for cookie in (site.session_value(U["x"]), site.session_value(U["n"])):
+            for path in ("/admin/users", f"/admin/users/{site._opaque(U['n'])}"):
+                r = await get(path, cookie)
+                assert r.status_code == 404 and "<" not in r.text, (path, r.status_code)
+        # ── 목록: n · N · M · 표준 상태 코드 ──
+        r = await get("/admin/users")
+        t = leak_free(r, "/admin/users")
+        assert r.status_code == 200 and f'href="/admin/users/{site._opaque(U["n"])}"' in t
+        row = next(x for x in t.split("<tr>") if Q5A["n"] in x)
+        assert '<td class="num">5</td><td class="num">4</td><td class="num">3</td>' in row, row
+        assert "std@1 adopting" in row and "axes incorporated" in row and "principles deferred" in row, row
+        assert M["c"] not in t, "목록엔 동의자 이름도 없다"
+        # ── 상세(비동의·철회) ──
+        for k in ("n", "r"):
+            path = f"/admin/users/{site._opaque(U[k])}"
+            r = await get(path)
+            t = leak_free(r, path)
+            assert r.status_code == 200 and "동의 없음" in t and 'class="lbl"' not in t, (k, t[-600:])
+            svg = svg_of(t)
+            assert svg == svg_of((await get(path)).text), "같은 사용자 두 번 → 같은 SVG"
+            assert svg.count('r="42"') == 6, "오브젝트 5(고립 2 포함) + 코어 후보 1 — 같은 크기"
+            assert svg.count("stroke-dasharray") == 2 and svg.count(structure_svg.LOCK_TEXT) >= 2, "편입된 표준 2 = 표준 정의 보호"
+            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 사용자" in svg, svg[:1500]
+            assert "marker" not in svg and "arrow" not in svg, "화살표 없음"
+            assert all(f'id="{structure_svg.node_anchor(i)}"' in t for i in range(5)) and f'id="{structure_svg.core_anchor("candidate")}"' in t
+            assert t.count('<td>N:1</td>') == 1 and t.count('<td>N:N</td>') == 3, "카디널리티 표시"
+            for code, n in (("REF-DANGLING", 1), ("REF-MISMATCH", 1), ("MD-ORPHAN", 1)):
+                assert re.search(rf"<td>{code}</td><td>[^<]+</td><td class=\"num\"><span class=err>{n}</span></td>", t), (code, t[-2500:])
+            assert re.search(r"<td>UNCHECKED</td><td>검사 불가[^<]*</td><td class=\"num\">1</td>", t), "검사 불가는 오류와 따로"
+            assert "std@1" in t and "adopting" in t and "incorporated" in t and "deferred" in t, "표준 상태 코드"
+            assert "표준 축" in t and "표준 결정" in t, "편입된 것만 표준명"
+        v = admin_db.userview("admin", U["n"])[U["n"]]
+        inp = admin_db.contract_input(v)
+        st = admin_db.link_stats(v, inp)
+        assert st["linked"] == [1, 1, 1, 0], st
+        assert sorted((e["code"], e["why"], e["n"]) for e in st["errors"]) == [("MD-ORPHAN", "candidate", 1), ("REF-DANGLING", "target", 1),
+                                                                             ("REF-MISMATCH", "object", 1)], st
+        assert [(e["rel"], e["why"], e["n"]) for e in st["unchecked"]] == [(3, "any_item", 1)], st
+        resp = contract.respond(inp, "admin_noconsent")
+        assert [r_["cardinality"] for r_ in resp["relations"]] == ["N:N", "N:1", "N:N", "N:N"] and resp["counts"]["sources"] == 1
+        assert structure_svg.render(resp) == structure_svg.render(contract.respond(admin_db.contract_input(v), "admin_noconsent"))
+        # ── 상세(동의): 현재 label·선택지 label 보임, key·선택지 값·출처 0 ──
+        path = f"/admin/users/{site._opaque(U['c'])}"
+        r = await get(path)
+        t = leak_free(r, path)
+        assert r.status_code == 200 and "동의 — 현재 이름" in t, t[-600:]
+        assert f"{M['c']}-L-사용자" in t and f"{M['c']}-F-여럿" in t and f"{M['c']}-OPT" in t, "동의자 현재 label·선택지 label"
+        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 사용자"' in svg_of(t), "SVG 에도 동의자 label"
+        # 철회 → 다음 조회부터 이름 0
+        db.optional_consent_set(U["c"], "struct_names", False)
+        t = (await get(path)).text
+        assert M["c"] not in t and "동의 없음" in t, "철회 뒤 이름 0"
+        db.optional_consent_set(U["c"], "struct_names", True)
+        # ── URL·오류: 위조 불투명 id · 내부 id · 쿼리 · 옛 트리 302 ──
+        for bad in ("0" * 12, secrets.token_hex(6), U["n"], site._opaque(U["n"])[:-1] + ("0" if site._opaque(U["n"])[-1] != "0" else "1")):
+            r = await get(f"/admin/users/{bad}")
+            t = leak_free(r, bad)
+            assert r.status_code == 404 and "NOT-FOUND" in t and bad not in t, (bad, r.status_code)
+        r = await get(f"/admin/users/{site._opaque(U['n'])}?u=1")
+        assert r.status_code == 400 and leak_free(r, "?u=1")
+        r = await get(f"/admin/schema?u={site._opaque(U['n'])}")
+        leak_free(r, "/admin/schema?u=n")
+        assert r.status_code == 302 and r.headers["location"] == f"/admin/users/{site._opaque(U['n'])}", r.headers
+        for path in ("/admin", "/admin/schema", "/admin/reports?ds=structure&g1=value_type"):
+            leak_free(await get(path), path)
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 22a Q5 운영자 화면(SVG 결정성·예제·본인 응답 · 일반 사용자 404 · 목록 n·N·M·표준 코드 · 비동의·철회 상세 이름·key·값·출처·id 0"
+          "(HTML·SVG·aria·URL·302·404) · 동의 label 보임·key 0·철회 뒤 0 · 위조 id 404 · 무결성 3종 ≠ 검사 불가 · N:1·N:N · 고립·표준 정의 보호) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

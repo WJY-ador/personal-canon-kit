@@ -11,6 +11,7 @@
 """
 import datetime as _dt
 
+import contract
 import db
 
 VIEWER_ADMIN = "admin"
@@ -600,3 +601,140 @@ def preset_params(params, today=None):
         q["from"] = (today - _dt.timedelta(days=params["days"] - 1)).isoformat()
         q["to"] = today.isoformat()
     return q
+
+
+# ── 운영자 사용자 뷰(PR #20 Q5) — /admin/users · /admin/users/<불투명 id> ─────────
+# 구조는 contract.respond(…, admin_*) 를 거쳐서만 화면에 나간다. 여기선 그 입력을 이름 없이 조립한다 — 오브젝트 id·필드 key 는 md5 대리값
+# (_admin 은 id·key 를 내보내지 않는다), label·선택지는 이름 공유 분기(schema_names) 행이 있을 때만 끼운다. 선택지 값은 꺼내지 않는다.
+# 연결·무결성 조회는 items·records·candidates 의 상태 열(revision·archived_at·deleted_at)과 개수만 읽는다 — 본문 열 0.
+# args 는 {"uid": 사용자 id 또는 None(전원), "ver": 설치 표준 버전, "names_ver": struct_names 현재 버전}.
+USERVIEW_KEYS = ("userview.counts", "userview.defs", "userview.links", "userview.tickets")
+ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유효 동의 · 표준 표식·선택(코드) · 출처 수 · M-D 위반(근거 기록이 지워진 후보) 수
+    "sql": "SELECT u.id AS user_id, "
+           "EXISTS (SELECT 1 FROM optional_consents oc WHERE oc.user_id=u.id AND oc.kind='struct_names' AND oc.state='granted' "
+           "AND oc.version=%(names_ver)s) AS names, m.version AS std_version, m.state AS std_state, "
+           "(SELECT coalesce(jsonb_object_agg(ch.std_key, ch.state), '{}'::jsonb) FROM std_choices ch WHERE ch.user_id=u.id) AS std_choices, "
+           "(SELECT count(*) FROM sources s WHERE s.user_id=u.id) AS sources_n, "
+           "(SELECT count(*) FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
+           "WHERE c.user_id=u.id AND r.deleted_at IS NOT NULL) AS md_broken "
+           "FROM users u LEFT JOIN std_marks m ON m.user_id=u.id AND m.version=%(ver)s "
+           "WHERE (%(uid)s::text IS NULL OR u.id=%(uid)s) ORDER BY u.created, u.id",
+    "cols": ("user_id", "names", "std_version", "std_state", "std_choices", "sources_n", "md_broken"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.defs"] = {   # 적용·보관 아닌 오브젝트 × 보관 아닌 필드 — db.definitions 와 같은 범위·순서 + 출처 판정 열(std_id·template_slot)
+    "sql": "SELECT o.user_id, md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, "
+           "md5(f.key) AS field_ref, f.value_type, f.required, f.multiple, f.target_kind, md5(f.target_object_id) AS target_ref, "
+           "f.std_id AS field_std, f.template_slot AS field_slot FROM object_defs o "
+           "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id AND f.archived_at IS NULL "
+           "WHERE (%(uid)s::text IS NULL OR o.user_id=%(uid)s) AND o.revision > 0 AND o.archived_at IS NULL "
+           "ORDER BY o.user_id, o.created_at, o.id, f.position, f.key",
+    "cols": ("user_id", "object_ref", "semantic_kind", "object_std", "object_slot", "field_ref", "value_type", "required", "multiple",
+             "target_kind", "target_ref", "field_std", "field_slot"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.links"] = {   # 항목 출발 연결 묶음 — 출발(살아 있는 항목만) 오브젝트·필드 × 실제 도착 종류·오브젝트 × 대상 없음 여부 × 개수
+    # dangling = 대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다. 기록 출발 연결(attach_to·axes)은 관계(참조 필드)가 아니라 뺀다.
+    "sql": "SELECT l.user_id, md5(l.source_object_id) AS source_ref, md5(l.field_key) AS field_ref, "
+           "CASE WHEN l.target_item_id IS NOT NULL THEN 'item' WHEN l.target_record_id IS NOT NULL THEN 'record' ELSE 'candidate' END "
+           "AS target_kind, md5(ti.object_id) AS target_ref, "
+           "((ti.id IS NOT NULL AND (ti.archived_at IS NOT NULL OR ti.revision = 0)) OR tr.deleted_at IS NOT NULL) AS dangling, "
+           "count(*) AS n FROM item_links l "
+           "JOIN items si ON si.user_id=l.user_id AND si.id=l.source_item_id AND si.revision > 0 AND si.archived_at IS NULL "
+           "LEFT JOIN items ti ON ti.user_id=l.user_id AND ti.id=l.target_item_id "
+           "LEFT JOIN records tr ON tr.user_id=l.user_id AND tr.id=l.target_record_id "
+           "WHERE (%(uid)s::text IS NULL OR l.user_id=%(uid)s) AND l.source_item_id IS NOT NULL "
+           "GROUP BY 1, 2, 3, 4, 5, 6 ORDER BY 1, 2, 3, 4, 5, 6",
+    "cols": ("user_id", "source_ref", "field_ref", "target_kind", "target_ref", "dangling", "n"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+ALLOW["userview.tickets"] = {   # 문의 요약 — 종류 × 상태 개수(원문·메모 없음)
+    "sql": "SELECT t.user_id, t.kind, t.status, count(*) AS n FROM tickets t WHERE (%(uid)s::text IS NULL OR t.user_id=%(uid)s) "
+           "GROUP BY t.user_id, t.kind, t.status ORDER BY t.user_id, t.kind, t.status",
+    "cols": ("user_id", "kind", "status", "n"),
+    "viewer": VIEWER_ADMIN, "consent": None,
+}
+# 무결성 코드 — 「검사 불가」는 정상으로 세지 않고 따로 둔다
+INTEGRITY_CODES = ("REF-DANGLING", "REF-MISMATCH", "MD-ORPHAN")
+UNCHECKED = "UNCHECKED"
+
+
+def userview_rows(role, uid=None):
+    """사용자 뷰 원행 {키: 행 목록} — 네 조회를 한 트랜잭션(같은 시점)에서 읽는다."""
+    sqls = {k: _check(k, role) for k in USERVIEW_KEYS}
+    args = {"uid": None if uid is None else str(uid), "ver": contract.STD_VERSION, "names_ver": db.OPTIONAL_VERSIONS["struct_names"]}
+    with db.tx() as c:
+        return {k: db._all(c, sql, args) for k, sql in sqls.items()}
+
+
+def userview(role, uid=None):
+    """{user_id: 사용자 뷰} — uid 가 None 이면 전원(목록). 값 = {names, std_marks, std_choices, sources_n, md_broken, defs, links, tickets}."""
+    rows = userview_rows(role, uid)
+    out = {}
+    for r in rows["userview.counts"]:
+        out[r["user_id"]] = {"names": bool(r["names"]), "std_choices": dict(r["std_choices"] or {}), "sources_n": r["sources_n"],
+                             "std_marks": {"version": r["std_version"], "state": r["std_state"]} if r["std_state"] else None,
+                             "md_broken": r["md_broken"], "defs": [], "links": [], "tickets": []}
+    for k, dest in (("userview.defs", "defs"), ("userview.links", "links"), ("userview.tickets", "tickets")):
+        for r in rows[k]:
+            if r["user_id"] in out:
+                out[r["user_id"]][dest].append(r)
+    return out
+
+
+def contract_input(v, onames=(), fnames=()):
+    """사용자 뷰 한 명 → contract.respond 입력(user dict). id·key = md5 대리값, label·선택지 label = 이름 공유 분기 행(없으면 None·[]).
+    선택지 값은 None — _admin 은 값을 내보내지 않는다. 출처는 개수만(_admin 은 counts.sources 만 쓴다)."""
+    olab = {r["object_ref"]: r["label"] for r in onames}
+    flab = {(r["object_ref"], r["field_ref"]): (r["label"], r["option_labels"]) for r in fnames}
+    defs, by = [], {}
+    for r in v["defs"]:
+        o = by.get(r["object_ref"])
+        if o is None:
+            o = by[r["object_ref"]] = {"id": r["object_ref"], "key": r["object_ref"], "label": olab.get(r["object_ref"]),
+                                       "semantic_kind": r["semantic_kind"], "policy": {}, "fields": [],
+                                       "std_id": r["object_std"], "template_slot": r["object_slot"]}
+            defs.append(o)
+        if r["field_ref"] is None:
+            continue
+        lab, opts = flab.get((r["object_ref"], r["field_ref"]), (None, None))
+        o["fields"].append({"key": r["field_ref"], "label": lab, "value_type": r["value_type"], "required": r["required"],
+                            "options": [{"value": None, "label": x} for x in opts or []], "target_kind": r["target_kind"],
+                            "target_object_id": r["target_ref"], "multiple": r["multiple"],
+                            "std_id": r["field_std"], "template_slot": r["field_slot"]})
+    return {"definitions": defs, "std_marks": v["std_marks"], "std_choices": v["std_choices"],
+            "sources": [{"id": None, "kind": None, "name": None, "location": None} for _ in range(v["sources_n"])]}
+
+
+def link_stats(v, user_input):
+    """관계(contract.relations 순 = 응답 relations 순)별 정상 연결 수 · 무결성 오류 · 검사 불가.
+    반환 {linked: [n…], errors: [{code, rel, n, why}], unchecked: [{rel, n, why}]} — rel = 관계 순번(없으면 None), why = 사유 코드."""
+    defs = user_input["definitions"]
+    raw = contract.relations(defs)
+    live = {o["id"] for o in defs}
+    idx = {(r["object_id"], r["field_key"]): i for i, r in enumerate(raw)}
+    linked, errors, unchecked = [0] * len(raw), [], []
+    for i, r in enumerate(raw):
+        if r["target_kind"] == "item" and r["target_object_id"] is not None and r["target_object_id"] not in live:
+            errors.append({"code": "REF-DANGLING", "rel": i, "n": 1, "why": "target_def"})
+    for ln in v["links"]:
+        i = idx.get((ln["source_ref"], ln["field_ref"]))
+        if i is None:
+            unchecked.append({"rel": None, "n": ln["n"], "why": "no_def"})
+            continue
+        r = raw[i]
+        if ln["dangling"]:
+            errors.append({"code": "REF-DANGLING", "rel": i, "n": ln["n"], "why": "target"})
+        elif ln["target_kind"] != r["target_kind"]:
+            errors.append({"code": "REF-MISMATCH", "rel": i, "n": ln["n"], "why": "kind"})
+        elif r["target_kind"] == "item" and r["target_object_id"] is None:
+            unchecked.append({"rel": i, "n": ln["n"], "why": "any_item"})
+        elif r["target_kind"] == "item" and r["target_object_id"] not in live:
+            unchecked.append({"rel": i, "n": ln["n"], "why": "target_def"})
+        elif r["target_kind"] == "item" and ln["target_ref"] != r["target_object_id"]:
+            errors.append({"code": "REF-MISMATCH", "rel": i, "n": ln["n"], "why": "object"})
+        else:
+            linked[i] += ln["n"]
+    if v["md_broken"]:
+        errors.append({"code": "MD-ORPHAN", "rel": None, "n": v["md_broken"], "why": "candidate"})
+    return {"linked": linked, "errors": errors, "unchecked": unchecked}

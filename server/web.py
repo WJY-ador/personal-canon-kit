@@ -28,7 +28,9 @@ from starlette.routing import Route
 
 import admin_db
 import auth
+import contract
 import db
+import structure_svg
 from envnames import env
 
 SESSION_COOKIE = "crm_session"
@@ -482,10 +484,20 @@ form.rq label{display:flex;flex-direction:column;gap:2px;font-size:12px;color:#6
 select,input{font:inherit;font-size:13px;padding:3px 6px;border:1px solid #CFC4B7;border-radius:5px;background:#fff;color:#2B2824}
 ul.tree{list-style:none;padding:0;margin:0}ul.tree>li{margin:0 0 10px;padding:8px 10px;border:1px solid #E4DCD2;border-radius:8px;background:#fff}
 ul.tree ul{margin:6px 0 0;padding-left:18px}ul.tree ul li{margin:2px 0}.nm{font-family:ui-monospace,Menlo,monospace;font-weight:600}
-.lbl{color:#186A4B}.note{font-size:12px;color:#6B635A}.note.warn{color:#B4462F;font-weight:600}"""
+.lbl{color:#186A4B}.note{font-size:12px;color:#6B635A}.note.warn{color:#B4462F;font-weight:600}
+.dmo{background:#fff;border:1px solid #E4DCD2;border-radius:8px;padding:8px}.dmo svg{display:block;width:100%;height:auto;max-width:760px;margin:0 auto}
+.dmo a{text-decoration:none}.dmo a:hover circle,.dmo a:focus-visible circle{stroke-width:3}.dmo a:hover line,.dmo a:hover path{stroke-width:2.4}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:#6B635A;margin:8px 0}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:50%;border:1.5px solid;vertical-align:-1px;margin-right:4px}
+.legend .o-core{background:var(--dmo-core-bg);border-color:var(--dmo-core-line)}.legend .o-standard{background:var(--dmo-standard-bg);border-color:var(--dmo-standard-line)}
+.legend .o-template{background:var(--dmo-template-bg);border-color:var(--dmo-template-line)}.legend .o-custom{background:var(--dmo-custom-bg);border-color:var(--dmo-custom-line)}
+ul.tree li:target,tr:target td{background:#FFF5E8}ul.tree>li:target{border-color:#B4462F;box-shadow:0 0 0 1px #B4462F}
+.err{color:#9A3520;font-weight:600}td.long{white-space:normal;word-break:break-word}.tag.lock{background:#DCEBE3;color:#186A4B}
+@media (max-width:600px){.wrap{padding:16px 12px 40px}th,td{padding:5px 6px}}"""
+_ADMIN_CSS += structure_svg.tokens_css(dark_media=False)   # DMO 그래프 토큰(--dmo-*) — 운영 화면은 밝게 고정(OS 미추종, 스크립트 0 이라 토글 없음)
 
 # 공통 상단 메뉴(P4) — (현재 표시 키, 경로, 글자). 문의 화면은 P3·P4 문의 몫(없으면 404).
-ADMIN_MENU = (("overview", "/admin", "개요"), ("schema", "/admin/schema", "스키마"), ("reports", "/admin/reports", "리포트"),
+ADMIN_MENU = (("overview", "/admin", "개요"), ("users", "/admin/users", "사용자"), ("schema", "/admin/schema", "스키마"), ("reports", "/admin/reports", "리포트"),
               ("tickets", "/admin/tickets", "문의"), ("setup", "/admin/setup", "Setup"))
 
 
@@ -570,14 +582,6 @@ def core_schema(sql_text: str) -> list[dict]:
 def template_schema() -> dict:
     """동결 템플릿(author@1.json) — 코드 정의. 이름(label)은 코드에 있는 기본 이름이다(사용자가 바꾼 이름이 아니다)."""
     return json.loads(template_author.FROZEN_PATH.read_text(encoding="utf-8"))
-
-
-def _slot_key(slot: str | None) -> str | None:
-    """템플릿 계보 슬롯 `author@1:<obj>` · `author@1:<obj>.<field>` → 표시 key(<obj> 또는 <field>). 읽기만 한다."""
-    if not slot or ":" not in slot:
-        return None
-    rest = slot.split(":", 1)[1]
-    return rest.split(".", 1)[1] if "." in rest else rest
 
 
 def _yn_mark(v) -> str:
@@ -701,52 +705,128 @@ def render_standard() -> str:
             f'<h3>코어 표준 오브젝트</h3><ul class="tree">{"".join(core)}</ul>')
 
 
-def render_user_tree(email: str, opaque: str, rows: list, onames: list, fnames: list) -> str:
-    """사용자 한 명의 트리. 표시 이름: 템플릿 유래 tpl:<key>(계보 슬롯), 사용자 것 u<n>((created_at, id) 순, 보관 포함)·
-    오브젝트 안 f<n>((position, key) 순). onames·fnames 가 비면(유효 동의 없음) 이름을 보이지 않는다."""
-    objs, byref = [], {}
-    for r in rows:
-        o = byref.get(r["object_ref"])
-        if o is None:
-            o = byref[r["object_ref"]] = {**r, "fields": []}
-            objs.append(o)
-        if r["value_type"] is not None:
-            o["fields"].append(r)
-    n = 0
-    for o in objs:
-        k = _slot_key(o["object_slot"])
-        if k:
-            o["disp"] = f"tpl:{k}"
-        else:
-            n += 1
-            o["disp"] = f"u{n}"
-    olabel = {r["object_ref"]: r["label"] for r in onames}
-    flabel = {(r["object_ref"], r["field_ref"]): (r["label"], r["option_labels"]) for r in fnames}
-    named = bool(onames)
+# ── /admin/users 운영자 사용자 뷰(PR #20 Q5) — 구조 글자는 전부 contract.respond(…, admin_*) 출력에서 온다 ──
+# 이름 = 이름 공유 유효 동의자의 현재 label(admin_consent) · 그 밖엔 자리표(「오브젝트 1」·「필드 a」)와 편입된 표준명뿐.
+# key·선택지 값·출처 name·location·사용자 id 는 계약 출력에 없어 화면에도 없다. 그래프 = structure_svg.render(같은 응답).
+UV_INTEGRITY = {"REF-DANGLING": "없는 대상 참조", "REF-MISMATCH": "대상 정의 불일치", "MD-ORPHAN": "M-D 위반"}
+UV_WHY = {"target_def": "관계 정의의 대상 오브젝트가 없다(보관됨)", "target": "대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다",
+          "kind": "실제 도착 종류가 정의와 다르다", "object": "도착 항목의 오브젝트가 정의의 대상과 다르다",
+          "candidate": "근거 기록이 지워진 후보", "no_def": "정의 밖 연결 — 보관된 필드·오브젝트에서 출발",
+          "any_item": "대상 오브젝트를 정하지 않은 항목 필드 — 오브젝트 일치를 볼 수 없다"}
+UV_LOCK = f'<span class="tag lock">{_esc(structure_svg.LOCK_TEXT)}</span>'
+
+
+def uv_build(v: dict, onames=(), fnames=()) -> tuple[dict, dict]:
+    """사용자 뷰 원행 → (계약 응답, 관계별 연결·무결성). 유효 동의(names)면 admin_consent, 아니면 admin_noconsent.
+    이름은 이름 분기 행(동의를 같은 문장에서 다시 본다)에서만 온다 — 두 조회 사이에 철회되면 label 이 None 으로 남아 보이지 않는다."""
+    inp = admin_db.contract_input(v, onames, fnames)
+    viewer = "admin_consent" if v["names"] else "admin_noconsent"
+    return contract.respond(inp, viewer), admin_db.link_stats(v, inp)
+
+
+def _uv_std(std: dict) -> str:
+    """표준 상태 — 코드만. 표식 없으면 version·state 는 —."""
+    objs = " · ".join(f"{k} {v}" for k, v in std["objects"].items())
+    return f'{_esc(std["version"] or "—")} {_esc(std["state"] or "—")} · {_esc(objs)}'
+
+
+def _uv_name(d: dict) -> str:
+    """오브젝트·필드 한 칸 — 자리표 + 편입된 표준명 + (동의면) 현재 label. 동적 글자는 _esc."""
+    out = f'<span class="nm">{_esc(d["ref"])}</span>'
+    if d.get("std_name"):
+        out += f' <span class="tag">표준 {_esc(d["std_name"])}</span>'
+    if d.get("label") is not None:
+        out += f' <span class="lbl">「{_esc(d["label"])}」</span>'
+    return out
+
+
+def _uv_where(resp: dict, rel, why: str = "") -> str:
+    if rel is None:
+        return "코어 후보" if why == "candidate" else "관계 밖"
+    r = resp["relations"][rel]
+    return f'관계 {rel + 1}({_esc(r["from"])}.{_esc(r["field"])})'
+
+
+def _uv_target(resp: dict, st: dict, i: int) -> str:
+    r = resp["relations"][i]
+    if r["to"] in structure_svg.CORE_TEXT:
+        return f'코어 {_esc(structure_svg.CORE_TEXT[r["to"]])}'
+    if r["to"] is not None:
+        o = next(x for x in resp["objects"] if x["ref"] == r["to"])
+        return _uv_name({k: o.get(k) for k in ("ref", "std_name", "label")})
+    gone = any(e["rel"] == i and e["why"] == "target_def" for e in st["errors"])
+    return '<span class="err">대상 정의 없음</span>' if gone else '<span class="muted">항목(오브젝트 미지정)</span>'
+
+
+def render_userview(u: dict, opaque: str, named: bool, resp: dict, st: dict, tickets: list) -> str:
+    """상세 본문 — 계정 요약 → DMO 그래프 → 관계별 집계 → 무결성 → 표준 상태 → 구조 트리 → 문의 요약."""
+    rels, cnt = resp["relations"], resp["counts"]
+    err_n = [sum(e["n"] for e in st["errors"] if e["rel"] == i) for i in range(len(rels))]
+    unc_n = [sum(e["n"] for e in st["unchecked"] if e["rel"] == i) for i in range(len(rels))]
+    m = sum(1 for n in st["linked"] if n)
+    summary = (f'<dl class="meta"><dt>이메일</dt><dd>{_esc(u["email"])}</dd><dt>가입일</dt><dd>{_esc(_kst(u["created"])[:10])}</dd>'
+               f'<dt>역할</dt><dd>{"관리자" if u["role"] == "admin" else "사용자"}{" · 차단" if u["blocked_at"] else ""}</dd>'
+               f'<dt>구조 이름 공유</dt><dd>{"동의 — 현재 이름을 함께 보여요" if named else "동의 없음 — 자리표와 편입된 표준명만 보여요"}</dd>'
+               f'<dt>불투명 id</dt><dd>{_esc(opaque)}</dd>'
+               f'<dt>구조</dt><dd>오브젝트 {_esc(cnt["objects"])} · 필드 {_esc(cnt["fields"])} · 관계 {_esc(cnt["relations"])} · '
+               f'그중 연결 있음 {_esc(m)} · 출처 {_esc(cnt["sources"])}</dd></dl>')
+    legend = ('<div class="legend">' + "".join(f'<span><i class="o-{k}"></i>{_esc(v)}</span>' for k, v in structure_svg.ORIGIN_TEXT.items())
+              + f'<span>점선 고리 = {_esc(structure_svg.LOCK_TEXT)}</span>'
+              + '<span>선 = 관계(화살표 없음) · 세 갈래 = 여러(N) · 두 줄 = 하나(1) · 참조를 가진 쪽이 N</span></div>')
+    rrows = []
+    for i, r in enumerate(rels):
+        o = next(x for x in resp["objects"] if x["ref"] == r["from"])
+        f = next(x for x in o["fields"] if x["ref"] == r["field"])
+        rrows.append(f'<tr id="{structure_svg.rel_anchor(i)}"><td class="num">{i + 1}</td>'
+                     f'<td><a href="#{structure_svg.node_anchor(resp["objects"].index(o))}">{_uv_name(o)}</a></td><td>{_uv_name(f)}</td>'
+                     f'<td>{_uv_target(resp, st, i)}</td><td>{_esc(r["cardinality"])}</td>'
+                     f'<td>{_esc(structure_svg.ORIGIN_TEXT.get(r["origin"], r["origin"]))}</td>'
+                     f'<td>{UV_LOCK if r["locked"] else ""}</td>'
+                     f'<td class="num">{_esc(st["linked"][i])}</td>'
+                     f'<td class="num">{f"<span class=err>{err_n[i]}</span>" if err_n[i] else "0"}</td><td class="num">{_esc(unc_n[i])}</td></tr>')
+    erows = []
+    for code, lab in UV_INTEGRITY.items():
+        es = [e for e in st["errors"] if e["code"] == code]
+        tot = sum(e["n"] for e in es)
+        where = " · ".join(f'{_uv_where(resp, e["rel"], e["why"])} {_esc(e["n"])}건 — {_esc(UV_WHY[e["why"]])}' for e in es)
+        erows.append(f'<tr><td>{_esc(code)}</td><td>{_esc(lab)}</td><td class="num">{f"<span class=err>{tot}</span>" if tot else "0"}</td>'
+                     f'<td class="long">{where or "—"}</td></tr>')
+    un = st["unchecked"]
+    where = " · ".join(f'{_uv_where(resp, e["rel"], e["why"])} {_esc(e["n"])}건 — {_esc(UV_WHY[e["why"]])}' for e in un)
+    erows.append(f'<tr><td>{_esc(admin_db.UNCHECKED)}</td><td>검사 불가(정상으로 세지 않음)</td><td class="num">{_esc(sum(e["n"] for e in un))}</td>'
+                 f'<td class="long">{where or "—"}</td></tr>')
+    std = resp["std"]
+    std_t = _table(['<th>표준 오브젝트</th><th>상태</th>'],
+                   [f'<tr><td class="nm">{_esc(k)}</td><td>{_esc(v)}</td></tr>' for k, v in std["objects"].items()])
     items = []
-    for o in objs:
-        fl, m = [], 0
-        for f in o["fields"]:
-            k = _slot_key(f["field_slot"])
-            if not k:
-                m += 1
-            tk = f["target_kind"]
-            target = (byref[f["target_ref"]]["disp"] if f["target_ref"] in byref else CORE_LABEL["items"]) if tk == "item" \
-                else TARGET_LABEL.get(tk, "")
-            lab, opts = flabel.get((o["object_ref"], f["field_ref"]), (None, None))
-            fl.append(_field_li(f"tpl:{k}" if k else f"f{m}", f["value_type"], f["required"], f["multiple"], target, lab, opts,
-                                f["field_archived"] is not None))
-        lab = olabel.get(o["object_ref"])
-        items.append(f'<li><span class="nm">{_esc(o["disp"])}</span> <span class="tag">{_esc(o["semantic_kind"])}</span>'
-                     f'{" <span class=tag>보관</span>" if o["object_archived"] is not None else ""}'
-                     f'{f" <span class=lbl>「{_esc(lab)}」</span>" if lab is not None else ""}'
-                     f'<ul>{"".join(fl) or "<li class=muted>필드 없음</li>"}</ul></li>')
-    state = ("유효 동의 — 현재 이름(오브젝트·필드·선택지)을 함께 보여요" if named
-             else "유효 동의 없음 — 이름 없이 구조만 보여요")
-    return (f'<h1>구조 — {_esc(email)}</h1><p class="note">불투명 id {_esc(opaque)} · 이름 공유: {_esc(state)} · '
-            f'tpl:&lt;key&gt; = 템플릿 유래, u&lt;n&gt;·f&lt;n&gt; = 사용자 것(순번은 표시용)</p>'
-            f'<p><a href="/admin/schema">← 스키마</a></p>'
-            f'<ul class="tree">{"".join(items) or "<li class=muted>적용된 오브젝트 없음</li>"}</ul>')
+    for i, o in enumerate(resp["objects"]):
+        fl = "".join(f'<li>{_uv_name(f)} <span class="muted">{_esc(structure_svg.ORIGIN_TEXT.get(f["origin"], f["origin"]))}</span>'
+                     f'{" " + UV_LOCK if f["locked"] else ""}'
+                     f'{" <span class=lbl>선택지 " + _esc(" · ".join(str(x) for x in f["options"])) + "</span>" if f.get("options") else ""}</li>'
+                     for f in o["fields"])
+        items.append(f'<li id="{structure_svg.node_anchor(i)}">{_uv_name(o)} <span class="tag">{_esc(o["semantic_kind"])}</span> '
+                     f'<span class="muted">{_esc(structure_svg.ORIGIN_TEXT.get(o["origin"], o["origin"]))}</span>'
+                     f'{" " + UV_LOCK if o["locked"] else ""}'
+                     f'<ul>{fl or "<li class=muted>필드 없음</li>"}</ul></li>')
+    items += [f'<li id="{structure_svg.core_anchor(c["kind"])}"><span class="nm">코어 {_esc(structure_svg.CORE_TEXT.get(c["kind"], c["kind"]))}</span>'
+              f' <span class="muted">{_esc(structure_svg.ORIGIN_TEXT["core"])} — 참조 필드가 가리키는 공통 테이블</span></li>' for c in resp["core"]]
+    tk = _table(['<th>종류</th><th>상태</th><th class="num">n</th>'],
+                [f'<tr><td>{_esc(admin_db.VALUE_LABELS["kind"].get(r["kind"], r["kind"]))}</td>'
+                 f'<td>{_esc(admin_db.VALUE_LABELS["status"].get(r["status"], r["status"]))}</td><td class="num">{_esc(r["n"])}</td></tr>'
+                 for r in tickets], "문의 없음")
+    return (f'<p><a href="/admin/users">← 사용자 목록</a></p><h1>사용자 — {_esc(u["email"])}</h1>{summary}'
+            f'<h2>DMO 그래프</h2>{legend}<div class="dmo">{structure_svg.render(resp)}</div>'
+            f'<p class="note">원을 누르면 구조 트리의 그 오브젝트로, 선을 누르면 관계 집계 행으로 가요. 대상이 없는 관계(오브젝트 미지정·대상 정의 없음)는 선이 없어요.</p>'
+            f'<h2>관계별 집계</h2><p class="note">관계 = 참조 필드 하나. 연결 = 살아 있는 항목에서 출발한 정상 연결 수(오류·검사 불가 제외). '
+            f'기록에서 출발하는 분류 연결은 관계가 아니라 세지 않아요.</p>'
+            + _table(['<th class="num">#</th><th>출발</th><th>필드</th><th>대상</th><th>카디널리티</th><th>출처</th><th>보호</th>'
+                      '<th class="num">연결</th><th class="num">오류</th><th class="num">검사 불가</th>'], rrows, "관계 없음")
+            + '<h2>무결성</h2><p class="note">검사 불가는 정상이 아니에요 — 정의만으로는 맞는지 볼 수 없는 연결이에요.</p>'
+            + _table(['<th>코드</th><th>검사</th><th class="num">건</th><th>위치</th>'], erows)
+            + f'<h2>표준 상태</h2><p class="note">설치 버전·표식 상태·표준 오브젝트별 상태 코드.</p>'
+            f'<p><span class="nm">{_esc(std["version"] or "—")}</span> · 표식 {_esc(std["state"] or "—")}</p>{std_t}'
+            f'<h2>구조 트리</h2><ul class="tree">{"".join(items) or "<li class=muted>적용된 오브젝트 없음</li>"}</ul>'
+            f'<h2>문의 요약</h2><p class="note">원문은 <a href="/admin/tickets">문의 화면</a>에서만 봐요.</p>{tk}')
 
 
 class Web:
@@ -1410,8 +1490,8 @@ class Web:
                            cur=cur)
 
     async def admin_schema(self, request):
-        """/admin/schema — 서비스 표준 구조(템플릿 + 코어 표준 오브젝트, 코드 정의) + 사용자 목록.
-        ?u=<불투명 id> — 그 사용자의 트리(이름 없음). 유효 이름 공유 동의자면 현재 이름을 함께 보인다(admin_db 이름 분기)."""
+        """/admin/schema — 서비스 표준 구조(템플릿 + 코어 표준 오브젝트, 코드 정의) + 사용자 목록(상세 링크).
+        ?u=<불투명 id> — 옛 사용자 트리 주소. 그 사용자의 새 상세(/admin/users/<불투명 id>)로 302, 모르는 id 는 404(입력을 되비추지 않는다)."""
         _, err = await self._admin_view(request)
         if err:
             return err
@@ -1431,7 +1511,7 @@ class Web:
                 no, nf = counts.get(u["id"], (0, 0))
                 rows.append(f'<tr><td class="email">{_esc(u["email"])}</td><td class="num">{_esc(no)}</td><td class="num">{_esc(nf)}</td>'
                             f'<td>{"동의" if names.get(u["id"]) else "—"}</td>'
-                            f'<td><a href="/admin/schema?u={_esc(self._opaque(u["id"]))}">트리</a></td></tr>')
+                            f'<td><a href="/admin/users/{_esc(self._opaque(u["id"]))}">상세</a></td></tr>')
             body = (f'<h1>스키마</h1>{render_standard()}<h2>사용자별 구조</h2>'
                     f'<p class="note">개수는 적용된 오브젝트·필드(보관 제외). 이름 공유 = 유효 선택 동의(현재 버전).</p>'
                     + _table(['<th>이메일</th><th class="num">오브젝트</th><th class="num">필드</th><th>이름 공유</th><th></th>'], rows))
@@ -1441,10 +1521,7 @@ class Web:
         if u is None:
             return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/schema">스키마로</a></p>',
                                404, cur="schema")
-        rows, (onames, fnames) = await run_in_threadpool(lambda: (admin_db.schema_tree(role, u["id"]),
-                                                                  admin_db.schema_names(role, u["id"])))
-        body = render_user_tree(u["email"], self._opaque(u["id"]), rows, onames, fnames)
-        return _admin_page("관리 — 스키마", body, cur="schema")
+        return RedirectResponse(f"/admin/users/{self._opaque(u['id'])}", status_code=302)
 
     async def admin_reports(self, request):
         """/admin/reports — GET 쿼리스트링(ds·g1·g2·필터·from·to)만. 열거 키·허용 조합은 admin_db 허용표. 모르는 키·조합은 400 화면."""
@@ -1633,6 +1710,58 @@ class Web:
                 f'</tr></thead><tbody>{"".join(rows) or "<tr><td colspan=6 class=muted>없음</td></tr>"}</tbody></table></div>')
         return _admin_page("관리 — 문의", body, cur="tickets")
 
+    # ── /admin/users 운영자 사용자 뷰(PR #20 Q5) — 조회는 admin_db.userview·users·schema_names 만, 구조 글자는 contract.respond 출력만 ──
+    async def admin_users(self, request):
+        """/admin/users — 사용자 목록: 오브젝트 n · 관계 N · 그중 연결 있음 M · 표준 상태 코드. 이름 없음(목록은 언제나 admin_noconsent)."""
+        _, err = await self._admin_view(request)
+        if err:
+            return err
+        if request.query_params:
+            return self._admin_bad("사용자 목록을 열 수 없어요", "쿼리 키를 받지 않아요.", "/admin/users", "users")
+        role = request.state.role
+        users, views = await run_in_threadpool(lambda: (admin_db.users(role), admin_db.userview(role)))
+        trs = []
+        for u in users:
+            v = views.get(u["id"])
+            if v is None:   # 두 조회 사이에 생긴 계정 — 다음 조회에 나온다
+                continue
+            resp, st = uv_build({**v, "names": False})
+            href = f"/admin/users/{_esc(self._opaque(u['id']))}"
+            blk = ' <span class="tag blocked">차단</span>' if u["blocked_at"] else ""
+            trs.append(f'<tr><td class="email"><a href="{href}">{_esc(u["email"])}</a></td><td>{_esc(_kst(u["created"])[:10])}</td>'
+                       f'<td>{"관리자" if u["role"] == "admin" else "사용자"}{blk}</td><td>{"동의" if v["names"] else "—"}</td>'
+                       f'<td class="num">{_esc(resp["counts"]["objects"])}</td><td class="num">{_esc(resp["counts"]["relations"])}</td>'
+                       f'<td class="num">{_esc(sum(1 for n in st["linked"] if n))}</td><td>{_uv_std(resp["std"])}</td>'
+                       f'<td><a href="{href}">상세</a></td></tr>')
+        body = (f'<h1>사용자 {len(trs)}명</h1><p class="note">오브젝트 = 적용된 사용자 정의(보관 제외) · 관계 = 참조 필드 · '
+                f'연결 있음 = 정상 연결이 1개 이상인 관계 · 표준 = 설치 버전·표식 상태·표준 오브젝트별 상태 코드. 개수만, 이름 없음.</p>'
+                + _table(['<th>이메일</th><th>가입일</th><th>역할</th><th>이름 공유</th><th class="num">오브젝트</th><th class="num">관계</th>'
+                          '<th class="num">연결 있음</th><th>표준</th><th></th>'], trs))
+        return _admin_page("관리 — 사용자", body, cur="users")
+
+    async def admin_user(self, request):
+        """/admin/users/<불투명 id> — 요약 → DMO 그래프 → 관계 집계 → 무결성 → 표준 상태 → 구조 트리 → 문의 요약.
+        이름은 이름 공유 유효 동의자만(admin_consent — admin_db.schema_names 분기 행). 모르는 id 404(입력을 되비추지 않는다)."""
+        _, err = await self._admin_view(request)
+        if err:
+            return err
+        if request.query_params:
+            return self._admin_bad("사용자를 열 수 없어요", "쿼리 키를 받지 않아요.", "/admin/users", "users")
+        role = request.state.role
+        users = await run_in_threadpool(admin_db.users, role)
+        u = next((x for x in users if self._opaque(x["id"]) == request.path_params["oid"]), None)
+        if u is None:
+            return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/users">사용자 목록으로</a></p>',
+                               404, cur="users")
+        views, (onames, fnames) = await run_in_threadpool(lambda: (admin_db.userview(role, u["id"]), admin_db.schema_names(role, u["id"])))
+        v = views.get(u["id"])
+        if v is None:
+            return _admin_page("사용자를 찾지 못했어요", '<h1>사용자를 찾지 못했어요</h1><p>NOT-FOUND</p><p><a href="/admin/users">사용자 목록으로</a></p>',
+                               404, cur="users")
+        resp, st = uv_build(v, onames, fnames)
+        body = render_userview(u, self._opaque(u["id"]), v["names"], resp, st, v["tickets"])
+        return _admin_page("관리 — 사용자", body, cur="users")
+
     def routes(self) -> list[Route]:
         u = _usage
         return [
@@ -1663,6 +1792,8 @@ class Web:
             Route("/admin/signout", self.admin_signout, methods=["POST"]),
             Route("/admin/block", self.admin_block, methods=["POST"]),
             Route("/admin/unblock", self.admin_unblock, methods=["POST"]),
+            Route("/admin/users", self.admin_users),
+            Route("/admin/users/{oid}", self.admin_user),
             Route("/admin/schema", self.admin_schema),
             Route("/admin/reports", self.admin_reports),
             Route("/admin/tickets", self.admin_tickets),
