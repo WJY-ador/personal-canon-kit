@@ -467,7 +467,7 @@ async def test_web():
                 assert (await h.get("/api/state")).status_code == 401
                 assert (await h.post("/api/candidate/decide", json={}, headers=origin)).status_code == 401
                 r = await h.get("/login")
-                assert r.status_code == 302 and "canon_login" in r.headers.get("set-cookie", ""), r.headers
+                assert r.status_code == 302 and "crm_login" in r.headers.get("set-cookie", ""), r.headers
                 q = parse_qs(urlparse(r.headers["location"]).query)
                 assert q["client_id"] == ["client_test"] and q["resource"] == [RESOURCE] and q["code_challenge_method"] == ["S256"], q
                 assert q["redirect_uri"] == [f"{PUBLIC}/auth/callback"] and q["scope"] == ["openid email"], q
@@ -478,7 +478,7 @@ async def test_web():
                 assert r.status_code == 400 and not exchanged
                 r = await h.get("/auth/callback", params={"code": "c1", "state": state})
                 assert r.status_code == 302 and r.headers["location"] == "/app", (r.status_code, r.text[:200])
-                assert "canon_session" in r.headers.get("set-cookie", "")
+                assert "crm_session" in r.headers.get("set-cookie", "")
                 assert "max-age=604800" in r.headers.get("set-cookie", "").lower(), "세션 쿠키 7일(PR①)"
                 d = exchanged[0]
                 chal = base64.urlsafe_b64encode(hashlib.sha256(d["code_verifier"].encode()).digest()).rstrip(b"=").decode()
@@ -549,22 +549,22 @@ async def test_web():
                 assert j["wording_approved"] is False and j["status"] == "pending", j
                 assert (await h.post("/logout")).status_code == 403
                 r = await h.post("/logout", headers=origin)
-                assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
+                assert r.status_code == 200 and 'crm_session=""' in r.headers.get("set-cookie", ""), r.headers
                 assert r.json() == {"ok": True, "redirect": "/?out=1"}, "로그아웃은 시작 화면으로"
                 assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
                 # 토큰에 sid 가 있어도 세션에 담지 않고, 로그아웃 주소도 같다
                 tok_sid["sid"] = "app_consent_test"
                 await login_once(h)
                 assert (await h.get("/api/state")).status_code == 200
-                assert "sid" not in site.unsign(h.cookies.get("canon_session")), "세션에 sid 를 담지 않는다"
+                assert "sid" not in site.unsign(h.cookies.get("crm_session")), "세션에 sid 를 담지 않는다"
                 r = await h.post("/logout", headers=origin)
-                assert r.status_code == 200 and 'canon_session=""' in r.headers.get("set-cookie", ""), r.headers
+                assert r.status_code == 200 and 'crm_session=""' in r.headers.get("set-cookie", ""), r.headers
                 assert r.json() == {"ok": True, "redirect": "/?out=1"}, r.json()
                 assert (await h.get("/api/state")).status_code == 401, "로그아웃 뒤 401"
                 r = await h.get("/")
                 assert r.status_code == 200 and "로그인" in r.text, "로그아웃 뒤 시작 화면"
                 # 서명 위조 쿠키
-                h.cookies.set("canon_session", site.session_value(uid)[:-3] + "xxx")
+                h.cookies.set("crm_session", site.session_value(uid)[:-3] + "xxx")
                 assert (await h.get("/api/state")).status_code == 401, "서명 깨진 쿠키"
                 # 반사 XSS: 쿼리·토큰 서버 응답·예외 문구는 escape 해서 글자로만 보인다
                 xss = "<script>alert(1)</script>"
@@ -1874,7 +1874,7 @@ async def test_feedback_admin():
             # 관리자 — β2: role=admin + 재인증(ra) 쿠키 세션. DEV 폴백엔 ra 가 없어 관리자 경로가 닫힌다
             _set_role(uid, "admin")
             site.dev, site.dev_user = False, ""
-            h.cookies.set("canon_session", site.session_value(uid, int(time.time()) - 3600))
+            h.cookies.set("crm_session", site.session_value(uid, int(time.time()) - 3600))
             # Origin 없음·다름 → 403 ORIGIN (관리자여도)
             for hd in ({}, {"origin": "https://evil.example"}):
                 for url in ("/api/feedback/status", "/api/feedback/note"):
@@ -1944,7 +1944,7 @@ async def test_feedback_admin():
             assert r.status_code == 404 and r.json()["code"] == "NOT-FOUND", r.text
             # 글쓴이(비관리자)는 바뀐 상태만 보고 메모는 못 본다
             await h.post("/api/feedback/status", json={"id": ids["bug"], "status": "doing"}, headers=origin)
-            h.cookies.set("canon_session", site.session_value(other))
+            h.cookies.set("crm_session", site.session_value(other))
             r = await h.get("/api/feedback")
             mine = {t["id"]: t for t in r.json()["tickets"]}
             assert "admin" not in r.json() and mine[ids["bug"]]["status"] == "doing" and "admin_note" not in mine[ids["bug"]], r.json()
@@ -2127,7 +2127,7 @@ async def test_consent_gate():
             assert r.status_code == 401, r.status_code
 
             # B5: MCP 거절 → 브라우저 로그인(세션 쿠키) → /app 이 /consent 로 → 동의 → MCP 다음 호출 통과
-            h.cookies.set("canon_session", site.session_value(nc))
+            h.cookies.set("crm_session", site.session_value(nc))
             r = await h.get("/app")
             assert r.status_code == 302 and r.headers["location"] == "/consent"
             r = await h.post("/api/consent", data={"privacy": "v1"})   # Origin 없음
@@ -2546,7 +2546,7 @@ async def test_beta2():
     async def call(method, path, cookie=None, origin=True, data=None):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
             if cookie:
-                h.cookies.set("canon_session", cookie)
+                h.cookies.set("crm_session", cookie)
             return await h.request(method, path, headers={"origin": PUBLIC} if origin else {}, data=data)
 
     tok_next = {"sub": "b2a_sub", "extra": None}
@@ -2560,13 +2560,13 @@ async def test_beta2():
         tok_next.update(sub=sub, extra=extra)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
             if cookie:
-                h.cookies.set("canon_session", cookie)
+                h.cookies.set("crm_session", cookie)
             r = await h.get("/login", params={"fresh": "1", "reauth": "1"} if reauth else {})
             q = parse_qs(urlparse(r.headers["location"]).query)
             if reauth:
                 assert q.get("prompt") == ["login"], q
             r = await h.get("/auth/callback", params={"code": "c", "state": q["state"][0]})
-            return r, site.unsign(r.cookies.get("canon_session"))
+            return r, site.unsign(r.cookies.get("crm_session"))
 
     posts = (("/admin/role", {"uid": C, "role": "admin"}), ("/admin/signout", {"uid": C}), ("/admin/block", {"uid": C}),
              ("/admin/unblock", {"uid": C}))
@@ -2651,7 +2651,7 @@ async def test_beta2():
             r = await call("POST", "/admin/role", fresh(), origin=hd_origin, data={"uid": C, "role": "admin"})
             assert r.status_code == 403 and "ORIGIN" in r.text, (r.status_code, r.text[:200])
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-            h.cookies.set("canon_session", fresh())
+            h.cookies.set("crm_session", fresh())
             r = await h.post("/admin/role", headers={"origin": "https://evil.example"}, data={"uid": C, "role": "admin"})
             assert r.status_code == 403 and "ORIGIN" in r.text, r.status_code
             r = await h.post("/admin/role", headers={"origin": PUBLIC}, json={"uid": C, "role": "admin"})
@@ -2755,7 +2755,7 @@ async def test_beta2():
             assert r.status_code == 200 and set(r.json()) == {"tickets"}, list(r.json())
             for path, body in (("/api/feedback/status", {"id": "tk_nope", "status": "ack"}), ("/api/feedback/note", {"id": "tk_nope", "admin_note": "x"})):
                 async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-                    h.cookies.set("canon_session", cookie)
+                    h.cookies.set("crm_session", cookie)
                     r = await h.post(path, json=body, headers={"origin": PUBLIC})
                 assert r.status_code == 403 and r.json()["code"] == "REAUTH-REQUIRED", (path, r.text)
         cookie = ck(A, now() - 3600)
@@ -2764,10 +2764,10 @@ async def test_beta2():
         j = (await call("GET", "/api/feedback", cookie)).json()
         assert j.get("admin") is True and "admin_tickets" in j, list(j)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
-            h.cookies.set("canon_session", cookie)
+            h.cookies.set("crm_session", cookie)
             r = await h.post("/api/feedback/status", json={"id": "tk_nope", "status": "ack"}, headers={"origin": PUBLIC})
             assert r.status_code == 404 and r.json()["code"] == "NOT-FOUND", r.text   # 창 안 → 게이트 통과
-            h.cookies.set("canon_session", ck(C, now()))
+            h.cookies.set("crm_session", ck(C, now()))
             r = await h.post("/api/feedback/status", json={"id": "tk_nope", "status": "ack"}, headers={"origin": PUBLIC})
             assert r.status_code == 403 and r.json()["code"] == "FORBIDDEN", "비관리자는 ra 가 있어도 FORBIDDEN"
 

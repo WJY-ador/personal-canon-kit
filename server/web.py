@@ -28,8 +28,8 @@ from starlette.routing import Route
 import auth
 import db
 
-SESSION_COOKIE = "canon_session"
-FLOW_COOKIE = "canon_login"
+SESSION_COOKIE = "crm_session"
+FLOW_COOKIE = "crm_login"
 SESSION_TTL = 7 * 24 * 3600   # 세션 쿠키 7일(PR①, 30일에서 줄임)
 FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
