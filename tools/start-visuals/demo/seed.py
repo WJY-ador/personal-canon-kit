@@ -1,9 +1,9 @@
 """데모 촬영용 시드 — 로컬 postgres 의 격리 스키마를 비우고 샘플 데이터를 넣는다. 운영 DB 에는 절대 붙지 않는다.
 
 실행: server 의 파이썬(psycopg 가 있는 venv)으로. 보통은 shoot.py 가 부른다.
-    DATABASE_URL=postgresql://localhost/canon_test <venv>/bin/python seed.py
+    DATABASE_URL=postgresql://localhost/crm_test <venv>/bin/python seed.py
 가드: DATABASE_URL 호스트가 localhost·127.0.0.1 이 아니면 exit 1(CI 의 운영 DB 보호 가드와 같은 규칙).
-격리: 스키마 CANON_TEST_SCHEMA(기본 start_demo)를 DROP → CREATE → init_schema. 연결 문자열에 search_path 를 얹어 쓴다.
+격리: 스키마 CRM_TEST_SCHEMA(기본 start_demo)를 DROP → CREATE → init_schema. 연결 문자열에 search_path 를 얹어 쓴다.
 값: 문장은 sample-data 와 같다(파일명 주석). sample-data JSON 을 파싱하지 않는다 — 상수로 둔다.
 경로: MCP 도구와 같은 db.* 함수(question_add·record_add·candidates_propose·candidate_decide). 화면 날짜는 시드 뒤 2026-10-15 로 고정.
 """
@@ -52,9 +52,9 @@ def guarded_url() -> tuple[str, str, str]:
     if host not in ("localhost", "127.0.0.1"):
         print("실패: DATABASE_URL 호스트가 localhost·127.0.0.1 이 아니에요 — 촬영 중단")
         sys.exit(1)
-    schema = os.environ.get("CANON_TEST_SCHEMA", "start_demo")
+    schema = os.environ.get("CRM_TEST_SCHEMA", "start_demo")
     if not schema.replace("_", "").isalnum():
-        print("실패: CANON_TEST_SCHEMA 는 영문·숫자·_ 만")
+        print("실패: CRM_TEST_SCHEMA 는 영문·숫자·_ 만")
         sys.exit(1)
     sep = "&" if "?" in base else "?"
     return base, schema, f"{base}{sep}options={quote('-csearch_path=' + schema)}"

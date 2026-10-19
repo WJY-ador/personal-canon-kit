@@ -1,7 +1,7 @@
 # 03. 설치 — Windows
 
 > **상태: 미검증.** 코드는 Windows 를 고려해 썼지만(파일 잠금·경로·인코딩) 깨끗한 Windows PC 에서 처음부터 끝까지 시험하지 않았습니다.
-> 막힌 문장과 오류를 `python canon.py diag` 결과와 함께 알려 주시면 지원표에 반영합니다.
+> 막힌 문장과 오류를 `python crm.py diag` 결과와 함께 알려 주시면 지원표에 반영합니다.
 
 **네이티브 Windows(PowerShell)** 기준입니다. WSL 은 별도 환경이라 이 문서를 따르지 말고, WSL 안에서는 [02-install-macos.md](02-install-macos.md) 의 명령을 그대로 쓰되 **WSL 과 Windows 경로·CLI 를 섞지 마세요.**
 
@@ -28,26 +28,26 @@ claude --version
 ## 3. 패키지 위치와 점검
 
 ```powershell
-cd "$HOME\Documents\canon-kit"
-py canon.py doctor
+cd "$HOME\Documents\personal-crm"
+py crm.py doctor
 ```
 
 ## 4. 데이터 폴더
 
 ```powershell
-py canon.py init --data "$HOME\canon-data"
-py canon.py backup --label first
+py crm.py init --data "$HOME\crm-data"
+py crm.py backup --label first
 ```
 
 ## 5. 확인
 
 ```powershell
-py canon.py serve --open
+py crm.py serve --open
 ```
 
 ## 한글이 깨질 때
 
-`canon.py` 는 출력 인코딩을 UTF-8 로 맞춥니다. 그래도 깨지면 Windows Terminal 을 쓰거나 `chcp 65001` 후 다시 실행하세요.
+`crm.py` 는 출력 인코딩을 UTF-8 로 맞춥니다. 그래도 깨지면 Windows Terminal 을 쓰거나 `chcp 65001` 후 다시 실행하세요.
 
 ## 이 버전에서 Windows 에 없는 것
 

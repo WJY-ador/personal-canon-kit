@@ -6,7 +6,7 @@
 
 상태는 서버 메모리에 두지 않는다(Render Free 는 유휴 때 죽는다). PKCE verifier·state 는 10분짜리 서명 쿠키, 세션은 7일 서명 쿠키.
 세션 쿠키 v2(β2): {uid, iat, ra?} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. ra = 마지막 재인증 시각.
-환경변수: AUTHKIT_WEB_CLIENT_ID · CANON_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
+환경변수: AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
 """
 import base64
 import hashlib
@@ -27,6 +27,7 @@ from starlette.routing import Route
 
 import auth
 import db
+from envcompat import env
 
 SESSION_COOKIE = "crm_session"
 FLOW_COOKIE = "crm_login"
@@ -35,13 +36,13 @@ FLOW_TTL = 600
 APP_HTML = Path(__file__).parent / "app.html"
 START_HTML = Path(__file__).parent / "start.html"
 ACTIONS = ("confirm", "exclude", "pending", "edit", "edit_confirm")
-# 도움말 정본은 레포의 guides/. 웹 /help 와 MCP help_get 이 같은 것을 읽는다. CANON_GUIDES_DIR 가 있으면 그 폴더.
+# 도움말 정본은 레포의 guides/. 웹 /help 와 MCP help_get 이 같은 것을 읽는다. CRM_GUIDES_DIR 가 있으면 그 폴더.
 # Render 는 레포 루트에서 빌드·실행한다(render.yaml 에 rootDir 없음) — rootDir=server 면 guides/ 가 안 올라간다.
-GUIDES_DIR = Path(os.environ.get("CANON_GUIDES_DIR") or Path(__file__).parent.parent / "guides")
+GUIDES_DIR = Path(env("GUIDES_DIR") or Path(__file__).parent.parent / "guides")
 HELP_FILES = {"start": "09-hosted-start.md", "words": "10-words.md"}
 _HELP_ANCHORS = {**{f: f"#{k}" for k, f in HELP_FILES.items()}, "11-privacy.md": "/privacy"}
 # 개인정보 처리방침 /privacy — 정본은 guides/11-privacy.md. help_get(MCP)에는 넣지 않는다(HELP_FILES 밖).
-# 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CANON_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
+# 권리 행사 경로는 대시보드 「문의」 하나. 문안의 {{CONTACT_LINE}} 은 env CRM_CONTACT(선택)가 있으면 보조 메일 한 줄, 없으면 빈 줄로 바꾼다(레포에 연락처를 적지 않는다).
 PRIVACY_FILE = "11-privacy.md"
 # 동의 문서(α2) — 첫 20줄 머리글 `vN · 날짜` 에서 버전을 뽑아 db.CONSENT_VERSIONS 에. terms 는 파일이 있을 때만.
 CONSENT_FILES = {"privacy": PRIVACY_FILE, "terms": "12-terms.md"}
@@ -150,7 +151,7 @@ def ua_family(ua: str | None) -> str:
 
 
 def _write_status(e) -> int:
-    """웹 쓰기 API 의 CanonError → HTTP 상태. 동의 필요는 403, 나머지는 400(기존 그대로)."""
+    """웹 쓰기 API 의 CrmError → HTTP 상태. 동의 필요는 403, 나머지는 400(기존 그대로)."""
     return 403 if e.code == "CONSENT-REQUIRED" else 400
 
 
@@ -404,8 +405,8 @@ def read_consent_versions(d: Path, dev: bool) -> dict:
 
 
 def privacy_contact_line() -> str:
-    """env CANON_CONTACT(선택, 한 줄로 접음)가 있으면 보조 메일 한 줄. 없으면 빈 문자열 — 처리방침에 메일 줄이 없다."""
-    contact = " ".join(os.environ.get("CANON_CONTACT", "").split())
+    """env CRM_CONTACT(선택, 한 줄로 접음)가 있으면 보조 메일 한 줄. 없으면 빈 문자열 — 처리방침에 메일 줄이 없다."""
+    contact = " ".join(env("CONTACT", "").split())
     return f"로그인할 수 없으면 메일로도 요청할 수 있습니다(보조 경로). 가입한 이메일 주소에서 보낸 메일만 처리합니다. 메일: {contact}" if contact else ""
 
 
@@ -510,7 +511,7 @@ class Web:
         self.dev = dev
         self.dev_user = dev_user
         self.client_id = os.environ.get("AUTHKIT_WEB_CLIENT_ID", "").strip()
-        self.secret = os.environ.get("CANON_SESSION_SECRET", "").encode()
+        self.secret = env("SESSION_SECRET", "").encode()
         if self.dev and not self.secret:
             self.secret = b"dev-only-" + secrets.token_bytes(16)   # 개발은 재시작마다 바뀌어도 된다
         p = urlparse(self.public_url)
@@ -708,7 +709,7 @@ class Web:
             return JSONResponse({"code": "ARG-INVALID", "msg": "동의할 문서·버전이 필요해요."}, status_code=400)
         try:
             await run_in_threadpool(db.consent_grant, uid, body)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         if is_json:
             return JSONResponse({"ok": True, "redirect": "/app"})
@@ -717,7 +718,7 @@ class Web:
     # ── 로그인 ─────────────────────────────────────────
     async def login(self, request):
         if not self.login_ready:
-            return _page("아직 로그인을 열지 않았어요", "<p>운영자가 로그인 설정(AUTHKIT_WEB_CLIENT_ID·CANON_SESSION_SECRET)을 마치면 열려요.</p>", 503)
+            return _page("아직 로그인을 열지 않았어요", "<p>운영자가 로그인 설정(AUTHKIT_WEB_CLIENT_ID·CRM_SESSION_SECRET)을 마치면 열려요.</p>", 503)
         verifier = _b64(secrets.token_bytes(48))
         state = _b64(secrets.token_bytes(24))
         challenge = _b64(hashlib.sha256(verifier.encode()).digest())
@@ -776,7 +777,7 @@ class Web:
             return _page("받은 토큰을 믿을 수 없어요", "<p>토큰의 발급자·대상이 이 서버와 맞지 않아요.</p>" + again, 502)
         try:
             uid = await run_in_threadpool(auth.user_id_for, verified)
-        except Exception as e:   # ToolError·CanonError — 메시지만 보인다
+        except Exception as e:   # ToolError·CrmError — 메시지만 보인다
             msg = getattr(e, "message", None) or str(e)
             return _page("사용자를 연결하지 못했어요", f"<p>{_esc(msg)}</p>{again}", 502)
         claims = verified.claims or {}
@@ -822,7 +823,7 @@ class Web:
         rid = request.query_params.get("id", "")
         try:
             r = await run_in_threadpool(db.record_get, uid, rid)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message}, status_code=404)
         return JSONResponse({"id": r["id"], "title": r["title"], "body": r["body"],
                              "meta": {"created": r["created"], "source": r["source"], "question_id": r["question_id"]}},
@@ -852,7 +853,7 @@ class Web:
             return db.candidate_decide(uid, cid, action, text, rev, wording_by)
         try:
             out = await run_in_threadpool(write)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
         return JSONResponse(out)
 
@@ -863,7 +864,7 @@ class Web:
             return err
         try:
             out = await run_in_threadpool(db.item_get, uid, request.query_params.get("id", ""))
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message}, status_code=404)
         return JSONResponse(out, headers={"cache-control": "no-store"})
 
@@ -893,7 +894,7 @@ class Web:
             return db.item_decide(uid, iid, rev, pid, action, hid)
         try:
             out = await run_in_threadpool(write)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=_write_status(e))
         return JSONResponse(out)
 
@@ -925,7 +926,7 @@ class Web:
             return db.ticket_add(uid, kind, text, "web", page=page, ua_family=fam)
         try:
             out = await run_in_threadpool(write)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse({**out, "notice": db.NOTICE})
 
@@ -951,7 +952,7 @@ class Web:
             return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문({'·'.join(fields)} 문자열)이 필요해요."}, status_code=400)
         try:
             out = await run_in_threadpool(fn, *args)
-        except db.CanonError as e:
+        except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=404 if e.code == "NOT-FOUND" else 400)
         return JSONResponse(out)
 
@@ -1072,7 +1073,7 @@ class Web:
                                '세션에서만 돼요.</p><p><a href="/admin/reauth">다시 로그인</a></p>', 403)
         try:
             await run_in_threadpool(db.admin_act, uid, op, form["uid"], role)
-        except db.CanonError as e:
+        except db.CrmError as e:
             status = {"NOT-FOUND": 404, "FORBIDDEN": 403, "LAST-ADMIN": 409}.get(e.code, 400)
             return _admin_page("처리하지 못했어요", f"<h1>처리하지 못했어요</h1><p>{_esc(e.code)} — {_esc(e.message)}</p>"
                                f"{'<p>' + _esc(e.action) + '</p>' if e.action else ''}{back}", status)

@@ -21,7 +21,7 @@
 
 - macOS, 시스템 `python3` 에 `playwright`(Chromium 포함)·`Pillow`. `brew install ffmpeg webp`(img2webp·cwebp·webpinfo).
 - Node 22 · `cd tools/start-visuals/still && npm ci`(`node_modules` 는 커밋하지 않는다).
-- 데모만: 로컬 postgres(`brew services start postgresql@17`, DB 하나 — 예 `createdb canon_test`) + server 의 파이썬(venv, `server/requirements.txt`).
+- 데모만: 로컬 postgres(`brew services start postgresql@17`, DB 하나 — 예 `createdb crm_test`) + server 의 파이썬(venv, `server/requirements.txt`).
   로컬 postgres 가 없으면 Playwright route 로 `/api/*` 를 모킹하는 대안이 있다(구현하지 않음).
 
 ## 배경 — `still/`
@@ -57,18 +57,18 @@ python3 render.py --theme dark    # 한 벌만
 
 ```
 cd tools/start-visuals/demo
-DATABASE_URL=postgresql://localhost/canon_test \
+DATABASE_URL=postgresql://localhost/crm_test \
   python3 shoot.py --server-python ../../../server/.venv/bin/python --work /tmp/start-demo   # light/·dark/ 둘 다
 ./encode.sh /tmp/start-demo/light light   # start-demo.webp · start-demo-poster.webp · start-demo.json[light]
 ./encode.sh /tmp/start-demo/dark dark     # start-demo-dark.webp · start-demo-dark-poster.webp · start-demo.json[dark]
 ```
 
-- `seed.py`(server 파이썬): `DATABASE_URL` 호스트가 localhost·127.0.0.1 이 아니면 exit 1. 스키마 `CANON_TEST_SCHEMA`(기본 `start_demo`)를 DROP→CREATE 하고
+- `seed.py`(server 파이썬): `DATABASE_URL` 호스트가 localhost·127.0.0.1 이 아니면 exit 1. 스키마 `CRM_TEST_SCHEMA`(기본 `start_demo`)를 DROP→CREATE 하고
   연결 문자열에 `options=-csearch_path=<스키마>` 를 얹어 그 안에서만 쓴다. 값은 `sample-data/` 와 같은 문장(상수). 촬영 사용자 `demo@local`.
 - `shoot.py`(시스템 python3): DEV 서버를 `--host 127.0.0.1 --port 8932` 로 띄운다(인증 없는 DEV — 0.0.0.0 금지). 브라우저 시계와 「불러온 시각」을 2026-10-15 23:05 KST 로 고정.
   장면 ① 기록 원문 ② 원문과 대조(후보·형광펜) ②' 「내 판단으로 남기기」 클릭 링(촬영 때만 `add_style_tag`) ③ 남긴 뒤(실제 POST) ④ 구조 탭 내 판단. 127.0.0.1 밖 요청 0건 단정.
 - `encode.sh`: 장면 PNG(2x) → 1280w · 12fps · 홀드 + 0.33초 페이드(클릭 전후는 컷) → img2webp(`-kmax 1`, lossy q70). 포스터는 장면 ② 한 장.
-- 다크 촬영: `localStorage["canon-theme"]="dark"` 를 미리 넣어 theme.js 가 어두운 화면으로 연 대시보드를 같은 시나리오로 찍는다(시드부터 다시).
+- 다크 촬영: `localStorage["crm-theme"]="dark"` 를 미리 넣어 theme.js 가 어두운 화면으로 연 대시보드를 같은 시나리오로 찍는다(시드부터 다시).
   실측: 라이트 431KB · 다크 421KB, 포스터 31.9KB · 31.0KB.
   실측: 16.8초 · 202프레임 → WebP 14프레임 · 431KB, 포스터 32KB. 부분 사각형을 허용하면 349KB 지만 오른쪽·아래에 찌꺼기 줄이 남았다.
 
@@ -89,7 +89,7 @@ DATABASE_URL=postgresql://localhost/canon_test \
 
 손으로 쓰는 파일이다(렌더 결과 아님). 시작·도움말·대시보드 `<head>` 가 `/assets/theme.js?v=…` 로 읽는 유일한 외부(self) 스크립트.
 기본은 밝은 화면이고 OS 다크 설정은 따르지 않는다. ☀/☾ 버튼(`[data-theme-toggle]`)이 `<html data-theme="dark">` 를 붙이고 떼며,
-선택은 `localStorage["canon-theme"]` 에 기억한다(막혀 있으면 이번 화면에만). 데모 그림은 테마별 촬영본을 CSS 로 바꿔 보인다(다크에서 데모 창만 하얗게 뜨지 않게).
+선택은 `localStorage["crm-theme"]` 에 기억한다(막혀 있으면 이번 화면에만). 데모 그림은 테마별 촬영본을 CSS 로 바꿔 보인다(다크에서 데모 창만 하얗게 뜨지 않게).
 
 ## 시작 화면 구성(시안 A 「히어로」, `server/start.html`)
 

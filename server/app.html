@@ -1416,7 +1416,7 @@ const DESK_MAX = 4096;   // 서버 db.LIMIT_TICKET 과 같은 단위(UTF-8 바�
 const DESK_CHIP = {open: "st-wait", ack: "", doing: "flag", done: "st-mine", wontfix: "st-off"};
 const DESK_PAGE = {today: "today", question: "question", record: "record", structure: "structure", map: "map"};
 const deskBytes = s => new TextEncoder().encode(s).length;
-// 관리자(서버 env CANON_ADMIN_USER_IDS)면 GET /api/feedback 이 admin:true·전체 문의·admin_tickets 를 준다 — 띠와 「문의함」은 그때만.
+// 관리자(users.role=admin, 재인증 12시간 안)면 GET /api/feedback 이 admin:true·전체 문의·admin_tickets 를 준다 — 띠와 「문의함」은 그때만.
 const DESK_STATUSES = ["open", "ack", "doing", "done", "wontfix"];
 const DESK_NOTE_MAX = 2048;   // 서버 db.LIMIT_ADMIN_NOTE(UTF-8 바이트)
 const DESK_HEAD = {user: ["접수일", "종류", "상태", "글"], admin: ["접수일", "사용자", "종류", "상태", "글", "메모"]};

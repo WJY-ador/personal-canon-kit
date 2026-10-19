@@ -4,7 +4,7 @@
 // 시작 화면·도움말·대시보드가 같이 쓴다. 외부 출처 요청 없음(self 파일 하나 — 나중 script-src 'self' 통과).
 (function () {
   "use strict";
-  var KEY = "canon-theme";
+  var KEY = "crm-theme";
   var root = document.documentElement;
 
   function read() {

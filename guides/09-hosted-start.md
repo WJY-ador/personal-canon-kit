@@ -7,7 +7,7 @@
 | 어디서 | 어떻게 |
 |---|---|
 | Claude (claude.ai) | 설정 › 커넥터 › 커스텀 커넥터 추가 → 주소 `https://personal-canon-kit.onrender.com/mcp` → 로그인 창에서 Google 또는 이메일 코드 |
-| Claude Code | `claude mcp add --transport http canon https://personal-canon-kit.onrender.com/mcp` 뒤 `/mcp` 에서 로그인 |
+| Claude Code | `claude mcp add --transport http my-crm https://personal-canon-kit.onrender.com/mcp` 뒤 `/mcp` 에서 로그인 |
 | ChatGPT | Developer Mode 의 커넥터 추가(같은 주소). 2026-10 기준 Business 이상에서 쓰기 도구를 허용합니다 — Plus/Pro 는 확인 전 |
 | 웹 | `https://personal-canon-kit.onrender.com/` → [로그인]. 같은 이메일이면 대화와 웹이 한 계정입니다 |
 

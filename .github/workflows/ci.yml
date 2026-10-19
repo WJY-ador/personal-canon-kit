@@ -25,22 +25,22 @@ jobs:
       postgres:
         image: postgres:17
         env:
-          POSTGRES_PASSWORD: canon
-          POSTGRES_DB: canon
+          POSTGRES_PASSWORD: crm
+          POSTGRES_DB: crm
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres -d canon"
+          --health-cmd "pg_isready -U postgres -d crm"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql://postgres:canon@localhost:5432/canon
-      CANON_DEV: "1"
-      CANON_DEV_USER: tester@example.com
+      DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm
+      CRM_DEV: "1"
+      CRM_DEV_USER: tester@example.com
       AUTHKIT_ISSUER: https://fake.authkit.test
-      CANON_PUBLIC_URL: http://127.0.0.1:8800
+      CRM_PUBLIC_URL: http://127.0.0.1:8800
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -90,6 +90,6 @@ jobs:
       - name: "④ 서버 시험 (test_tools.py)"
         run: python server/test_tools.py
 
-      - name: "⑤ canon.py check (참고용)"
+      - name: "⑤ crm.py check (참고용)"
         continue-on-error: true
-        run: python canon.py check
+        run: python crm.py check

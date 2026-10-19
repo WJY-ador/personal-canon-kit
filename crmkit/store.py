@@ -17,7 +17,7 @@ from . import paths
 LOCK_STALE_SEC = 15 * 60
 
 
-class CanonError(Exception):
+class CrmError(Exception):
     """사용자에게 보여 줄 오류. code 는 가이드의 오류 표와 같은 이름이다."""
 
     def __init__(self, code, message, action=""):
@@ -40,11 +40,11 @@ def read_json(path):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        raise CanonError("FILE-MISSING", f"파일이 없습니다: {path.name}",
-                         "python3 canon.py doctor 로 무엇이 빠졌는지 확인하세요.")
+        raise CrmError("FILE-MISSING", f"파일이 없습니다: {path.name}",
+                         "python3 crm.py doctor 로 무엇이 빠졌는지 확인하세요.")
     except ValueError as e:
-        raise CanonError("FILE-CORRUPT", f"{path.name} 을(를) 읽을 수 없습니다 (JSON 형식 오류: {e})",
-                         "python3 canon.py backups 로 백업을 보고 restore 로 되돌리세요.")
+        raise CrmError("FILE-CORRUPT", f"{path.name} 을(를) 읽을 수 없습니다 (JSON 형식 오류: {e})",
+                         "python3 crm.py backups 로 백업을 보고 restore 로 되돌리세요.")
 
 
 def write_text_atomic(path, text, check=None):
@@ -73,7 +73,7 @@ def write_json_atomic(path, data, validate=None):
         if validate:
             errs = validate(loaded)
             if errs:
-                raise CanonError("SCHEMA-INVALID", "저장 전 검사 실패: " + "; ".join(errs),
+                raise CrmError("SCHEMA-INVALID", "저장 전 검사 실패: " + "; ".join(errs),
                                  "기존 파일은 그대로입니다. 입력값을 고쳐 다시 실행하세요.")
     write_text_atomic(path, text, check)
 
@@ -90,7 +90,7 @@ def lock(data, what):
         fd = os.open(str(lf), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError:
         info = lf.read_text(encoding="utf-8", errors="replace").strip()
-        raise CanonError("RUN-LOCKED", f"다른 작업이 실행 중입니다 ({info}).",
+        raise CrmError("RUN-LOCKED", f"다른 작업이 실행 중입니다 ({info}).",
                          "끝날 때까지 기다리세요. 15분이 지나면 자동으로 풀립니다.")
     try:
         os.write(fd, f"{what} pid={os.getpid()} at={now()}".encode("utf-8"))
@@ -117,7 +117,7 @@ def _managed_files(data):
 
 
 def backup(data, label):
-    """설정·기록·정리본을 .canon/backups/<시각>-<라벨>/ 로 복사한다. 백업 ID 를 돌려준다."""
+    """설정·기록·정리본을 .crm/backups/<시각>-<라벨>/ 로 복사한다. 백업 ID 를 돌려준다."""
     data = Path(data)
     bid = f"{stamp()}-{label}"
     dest = paths.sys_dir(data) / "backups" / bid
@@ -156,14 +156,14 @@ def restore(data, bid):
     src = paths.sys_dir(data) / "backups" / bid
     meta_f = src / "backup.json"
     if not meta_f.exists():
-        raise CanonError("BACKUP-MISSING", f"백업 {bid} 이(가) 없습니다.",
-                         "python3 canon.py backups 로 ID 를 확인하세요.")
+        raise CrmError("BACKUP-MISSING", f"백업 {bid} 이(가) 없습니다.",
+                         "python3 crm.py backups 로 ID 를 확인하세요.")
     meta = json.loads(meta_f.read_text(encoding="utf-8"))
     pre = backup(data, "before-restore")
     for rel in meta["files"]:
         s = src / rel
         if not s.exists():
-            raise CanonError("BACKUP-BROKEN", f"백업 안 파일이 빠졌습니다: {rel}",
+            raise CrmError("BACKUP-BROKEN", f"백업 안 파일이 빠졌습니다: {rel}",
                              f"다른 백업을 고르세요. 복구 전 상태는 {pre} 에 있습니다.")
         t = data / rel
         t.parent.mkdir(parents=True, exist_ok=True)

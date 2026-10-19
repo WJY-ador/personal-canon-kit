@@ -1,4 +1,4 @@
-# personal-canon-kit (가칭) · v0.1.0
+# My CRM (가칭) · v0.1.0
 
 내 기록을 내 질문·내 화면으로 다시 쓰게 하는 로컬 키트. Windows·macOS 목표, Python 표준 라이브러리만 씁니다.
 **받았으면 [START.md](START.md) 부터.**
@@ -23,18 +23,18 @@
 
 | 제품 폴더 (업데이트 때 바뀜) | 데이터 폴더 (내 것, 제품 밖) |
 |---|---|
-| `canon.py` 명령 | `profile.json` 확인/추정/미입력/꺼 둠 |
-| `canonkit/` 코어 | `questions.json`·`sources.json`·`tabs.json` |
+| `crm.py` 명령 | `profile.json` 확인/추정/미입력/꺼 둠 |
+| `crmkit/` 코어 | `questions.json`·`sources.json`·`tabs.json` |
 | `web/` 대시보드 화면 | `journal/*.md` 원문 기록 |
 | `templates/` 양식 | `candidates.json` 판단 후보 |
 | `guides/` 가이드 8개 | `sheets/*.md` 질문별 한 장 |
 | `.claude/skills/` 스킬 4개 | `issue-log.md` |
-| `sample-data/` 가짜 샘플 | `.canon/` 백업·실행 상태 (정본 아님) |
+| `sample-data/` 가짜 샘플 | `.crm/` 백업·실행 상태 (정본 아님) |
 | `manifest.json` 파일 목록·지원표 | |
 
 ## 경계 (코드로 지키는 것)
 
-- 쓰기는 `canon.py` 명령만. 대시보드는 GET 만 받고, `127.0.0.1` 에만 붙고, 파일을 쓰지 않고, 모델을 부르지 않습니다.
+- 쓰기는 `crm.py` 명령만. 대시보드는 GET 만 받고, `127.0.0.1` 에만 붙고, 파일을 쓰지 않고, 모델을 부르지 않습니다.
 - 모든 쓰기: 잠금(`O_EXCL` 파일) → 임시 파일 → 스키마 검사 → `os.replace`. 검사 실패 시 기존 파일 유지.
 - 모델 호출은 `digest` 한 곳, 구독 `claude -p` 로만. API 키 입력 칸 없음. 보내는 것은 기록 1편 + 질문 문장.
 - AI 후보의 근거 인용은 원문에 글자 그대로 있어야 저장. 같은 후보 중복 생성 안 함.
@@ -46,7 +46,7 @@
 
 ```bash
 python3 tests/test_flow.py                   # 흐름 시험 (모델은 가짜 CLI 로)
-python3 canon.py check                        # 패키지 검사: manifest·원작자 값·문서 속 명령
+python3 crm.py check                        # 패키지 검사: manifest·원작자 값·문서 속 명령
 ```
 
 ## 이 버전에 없는 것

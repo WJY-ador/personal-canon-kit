@@ -1,9 +1,9 @@
 """데모 촬영 — 로컬 DEV 서버(127.0.0.1 만) + 샘플 시드로 실제 app.html 장면 4개를 찍는다. 합성은 encode.sh.
 
 실행(원작자 Mac, 수동): 시스템 python3 (playwright 필요). 서버·시드는 server 의 파이썬(venv)으로 띄운다.
-    DATABASE_URL=postgresql://localhost/canon_test python3 shoot.py --server-python ../../../server/.venv/bin/python --work /tmp/demo
+    DATABASE_URL=postgresql://localhost/crm_test python3 shoot.py --server-python ../../../server/.venv/bin/python --work /tmp/demo
     ./encode.sh /tmp/demo/light light && ./encode.sh /tmp/demo/dark dark
-테마: 라이트·다크 둘 다 같은 시나리오로 찍는다(--theme 로 한 벌만). 다크는 localStorage["canon-theme"]="dark" 를 미리 넣어
+테마: 라이트·다크 둘 다 같은 시나리오로 찍는다(--theme 로 한 벌만). 다크는 localStorage["crm-theme"]="dark" 를 미리 넣어
      theme.js 가 <html data-theme="dark"> 를 붙인 상태 — 시작 화면이 어두울 때 데모 창만 하얗게 뜨지 않게.
      테마마다 시드부터 다시 한다(「남기기」가 실제 POST 라 상태가 바뀐다).
 가드: DATABASE_URL 호스트 localhost·127.0.0.1 만(seed.py 와 같은 규칙). 서버는 --host 127.0.0.1(인증 없는 DEV 라 0.0.0.0 금지).
@@ -55,8 +55,8 @@ def start_server(py: str, base_url: str) -> subprocess.Popen:
     sys.path.insert(0, str(HERE))
     from seed import guarded_url   # 같은 가드·같은 search_path 규칙
     _, _, url = guarded_url()
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("AUTHKIT_", "CANON_SESSION"))}
-    env.update(DATABASE_URL=url, CANON_DEV="1", CANON_DEV_USER="demo@local", CANON_PUBLIC_URL=BASE, PYTHONUNBUFFERED="1")
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AUTHKIT_", "CRM_SESSION"))}
+    env.update(DATABASE_URL=url, CRM_DEV="1", CRM_DEV_USER="demo@local", CRM_PUBLIC_URL=BASE, PYTHONUNBUFFERED="1")
     subprocess.run([py, str(HERE / "seed.py")], check=True, env={**os.environ, "DATABASE_URL": base_url})
     proc = subprocess.Popen([py, "-m", "uvicorn", "main:app", "--host", "127.0.0.1", "--port", str(PORT), "--log-level", "warning"],
                             cwd=SERVER, env=env)
@@ -76,7 +76,7 @@ async def shoot(work: Path, theme: str):
     async with async_playwright() as p:
         b = await p.chromium.launch()
         ctx = await b.new_context(viewport=VIEW, device_scale_factor=DSF, locale="ko-KR", timezone_id="Asia/Seoul")
-        await ctx.add_init_script(f"try {{ localStorage.setItem('canon-theme', '{theme}'); }} catch (e) {{}}")
+        await ctx.add_init_script(f"try {{ localStorage.setItem('crm-theme', '{theme}'); }} catch (e) {{}}")
         pg = await ctx.new_page()
         await pg.clock.set_fixed_time(CLOCK)
 
@@ -130,7 +130,7 @@ async def shoot(work: Path, theme: str):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--server-python", default=os.environ.get("CANON_SERVER_PYTHON", str(SERVER / ".venv" / "bin" / "python")))
+    ap.add_argument("--server-python", default=os.environ.get("CRM_SERVER_PYTHON", str(SERVER / ".venv" / "bin" / "python")))
     ap.add_argument("--work", required=True, help="장면 PNG 를 둘 폴더(레포 밖). 테마별 하위 폴더 light/·dark/ 에 쓴다")
     ap.add_argument("--theme", choices=["light", "dark", "both"], default="both")
     a = ap.parse_args()

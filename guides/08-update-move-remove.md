@@ -5,10 +5,10 @@
 ## 업데이트
 
 1. 새 버전의 `CHANGELOG.md` 에서 바뀐 것과 "호환" 줄을 읽습니다.
-2. 지금 상태 백업 — `python3 canon.py backup --label before-update`
-3. 옛 제품 폴더 이름을 바꿔 둡니다(예: `canon-kit-0.1.0`). 지우지 않습니다.
+2. 지금 상태 백업 — `python3 crm.py backup --label before-update`
+3. 옛 제품 폴더 이름을 바꿔 둡니다(예: `personal-crm-0.1.0`). 지우지 않습니다.
 4. 새 제품 폴더를 같은 자리에 두고, 옛 폴더의 `local.json` 을 새 폴더로 복사합니다(데이터 위치 기억).
-5. `python3 canon.py doctor`
+5. `python3 crm.py doctor`
    - 통과 → 끝. 옛 폴더는 며칠 뒤 지워도 됩니다.
    - `DATA-SCHEMA … 옛 버전` → 새 버전 CHANGELOG 의 마이그레이션 절차를 따릅니다. 절차가 없으면 **업데이트하지 말고** 옛 폴더로 돌아갑니다.
    - 다른 실패 → 옛 폴더 이름을 되돌리고 `restore <before-update 백업>`.
@@ -17,8 +17,8 @@
 
 ## 다른 컴퓨터로 이동
 
-1. 데이터 폴더(`~/canon-data` 등)를 통째로 복사합니다.
-2. 새 컴퓨터에 제품을 설치하고 `python3 canon.py init --data <복사한 위치>` — 기존 파일은 건드리지 않고 위치만 기억합니다.
+1. 데이터 폴더(`~/crm-data` 등)를 통째로 복사합니다.
+2. 새 컴퓨터에 제품을 설치하고 `python3 crm.py init --data <복사한 위치>` — 기존 파일은 건드리지 않고 위치만 기억합니다.
 3. `doctor` → `DATA-SOURCE 경고`가 나오면 자료 위치를 새로 등록합니다(06 가이드).
 
 ## 제거
@@ -30,6 +30,6 @@
 | journal/*.md | 원문 기록 | 아무 메모 앱 |
 | sheets/*.md | 질문별 한 장 | 아무 메모 앱 |
 | *.json | 프로필·질문·탭·후보 | 텍스트 편집기 |
-| .canon/backups/ | 백업 | 같은 구조의 사본 |
+| .crm/backups/ | 백업 | 같은 구조의 사본 |
 
 데이터 폴더까지 지우려면 직접 지우세요. 이 패키지는 데이터 폴더를 지우는 명령을 두지 않습니다.

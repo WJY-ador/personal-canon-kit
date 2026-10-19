@@ -1,7 +1,7 @@
 """구독 Claude Code CLI(`claude -p`) 호출. API 키는 받지 않는다.
 
 프롬프트는 argv 가 아니라 stdin 으로 넘긴다 — Windows 의 claude.cmd 인자 이스케이프·길이 제한을 피한다.
-CANON_CLAUDE 환경변수로 실행 파일을 바꿀 수 있다(시험용 가짜 모델).
+CRM_CLAUDE 환경변수로 실행 파일을 바꿀 수 있다(시험용 가짜 모델).
 """
 import json
 import os
@@ -10,13 +10,14 @@ import shutil
 import subprocess
 import sys
 
-from .store import CanonError
+from . import paths
+from .store import CrmError
 
 TIMEOUT = 300
 
 
 def find_claude():
-    override = os.environ.get("CANON_CLAUDE")
+    override = paths.env("CLAUDE")
     if override:
         return override
     return shutil.which("claude")       # Windows 는 PATHEXT 로 claude.cmd 도 찾는다
@@ -25,7 +26,7 @@ def find_claude():
 def ask(prompt, cwd=None):
     exe = find_claude()
     if not exe:
-        raise CanonError("CLI-MISSING", "Claude Code CLI(claude)를 찾지 못했습니다.",
+        raise CrmError("CLI-MISSING", "Claude Code CLI(claude)를 찾지 못했습니다.",
                          "guides/02-install-macos.md 또는 03-install-windows.md 의 CLI 설치 절을 따르세요.")
     cmd = [exe, "-p", "--output-format", "json", "--max-turns", "1"]
     if exe.endswith(".py"):                 # 시험용 가짜 모델 — OS 무관하게 같은 파이썬으로 돌린다
@@ -34,23 +35,23 @@ def ask(prompt, cwd=None):
         r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding="utf-8",
                            timeout=TIMEOUT, cwd=cwd)
     except subprocess.TimeoutExpired:
-        raise CanonError("MODEL-TIMEOUT", f"모델 응답이 {TIMEOUT}초 안에 오지 않았습니다.",
-                         "잠시 뒤 한 번만 다시 실행하세요. 반복되면 python3 canon.py diag 로 진단을 만드세요.")
+        raise CrmError("MODEL-TIMEOUT", f"모델 응답이 {TIMEOUT}초 안에 오지 않았습니다.",
+                         "잠시 뒤 한 번만 다시 실행하세요. 반복되면 python3 crm.py diag 로 진단을 만드세요.")
     except OSError as e:
-        raise CanonError("CLI-FAILED", f"claude 실행 실패: {e}", "python3 canon.py doctor 로 CLI 경로를 확인하세요.")
+        raise CrmError("CLI-FAILED", f"claude 실행 실패: {e}", "python3 crm.py doctor 로 CLI 경로를 확인하세요.")
     out = (r.stdout or "").strip()
     err = (r.stderr or "").strip()
     if r.returncode != 0:
         low = (out + err).lower()
         if "login" in low or "auth" in low or "/login" in low:
-            raise CanonError("CLI-LOGIN", "Claude Code 로그인이 필요합니다.",
+            raise CrmError("CLI-LOGIN", "Claude Code 로그인이 필요합니다.",
                              "터미널에서 claude 를 열고 /login 한 뒤 다시 실행하세요.")
-        raise CanonError("MODEL-FAILED", f"모델 실행 실패 (exit {r.returncode})",
+        raise CrmError("MODEL-FAILED", f"모델 실행 실패 (exit {r.returncode})",
                          "한 번만 다시 실행하세요. 반복되면 diag 로 진단을 만드세요.")
     try:
         env = json.loads(out)
         if env.get("is_error"):
-            raise CanonError("MODEL-FAILED", "모델이 오류를 돌려줬습니다.", "한 번만 다시 실행하세요.")
+            raise CrmError("MODEL-FAILED", "모델이 오류를 돌려줬습니다.", "한 번만 다시 실행하세요.")
         return env.get("result", "")
     except ValueError:
         return out
@@ -63,7 +64,7 @@ def extract_json(text):
     try:
         return json.loads(raw)
     except ValueError:
-        raise CanonError("MODEL-FORMAT", "모델 답이 약속한 형식(JSON)이 아닙니다.",
+        raise CrmError("MODEL-FORMAT", "모델 답이 약속한 형식(JSON)이 아닙니다.",
                          "이전 정상본은 그대로입니다. 한 번만 다시 실행하세요.")
 
 

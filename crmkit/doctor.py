@@ -77,7 +77,7 @@ def data_checks(data):
     out = []
     if data is None:
         return [_r("DATA-UNSET", FAIL, "데이터 폴더가 정해지지 않음",
-                   "python3 canon.py init --data <폴더> 로 만드세요.", "user")]
+                   "python3 crm.py init --data <폴더> 로 만드세요.", "user")]
     data = Path(data)
     if not (data / "meta.json").exists():
         return [_r("DATA-MISSING", FAIL, f"데이터 폴더 아님: {paths.mask_path(data)}",
@@ -112,7 +112,7 @@ def data_checks(data):
             d = json.loads(f.read_text(encoding="utf-8"))
         except ValueError as e:
             out.append(_r("DATA-CORRUPT", FAIL, f"{name} 손상 (JSON 형식 오류: 줄 {getattr(e, 'lineno', '?')})",
-                          "python3 canon.py backups 로 마지막 정상본을 고르고 restore <백업ID>.", "restore"))
+                          "python3 crm.py backups 로 마지막 정상본을 고르고 restore <백업ID>.", "restore"))
             continue
         errs = schema.VALIDATORS[name](d)
         if errs:
@@ -153,7 +153,7 @@ def data_checks(data):
     bks = store.list_backups(data)
     out.append(_r("BACKUP", OK if bks else WARN,
                   f"백업 {len(bks)}개, 최근 {bks[0]['id']}" if bks else "백업 없음 — 복구할 정상본이 없습니다",
-                  "" if bks else "python3 canon.py backup 으로 지금 상태를 먼저 남기세요.", "user"))
+                  "" if bks else "python3 crm.py backup 으로 지금 상태를 먼저 남기세요.", "user"))
     return out
 
 

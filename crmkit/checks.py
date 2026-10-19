@@ -53,7 +53,7 @@ def run(commands, extra_patterns=()):
     for f in sorted(actual - listed):
         issues.append(("warn", f, "패키지에 있는데 manifest 에 없음"))
     pats = GENERIC + [(re.compile(re.escape(x), re.I), "원작자 값") for x in extra_patterns if x]
-    cmd_re = re.compile(r"canon\.py\s+([a-z][a-z-]*)")
+    cmd_re = re.compile(r"crm\.py\s+([a-z][a-z-]*)")
     for rel in sorted(actual | {"manifest.json"}):
         p = paths.PRODUCT_ROOT / rel
         if p.suffix not in TEXT_EXT:
@@ -63,7 +63,7 @@ def run(commands, extra_patterns=()):
         except (UnicodeDecodeError, OSError):
             continue
         for i, line in enumerate(lines, 1):
-            if rel == "canonkit/checks.py":
+            if rel == "crmkit/checks.py":
                 continue
             for rx, what in pats:
                 if rx.search(line):

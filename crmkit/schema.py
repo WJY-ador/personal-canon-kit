@@ -21,7 +21,7 @@ BLOCKS = {
                   "reads": ["questions.json"], "needs": "questions"},
     "next": {"name": "다음 행동", "desc": "지금 할 일 하나", "reads": [], "needs": None},
     "status": {"name": "실행 상태", "desc": "마지막 정리 실행의 성공·실패와 시각",
-               "reads": [".canon/runs.json"], "needs": None},
+               "reads": [".crm/runs.json"], "needs": None},
 }
 
 ID_RE = {

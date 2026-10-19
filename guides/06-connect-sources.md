@@ -6,11 +6,11 @@
 
 1. 읽어도 되는 범위에 동의 — 전체 디스크가 아니라 한 곳만.
    ```bash
-   python3 canon.py consent --read ~/notes
+   python3 crm.py consent --read ~/notes
    ```
 2. 자료 등록 — 이름은 내 말로.
    ```bash
-   python3 canon.py source add ~/notes --label "업무 메모"
+   python3 crm.py source add ~/notes --label "업무 메모"
    ```
    모델 전송을 허용하는 자료면 `--model-send` 를 붙입니다(기본은 안 보냄).
 3. 그 안의 파일 1편을 기록으로 — `record add --file`.

@@ -3,7 +3,7 @@
 Claude Code 를 **제품 폴더에서** 열고 이렇게 말합니다.
 
 ```
-canon-setup 스킬로 설정 시작해 줘
+crm-setup 스킬로 설정 시작해 줘
 ```
 
 스킬이 순서대로 진행하고, 단계마다 묻습니다. 아래는 무엇을 하는지 미리 보는 용도입니다.
@@ -11,7 +11,7 @@ canon-setup 스킬로 설정 시작해 줘
 ## 순서
 
 1. **읽기 범위·모델 전송 동의** — 어느 폴더/파일을 읽어도 되는지, 정리할 때 기록을 모델로 보내도 되는지. 동의 전에는 아무 파일도 열지 않습니다.
-   - 기록: `python3 canon.py consent --read <폴더> --model-send yes|no`
+   - 기록: `python3 crm.py consent --read <폴더> --model-send yes|no`
 2. **내 글/메모 읽고 추정 보여 주기** — 고른 자료만 읽고, 알 수 있는 건 "추정"으로 짧게 보여 줍니다. 맞으면 확인, 틀리면 고칩니다.
 3. **모르는 것만 묶어서 묻기** — 이미 답한 건 다시 묻지 않습니다. 건너뛸 수 있습니다.
    - 최근 실제로 자료를 다시 찾았던 일은?
@@ -33,17 +33,17 @@ canon-setup 스킬로 설정 시작해 줘
 | 미입력 | 아직 모름 |
 | 꺼 둠 | 쓰지 않기로 함 |
 
-`python3 canon.py status` 로 언제든 봅니다.
+`python3 crm.py status` 로 언제든 봅니다.
 
 ## 중단했다면
 
-다시 「canon-setup 스킬로 이어서」 라고 말하면 `setup-state.json` 의 마지막 완료 단계부터 이어갑니다.
+다시 「crm-setup 스킬로 이어서」 라고 말하면 `setup-state.json` 의 마지막 완료 단계부터 이어갑니다.
 
 ## 탭 이름·순서를 나중에 바꾸려면
 
 ```bash
-python3 canon.py blocks                         # 쓸 수 있는 블록
-python3 canon.py tabs propose --tab "주간 회고=sheet,candidates,next" --tab "글감=journal"
-python3 canon.py tabs rename t-001 "회고 재료"    # 이름만 — 내부 ID·주소(#t-001)는 그대로
-python3 canon.py tabs apply
+python3 crm.py blocks                         # 쓸 수 있는 블록
+python3 crm.py tabs propose --tab "주간 회고=sheet,candidates,next" --tab "글감=journal"
+python3 crm.py tabs rename t-001 "회고 재료"    # 이름만 — 내부 ID·주소(#t-001)는 그대로
+python3 crm.py tabs apply
 ```
