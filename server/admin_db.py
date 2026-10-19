@@ -107,21 +107,21 @@ ALLOW = {
     },
     # 리포트 「구조」 — 사용자 × 적용된 오브젝트(revision>0, 보관 포함) × 필드. 이름 없음. 사용자에 오브젝트가 없으면 object_ref NULL 한 행.
     "report.structure": {
-        "sql": "SELECT u.id AS user_id, md5(o.id) AS object_ref, o.semantic_kind, o.template_slot AS object_slot, "
-               "o.archived_at AS object_archived, f.value_type, f.required, f.multiple, f.target_kind, f.template_slot AS field_slot, "
+        "sql": "SELECT u.id AS user_id, md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, "
+               "o.archived_at AS object_archived, f.value_type, f.required, f.multiple, f.target_kind, f.std_id AS field_std, f.template_slot AS field_slot, "
                "f.archived_at AS field_archived FROM users u LEFT JOIN object_defs o ON o.user_id=u.id AND o.revision > 0 "
                "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id ORDER BY u.created, u.id, o.created_at, o.id, f.position, f.key",
-        "cols": ("user_id", "object_ref", "semantic_kind", "object_slot", "object_archived", "value_type", "required", "multiple",
-                 "target_kind", "field_slot", "field_archived"),
+        "cols": ("user_id", "object_ref", "semantic_kind", "object_std", "object_slot", "object_archived", "value_type", "required", "multiple",
+                 "target_kind", "field_std", "field_slot", "field_archived"),
         "viewer": VIEWER_ADMIN, "consent": None,
         "time": None,   # 지금 상태(스냅샷) — 기간 없음
         "dims": {"semantic_kind": "오브젝트 종류", "origin": "오브젝트 출처", "value_type": "필드 타입", "field_origin": "필드 출처",
                  "required": "필수", "multiple": "다중", "target": "관계 대상", "archived": "보관",
                  "objects_bucket": "사용자별 오브젝트 수 구간", "fields_bucket": "사용자별 필드 수 구간"},
         "user_dims": ("objects_bucket", "fields_bucket"),   # 사용자 단위 차원 — 서로끼리만 묶고 필터와 같이 쓰지 않는다
-        "filters": {"semantic_kind": ("collection", "event", "principle"), "origin": ("template", "user"),
+        "filters": {"semantic_kind": ("collection", "event", "principle"), "origin": ("standard", "template", "user"),
                     "value_type": ("text", "number", "boolean", "date", "select", "text_list", "reference"),
-                    "field_origin": ("template", "user"), "required": ("yes", "no"), "multiple": ("yes", "no"),
+                    "field_origin": ("standard", "template", "user"), "required": ("yes", "no"), "multiple": ("yes", "no"),
                     "target": ("item", "record", "candidate", "none"), "archived": ("yes", "no")},
         "measures": {"users": {"label": "사용자 수", "src": "users · object_defs", "time": "지금",
                                "missing": "행 단위: 오브젝트 없는 사용자 제외 · 구간: 전원(0 구간 포함)",
@@ -151,13 +151,13 @@ ALLOW = {
     },
     # 사용자 한 명의 구조 트리 — 이름 없음. args (user_id).
     "schema.tree": {
-        "sql": "SELECT md5(o.id) AS object_ref, o.semantic_kind, o.template_slot AS object_slot, o.archived_at AS object_archived, "
+        "sql": "SELECT md5(o.id) AS object_ref, o.semantic_kind, o.std_id AS object_std, o.template_slot AS object_slot, o.archived_at AS object_archived, "
                "md5(f.key) AS field_ref, f.value_type, f.required, f.multiple, f.target_kind, md5(f.target_object_id) AS target_ref, "
-               "f.template_slot AS field_slot, f.archived_at AS field_archived FROM object_defs o "
+               "f.std_id AS field_std, f.template_slot AS field_slot, f.archived_at AS field_archived FROM object_defs o "
                "LEFT JOIN field_defs f ON f.user_id=o.user_id AND f.object_id=o.id "
                "WHERE o.user_id=%s AND o.revision > 0 ORDER BY o.created_at, o.id, f.position, f.key",
-        "cols": ("object_ref", "semantic_kind", "object_slot", "object_archived", "field_ref", "value_type", "required", "multiple",
-                 "target_kind", "target_ref", "field_slot", "field_archived"),
+        "cols": ("object_ref", "semantic_kind", "object_std", "object_slot", "object_archived", "field_ref", "value_type", "required", "multiple",
+                 "target_kind", "target_ref", "field_std", "field_slot", "field_archived"),
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # 이름 공유 분기 — 그 사용자의 유효 동의(granted · 현재 버전)가 같은 문장 안에서 참일 때만 행이 나온다. args (user_id, 버전).
@@ -346,7 +346,8 @@ VALUE_LABELS = {
     "blocked": {"yes": "차단", "no": "아님"}, "active14": {"yes": "활동", "no": "없음"},
     "role": {"user": "사용자", "admin": "관리자"},
     "result": {"ok": "정상", "error": "오류"}, "linked": {"yes": "연결", "no": "미연결"},
-    "origin": {"template": "템플릿", "user": "사용자"}, "field_origin": {"template": "템플릿", "user": "사용자"},
+    "origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},   # 앱 출처 용어(structure_svg.ORIGIN_TEXT, user = custom)
+    "field_origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},
     "required": {"yes": "필수", "no": "선택"}, "multiple": {"yes": "다중", "no": "단일"}, "archived": {"yes": "보관", "no": "사용 중"},
     "target": {"item": "항목", "record": "기록", "candidate": "후보", "none": "관계 아님"},
     "kind": {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"},
@@ -495,6 +496,10 @@ def report_check(ds, dims, filters):
     return spec
 
 
+def _origin(std, slot):
+    return "standard" if std else "template" if slot else "user"
+
+
 def _facts(ds, r, today):
     """원행 하나 → 차원 값 dict(열거 값 또는 날짜 문자열, 해당 없음 None)."""
     if ds == "users":
@@ -510,9 +515,9 @@ def _facts(ds, r, today):
         c, z = _kdate(r["created"]), _kdate(r["closed_at"])
         return {"kind": r["kind"], "status": r["status"], "page": r["page"], "via": r["via"], "created_month": _month(c),
                 "created_week": _week(c), "closed_month": _month(z), "closed_week": _week(z)}
-    has_f = r["value_type"] is not None
-    return {"semantic_kind": r["semantic_kind"], "origin": "template" if r["object_slot"] else "user",
-            "value_type": r["value_type"], "field_origin": ("template" if r["field_slot"] else "user") if has_f else None,
+    has_f = r["value_type"] is not None   # 출처 = contract.origin_of 순서(std_id → template_slot → 사용자)
+    return {"semantic_kind": r["semantic_kind"], "origin": _origin(r["object_std"], r["object_slot"]),
+            "value_type": r["value_type"], "field_origin": _origin(r["field_std"], r["field_slot"]) if has_f else None,
             "required": _yn(r["required"]) if has_f else None, "multiple": _yn(r["multiple"]) if has_f else None,
             "target": (r["target_kind"] or "none") if has_f else None,
             "archived": _yn(r["object_archived"] is not None or (has_f and r["field_archived"] is not None))}

@@ -3555,7 +3555,9 @@ async def test_admin_screens():
     · 이름 공유: 동의자만 현재 이름(템플릿 이름 바꾼 것 포함), 비동의·철회·옛 버전은 0 · 출력 escape · 리포트 잘못된 키·조합 400
     · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)."""
     import datetime
+    import hashlib
     import admin_db
+    import structure_svg
     import template_author
     from psycopg.types.json import Jsonb
     site = main.site
@@ -3702,6 +3704,32 @@ async def test_admin_screens():
                            (f"/admin/users/{site._opaque(U['g'])}?zz=1", 400)):
             r = await get(path)
             assert r.status_code == code and "<script" not in r.text.lower(), (path, r.status_code)
+        # ── 리포트 구조 출처 = contract.origin_of 순서(PR #20 R4): std_id 가 template_slot 보다 먼저 ──
+        with db.tx() as c:   # 시드가 template_slot 을 칠한 행에 std_id 를 단다(옛 백필 + 편입) — 표준이어야 한다
+            assert c.execute("UPDATE object_defs SET std_id='std:principles' WHERE user_id=%s AND key='principles' "
+                             "AND template_slot IS NOT NULL", (U["g"],)).rowcount == 1
+            assert c.execute("UPDATE field_defs SET std_id='std:principles.axes' WHERE user_id=%s AND object_id='od_principles' "
+                             "AND key='axes' AND template_slot IS NOT NULL", (U["g"],)).rowcount == 1
+        ref = {k: hashlib.md5(k.encode()).hexdigest() for k in ("od_principles", "od_axes", "od_p4u")}
+        gf = [(r_, admin_db._facts("structure", r_, today)) for r_ in admin_db.report_rows("admin", "structure") if r_["user_id"] == U["g"]]
+        og = {r_["object_ref"]: f_["origin"] for r_, f_ in gf}
+        assert (og[ref["od_principles"]], og[ref["od_axes"]], og[ref["od_p4u"]]) == ("standard", "template", "user"), og
+        fo = {(r_["object_ref"], r_["field_std"] or r_["field_slot"] or ""): f_["field_origin"] for r_, f_ in gf if f_["field_origin"]}
+        assert fo[(ref["od_principles"], "std:principles.axes")] == "standard", fo
+        assert {v for (o_, _), v in fo.items() if o_ == ref["od_principles"]} == {"standard", "template"}, "같은 오브젝트의 나머지 필드는 템플릿"
+        assert {v for (o_, _), v in fo.items() if o_ == ref["od_p4u"]} == {"user"}, fo
+        assert "standard" in admin_db.report_spec("structure")["filters"]["origin"]
+        ot = structure_svg.ORIGIN_TEXT   # 리포트 출처 라벨 = 앱 용어(키 user ↔ 앱 custom) · 다른 차원의 user 라벨은 그대로
+        assert admin_db.VALUE_LABELS["origin"] == admin_db.VALUE_LABELS["field_origin"] == {
+            "standard": ot["standard"], "template": ot["template"], "user": ot["custom"]}, admin_db.VALUE_LABELS["origin"]
+        assert admin_db.VALUE_LABELS["role"]["user"] == "사용자"
+        st = admin_db.report("admin", "structure", ("origin",), {"origin": "standard"}, today=today)
+        assert st["rows"] and st["rows"][0]["values"]["objects"] >= 1, st
+        for path in ("/admin/reports?ds=structure&g1=origin", "/admin/reports?ds=structure&g1=field_origin&origin=standard"):
+            r = await get(path)
+            t = clean(r, path)
+            assert r.status_code == 200 and "표준" in t, (path, r.status_code)
+            assert "G-RENAMED" not in t and "G-OBJ" not in t and "G-FLD" not in t, (path, "리포트에 이름 없음")
         # ── 리포트: 프리셋 · 모든 차원·필터 200, 이름 0 ──
         urls = admin_report_urls()
         assert len([u for u in urls if "ds=" in u]) > 40, len(urls)
@@ -3740,6 +3768,8 @@ async def test_admin_screens():
         site.dev, site.dev_user = real
         with db.tx() as c:
             c.execute("DELETE FROM usage_daily WHERE user_id='' AND name='p4:unlinked'")
+            c.execute("UPDATE object_defs SET std_id=NULL WHERE user_id=%s AND std_id='std:principles'", (U["g"],))
+            c.execute("UPDATE field_defs SET std_id=NULL WHERE user_id=%s AND std_id='std:principles.axes'", (U["g"],))
     print("OK — 운영 화면(개요·스키마·리포트: 404·옛 ra 통과·CSP·메뉴·이름 공유 허용/금지·철회·escape·400·행 상한·프리셋·표준 구조) 통과")
 
 
