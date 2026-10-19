@@ -87,7 +87,7 @@ QUOTA_EXEMPT = frozenset({"feedback_send"})
 CONSENT_VERSIONS: dict = {}
 
 # ── 선택 동의 (운영 콘솔) ───────────────────────────────
-# 게이트 밖 — 동의하지 않아도 모든 기능을 쓴다. 지금은 「구조 이름 공유」 하나: 운영자 조회에 현재 이름(오브젝트·필드·선택지)을 보인다.
+# 필수 아님 — 동의하지 않아도 모든 기능을 쓴다. 지금은 「구조 이름 공유」 하나: 운영자 조회에 현재 이름(오브젝트·필드·선택지)을 보인다.
 # 버전 = 공유 범위 문서 버전(처리방침 머리글과 별개). 범위가 바뀌면 상수를 올린다 → 옛 버전 동의는 유효하지 않다.
 STRUCT_NAMES_VERSION = "s1"
 OPTIONAL_VERSIONS = {"struct_names": STRUCT_NAMES_VERSION}
