@@ -264,6 +264,11 @@ def review_reason(record):
 SCOPE_MSG = "남이 쓴 글(author_kind=external)은 기록으로 넣을 수 없어요."
 SCOPE_ACT = "직접 쓴 내 기록만 넣어요. 남의 말·AI 요약은 넣지 않아요."
 
+# 기능 플래그 꺼짐 거절(4단계 추가 — §8 신규 3종 밖). 표준 보류·거절 기록이 STANDARD 를 따르는지 명세 미정 → 기본은 따른다(db.STD_CHOICE_NEEDS_FLAG)
+FEATURE_OFF = "FEATURE-OFF"
+FEATURE_OFF_MSG = {"STANDARD": "표준 정의 선택은 아직 열리지 않았어요.", "SOURCES": "출처 기능은 아직 열리지 않았어요."}
+FEATURE_OFF_ACT = "운영자가 기능을 켠 뒤 다시 하세요. 읽기(미리보기·목록)는 지금도 돼요."
+
 
 # ── 고정 예제 입력 — 가짜 사용자 둘. 사용자가 정한 문자열은 전부 표식(ULBL·PLBL·SRC 등)을 달아 누출 시험이 찾게 한다 ──
 

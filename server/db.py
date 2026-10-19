@@ -362,6 +362,7 @@ def init_schema(conn=None):
       2. schema.sql — CREATE … IF NOT EXISTS. 새 DB 는 여기서 바로 최종형, 옛 DB 는 no-op.
       3. 2단계 ALTER — records.notes 추가 · candidates.question_id NULL 허용(기존 행은 안 건드림).
       4. template_slot — object_defs·field_defs 에 ADD COLUMN IF NOT EXISTS → 백필(_backfill_template_slots). 열이 먼저다.
+         std_id(PR #20) — 같은 두 테이블에 ADD COLUMN IF NOT EXISTS 만(값은 시드·편입이 채운다, 백필 없음). std_marks·std_choices 는 2 에서.
       5. 1회성 — schema_marks 표식이 없을 때만(INSERT … ON CONFLICT DO NOTHING RETURNING): 처리방침 v2 전환 usage_daily 전체 삭제."""
     if conn is None:
         with pool().connection() as c:
@@ -394,6 +395,9 @@ def _init_schema(c):
         for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
+        for t in ("object_defs", "field_defs"):   # PR #20 표준 식별자 — 열만. 옛 행은 NULL(표준 아님) 그대로
+            if not _has_col(c, t, "std_id"):
+                c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS std_id text")
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
         # 처리방침 v2 전환 — v2 시행 전에 모은 이용 기록(usage_daily)을 1회 전부 지운다. 표식이 있으면 건너뛴다.
         if _one(c, "INSERT INTO schema_marks (key) VALUES (%s) ON CONFLICT (key) DO NOTHING RETURNING key", (USAGE_RESET_MARK,)):
@@ -1047,6 +1051,10 @@ def _scope_self():
     return CrmError(contract.SCOPE_SELF_ONLY, contract.SCOPE_MSG, contract.SCOPE_ACT)
 
 
+def _feature_off(name):
+    return CrmError(contract.FEATURE_OFF, contract.FEATURE_OFF_MSG[name], contract.FEATURE_OFF_ACT)
+
+
 # ── 정의 정규화·검증 (DB 없이 — 시드 --dry-run 도 같은 함수) ──
 
 def _norm_options(raw, fkey):
@@ -1223,8 +1231,9 @@ def _item_problems(fields, policy, data, links, strict):
 
 # ── 정의 읽기·쓰기 ──
 
-_DEF_COLS = "id,key,label,semantic_kind,revision,policy,draft_doc,draft_id,draft_base_revision,archived_at,created_at,updated_at"
-_FIELD_COLS = "key,label,value_type,required,options,target_kind,target_object_id,multiple,position,archived_at"
+_DEF_COLS = ("id,key,label,semantic_kind,revision,policy,draft_doc,draft_id,draft_base_revision,archived_at,created_at,updated_at,"
+             "template_slot,std_id")   # template_slot·std_id = 출처 판정(contract.origin_of) 입력
+_FIELD_COLS = "key,label,value_type,required,options,target_kind,target_object_id,multiple,position,archived_at,template_slot,std_id"
 
 
 def _fields(c, uid, oid, include_archived=False):
@@ -1377,6 +1386,171 @@ def definition_history(uid, object_id):
     if not r:
         raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
     return r["history"]
+
+
+# ── PR #20 표준(std@1) — 상태 읽기 · 편입 미리보기(읽기 전용) · 선택 기록(보류·거절) ──
+# 명세 §0·§1·§3. 시드·편입 적용·잠금 검사는 5단계. 자동 분류·편입 없음 — 미리보기는 행을 쓰지 않는다.
+
+STD_CHOICE_STATES = ("deferred", "refused")   # std_choose 가 받는 값. incorporated 는 적용 경로·seeded 는 시드만(5단계)
+STD_CHOICE_NEEDS_FLAG = True   # 선택 기록(쓰기)이 CRM_FEATURE_STANDARD=on 을 요구하는가 — 명세 §7 미명시, 기본 요구(FEATURE-OFF). 미리보기는 무관
+STD_READY = ("seeded", "incorporated")   # 참조 대상이 이 상태여야 그 참조를 가진 표준 오브젝트를 편입할 수 있다(§3 참조 의존)
+STD_STRUCTURES = ("match", "extend", "missing", "conflict")   # 일치 · 확장(표준 + 사용자 필드) · 누락(같은 key 없음) · 충돌
+# 충돌 사유 — field=None 이면 오브젝트 단위, 아니면 표준 필드 key 하나
+STD_CONFLICTS = ("key_draft_only", "key_archived", "kind", "field_missing", "field_archived", "field_value_type",
+                 "field_target_kind", "field_target", "field_multiple", "field_required", "field_options")
+STD_BLOCKS = ("already", "conflict", "needs_target")   # 편입 불가 사유: 이미 seeded·incorporated · 구조 충돌 · 참조 대상 미편입
+
+
+def std_doc():
+    """설치 버전 명세 templates/std@1.json — 정규화 정의 + 템플릿 id(od_axes …). 참조 대상은 템플릿 id 로 적혀 있다."""
+    return template_frozen(contract.STD_VERSION)
+
+
+def _std_rows(c, uid):
+    marks = _one(c, "SELECT version,state FROM std_marks WHERE user_id=%s AND version=%s", (uid, contract.STD_VERSION))
+    choices = {r["std_key"]: _iso(r) for r in _all(
+        c, "SELECT std_key,state,def_id,def_revision,confirmed_meaning,at FROM std_choices WHERE user_id=%s", (uid,))}
+    return marks, choices
+
+
+def _std_state(c, uid):
+    marks, choices = _std_rows(c, uid)
+    return contract.std_state(marks, {k: r["state"] for k, r in choices.items()})
+
+
+def std_status(uid):
+    """사용자 `std` = {version, state, objects}(contract.std_state 모양). 표식 없으면 version·state null, objects 는 std_choices 대로."""
+    with tx() as c:
+        return _std_state(c, uid)
+
+
+def _std_objects(c, uid):
+    """표준 key → 그 사용자의 대응 오브젝트 행 또는 None. 규칙(5단계 적용도 이대로 쓴다): object_defs.std_id = std:<key> 가 먼저,
+    없으면 같은 key 행 — 적용 전 초안(revision 0)·보관 행도 돌려준다(판정은 호출자). UNIQUE(user_id, key) 라 key 갈래는 많아야 하나."""
+    sids = [contract.std_id_of(k) for k in contract.STD_KEYS]
+    rows = _all(c, "SELECT id,key,label,semantic_kind,revision,archived_at,std_id FROM object_defs "
+                   "WHERE user_id=%s AND (key = ANY(%s) OR std_id = ANY(%s)) ORDER BY created_at, id",
+                (uid, list(contract.STD_KEYS), sids))
+    out = {}
+    for k, sid in zip(contract.STD_KEYS, sids):
+        out[k] = next((r for r in rows if r["std_id"] == sid), None) or next((r for r in rows if r["key"] == k), None)
+    return out
+
+
+def _std_classify(sd, row, fields, target_ids):
+    """표준 오브젝트 sd ↔ 대응 행 row → (구조 판정, 충돌 [{code, field}]). 사용자 label·값은 담지 않는다(코드·표준 필드 key 만).
+    fields = row 의 field_defs 전부(보관 포함). target_ids = 표준 템플릿 id → 그 사용자 대응 오브젝트 id(적용·미보관만, 없으면 키 없음)
+    — 표준 참조 필드는 이 id 를 가리켜야 같다. label·policy·사용자 필드 순서는 보지 않는다(잠금 밖)."""
+    if row is None:
+        return "missing", []
+    if row["revision"] == 0:
+        return "conflict", [{"code": "key_draft_only", "field": None}]
+    if row["archived_at"] is not None:
+        return "conflict", [{"code": "key_archived", "field": None}]
+    probs = []
+    if row["semantic_kind"] != sd["semantic_kind"]:
+        probs.append(("kind", None))
+    byk = {f["key"]: f for f in fields}
+    for sf in sd["fields"]:
+        k, uf = sf["key"], byk.get(sf["key"])
+        if uf is None:
+            probs.append(("field_missing", k))
+            continue
+        if uf["archived_at"] is not None:
+            probs.append(("field_archived", k))
+            continue
+        if uf["value_type"] != sf["value_type"]:
+            probs.append(("field_value_type", k))
+            continue
+        if uf["target_kind"] != sf["target_kind"]:
+            probs.append(("field_target_kind", k))
+        elif sf["target_kind"] == "item" and uf["target_object_id"] != target_ids.get(sf["target_object_id"]):
+            probs.append(("field_target", k))
+        if bool(uf["multiple"]) != bool(sf["multiple"]):
+            probs.append(("field_multiple", k))
+        if bool(uf["required"]) != bool(sf["required"]):
+            probs.append(("field_required", k))
+        if sf["value_type"] == "select" and not {o["value"] for o in sf["options"]} <= {o["value"] for o in uf["options"] or []}:
+            probs.append(("field_options", k))
+    if probs:
+        return "conflict", [{"code": code, "field": fk} for code, fk in probs]
+    std_keys = {sf["key"] for sf in sd["fields"]}
+    extra = any(f["archived_at"] is None and f["key"] not in std_keys for f in fields)
+    return ("extend" if extra else "match"), []
+
+
+def _std_lock_effects(sd):
+    """편입하면 막히는 변경(§1) — contract.LOCKED_CHANGES 코드 목록 + 잠기는 표준 필드 key. option_remove 는 표준 select 필드가 있을 때만."""
+    has_select = any(f["value_type"] == "select" for f in sd["fields"])
+    return {"changes": [ch for ch in contract.LOCKED_CHANGES if ch != "option_remove" or has_select],
+            "fields": [f["key"] for f in sd["fields"]]}
+
+
+def std_preview(uid):
+    """편입 미리보기(§3) — 본인 것만, 읽기 전용(READ ONLY 트랜잭션 — 어떤 행도 쓰지 않는다), 플래그와 무관.
+    표준 오브젝트마다(std@1.json 순): 현재 상태(std_choices, 없으면 none) · 구조 판정 하나 + 충돌 사유 · 대응 오브젝트(본인 label 포함)
+    · meaning_check(같은 key 기존 행이 있으면 항상 true — 초안·보관 포함) · 잠금 영향 · 필요한 대상(표준 참조 필드의 대상 표준 key 와
+    그 상태, ready = seeded·incorporated) · 편입 가능 여부와 불가 사유(STD_BLOCKS). 대상을 자동 편입하지 않는다."""
+    doc = std_doc()
+    tid_key = {o["id"]: o["key"] for o in doc["objects"]}
+    with tx() as c:
+        c.execute("SET TRANSACTION READ ONLY")
+        marks, choices = _std_rows(c, uid)
+        rows = _std_objects(c, uid)
+        target_ids = {o["id"]: rows[o["key"]]["id"] for o in doc["objects"]
+                      if rows[o["key"]] and rows[o["key"]]["revision"] > 0 and rows[o["key"]]["archived_at"] is None}
+        fields = {k: _all(c, "SELECT key,value_type,required,options,target_kind,target_object_id,multiple,archived_at "
+                             "FROM field_defs WHERE user_id=%s AND object_id=%s", (uid, r["id"]))
+                  for k, r in rows.items() if r}
+    std = contract.std_state(marks, {k: r["state"] for k, r in choices.items()})
+    out = []
+    for sd in doc["objects"]:
+        k, row = sd["key"], rows[sd["key"]]
+        state = std["objects"][k]
+        structure, conflicts = _std_classify(sd, row, fields.get(k, []), target_ids)
+        needs = []
+        for f in sd["fields"]:
+            tk = tid_key.get(f["target_object_id"]) if f["target_kind"] == "item" else None
+            if tk and tk != k:
+                needs.append({"field": f["key"], "std_key": tk, "state": std["objects"][tk], "ready": std["objects"][tk] in STD_READY})
+        blocked = ([] if state not in STD_READY else ["already"]) + (["conflict"] if structure == "conflict" else []) \
+            + (["needs_target"] if any(not n["ready"] for n in needs) else [])
+        ch = choices.get(k)
+        out.append({
+            "std_key": k, "std_id": contract.std_id_of(k), "std_name": contract.std_name(contract.std_id_of(k)), "state": state,
+            "choice": {kk: ch[kk] for kk in ("def_id", "def_revision", "confirmed_meaning", "at")} if ch else None,
+            "structure": structure, "conflicts": conflicts,
+            "object": {"id": row["id"], "key": row["key"], "label": row["label"], "revision": row["revision"],
+                       "archived": row["archived_at"] is not None} if row else None,
+            "meaning_check": row is not None, "lock": _std_lock_effects(sd), "needs": needs,
+            "can_incorporate": not blocked, "blocked": blocked})
+    return {"version": contract.STD_VERSION, "std": std, "objects": out}
+
+
+def std_choose(uid, std_key, state):
+    """표준 오브젝트 하나의 보류·거절 기록(§3 선택). 다시 고르면 덮어쓴다(이력 없음), confirmed_meaning=false.
+    def_id·def_revision = 지금 대응 오브젝트(있으면 — 초안·보관 포함). 이미 seeded·incorporated 이거나 대응 오브젝트에 std_id 가 있으면
+    STANDARD-LOCKED(편입을 되돌리는 것 = std_id 제거, §1). STD_CHOICE_NEEDS_FLAG 면 STANDARD off 에서 FEATURE-OFF.
+    이 기록은 정의·항목 쓰기를 막지 않는다 — 다른 쓰기 경로는 std_choices 를 읽지 않는다."""
+    if std_key not in contract.STD_KEYS:
+        raise CrmError("ARG-INVALID", f"std_key 는 {', '.join(contract.STD_KEYS)} 중 하나예요.")
+    if state not in STD_CHOICE_STATES:
+        raise CrmError("ARG-INVALID", "state 는 deferred(보류)·refused(거절) 중 하나예요. 편입은 따로 적용해요.")
+    if STD_CHOICE_NEEDS_FLAG and not contract.standard_on():
+        raise _feature_off("STANDARD")
+    with tx() as c:
+        _user_lock(c, uid)   # 잠금 순서 = users 행 → std_choices
+        row = _std_objects(c, uid)[std_key]
+        cur = _one(c, "SELECT state FROM std_choices WHERE user_id=%s AND std_key=%s FOR UPDATE", (uid, std_key))
+        if (cur and cur["state"] in STD_READY) or (row and row["std_id"]):
+            raise _std_locked("std_id", contract.std_id_of(std_key))
+        did, drev = (row["id"], row["revision"]) if row else (None, None)
+        c.execute("INSERT INTO std_choices (user_id,std_key,state,def_id,def_revision,confirmed_meaning) VALUES (%s,%s,%s,%s,%s,false) "
+                  "ON CONFLICT (user_id,std_key) DO UPDATE SET state=excluded.state,def_id=excluded.def_id,"
+                  "def_revision=excluded.def_revision,confirmed_meaning=false,at=now()",
+                  (uid, std_key, state, did, drev))
+        std = _std_state(c, uid)
+    return {"std_key": std_key, "state": state, "def_id": did, "def_revision": drev, "std": std}
 
 
 # ── 관계 ──

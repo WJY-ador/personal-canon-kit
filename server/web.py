@@ -1025,7 +1025,8 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me, flags = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid)))
+        st, me, flags, std = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid), db.std_status(uid)))
+        st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
@@ -1112,6 +1113,41 @@ class Web:
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
+
+    async def api_std_preview(self, request):
+        """표준 편입 미리보기(R3) — 세션 사용자 본인 것만(다른 사용자를 고르는 인자가 없다). 읽기 전용·플래그 무관. 본인 label 이 들어 있다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.std_preview, uid)
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_std_choose(self, request):
+        """표준 오브젝트 보류·거절 기록. 세션(401) → Origin(403) → JSON {std_key, state} 문자열(400) → write_gate → db.std_choose
+        (ARG-INVALID·FEATURE-OFF·STANDARD-LOCKED 등 400). 대상 사용자 = 세션 uid 뿐."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict) and isinstance(body.get("std_key"), str) and isinstance(body.get("state"), str)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(std_key·state 문자열)이 필요해요."}, status_code=400)
+        key, state = body["std_key"], body["state"]
+
+        def write():   # 쓰기 진입 — MCP guard 와 같은 db.write_gate(길이·전역 DB 크기)
+            db.write_gate("std_choose", {"std_key": key, "state": state}, uid)
+            return db.std_choose(uid, key, state)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CrmError as e:
+            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
 
     async def api_feedback(self, request):
         """문의(desk-0). GET = 「내 문의」(본인 글·상태·답변 유무·공개 갱신, 운영자 메모 없음) — 관리자도 같다(운영은 /admin/tickets)
@@ -1607,6 +1643,8 @@ class Web:
             Route("/api/candidate/decide", u("web:candidate_decide", self.api_decide), methods=["POST"]),
             Route("/api/item", u("web:item", self.api_item)),
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
+            Route("/api/std/preview", u("web:std_preview", self.api_std_preview)),
+            Route("/api/std/choose", u("web:std_choose", self.api_std_choose), methods=["POST"]),
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),

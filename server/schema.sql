@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS object_defs (
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
   template_slot       text,                         -- 템플릿 계보 `author@1:<key>`. 시드만 채운다(apply 는 안 건드림). 옛 DB 는 init_schema ADD COLUMN
+  std_id              text,                         -- PR #20 표준 식별자 `std:<key>`. NULL = 표준 아님. 시드·편입만 채운다. 옛 DB 는 init_schema ADD COLUMN
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, key)
 );
@@ -164,6 +165,7 @@ CREATE TABLE IF NOT EXISTS field_defs (
   position         integer NOT NULL DEFAULT 0,
   archived_at      timestamptz,
   template_slot    text,                            -- 템플릿 계보 `author@1:<object_key>.<field_key>`. 시드만 채운다
+  std_id           text,                            -- PR #20 표준 식별자 `std:<object_key>.<field_key>`. NULL = 표준 아님(사용자가 더한 필드 포함)
   PRIMARY KEY (user_id, object_id, key),
   FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE,
   FOREIGN KEY (user_id, target_object_id) REFERENCES object_defs(user_id, id),          -- 보호 Lookup
@@ -340,3 +342,27 @@ CREATE TABLE IF NOT EXISTS ticket_history (
   reason      text CHECK (reason IS NULL OR reason IN ('not_privacy','duplicate','other'))
 );
 CREATE INDEX IF NOT EXISTS ix_ticket_history_ticket ON ticket_history (ticket_id, at, id);
+
+-- PR #20 표준(2026-10-19, 명세 §0·§3). std_id 를 참조하는 INDEX·CHECK 는 여기 두지 않는다 — 옛 DB 에선 이 파일이 ADD COLUMN 보다 먼저 돈다.
+-- std_marks = 사용자별 설치 버전 표식. 신규 시드 시작 또는 첫 편입 때 생긴다(일부 편입이어도 있다). 없으면 std.version·state 가 null.
+CREATE TABLE IF NOT EXISTS std_marks (
+  user_id  text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  version  text NOT NULL,                          -- 명세 파일 주소 `std@1`. 식별자(std_id)엔 버전을 넣지 않는다
+  state    text NOT NULL CHECK (state IN ('seed_pending','seeded','adopting')),
+  at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, version)
+);
+-- std_choices = 표준 오브젝트별 사용자 상태. 행 없음 = none(아직 고르지 않음). 다시 고르면 덮어쓴다(이력 없음).
+-- def_id·def_revision = 고를 때 본 같은 key 기존 오브젝트(없으면 NULL) — 적용 때 재검증용 스냅샷이라 object_defs FK 를 걸지 않는다
+-- (db.user_delete 가 object_defs 를 users 보다 먼저 지운다).
+CREATE TABLE IF NOT EXISTS std_choices (
+  user_id            text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  std_key            text NOT NULL,                -- 표준 오브젝트 key(std@1.json)
+  state              text NOT NULL CHECK (state IN ('deferred','refused','incorporated','seeded')),
+  def_id             text,
+  def_revision       integer CHECK (def_revision IS NULL OR def_revision >= 0),
+  confirmed_meaning  boolean NOT NULL DEFAULT false,   -- 기존 오브젝트 편입 때 「같은 뜻으로 쓴다」 명시 확인(5단계)
+  at                 timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, std_key),
+  CONSTRAINT ck_std_choices_def CHECK ((def_id IS NULL) = (def_revision IS NULL))
+);

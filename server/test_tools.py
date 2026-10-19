@@ -40,6 +40,9 @@
    · Q1b 일반 사용자 /app = 하단 문의 섹션 없음 · 「문의 보내기」·「내 문의」는 대화창(desk-dlg) · 「문의 섹션 숨기기」 없음
 18) R2(PR #20 3단계, DB 없이): 기능 플래그 해석(on 만 켬) · render.yaml sync:false 선언 · 수신자별 응답(본인·운영자 비동의·동의) 허용 목록
    · 이름 누출 0(비동의: label·key·선택지·출처 name·location·id / 동의: key·선택지 값·출처·id) · origin·관계 파생 · std 모양 · 오류 코드 문구 · 예제 동결 일치
+19) R3(PR #20 4단계): 표준 편입 미리보기 판정(누락·일치·확장·충돌 사유·참조 의존·초안·보관) · 쓰기 0(READ ONLY·전 테이블 해시)·플래그 무관
+   · std_choices 보류·거절(STANDARD off → FEATURE-OFF · 덮어쓰기 · 편입된 것 STANDARD-LOCKED · 무관한 쓰기 안 막음) · 본인만(/api/std/*)
+   · /api/state std 모양(MCP 엔 없음) · definitions() template_slot·std_id → origin · init_schema 옛 DB 2회 멱등
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -117,9 +120,10 @@ TEST_EMAILS = ("tester@example.com", "other@example.com", "def1@example.com", "d
     + ("tkv-admin@example.com", "<i>tkv</i>@example.com") \
     + ("int-admin@example.com", "int-admin2@example.com", "int-owner@example.com", "int-other@example.com", "int-names@example.com") \
     + ("r1-admin@example.com", "r1-user@example.com") \
+    + tuple(f"r3{k}@example.com" for k in ("none", "match", "conf", "edge", "orig")) \
     + tuple(f"p4{k}@example.com" for k in ("a", "g", "n", "w", "o"))   # P4 운영 화면: a 관리자 · g 이름 공유 동의 · n 비동의 · w 철회 · o 옛 버전
 # desk* = 전역 한도 시험, noconsent = α2 미동의 전용, lim-* = α2 일일 한도, b2* = β2 관리자·차단, adb-* = 운영 경계, oc* = 선택 동의, tk-* = 문의 완결
-# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1
+# p4* = 운영 화면(개요·스키마·리포트), r1-* = R1 플래그 off 기준선·Q1, r3* = R3 표준 미리보기·선택
 TESTER, DEF1, NOCONSENT = TEST_EMAILS[0], TEST_EMAILS[2], TEST_EMAILS[6]
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -3744,6 +3748,7 @@ async def run():
         await test_integration_p5()
         await test_r1_flags_off()
         test_r2_contract()
+        await test_r3_std()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3752,7 +3757,7 @@ async def run():
             left = c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchone()["n"]
             rest = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id = ANY(%s)", (ids,)).fetchone()["n"]
                     for t in ("object_defs", "field_defs", "items", "item_links", "item_history", "records", "candidates", "tickets",
-                              "agreements", "usage_daily", "optional_consents", "optional_consent_log")}
+                              "agreements", "usage_daily", "optional_consents", "optional_consent_log", "std_marks", "std_choices")}
             rest["admin_audit"] = c.execute("SELECT count(*) AS n FROM admin_audit WHERE actor_id = ANY(%s) OR target_id = ANY(%s)",
                                             (ids, ids)).fetchone()["n"]
         db.close()
@@ -4340,6 +4345,326 @@ def test_r2_contract():
     assert [rr("self", t) for t in ("structured", "rewritten", "generated", "unknown")] == ["processed"] * 4
     assert rr("external", "generated", "2026-10-19") == "deleted"
     print("OK — R2 계약(플래그 on 만 · render.yaml · 예제 6개 동결 · 비동의·동의 이름 누출 0 · origin·관계 파생 · std 모양 · 오류 코드 3종) 통과")
+
+
+# ── 19) R3 — 표준 편입 미리보기(읽기 전용) · std_choices 기록(보류·거절) ─────────
+R3 = {k: f"r3{k}@example.com" for k in ("none", "match", "conf", "edge", "orig")}
+# none = 정의 없음(전부 누락) · match = 일치·확장·참조 대응 · conf = 충돌 사유 · edge = 초안만·보관 · orig = template·std_id 출처
+
+
+def _r3_def(uid, key, label, kind, fields, oid=None, policy=None, object_id=None, rev=0):
+    d = {"key": key, "label": label, "semantic_kind": kind, "fields": fields}
+    if oid:
+        d["id"] = oid
+    if policy is not None:
+        d["policy"] = policy
+    p = db.definition_propose(uid, object_id, rev, d)
+    return db.definition_apply(uid, p["object_id"], p["proposal_id"], rev)
+
+
+def _r3_tables_digest():
+    """현재 스키마 모든 테이블의 행 수·내용 해시 — 미리보기 전후가 같아야 한다(쓰기 0)."""
+    with db.tx() as c:
+        ts = [r["table_name"] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() "
+                                                 "AND table_type='BASE TABLE' ORDER BY table_name").fetchall()]
+        return {t: c.execute(f"SELECT count(*) AS n, md5(coalesce(string_agg(x::text, ',' ORDER BY x::text), '')) AS h FROM \"{t}\" x")
+                .fetchone() for t in ts}
+
+
+def _r3_by(pv):
+    return {o["std_key"]: o for o in pv["objects"]}
+
+
+async def test_r3_std():
+    """미리보기 판정 표(누락·일치·확장·충돌 사유·참조 의존·초안·보관) · 쓰기 0(READ ONLY·전 테이블 해시) · 플래그 무관 읽기
+    · 선택 기록(STANDARD off → FEATURE-OFF, on → 기록·덮어쓰기·def_id/def_revision) · 편입된 것 보류·거절 → STANDARD-LOCKED
+    · 보류·거절이 정의·항목 쓰기를 안 막음 · 다른 사용자 접근 거절 · /api/std/* 401·403·400 · /api/state std 모양(MCP 엔 없음)
+    · definitions() 의 template_slot·std_id → contract origin · init_schema 옛 DB 2회 멱등."""
+    site = main.site
+    saved = os.environ.pop("CRM_FEATURE_STANDARD", None)
+    U = {k: db.user_by_email(e)["id"] for k, e in R3.items()}
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+
+    async def req(method, path, uid=None, origin=True, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if uid:
+                h.cookies.set("crm_session", site.session_value(uid))
+            return await h.request(method, path, headers={"origin": PUBLIC} if origin else {}, **kw)
+
+    def with_flag(on, fn, *a):
+        prev = os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if on:
+            os.environ["CRM_FEATURE_STANDARD"] = "on"
+        try:
+            return fn(*a)
+        finally:
+            os.environ.pop("CRM_FEATURE_STANDARD", None)
+            if prev is not None:
+                os.environ["CRM_FEATURE_STANDARD"] = prev
+
+    def choices(uid):
+        with db.tx() as c:
+            return {r["std_key"]: r for r in c.execute("SELECT std_key,state,def_id,def_revision,confirmed_meaning,at FROM std_choices "
+                                                       "WHERE user_id=%s", (uid,)).fetchall()}
+
+    def sql(q, args=()):
+        with db.tx() as c:
+            c.execute(q, args)
+    try:
+        assert "CRM_FEATURE_STANDARD" not in os.environ
+        # ── 재료 ──
+        # match: 축 일치(id 가 템플릿과 다름) · 결정 확장(사용자 필드) · 기준 일치 — 참조는 그 사용자의 축·결정 오브젝트로 대응
+        m_ax = _r3_def(U["match"], "axes", "주제 R3LBL01", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"}],
+                       oid="od_myaxes")
+        m_ev = _r3_def(U["match"], "decision_events", "결정 R3LBL02", "event", [
+            {"key": "happened_on", "label": "날", "value_type": "date"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True},
+            {"key": "project", "label": "프로젝트", "value_type": "text"}], oid="od_myevents")
+        m_pr = _r3_def(U["match"], "principles", "원칙 R3LBL03", "principle", [
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": m_ev["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": m_ax["id"],
+             "multiple": True}])
+        # conf: 축 종류·필드 타입 · 결정 필드 누락·multiple·required · 기준 대상 다름·대상 종류 다름·보관 필드
+        c_ax = _r3_def(U["conf"], "axes", "축", "event", [{"key": "keywords", "label": "단어", "value_type": "text"}])
+        _r3_def(U["conf"], "decision_events", "결정", "event", [
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "required": True}])
+        c_bk = _r3_def(U["conf"], "books", "책", "collection", [])
+        c_pr = _r3_def(U["conf"], "principles", "기준", "principle", [
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": c_bk["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        promo = {**db.DEFAULT_PROMOTION, "claim_field": "my_claims"}
+        _r3_def(U["conf"], "principles", "기준", "principle", [   # evidence_claims 를 빼고 적용 → 보관 필드
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": c_bk["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "candidate", "multiple": True},
+            {"key": "my_claims", "label": "내 근거", "value_type": "reference", "target_kind": "candidate", "multiple": True}],
+            policy={"promotion": promo}, object_id=c_pr["id"], rev=1)
+        # edge: 축 = 적용 전 초안만 · 결정 = 보관 오브젝트 · 기준 없음
+        db.definition_propose(U["edge"], None, 0, {"key": "axes", "label": "초안 축", "semantic_kind": "collection", "fields": []})
+        e_ev = _r3_def(U["edge"], "decision_events", "결정", "event", [
+            {"key": "happened_on", "label": "날", "value_type": "date"},
+            {"key": "claims", "label": "판단", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        sql("UPDATE object_defs SET archived_at=now() WHERE user_id=%s AND id=%s", (U["edge"], e_ev["id"]))
+
+        # ── 미리보기 판정 표 (플래그 미설정 = 읽기는 무관) ──
+        before = _r3_tables_digest()
+        pv = {k: db.std_preview(uid) for k, uid in U.items()}
+        assert _r3_tables_digest() == before, "미리보기는 어떤 행도 쓰지 않는다"
+        real_objs = db._std_objects
+
+        def evil(c, uid):   # 미리보기 트랜잭션 안에서 쓰기를 시도 → READ ONLY 가 막는다
+            c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,'std@x','seeded')", (uid,))
+            raise AssertionError("미리보기 트랜잭션에서 쓰기가 통과했다 — READ ONLY 가 아니다")
+        db._std_objects = evil
+        try:
+            db.std_preview(U["none"])
+            raise AssertionError("READ ONLY 트랜잭션이어야 한다")
+        except psycopg.errors.ReadOnlySqlTransaction:
+            pass
+        finally:
+            db._std_objects = real_objs
+        for k, p in pv.items():
+            assert p["version"] == contract.STD_VERSION and [o["std_key"] for o in p["objects"]] == list(contract.STD_KEYS), k
+            assert p["std"] == contract.std_state(None, None), k
+            for o in p["objects"]:
+                assert o["structure"] in db.STD_STRUCTURES and set(o["blocked"]) <= set(db.STD_BLOCKS), o
+                assert all(x["code"] in db.STD_CONFLICTS for x in o["conflicts"]), o
+                assert o["can_incorporate"] is (not o["blocked"]) and o["state"] == "none" and o["choice"] is None
+                assert o["std_id"] == contract.std_id_of(o["std_key"]) and o["std_name"] == contract.std_name(o["std_id"])
+                assert o["meaning_check"] is (o["object"] is not None), o
+                assert o["lock"]["changes"] == ["archive", "key", "semantic_kind", "std_id", "field_remove", "field_shape"], o["lock"]
+        lockf = {"axes": ["keywords"], "decision_events": ["happened_on", "claims"], "principles": ["evidence_claims", "evidence_events", "axes"]}
+        assert {o["std_key"]: o["lock"]["fields"] for o in pv["none"]["objects"]} == lockf
+        n = _r3_by(pv["none"])
+        assert [n[k]["structure"] for k in contract.STD_KEYS] == ["missing"] * 3 and not any(o["conflicts"] for o in n.values())
+        assert n["axes"]["can_incorporate"] and n["decision_events"]["can_incorporate"] and n["axes"]["needs"] == []
+        assert n["principles"]["blocked"] == ["needs_target"], "참조 대상(결정·축)이 편입 전이면 기준은 편입 불가"
+        assert n["principles"]["needs"] == [{"field": "evidence_events", "std_key": "decision_events", "state": "none", "ready": False},
+                                            {"field": "axes", "std_key": "axes", "state": "none", "ready": False}]
+        m = _r3_by(pv["match"])
+        assert (m["axes"]["structure"], m["decision_events"]["structure"], m["principles"]["structure"]) == ("match", "extend", "match"), m
+        assert m["axes"]["object"] == {"id": "od_myaxes", "key": "axes", "label": "주제 R3LBL01", "revision": 1, "archived": False}
+        assert m["axes"]["blocked"] == [] and m["principles"]["blocked"] == ["needs_target"]
+        cf = _r3_by(pv["conf"])
+        got = {k: [(x["code"], x["field"]) for x in o["conflicts"]] for k, o in cf.items()}
+        assert got == {"axes": [("kind", None), ("field_value_type", "keywords")],
+                       "decision_events": [("field_missing", "happened_on"), ("field_multiple", "claims"), ("field_required", "claims")],
+                       "principles": [("field_archived", "evidence_claims"), ("field_target", "evidence_events"),
+                                      ("field_target_kind", "axes")]}, got
+        assert all(o["structure"] == "conflict" and o["blocked"][0] == "conflict" and o["meaning_check"] for o in cf.values())
+        assert cf["principles"]["blocked"] == ["conflict", "needs_target"]
+        ed = _r3_by(pv["edge"])
+        assert (ed["axes"]["conflicts"], ed["axes"]["object"]["revision"]) == ([{"code": "key_draft_only", "field": None}], 0)
+        assert (ed["decision_events"]["conflicts"], ed["decision_events"]["object"]["archived"]) == ([{"code": "key_archived", "field": None}], True)
+        assert ed["axes"]["meaning_check"] and ed["decision_events"]["meaning_check"] and ed["principles"]["structure"] == "missing"
+        # 단위 — select 선택지(std@1 엔 없음: 잠금 영향 option_remove·field_options 는 표준 select 가 있을 때만) · 대상 대응
+        sd = {"key": "s", "semantic_kind": "collection", "fields": [
+            {"key": "kind", "value_type": "select", "required": False, "multiple": False, "target_kind": None, "target_object_id": None,
+             "options": [{"value": "a", "label": "A"}, {"value": "b", "label": "B"}]},
+            {"key": "to", "value_type": "reference", "required": False, "multiple": False, "target_kind": "item",
+             "target_object_id": "od_tpl", "options": []}]}
+        row = {"revision": 2, "archived_at": None, "semantic_kind": "collection"}
+        uf = lambda opts, to: [{**sd["fields"][0], "options": [{"value": v, "label": v} for v in opts], "archived_at": None},   # noqa: E731
+                               {**sd["fields"][1], "target_object_id": to, "archived_at": None}]
+        assert db._std_classify(sd, row, uf(["a", "b", "c"], "od_mine"), {"od_tpl": "od_mine"}) == ("match", [])
+        assert db._std_classify(sd, row, uf(["a"], "od_mine"), {"od_tpl": "od_mine"}) == ("conflict", [{"code": "field_options", "field": "kind"}])
+        assert db._std_classify(sd, row, uf(["a", "b"], "od_tpl"), {}) == ("conflict", [{"code": "field_target", "field": "to"}])
+        assert "option_remove" in db._std_lock_effects(sd)["changes"]
+
+        # ── 선택 기록: 플래그 off → FEATURE-OFF(쓰기 0), 모드 전환(STD_CHOICE_NEEDS_FLAG=False)이면 off 에서도 기록 ──
+        e = expect("FEATURE-OFF", db.std_choose, U["match"], "principles", "deferred")
+        assert e.message == contract.FEATURE_OFF_MSG["STANDARD"] and choices(U["match"]) == {}
+        db.STD_CHOICE_NEEDS_FLAG = False
+        try:
+            assert db.std_choose(U["none"], "axes", "deferred")["state"] == "deferred"
+        finally:
+            db.STD_CHOICE_NEEDS_FLAG = True
+        sql("DELETE FROM std_choices WHERE user_id=%s", (U["none"],))
+        for bad in (("nope", "deferred"), ("axes", "incorporated"), ("axes", "seeded"), ("axes", "none")):
+            with_flag(True, expect, "ARG-INVALID", db.std_choose, U["match"], *bad)
+        # on → 기록(def_id·def_revision = 같은 key 기존 오브젝트) · 덮어쓰기 · 없는 오브젝트는 NULL
+        r = with_flag(True, db.std_choose, U["match"], "principles", "deferred")
+        assert (r["def_id"], r["def_revision"], r["std"]["objects"]["principles"]) == (m_pr["id"], 1, "deferred"), r
+        assert (r["std"]["version"], r["std"]["state"]) == (None, None), "표식 없이 보류만 — version·state null(§0)"
+        at1 = choices(U["match"])["principles"]["at"]
+        _r3_def(U["match"], "principles", "원칙 R3LBL03", "principle", [   # 정의가 바뀐 뒤 다시 고르면 새 revision 을 기록
+            {"key": "evidence_events", "label": "근거", "value_type": "reference", "target_kind": "item", "target_object_id": m_ev["id"],
+             "multiple": True},
+            {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": m_ax["id"],
+             "multiple": True}, {"key": "memo", "label": "메모", "value_type": "text"}], object_id=m_pr["id"], rev=1)
+        r = with_flag(True, db.std_choose, U["match"], "principles", "refused")
+        ch = choices(U["match"])
+        assert len(ch) == 1 and (ch["principles"]["state"], ch["principles"]["def_revision"]) == ("refused", 2), ch
+        assert ch["principles"]["at"] >= at1 and ch["principles"]["confirmed_meaning"] is False
+        r = with_flag(True, db.std_choose, U["none"], "decision_events", "refused")
+        assert (r["def_id"], r["def_revision"]) == (None, None)
+        r = with_flag(True, db.std_choose, U["edge"], "axes", "deferred")
+        assert (r["def_id"], r["def_revision"]) == (ed["axes"]["object"]["id"], 0), "초안 행도 기록"
+        p2 = _r3_by(db.std_preview(U["match"]))
+        assert p2["principles"]["state"] == "refused" and p2["principles"]["choice"]["def_revision"] == 2
+        assert p2["principles"]["structure"] == "extend", "사용자 필드 memo 를 더하면 확장"
+        # 참조 의존: 대상이 편입(또는 seeded)이면 풀린다 — 편입 적용은 5단계라 행을 직접 넣는다(시험 재료)
+        sql("INSERT INTO std_choices (user_id,std_key,state,def_id,def_revision) VALUES (%s,'axes','incorporated',%s,1),"
+            "(%s,'decision_events','seeded',%s,1)", (U["match"], m_ax["id"], U["match"], m_ev["id"]))
+        p3 = _r3_by(db.std_preview(U["match"]))
+        assert p3["principles"]["blocked"] == [] and p3["principles"]["can_incorporate"], p3["principles"]
+        assert [x["ready"] for x in p3["principles"]["needs"]] == [True, True]
+        assert p3["axes"]["blocked"] == ["already"] and not p3["axes"]["can_incorporate"]
+        # 이미 편입·시드된 것은 보류·거절로 되돌릴 수 없다(= std_id 제거) — 대응 오브젝트에 std_id 만 있어도 같다
+        for k in ("axes", "decision_events"):
+            e = with_flag(True, expect, "STANDARD-LOCKED", db.std_choose, U["match"], k, "refused")
+            assert f"std:{k}" in e.message
+        sql("UPDATE object_defs SET std_id='std:axes' WHERE user_id=%s AND id=%s", (U["conf"], c_ax["id"]))
+        with_flag(True, expect, "STANDARD-LOCKED", db.std_choose, U["conf"], "axes", "deferred")
+        sql("UPDATE object_defs SET std_id=NULL WHERE user_id=%s AND id=%s", (U["conf"], c_ax["id"]))
+
+        # ── 보류·거절은 정의·항목 쓰기를 막지 않는다 ──
+        with_flag(True, db.std_choose, U["conf"], "axes", "refused")
+        with_flag(True, db.std_choose, U["conf"], "decision_events", "deferred")
+        ax2 = _r3_def(U["conf"], "axes", "축 바꿈", "collection", [{"key": "keywords", "label": "단어", "value_type": "text"},
+                                                                  {"key": "color", "label": "색", "value_type": "text"}],
+                      object_id=c_ax["id"], rev=1)
+        assert ax2["revision"] == 2 and ax2["semantic_kind"] == "collection"
+        it = db.item_propose(U["conf"], c_ax["id"], 2, None, 0, "AX-1", "축 하나", "", {"keywords": "k", "color": "r"}, [])
+        assert db.item_decide(U["conf"], it["item_id"], 0, it["proposal_id"], "apply")["revision"] == 1
+        assert _r3_def(U["conf"], "notes", "노트", "collection", [])["revision"] == 1
+        assert choices(U["conf"])["axes"]["def_revision"] == 1, "기록은 고를 때 본 revision 그대로(적용 재검증은 5단계)"
+
+        # ── 웹: 본인만 · 401 · 403 · 400 · 플래그 ──
+        assert (await req("GET", "/api/std/preview")).status_code == 401
+        assert (await req("POST", "/api/std/choose", json={"std_key": "axes", "state": "deferred"})).status_code == 401
+        w = await req("GET", "/api/std/preview", U["match"])
+        assert w.status_code == 200 and w.headers.get("cache-control") == "no-store" and w.json() == db.std_preview(U["match"])
+        wo = await req("GET", f"/api/std/preview?user_id={U['match']}&uid={U['match']}", U["none"])   # 다른 사용자를 고를 인자가 없다
+        assert wo.json() == db.std_preview(U["none"]) and "R3LBL" not in wo.text and U["match"] not in wo.text and "od_my" not in wo.text
+        assert (await req("POST", "/api/std/choose", U["none"], origin=False, json={"std_key": "axes", "state": "deferred"})).status_code == 403
+        for body in ([], {"std_key": "axes"}, {"std_key": 1, "state": "deferred"}):
+            b = await req("POST", "/api/std/choose", U["none"], json=body)
+            assert b.status_code == 400 and b.json()["code"] == "ARG-INVALID", body
+        off = await req("POST", "/api/std/choose", U["none"], json={"std_key": "axes", "state": "deferred"})
+        assert off.status_code == 400 and off.json()["code"] == "FEATURE-OFF" and "axes" not in choices(U["none"])
+        os.environ["CRM_FEATURE_STANDARD"] = "on"
+        try:
+            ok = await req("POST", "/api/std/choose", U["none"], json={"std_key": "axes", "state": "deferred", "user_id": U["match"]})
+            assert ok.status_code == 200 and ok.json()["std"]["objects"]["axes"] == "deferred", ok.text
+            lk = await req("POST", "/api/std/choose", U["match"], json={"std_key": "axes", "state": "refused"})
+            assert lk.status_code == 400 and lk.json()["code"] == "STANDARD-LOCKED" and "R3LBL" not in lk.text
+        finally:
+            os.environ.pop("CRM_FEATURE_STANDARD", None)
+        assert choices(U["match"])["axes"]["state"] == "incorporated", "본문 user_id 는 무시 — 남의 선택을 못 바꾼다"
+        # /api/state std = contract.std_state 모양(계약 예제와 같은 키) · MCP state_get 엔 없음
+        ex = json.loads(contract.example_path("full", "self").read_text(encoding="utf-8"))["std"]
+        for k, uid in U.items():
+            st = (await req("GET", "/api/state", uid)).json()
+            assert set(st["std"]) == set(ex) and set(st["std"]["objects"]) == set(ex["objects"]), st["std"]
+            assert st["std"] == db.std_status(uid) == db.std_preview(uid)["std"], k
+        assert (await req("GET", "/api/state", U["match"])).json()["std"]["objects"] == \
+            {"axes": "incorporated", "decision_events": "seeded", "principles": "refused"}
+        sql("INSERT INTO std_marks (user_id,version,state) VALUES (%s,%s,'adopting')", (U["match"], contract.STD_VERSION))
+        assert db.std_status(U["match"])["version"] == "std@1" and db.std_status(U["match"])["state"] == "adopting"
+        assert "std" not in db.state(U["match"]), "MCP state_get 에는 넣지 않는다"
+
+        # ── definitions() → template_slot·std_id → contract origin ──
+        o_cr = _r3_def(U["orig"], "craft", "방식", "collection", [{"key": "project", "label": "프로젝트", "value_type": "text"},
+                                                                {"key": "mine", "label": "내 것", "value_type": "text"}])
+        db.template_slot_mark(U["orig"], o_cr["id"], "author@1:craft", {"project": "author@1:craft.project"})
+        o_ax = _r3_def(U["orig"], "axes", "축", "collection", [{"key": "keywords", "label": "단어", "value_type": "text_list"},
+                                                             {"key": "extra", "label": "더함", "value_type": "text"}])
+        sql("UPDATE object_defs SET std_id='std:axes', template_slot='author@1:axes' WHERE user_id=%s AND id=%s", (U["orig"], o_ax["id"]))
+        sql("UPDATE field_defs SET std_id='std:axes.keywords' WHERE user_id=%s AND object_id=%s AND key='keywords'", (U["orig"], o_ax["id"]))
+        defs = db.definitions(U["orig"])
+        assert all({"template_slot", "std_id"} <= set(d) and all({"template_slot", "std_id"} <= set(f) for f in d["fields"]) for d in defs)
+        resp = contract.respond({"definitions": defs}, "self")
+        org = {o["key"]: (o["origin"], [(f["key"], f["origin"], f["locked"]) for f in o["fields"]]) for o in resp["objects"]}
+        assert org == {"craft": ("template", [("project", "template", False), ("mine", "custom", False)]),
+                       "axes": ("standard", [("keywords", "standard", True), ("extra", "custom", False)])}, org
+
+        # ── init_schema: 옛 DB(std 열·테이블 없음) → 2회 멱등 · CHECK ──
+        name = f"r3_{secrets.token_hex(3)}"
+        create_schema(name)
+        try:
+            with schema_conn(name) as c:
+                db.init_schema(c)
+                c.execute("DROP TABLE std_marks, std_choices")
+                c.execute("ALTER TABLE field_defs DROP COLUMN std_id")
+                c.execute("ALTER TABLE object_defs DROP COLUMN std_id")
+                c.commit()
+                shape = lambda: c.execute(   # noqa: E731
+                    "SELECT table_name, column_name, data_type, is_nullable, column_default FROM information_schema.columns "
+                    "WHERE table_schema=current_schema() AND table_name IN ('object_defs','field_defs','std_marks','std_choices') "
+                    "ORDER BY table_name, column_name").fetchall()
+                db.init_schema(c)
+                c.commit()
+                first = shape()
+                cols = {(r["table_name"], r["column_name"]) for r in first}
+                assert {("object_defs", "std_id"), ("field_defs", "std_id"), ("std_marks", "state"), ("std_choices", "confirmed_meaning")} <= cols
+                db.init_schema(c)
+                c.commit()
+                assert shape() == first, "두 번째 init_schema 가 뭔가 바꿨다"
+                c.execute("INSERT INTO users (id,email) VALUES ('u_r3','r3@x.test')")
+                for q in ("INSERT INTO std_choices (user_id,std_key,state,def_id) VALUES ('u_r3','axes','refused','od_x')",
+                          "INSERT INTO std_choices (user_id,std_key,state) VALUES ('u_r3','axes','none')",
+                          "INSERT INTO std_marks (user_id,version,state) VALUES ('u_r3','std@1','done')"):
+                    try:
+                        with c.transaction():
+                            c.execute(q)
+                        raise AssertionError(f"CHECK 가 막아야 한다: {q}")
+                    except psycopg.errors.CheckViolation:
+                        pass
+                c.rollback()
+        finally:
+            drop_schema(name)
+    finally:
+        site.dev, site.dev_user = real
+        db.STD_CHOICE_NEEDS_FLAG = True
+        os.environ.pop("CRM_FEATURE_STANDARD", None)
+        if saved is not None:
+            os.environ["CRM_FEATURE_STANDARD"] = saved
+    print("OK — R3 표준 미리보기(누락·일치·확장·충돌 사유·참조 의존·초안·보관 · 쓰기 0 READ ONLY · 플래그 무관) · std_choices 보류·거절"
+          "(FEATURE-OFF·덮어쓰기·편입 잠금·무관한 쓰기 안 막음) · 본인만 · /api/state std · template·std_id 출처 · init_schema 멱등 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
