@@ -5357,7 +5357,7 @@ TEST_EMAILS += tuple(Q5A.values())
 
 
 def _q5a_fixture(uid, m, h):
-    """표준 편입 2(축·결정) · 사용자 오브젝트(N:1·N:N·대상 미지정 참조·select) · 템플릿·사용자 고립 노드 · 출처 1 ·
+    """표준 편입 2(축·결정) · 사용자 오브젝트(N:1·N:N·대상 미지정 참조·select) · 선택 템플릿·직접 추가 고립 노드 · 출처 1 ·
     연결: 정상 3 · 없는 대상(보관 항목) 1 · 대상 오브젝트 불일치 1 · 검사 불가(대상 미지정) 1 · M-D 위반(지워진 근거 기록의 후보) 1.
     사용자 문자열은 m(label·선택지 label·출처·본문), key·id·선택지 값은 h 를 품는다 — 누출 전문 검색용."""
     from psycopg.types.json import Jsonb
@@ -5477,7 +5477,7 @@ async def test_q5_admin():
             assert svg == svg_of((await get(path)).text), "같은 사용자 두 번 → 같은 SVG"
             assert svg.count('r="42"') == 6, "오브젝트 5(고립 2 포함) + 코어 후보 1 — 같은 크기"
             assert svg.count("stroke-dasharray") == 2 and svg.count(structure_svg.LOCK_TEXT) >= 2, "편입된 표준 2 = 표준 정의 보호"
-            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 사용자" in svg, svg[:1500]
+            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 직접 추가" in svg, svg[:1500]
             assert "marker" not in svg and "arrow" not in svg, "화살표 없음"
             assert all(f'id="{structure_svg.node_anchor(i)}"' in t for i in range(5)) and f'id="{structure_svg.core_anchor("candidate")}"' in t
             assert t.count('<td>N:1</td>') == 1 and t.count('<td>N:N</td>') == 3, "카디널리티 표시"
@@ -5502,7 +5502,7 @@ async def test_q5_admin():
         t = leak_free(r, path)
         assert r.status_code == 200 and "동의 — 현재 이름" in t, t[-600:]
         assert f"{M['c']}-L-사용자" in t and f"{M['c']}-F-여럿" in t and f"{M['c']}-OPT" in t, "동의자 현재 label·선택지 label"
-        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 사용자"' in svg_of(t), "SVG 에도 동의자 label"
+        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 직접 추가"' in svg_of(t), "SVG 에도 동의자 label"
         # 철회 → 다음 조회부터 이름 0
         db.optional_consent_set(U["c"], "struct_names", False)
         t = (await get(path)).text
@@ -5531,16 +5531,30 @@ Q45 = {k: f"q45{k}@example.com" for k in ("a", "b")}   # a = 화면 주인 · b 
 
 
 async def test_q45_user():
-    """app.html 정적(「구조 정의」 보기·편입 대화창 마크업·체크 게이트·출처 미확인·재검토 문구·인라인 스크립트 1개·on* 0·그래프 없음)
-    · /api/state structure == contract.respond(self)(기대값은 SQL 로 읽은 std_marks·std_choices + db.definitions + db.sources)
+    """app.html 정적(「구조 정의」 보기·편입 대화창 마크업·체크 게이트·출처 미확인·재검토 문구·인라인 스크립트 1개·on* 0·목록/그래프 전환)
+    · /api/state structure == contract.respond(self) · structure_svg == structure_svg.render(structure)(결정적·script·on* 0·다른 사용자 이름 0)(기대값은 SQL 로 읽은 std_marks·std_choices + db.definitions + db.sources)
     · 편입 전후 locked·origin 변화 · MCP state(db.state)엔 structure 없음 · 다른 사용자 이름 0(/api/state·/api/std/preview)
     · 출처 있는 기록·없는 기록·재검토 후보가 화면 입력에 있다 · 관리자 /app 에도 편입 대화창(사용자·관리자 구간 밖).
     시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
+    from html.parser import HTMLParser
+    import structure_svg
     site = main.site
     saved = {k: os.environ.pop(k, None) for k in ("CRM_FEATURE_STANDARD", "CRM_FEATURE_SOURCES")}
     real = (site.dev, site.dev_user)
     site.dev, site.dev_user = False, ""
     emails = list(Q45.values())
+    tokens = structure_svg.tokens_css(dark_attr=True, dark_media=False)
+
+    def svg_tags(svg):
+        """SVG 마크업 → [(태그, 속성 이름들)]. 글자(escape 된 label) 안의 「 onload=」 는 속성이 아니라 세지 않는다."""
+        out = []
+
+        class P(HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                out.append((tag, [k for k, _ in attrs]))
+            handle_startendtag = handle_starttag
+        P().feed(svg)
+        return out
 
     def wipe():
         with db.tx() as c:
@@ -5596,7 +5610,18 @@ async def test_q45_user():
         fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
         assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
         assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
-        assert "structure_svg" not in html and "renderGraph" not in html, "그래프 전환은 이번에 없다"
+        # 목록/그래프 전환(기본 목록) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
+        for w in ('let defsMode = "list";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
+                  'id="dmo-o${i + 1}"', 'id="dmo-r${i + 1}"', 'id="dmo-core-${esc(x.kind)}"', 'closest(".dmo a")', 'getAttribute("href")',
+                  "e.preventDefault(); defsJump(", "scrollIntoView"):
+            assert w in html, w
+        assert (structure_svg.node_anchor(0), structure_svg.rel_anchor(0), structure_svg.core_anchor("record")) == (
+            "dmo-o1", "dmo-r1", "dmo-core-record"), "app.html 의 id 꼴 = structure_svg 앵커"
+        assert tokens in html and "prefers-color-scheme" not in tokens and "prefers-color-scheme" not in html, "토큰 = 테마 토글(data-theme)만"
+        assert '[data-theme="dark"]' in tokens
+        chip = html[html.index("const ORIGIN_CHIP = {"):html.index("};", html.index("const ORIGIN_CHIP = {"))]
+        assert dict(re.findall(r'(\w+): \["[^"]*", "([^"]+)"\]', chip)) == structure_svg.ORIGIN_TEXT, "출처 용어 — 그래프 = 목록 칩"
+        assert "min-width: 420px" in html and ".dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }" in html
 
         # ── 사용자 A(기존 사용자형 — 표식 없음) · B(다른 사용자) ──
         A = db.user_by_subject("q45a_sub", Q45["a"])["id"]
@@ -5656,6 +5681,28 @@ async def test_q45_user():
         assert "Q45B" not in json.dumps(st, ensure_ascii=False) + json.dumps((await get("/api/std/preview", A)).json(), ensure_ascii=False)
         os.environ.pop("CRM_FEATURE_STANDARD", None)
 
+        # ── 구조 그래프 — N:1(편입된 axes)·N:N(코어 후보) 관계 · escape 가 필요한 label · 결정적 · script·on* 0 · 다른 사용자 이름 0 ──
+        axes_id = by["axes"]["id"]
+        _r3_def(A, "q45links", 'Q45 연결 "<script>alert(1)</script> onload=x &', "collection",
+                [{"key": "axis", "label": "축 <b onclick=y>", "value_type": "reference", "target_kind": "item", "target_object_id": axes_id,
+                  "multiple": False},
+                 {"key": "claims", "label": "판단들", "value_type": "reference", "target_kind": "candidate", "multiple": True}])
+        st = (await get("/api/state", A)).json()
+        svg = st["structure_svg"]
+        assert st["structure"] == expected(A), "structure = contract.respond(self)"
+        assert svg == structure_svg.render(st["structure"]) == structure_svg.render(expected(A)), "structure_svg = render(structure) — 결정적"
+        assert "structure_svg" not in db.state(A), "MCP state_get 에는 structure_svg 없음"
+        objs, rels = st["structure"]["objects"], st["structure"]["relations"]
+        assert sorted(r["cardinality"] for r in rels) == ["N:1", "N:N"] and [c["kind"] for c in st["structure"]["core"]] == ["candidate"]
+        assert all(f'href="#{structure_svg.node_anchor(i)}"' in svg for i in range(len(objs)))
+        assert all(f'href="#{structure_svg.rel_anchor(i)}"' in svg for i in range(len(rels)))
+        assert f'href="#{structure_svg.core_anchor("candidate")}"' in svg
+        tags = svg_tags(svg)
+        assert tags and tags[0][0] == "svg" and not [t for t, _ in tags if t in ("script", "foreignobject", "iframe")], "script 0"
+        assert not [(t, k) for t, ks in tags for k in ks if k.lower().startswith("on")], "on* 속성 0"
+        assert "<script" not in svg.lower() and "&lt;script&gt;" in svg and "&lt;b onclick=y&gt;" in svg, "label 은 escape — 글자로만 남는다"
+        assert "Q45B" not in svg and "Q45B" not in json.dumps(st, ensure_ascii=False), "다른 사용자 이름 0"
+
         # /app — 일반·관리자 모두 편입 대화창·구조 정의 보기 코드가 있다(CSP 해시 = 보낸 본문)
         for admin in (False, True):
             _set_role(A, "admin" if admin else "user")
@@ -5663,6 +5710,7 @@ async def test_q45_user():
             hs = web.inline_script_hashes(r.text)
             assert len(hs) == 1 and f"'sha256-{hs[0]}'" in r.headers["content-security-policy"]
             assert r.text.count('<dialog id="std-dlg"') == 1 and "renderDefs" in r.text, admin
+            assert tokens in r.text and "defsJump" in r.text, ("그래프 전환·토큰", admin)
             assert ('id="desk-dlg"' in r.text) is not admin, "Q1b·Q1 분기 유지"
         _set_role(A, "user")
     finally:
@@ -5675,6 +5723,7 @@ async def test_q45_user():
     with db.tx() as c:
         assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
     print("OK — Q4·Q5 사용자 화면(app.html 정적·structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
+          "·구조 그래프 structure_svg = render(structure)·script·on* 0·토큰 data-theme"
           "·출처 미확인·재검토·관리자 /app 대화창) 통과")
 
 

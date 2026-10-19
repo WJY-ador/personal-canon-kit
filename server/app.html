@@ -449,6 +449,25 @@ dialog .db { padding: .9rem 1.2rem; max-height: 72vh; overflow: auto; }
 #std-dlg .stdok input { margin-top: .25rem; flex: none; }
 #std-dlg .acts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .sftbl .tech { white-space: nowrap; }
+/* 구조 정의 목록/그래프 전환 — 그래프 = 서버 structure_svg.render(structure)(/api/state structure_svg). 배치·판정은 서버, 여기선 넣기만 */
+.dmode { display: flex; gap: .3rem; margin: 0 0 .9rem; }
+.dmode button { border: 1px solid var(--line); color: var(--muted); background: none; font: inherit; font-size: .74rem; padding: .15rem .7rem; border-radius: 999px; cursor: pointer; }
+.dmode button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); font-weight: 600; background: var(--card); }
+.dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }
+.dmo svg { display: block; width: 100%; min-width: 420px; height: auto; max-width: 760px; margin: 0 auto; }   /* 좁은 폭은 래퍼(.dmo) 안에서 가로 스크롤 */
+.dmo a { text-decoration: none; }
+.dmo a:hover circle, .dmo a:focus-visible circle { stroke-width: 3; }
+.dmo a:hover line, .dmo a:hover path { stroke-width: 2.4; }
+.dlegend { display: flex; flex-wrap: wrap; gap: .25rem .9rem; font-size: .76rem; color: var(--muted); margin: 0 0 .6rem; }
+.dlegend i { display: inline-block; width: 11px; height: 11px; border-radius: 50%; border: 1.5px solid; vertical-align: -1px; margin-right: .25rem; }
+.dlegend .o-core { background: var(--dmo-core-bg); border-color: var(--dmo-core-line); }
+.dlegend .o-standard { background: var(--dmo-standard-bg); border-color: var(--dmo-standard-line); }
+.dlegend .o-template { background: var(--dmo-template-bg); border-color: var(--dmo-template-line); }
+.dlegend .o-custom { background: var(--dmo-custom-bg); border-color: var(--dmo-custom-line); }
+[id^="dmo-"] { scroll-margin-top: 1rem; }
+.dmo-hit { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* DMO 토큰 = structure_svg.tokens_css(dark_attr=True, dark_media=False) 그대로 — 앱 테마 토글(data-theme)을 따르고 OS 는 따르지 않는다. 시험이 같은 문자열을 본다 */
+:root{--dmo-ink:#2B2824;--dmo-muted:#6B635A;--dmo-line:#4A443E;--dmo-core-bg:#F6E3EA;--dmo-core-line:#A3406B;--dmo-standard-bg:#DCEBE3;--dmo-standard-line:#186A4B;--dmo-template-bg:#FBEBD8;--dmo-template-line:#B5651D;--dmo-custom-bg:#ECEAE6;--dmo-custom-line:#6B635A}:root[data-theme="dark"]{--dmo-ink:#E7EAE6;--dmo-muted:#A3AAA6;--dmo-line:#BFC6C2;--dmo-core-bg:#3A2230;--dmo-core-line:#E08AB0;--dmo-standard-bg:#1C2E26;--dmo-standard-line:#4FB08A;--dmo-template-bg:#33281C;--dmo-template-line:#E0A262;--dmo-custom-bg:#2A2D2E;--dmo-custom-line:#A3AAA6}
 @media (max-width: 700px) { .spv { grid-template-columns: minmax(0, 1fr); } .spvc .acts { position: static; padding: 0; }
   .sftbl { min-width: 560px; } }   /* 좁은 폭은 표만 래퍼 안에서 가로 스크롤 */
 
@@ -965,6 +984,9 @@ const lockChip = on => on ? `<span class="chip lock" title="${esc(LOCK_TIP)}">�
 const VTYPE = {text: "글", number: "숫자", boolean: "예/아니오", date: "날짜", select: "고르기", text_list: "글 목록", reference: "참조"};
 const KIND_LABEL = {principle: LABELS.principle, event: LABELS.event, collection: LABELS.collection};
 const CORE_LABEL = {record: LABELS.record, candidate: LABELS.candidate};
+// 목록/그래프 전환 — 기본 목록. 라우트(해시)를 쓰지 않는다: 해시를 바꾸면 render → scrollTo(0,0) 과 편입 미리보기 재요청이 돈다
+let defsMode = "list";
+const DMO_ORIGIN = ["core", "standard", "template", "custom"];
 const josa = (w, a, b) => { const c = String(w).slice(-1).charCodeAt(0) - 0xAC00; return c < 0 || c > 11171 || c % 28 === 0 ? b : a; };   // 받침 있으면 a
 function renderDefs(tab) {
   subnav("");
@@ -985,28 +1007,58 @@ function renderDefs(tab) {
       <td>${esc(VTYPE[f.value_type] || f.value_type)}${r ? ` → ${esc(tgt(r))} <span class="chip">${esc(r.cardinality)}</span>` : ""}</td>
       <td>${originChip(f.origin)}</td><td>${f.locked ? lockChip(true) : `<span class="tech">—</span>`}</td></tr>`;
   };
-  const objCard = o => `<article class="sobj${o.locked ? " locked" : ""}" aria-labelledby="sobj-${esc(o.id)}">
+  // id dmo-o<n>·dmo-r<n>·dmo-core-<kind> = structure_svg node_anchor·rel_anchor·core_anchor(응답 순서 그대로) — 그래프 링크가 가리킨다
+  const objCard = (o, i) => `<article class="sobj${o.locked ? " locked" : ""}" id="dmo-o${i + 1}" aria-labelledby="sobj-${esc(o.id)}">
     <div class="sohead"><h3 id="sobj-${esc(o.id)}">${esc(o.label)}</h3><span class="tech">${esc(o.key)}</span></div>
     <div class="labels">${originChip(o.origin)}${lockChip(o.locked)}${o.std_name ? `<span class="chip">표준 「${esc(o.std_name)}」</span>` : ""}
       <span class="chip">${esc(KIND_LABEL[o.semantic_kind] || o.semantic_kind)}</span><span class="chip">항목 ${nItems(o.id)}</span></div>
     ${o.fields.length ? `<div class="sftbl-wrap"><table class="sftbl"><thead><tr><th scope="col">필드</th><th scope="col">key</th><th scope="col">값</th>
       <th scope="col">출처</th><th scope="col">보호</th></tr></thead><tbody>${o.fields.map(f => fieldRow(o, f)).join("")}</tbody></table></div>`
       : `<p class="hint">필드가 없어요.</p>`}</article>`;
-  const relRow = r => { const o = oById(r.object_id) || {}, f = (o.fields || []).find(x => x.key === r.field_key) || {};
-    return `<li><b>${esc(o.label || "")}</b><span class="tech">${esc(f.label || r.field_key)}</span> → <b>${esc(tgt(r))}</b>
+  const relRow = (r, i) => { const o = oById(r.object_id) || {}, f = (o.fields || []).find(x => x.key === r.field_key) || {};
+    return `<li id="dmo-r${i + 1}"><b>${esc(o.label || "")}</b><span class="tech">${esc(f.label || r.field_key)}</span> → <b>${esc(tgt(r))}</b>
       <span class="chip">${esc(r.cardinality)}</span>${originChip(r.origin)}${lockChip(r.locked)}</li>`; };
   const core = st.core || [];
+  const svg = typeof S.structure_svg === "string" ? S.structure_svg : "";
+  const mode = m => `<button type="button" data-dmode="${m}" aria-pressed="${defsMode === m}">${m === "list" ? "목록" : "그래프"}</button>`;
   $("view").innerHTML = structViews(tab, "defs") + `<div class="paper"><div class="eyebrow">구조 정의</div>
     <p class="hint" style="margin:.3rem 0 .9rem">내 오브젝트·필드와 관계예요. 정의를 바꾸는 일은 연결한 AI 대화에서 해요. 여기서는 표준 편입만 고를 수 있어요.</p>
+    <div class="dmode" role="group" aria-label="구조 정의 보기 방식">${mode("list")}${mode("graph")}</div>
+    <div id="dlist"${defsMode === "list" ? "" : " hidden"}>
     <section class="sec"><h3>오브젝트<span class="count">${objs.length}</span></h3>
       ${objs.length ? `<div class="sdef">${objs.map(objCard).join("")}</div>` : `<div class="empty">아직 오브젝트가 없어요.</div>`}</section>
     <section class="sec"><h3>관계<span class="count">${rels.length}</span></h3>
       ${rels.length ? `<ul class="srel">${rels.map(relRow).join("")}</ul>` : `<div class="empty">참조 필드가 없어요.</div>`}
-      ${core.length ? `<p class="hint" style="margin:.6rem 0 0">${originChip("core")} 공통으로 쓰는 ${core.map(x => esc(CORE_LABEL[x.kind] || x.kind)).join("·")}${josa(CORE_LABEL[core[core.length - 1].kind] || "", "을", "를")} 가리키는 관계가 있어요.</p>` : ""}</section>
+      ${core.length ? `<p class="hint" style="margin:.6rem 0 0">${originChip("core")} 공통으로 쓰는 ${core.map(x => `<b id="dmo-core-${esc(x.kind)}">${esc(CORE_LABEL[x.kind] || x.kind)}</b>`).join("·")}${josa(CORE_LABEL[core[core.length - 1].kind] || "", "을", "를")} 가리키는 관계가 있어요.</p>` : ""}</section></div>
+    <section class="sec" id="dgraph"${defsMode === "graph" ? "" : " hidden"} aria-label="구조 그래프">
+      <div class="dlegend">${DMO_ORIGIN.map(k => `<span><i class="o-${k}"></i>${esc((ORIGIN_CHIP[k] || ["", k])[1])}</span>`).join("")}
+        <span>점선 고리 = 표준 정의 보호</span><span>선 = 관계(화살표 없음) · 세 갈래 = 여러(N) · 두 줄 = 하나(1) · 참조를 가진 쪽이 N</span></div>
+      ${svg ? `<div class="dmo">${svg}</div>` : `<div class="empty">그래프를 읽지 못했어요. 목록으로 보세요. ${esc(FIXHINT)}</div>`}
+      <p class="hint" style="margin:.6rem 0 0">원을 누르면 목록의 그 오브젝트로, 선을 누르면 그 관계로 가요. 대상 오브젝트를 정하지 않은 관계는 선이 없어요.</p></section>
     <section class="sec" aria-labelledby="std-pv-title"><h3 id="std-pv-title">표준 편입 미리보기</h3>
       <p class="hint">표준 정의마다 편입·보류·거절을 골라요. 편입한 정의는 「표준 정의 보호」를 받아요. 고르지 않아도 다른 기능은 그대로예요.</p>
       <p id="std-msg" role="status" aria-atomic="true"></p><div id="std-pv" aria-busy="true"><p class="empty">미리보기를 불러오는 중이에요…</p></div></section></div>`;
   loadPreview();
+}
+
+function defsShow(m) {
+  defsMode = m === "graph" ? "graph" : "list";
+  const l = $("dlist"), g = $("dgraph");
+  if (!l || !g) return;
+  l.hidden = defsMode !== "list";
+  g.hidden = defsMode !== "graph";
+  for (const b of document.querySelectorAll("[data-dmode]")) b.setAttribute("aria-pressed", String(b.dataset.dmode === defsMode));
+}
+// 그래프 원·선 → 목록의 같은 id. SVG <a href="#dmo-…"> 는 해시를 바꾸지 않게 가로챈다(라우트 해시 앱 — #dmo-o1 은 탭이 아니다)
+function defsJump(id) {
+  const n = /^dmo-/.test(id) ? document.getElementById(id) : null;
+  if (!n) return;
+  defsShow("list");
+  n.setAttribute("tabindex", "-1");
+  n.scrollIntoView({block: "start"});
+  n.focus({preventScroll: true});
+  n.classList.add("dmo-hit");
+  setTimeout(() => n.classList.remove("dmo-hit"), 1600);
 }
 
 // ── 편입 미리보기 · 선택 (§3) — GET /api/std/preview(본인 것만, 읽기 전용) → 보류·거절·편입. 편입은 명시 확인 대화창을 거친다 ──
@@ -1697,6 +1749,10 @@ async function decide(cur, action, text) {
 
 // ── 이벤트 ───────────────────────────────────────────
 document.addEventListener("click", e => {
+  const dm = e.target.closest("[data-dmode]");
+  if (dm) { defsShow(dm.dataset.dmode); return; }
+  const da = e.target.closest(".dmo a");
+  if (da) { e.preventDefault(); defsJump((da.getAttribute("href") || "").slice(1)); return; }
   const a = e.target.closest("[data-rec]");
   if (a) { e.preventDefault(); openRec(a.dataset.rec, a.dataset.quote || ""); return; }
   const g = e.target.closest("[data-go]");

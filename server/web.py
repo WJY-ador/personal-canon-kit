@@ -1112,6 +1112,7 @@ class Web:
         st["structure"] = contract.respond({   # PR #20 Q5 구조 정의 보기 — 본인 계약 응답(origin·locked·cardinality 는 서버 판정). /app 전용
             "definitions": st["definitions"], "sources": srcs, "std_choices": std["objects"],
             "std_marks": {"version": std["version"], "state": std["state"]} if std["version"] else None}, "self")
+        st["structure_svg"] = structure_svg.render(st["structure"])   # 같은 응답의 DMO 그래프(서버 결정적 배치) — 목록과 같은 순번 앵커. /app 전용
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True

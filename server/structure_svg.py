@@ -14,7 +14,7 @@
 import html
 import math
 
-ORIGIN_TEXT = {"core": "코어", "standard": "표준", "template": "템플릿", "custom": "사용자"}
+ORIGIN_TEXT = {"core": "코어", "standard": "표준", "template": "선택 템플릿", "custom": "직접 추가"}   # 명세 §9 출처 표시 용어 = app.html ORIGIN_CHIP(시험이 대조)
 CORE_TEXT = {"record": "기록", "candidate": "후보"}
 LOCK_TEXT = "표준 정의 보호"
 
