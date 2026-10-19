@@ -3670,6 +3670,17 @@ async def test_admin_screens():
         assert "tpl:axes" in t and "tpl:principles" in t and "author@1" in t, "템플릿 구조"
         for w in ("questions", "records", "candidates", "record_id", "provenance_history", "M-D", "attach_to"):
             assert w in t, ("코어 표준 오브젝트", w)
+        # 문의(tickets)도 코어 표준 오브젝트 — 필드는 schema.sql 그대로, 이력은 부모 쪽 M-D 관계로만, 소유자·운영자 전용 열은 없다
+        std = [x for x in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8")) if x["table"] == "tickets"]
+        assert len(std) == 1 and std[0]["label"] == "문의", std
+        names = {f["name"] for f in std[0]["fields"]}
+        assert {"kind", "status", "via", "page", "text", "reply", "reply_at", "public_updated", "closed_at"} <= names, names
+        assert not names & {"user_id", "admin_note", "hint"}, ("소유자·운영자 전용 열은 표준 구조에 없다", names)
+        assert std[0]["links"] == [{"field": "ticket_history.ticket_id", "target": "tickets", "kind": "M-D"}], std[0]["links"]
+        assert [x["table"] for x in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))] == ["questions", "records", "candidates", "tickets"]
+        assert ">tickets</span> <span class=\"lbl\">「문의」</span>" in t and "ticket_history.ticket_id" in t and "→ tickets(문의)" in t, "문의 오브젝트·이력 관계"
+        std_html = t[t.index("코어 표준 오브젝트</h3>"):]
+        assert "admin_note" not in std_html and ">hint<" not in std_html, "표준 구조 화면에도 운영자 전용 열이 없다"
         assert "G-RENAMED" not in t and "G-FLD" not in t and "admin_audit" not in t and "usage_daily" not in t, "목록엔 사용자 이름·DB 내부 테이블 없음"
         for k in ("g", "n", "w", "o"):
             assert f'href="/admin/schema?u={site._opaque(U[k])}"' in t, k

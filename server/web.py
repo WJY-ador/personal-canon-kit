@@ -545,9 +545,15 @@ import template_author  # noqa: E402
 
 SCHEMA_SQL = Path(__file__).parent / "schema.sql"
 # 코어 표준 오브젝트 — 사용자가 쓰는 코어 테이블(정의 층이 아닌 것). 근거: db.TARGET_KINDS(record·candidate)·records.question_id·
-# app.html LABELS(질문·기록·후보). 필드·관계는 schema.sql 에서 읽는다. 설정(profile·tabs)·이력·DB 내부(감사·사용량·동의)는 뺀다.
-CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"))
-CORE_LABEL = {"questions": "질문", "records": "기록", "candidates": "후보", "items": "항목"}
+# app.html LABELS(질문·기록·후보)·문의 섹션(문의, 원작자 2026-10-19). 필드·관계는 schema.sql 에서 읽는다.
+# 설정(profile·tabs)·이력·DB 내부(감사·사용량·동의)는 뺀다. 이력 테이블은 오브젝트로 보이지 않고 부모 쪽 관계(CORE_CHILD_LINKS)로만 보인다.
+CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"), ("tickets", "문의"))
+CORE_LABEL = {"questions": "질문", "records": "기록", "candidates": "후보", "tickets": "문의", "items": "항목"}
+# 표준 구조에 보이지 않는 열 — 운영자 전용(문의 내부 메모 admin_note · 개인정보 의심 표식 hint). 소유자 열 user_id 는 모든 오브젝트에서 뺀다.
+CORE_HIDDEN = {"tickets": frozenset({"admin_note", "hint"})}
+# 부모 쪽에 보일 자식(이력) 관계 — 자식 테이블의 열 단위 REFERENCES 를 schema.sql 에서 읽는다.
+CORE_CHILD_LINKS = {"tickets": ("ticket_history",)}
+_REF_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s+\w+.*\bREFERENCES\s+(\w+)\s*\([^)]*\)(.*)$", re.I)
 TARGET_LABEL = {"record": "기록", "candidate": "후보"}
 _FK_RE = re.compile(r"FOREIGN KEY\s*\(([^)]*)\)\s*REFERENCES\s+(\w+)\s*\(([^)]*)\)(.*)", re.I)
 _COL_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s+([a-z][a-z0-9_]*)\b")   # 열 정의 줄(소문자 이름·타입). 제약·이어지는 줄은 대문자로 시작한다
@@ -575,9 +581,18 @@ def core_schema(sql_text: str) -> list[dict]:
                                   "kind": "M-D" if "ON DELETE CASCADE" in fk.group(4).upper() else "Lookup"})
                 continue
             name, typ = col.group(1), col.group(2)
-            if name == "user_id":
+            if name == "user_id" or name in CORE_HIDDEN.get(table, ()):
                 continue
             fields.append({"name": name, "type": typ, "required": "NOT NULL" in line.upper() or "PRIMARY KEY" in line.upper()})
+        for child in CORE_CHILD_LINKS.get(table, ()):   # 자식(이력) → 이 오브젝트. ON DELETE CASCADE 면 M-D
+            cm = re.search(rf"CREATE TABLE IF NOT EXISTS {child} \((.*?)\n\);", sql_text, re.S)
+            if not cm:
+                raise ValueError(f"schema.sql 에 {child} 이 없어요")
+            for cl in cm.group(1).splitlines():
+                rf = _REF_RE.match(cl.split("--", 1)[0].strip().rstrip(","))
+                if rf and rf.group(2) == table:
+                    links.append({"field": f"{child}.{rf.group(1)}", "target": table,
+                                  "kind": "M-D" if "ON DELETE CASCADE" in rf.group(3).upper() else "Lookup"})
         if table == "records":   # 기록 출발 관계는 item_links(field_key = attach_to·axes) — db.RECORD_LINK_KEYS
             links.append({"field": " · ".join(db.RECORD_LINK_KEYS), "target": "items", "kind": "Lookup(item_links)"})
         out.append({"table": table, "label": label, "fields": fields, "links": links})
@@ -713,7 +728,7 @@ def render_standard() -> str:
                f'<span class="tag">{_esc(ln["kind"])}</span></li>' for ln in t["links"]]
         core.append(f'<li><span class="nm">{_esc(t["table"])}</span> <span class="lbl">「{_esc(t["label"])}」</span><ul>{"".join(fl)}</ul></li>')
     return (f'<h2>서비스 표준 구조</h2><p class="note">템플릿 {_esc(template_author.TEMPLATE_NAME)}(server/templates) · 코어 표준 오브젝트'
-            f'(server/schema.sql). 이름은 코드 정의 그대로다. DB 내부 테이블(감사·사용량·동의·설정)은 뺐다. 소유자 열(user_id)은 생략.</p>'
+            f'(server/schema.sql). 이름은 코드 정의 그대로다. DB 내부 테이블(감사·사용량·동의·설정)은 뺐다. 소유자 열(user_id)·운영자 전용 열(문의 admin_note·hint)은 생략.</p>'
             f'<h3>템플릿 {_esc(template_author.TEMPLATE_NAME)}</h3><ul class="tree">{"".join(objs)}</ul>'
             f'<h3>코어 표준 오브젝트</h3><ul class="tree">{"".join(core)}</ul>')
 
