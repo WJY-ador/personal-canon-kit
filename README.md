@@ -30,6 +30,7 @@
 | `guides/` 가이드 8개 | `sheets/*.md` 질문별 한 장 |
 | `.claude/skills/` 스킬 4개 | `issue-log.md` |
 | `sample-data/` 가짜 샘플 | `.crm/` 백업·실행 상태 (정본 아님) |
+| `agent/` 로컬 에이전트(호스팅 판 연결 장치, 선택) | 에이전트 홈 — 원문·대응표·전송 대기(제품 밖, [agent/README.md](agent/README.md)) |
 | `manifest.json` 파일 목록·지원표 | |
 
 ## 경계 (코드로 지키는 것)
@@ -47,8 +48,13 @@
 ```bash
 python3 tests/test_flow.py                   # 흐름 시험 (모델은 가짜 CLI 로)
 python3 crm.py check                        # 패키지 검사: manifest·원작자 값·문서 속 명령
+python3 -m unittest discover -s agent/tests  # 로컬 에이전트 시험 (Keychain·launchd 는 모의 실행기)
 ```
+
+## 로컬 에이전트 (호스팅 판, 선택)
+
+`agent/` 는 호스팅 판 계정에 내 PC 를 「연결 장치」로 붙이는 프로그램입니다. 수집기 산출물(첫 입력원은 좋아요 `likes.jsonl`)을 활동으로 바꿔 보내고, 다른 사람의 원문은 PC 에 둡니다. macOS 는 1시간 예약(launchd)과 Keychain 을 씁니다. 표준 라이브러리만 씁니다. 쓰는 법은 [agent/README.md](agent/README.md).
 
 ## 이 버전에 없는 것
 
-자동 수집·계정 연결(다음 버전에 소스 1개 예정), 예약 실행·알림, 대시보드 안 채팅·쓰기, 결제, 클라우드·팀 기능.
+로컬 판의 자동 수집·계정 연결(로컬 에이전트는 호스팅 판 전용), 로컬 판 예약 실행·알림, 대시보드 안 채팅·쓰기, 결제, 클라우드·팀 기능.
