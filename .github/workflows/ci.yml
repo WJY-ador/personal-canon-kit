@@ -93,9 +93,27 @@ jobs:
       - name: "④ 서버 시험 (test_tools.py)"
         run: python server/test_tools.py
 
-      # board 이전(2026-10-20) — 웹 화면 경로(/api/devices·/api/inbox 등) 시험. 같은 CI Postgres(DATABASE_URL 은 job env)
+      # board 이전(2026-10-20) — 웹 화면 경로·이전 CLI 시험. 둘 다 시작 가드가 DB 이름 허용 목록(crm_test*)을 보므로
+      # 같은 Postgres 서비스에 전용 DB 를 만들고 그 단계에만 DATABASE_URL 을 덮어쓴다(서버 시험 ④ 는 job env 그대로)
+      - name: "④-0 board 이전 시험 DB 만들기"
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:crm@localhost:5432/crm", autocommit=True) as c:
+              for name in ("crm_test_web", "crm_test_bi_mig"):
+                  c.execute(f"CREATE DATABASE {name}")
+          PY
+
       - name: "④-a 웹 가져오기 화면 시험 (test_web_import.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_web
         run: python server/test_web_import.py
+
+      # 이전 CLI 시험 가드는 DB 이름을 crm_test_bi_mig 하나로 고정한다(test_migrate_cli.ALLOWED_DBS)
+      - name: "④-c board 이전 CLI 시험 (test_migrate_cli.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_bi_mig
+        run: python server/test_migrate_cli.py
 
       # board 이전(2026-10-20) — 로컬 에이전트(agent/, 표준 라이브러리만). 서버 DB 를 쓰지 않는다
       - name: "④-b 로컬 에이전트 시험 (agent/tests)"
