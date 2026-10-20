@@ -6,11 +6,11 @@
   "support": {
     "macos": {
       "core": "시험함 (Apple Silicon, Python 3.9·3.14)",
-      "optional": "예약·알림·수집 없음"
+      "optional": "로컬 에이전트(agent/, 호스팅 판 연결 장치): 단위 시험함(Python 3.9·3.14, Keychain·launchd 는 모의 실행기) — 예약 launchd 1시간, 수집 likes 1종. 알림 없음"
     },
     "windows-native": {
       "core": "미검증 — 코드 대응만",
-      "optional": "예약·알림·수집 없음"
+      "optional": "로컬 에이전트: 미검증 — 자격 증명 저장소 미구현이라 연결·업로드 불가, 계약 검증·원문 보기만. 예약·알림 없음"
     },
     "windows-wsl": {
       "core": "미검증·미결정",
@@ -58,6 +58,194 @@
     {
       "path": "START.md",
       "required": true
+    },
+    {
+      "path": "agent/README.md",
+      "required": false
+    },
+    {
+      "path": "agent/__init__.py",
+      "required": false
+    },
+    {
+      "path": "agent/__main__.py",
+      "required": false
+    },
+    {
+      "path": "agent/adapters/__init__.py",
+      "required": false
+    },
+    {
+      "path": "agent/adapters/base.py",
+      "required": false
+    },
+    {
+      "path": "agent/adapters/likes.py",
+      "required": false
+    },
+    {
+      "path": "agent/adapters/skeletons.py",
+      "required": false
+    },
+    {
+      "path": "agent/board_manifest.py",
+      "required": false
+    },
+    {
+      "path": "agent/cli.py",
+      "required": false
+    },
+    {
+      "path": "agent/config.example.json",
+      "required": false
+    },
+    {
+      "path": "agent/config.py",
+      "required": false
+    },
+    {
+      "path": "agent/contract.py",
+      "required": false
+    },
+    {
+      "path": "agent/hmacid.py",
+      "required": false
+    },
+    {
+      "path": "agent/jcs.py",
+      "required": false
+    },
+    {
+      "path": "agent/keystore.py",
+      "required": false
+    },
+    {
+      "path": "agent/osutil.py",
+      "required": false
+    },
+    {
+      "path": "agent/runner.py",
+      "required": false
+    },
+    {
+      "path": "agent/schedule.py",
+      "required": false
+    },
+    {
+      "path": "agent/store.py",
+      "required": false
+    },
+    {
+      "path": "agent/summary.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/__init__.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/application-craft.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/applications/2026-01-17-sample.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/craft.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/decisions.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/open-questions.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/career/work-decisions.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/config.example.json",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/drafts/published-log.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/journal/2026-01-10.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/journal/2026-01-11.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/journal/notes-undated.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/sessions/2026-01-12.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/fixtures/board/trend.md",
+      "required": false
+    },
+    {
+      "path": "agent/tests/helpers.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_adapters.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_board_manifest.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_cli_flow.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_contract.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_hmac_store.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_keychain_schedule.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_shared_vectors.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_summary.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_uploader.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_viewer.py",
+      "required": false
+    },
+    {
+      "path": "agent/uploader.py",
+      "required": false
+    },
+    {
+      "path": "agent/viewer.py",
+      "required": false
     },
     {
       "path": "crm.py",

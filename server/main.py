@@ -33,8 +33,10 @@ from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
 
+import activity
 import auth
 import db
+import imports
 import web
 from envnames import env
 
@@ -88,7 +90,9 @@ WRITE_TOOLS = frozenset({
 ALLOWED_TOOLS = frozenset({
     "state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get", "feedback_send", "ticket_list_mine",
     "ticket_get_mine", "display_name_set", "me_get", "person_list", "person_get", "source_list", "source_get", "source_reflection_list",
-    "source_reflection_get"})
+    "source_reflection_get",
+    # board 이전(2026-10-20) 읽기 7 — 활동·사람/출처 문맥·「나」 집계·승인 대기. 승인·제외는 웹에서만
+    "activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get"})
 
 # 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
@@ -614,7 +618,131 @@ def source_reflection_delete(
     return db.source_reflection_delete(uid_of(ctx), reflection_id, expected_revision)
 
 
+# ── board 이전 읽기 도구 (2026-10-20) — 활동·관계·「나」 집계·승인 대기. 쓰기 없음(승인·제외는 웹에서만) ──
+
+@mcp.tool()
+@guard
+def activity_list(
+    ctx: Context,
+    action: Annotated[Literal["", "like", "repost", "comment", "read", "save", "send", "reply"], Field(description="행동으로 거르기 (선택)")] = "",
+    person_id: Annotated[str, Field(description="사람 ID 로 거르기 (선택)")] = "",
+    source_id: Annotated[str, Field(description="출처 ID 로 거르기 (선택)")] = "",
+    axis_item_id: Annotated[str, Field(description="축 항목 ID 로 거르기 (선택)")] = "",
+    dated: Annotated[Literal["", "yes", "no"], Field(description="yes=날짜 확인된 것만, no=날짜 미확인만 (선택)")] = "",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """연결 장치가 보낸 내 활동(좋아요 등) 목록 — 현재 판만, 받은 순 최근 먼저. 행동·날짜·출처 종류·사람 별칭·축만 있고 원문은 없다
+    (원문은 사용자 PC 에만). 활동량을 성격·능력으로 해석하지 않는다."""
+    return activity.activity_list(uid_of(ctx), action, person_id, source_id, axis_item_id, dated, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def activity_get(activity_id: Annotated[str, Field(description="활동 ID (a_…)")], ctx: Context) -> dict:
+    """활동 하나 — 행동·날짜(occurred_on, 모르면 null)·처음 수집한 날·사람 별칭·축·승인된 메모·판 이력. 원문·원 URL 은 서버에 없다."""
+    return activity.activity_get(uid_of(ctx), activity_id)
+
+
+@mcp.tool()
+@guard
+def person_context_get(person_id: Annotated[str, Field(description="사람 ID (p_…)")], ctx: Context) -> dict:
+    """사람 하나에 연결된 활동·기록·항목(역방향). 별칭만 — 실명·연락처는 서버에 없다."""
+    return activity.person_context(uid_of(ctx), person_id)
+
+
+@mcp.tool()
+@guard
+def source_context_get(source_id: Annotated[str, Field(description="출처 ID (s_…)")], ctx: Context) -> dict:
+    """출처 하나에 속한 활동 — 행동별 수와 최근 활동."""
+    return activity.source_context(uid_of(ctx), source_id)
+
+
+@mcp.tool()
+@guard
+def me_aggregate_get(
+    ctx: Context,
+    period: Annotated[Literal["7d", "30d", "90d", "all"], Field(description="기간 — KST 오늘 포함 최근 N일 또는 전체")] = "30d",
+) -> dict:
+    """「나」 집계 — 정해진 계산 규칙(행동별·축별·자주 반응한 사람·출처별·날짜 미확인·기준의 근거 연결 수). 성향·점수가 아니다.
+    이 숫자로 사용자를 해석하거나 정본에 저장하지 않는다."""
+    return activity.me_aggregate(uid_of(ctx), period)
+
+
+@mcp.tool()
+@guard
+def inbox_list(
+    ctx: Context,
+    state: Annotated[Literal["pending", "applied", "noop", "excluded", "expired", "all"], Field(description="상태로 거르기")] = "pending",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """승인 대기(연결 장치가 보낸 자기 글·AI 요약) 목록. 본문은 inbox_get 으로. 승인·제외는 사용자가 웹에서만 한다 — 대신 하지 않는다."""
+    return imports.inbox_list(uid_of(ctx), state, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def inbox_get(import_id: Annotated[str, Field(description="승인 대기 ID (ie_…)")], ctx: Context) -> dict:
+    """승인 대기 하나 + 본문(대기 중일 때만). AI 요약은 승인해도 직접 쓴 원문이 아니고 인용할 수 없다."""
+    return imports.inbox_get(uid_of(ctx), import_id)
+
+
 # ── 웹 ─────────────────────────────────────────────────
+
+async def api_imports(request):
+    """POST /api/imports — 연결 장치 토큰(Bearer)만. 웹 쿠키·MCP 토큰은 받지 않는다. 응답 본문에 요청 값을 되돌려 주지 않는다.
+    오류 = {"code", "msg"} + imports.http_status(code). 사용 집계 name = api:imports."""
+    raw = await request.body()
+    uid, code = None, "EXC"
+    try:
+        status, body = await run_in_threadpool(imports.submit, request.headers.get("authorization", ""),
+                                                request.headers.get("idempotency-key", ""), raw)
+        uid, code = None, "OK"
+        return JSONResponse(body, status_code=status, headers={"cache-control": "no-store"})
+    except db.CrmError as e:
+        code = e.code
+        return _imports_err(e)
+    finally:
+        db.usage_count(uid, "api:imports", code)
+
+
+def _imports_err(e):
+    """장치 경로 오류 — {code, msg[, resume_at]}. 요청 값은 넣지 않는다."""
+    body = {"code": e.code, "msg": e.message}
+    if getattr(e, "resume_at", None):
+        body["resume_at"] = e.resume_at
+    return JSONResponse(body, status_code=imports.http_status(e.code), headers={"cache-control": "no-store"})
+
+
+async def api_import_device(request):
+    """GET /api/imports/device — 장치 토큰으로 자기 입력원(정책·키 공간·만료) 확인. POST /api/imports/device/revoke — 자기 토큰 폐기."""
+    fn = imports.device_self_revoke if request.method == "POST" else imports.device_self
+    code = "EXC"
+    try:
+        body = await run_in_threadpool(fn, request.headers.get("authorization", ""))
+        code = "OK"
+        return JSONResponse(body, headers={"cache-control": "no-store"})
+    except db.CrmError as e:
+        code = e.code
+        return _imports_err(e)
+    finally:
+        db.usage_count(None, "api:import_device", code)
+
+
+async def api_import_status(request):
+    """GET /api/imports/{import_id} — 같은 장치가 낸 접수 결과(응답 유실 뒤 확인용)."""
+    code = "EXC"
+    try:
+        body = await run_in_threadpool(imports.entry_status, request.headers.get("authorization", ""), request.path_params["import_id"])
+        code = "OK"
+        return JSONResponse(body, headers={"cache-control": "no-store"})
+    except db.CrmError as e:
+        code = e.code
+        return _imports_err(e)
+    finally:
+        db.usage_count(None, "api:import_status", code)
+
 
 async def health(request):
     try:
@@ -743,6 +871,13 @@ async def purge_once():
             print(f"[delete] 보관 기간 지난 삭제 contact {n}건 파기", flush=True)
     except Exception as e:
         print(f"[delete] contact 파기 실패 — 계속: {type(e).__name__}", flush=True)
+    try:   # board 이전 — 보관 기간(30일) 지난 승인 대기 본문 파기 · 지난 한도 카운터 파기
+        n = await run_in_threadpool(imports.expire_pending)
+        m = await run_in_threadpool(imports.counters_purge)
+        if n or m:
+            print(f"[imports] 승인 대기 만료 {n}건 · 지난 한도 카운터 {m}행 파기", flush=True)
+    except Exception as e:
+        print(f"[imports] 승인 대기 만료·카운터 파기 실패 — 계속: {type(e).__name__}", flush=True)
 
 
 async def _purger():
@@ -767,6 +902,10 @@ if not DEV and not site.login_ready:
 app = Starlette(
     routes=[
         Route("/health", health),
+        Route("/api/imports", api_imports, methods=["POST"]),                 # board 이전 — 장치 토큰(웹 세션 아님)
+        Route("/api/imports/device", api_import_device, methods=["GET"]),              # 경로 순서: {import_id} 보다 먼저
+        Route("/api/imports/device/revoke", api_import_device, methods=["POST"]),
+        Route("/api/imports/{import_id}", api_import_status, methods=["GET"]),
         *site.routes(),
         Mount("/", app=mcp_app),
     ],

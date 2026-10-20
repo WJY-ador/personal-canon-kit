@@ -50,9 +50,14 @@ CREATE TABLE IF NOT EXISTS sources (
   name      text NOT NULL,
   location  text NOT NULL DEFAULT '',             -- 없으면 '' — UNIQUE 가 NULL 을 서로 다르게 보지 않게
   created   timestamptz NOT NULL DEFAULT now(),
+  -- board 이전(2026-10-20): 연결 장치 활동의 일반 출처. NULL = 보통 출처. 값이 있으면 서버가 만든 일반 이름·kind other·위치 '' 뿐
+  -- (게시물 제목·방 이름·메일 제목·작성자명을 넣지 않는다). 옛 DB 는 db._init_schema 가 열 → 이름 붙은 CHECK·부분 UNIQUE 를 더한다
+  activity_provider text,
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, kind, name, location),
-  CONSTRAINT ck_sources_kind CHECK (kind IN ('file','url','chat','other'))
+  CONSTRAINT ck_sources_kind CHECK (kind IN ('file','url','chat','other')),
+  CONSTRAINT ck_sources_activity_provider CHECK (activity_provider IS NULL OR (activity_provider IN ('sns','web','mail','kakao')
+                                                 AND kind = 'other' AND location = ''))
 );
 
 CREATE TABLE IF NOT EXISTS records (
@@ -70,12 +75,25 @@ CREATE TABLE IF NOT EXISTS records (
   text_process       text  NOT NULL DEFAULT 'unknown',
   provenance_history jsonb NOT NULL DEFAULT '[]',  -- 생성·정정마다 {at, by, author_kind, text_process[, from, reason]}
   source_id          text,                        -- PR #20 출처 연결. NULL = 출처 미확인(옛 기록 전부). 옛 DB 는 init_schema 가 더한다
+  -- board 이전(2026-10-20). 옛 DB 는 init_schema 가 열을 더한다 — 옛 행 received_at NULL·ingest_kind legacy, 새 INSERT 부터 now()·interactive.
+  -- 일일 기록 한도는 COALESCE(received_at, created) 로 센다(이전한 기록의 created 가 과거여도 우회 못 한다)
+  received_at        timestamptz DEFAULT now(),   -- 서버에 실제로 생긴 시각
+  source_created_at  timestamptz,                 -- 확인된 원본 시각(시간대 포함)
+  source_date        date,                        -- 날짜만 확인된 원본. 자정·KST 를 붙이지 않는다
+  ingest_kind        text NOT NULL DEFAULT 'interactive',
+  generation_kind    text NOT NULL DEFAULT 'unknown',
+  generation_meta    jsonb NOT NULL DEFAULT '{}', -- 연결 장치가 신고한 도구·모델·입력 참조(검증된 사실 아님). 토큰·프롬프트·경로 없음
+  import_batch_id    text,                        -- 처음 만든 이전 배치(FK 아님 — 대응은 import_entries)
   UNIQUE (user_id, id),
   CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),   -- 같은 사용자 출처만
   FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id),  -- Lookup
   CONSTRAINT ck_records_author_kind CHECK (author_kind IN ('self','external','unknown')),
   CONSTRAINT ck_records_text_process CHECK (text_process IN ('verbatim','structured','rewritten','generated','unknown')),
-  CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array')
+  CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array'),
+  CONSTRAINT ck_records_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
+  CONSTRAINT ck_records_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed')),
+  CONSTRAINT ck_records_generation_meta CHECK (jsonb_typeof(generation_meta) = 'object'),
+  CONSTRAINT ck_records_source_when CHECK (source_created_at IS NULL OR source_date IS NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_records_user ON records (user_id, created DESC) WHERE deleted_at IS NULL;
 
@@ -87,7 +105,13 @@ CREATE TABLE IF NOT EXISTS people (
   revision integer NOT NULL DEFAULT 0,
   created  timestamptz NOT NULL DEFAULT now(),
   updated  timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, id)                       -- 별칭 중복 허용
+  -- board 이전(2026-10-20): 연결 장치가 보낸 사람 식별자. HMAC 키·원본 계정 대응표는 PC 에만. 값이 있으면 둘 다 있다.
+  -- (user_id, hmac_namespace, identity_hmac) 부분 UNIQUE 는 init_schema 가 만든다(옛 DB 에선 이 파일이 열보다 먼저 돈다)
+  hmac_namespace text,
+  identity_hmac  bytea,
+  PRIMARY KEY (user_id, id),                      -- 별칭 중복 허용
+  CONSTRAINT ck_people_identity CHECK ((hmac_namespace IS NULL AND identity_hmac IS NULL)
+                                       OR (hmac_namespace IS NOT NULL AND identity_hmac IS NOT NULL AND octet_length(identity_hmac) = 32))
 );
 
 -- PR B 코어 「출처 요약/반응」. 출처를 접한 뒤 내가 한 생각(자기 성찰). records 와 분리 — 인용 적격 경로(후보 근거·관계 대상)에 들어가지 않는다.
@@ -214,7 +238,7 @@ CREATE TABLE IF NOT EXISTS field_defs (
   value_type       text NOT NULL CHECK (value_type IN ('text','number','boolean','date','select','text_list','reference')),
   required         boolean NOT NULL DEFAULT false,
   options          jsonb NOT NULL DEFAULT '[]',     -- select: [{value,label}]
-  target_kind      text CHECK (target_kind IN ('item','record','candidate')),
+  target_kind      text CHECK (target_kind IN ('item','record','candidate','person','source','activity')),   -- 뒤 셋 = board 이전. 옛 DB 는 init_schema 가 넓힌다
   target_object_id text,
   multiple         boolean NOT NULL DEFAULT false,
   position         integer NOT NULL DEFAULT 0,
@@ -245,12 +269,80 @@ CREATE TABLE IF NOT EXISTS items (
   archived_at         timestamptz,
   created_at          timestamptz NOT NULL DEFAULT now(),
   updated_at          timestamptz NOT NULL DEFAULT now(),
+  -- board 이전(2026-10-20) — records 와 같은 뜻. 옛 DB 는 init_schema 가 더한다(옛 행 received_at NULL·ingest_kind legacy)
+  received_at         timestamptz DEFAULT now(),
+  source_created_at   timestamptz,
+  source_date         date,
+  ingest_kind         text NOT NULL DEFAULT 'interactive',
+  generation_kind     text NOT NULL DEFAULT 'unknown',
+  generation_meta     jsonb NOT NULL DEFAULT '{}',
+  import_batch_id     text,
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, id, object_id),                  -- item_links 복합 FK 대상
+  CONSTRAINT ck_items_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
+  CONSTRAINT ck_items_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed')),
+  CONSTRAINT ck_items_generation_meta CHECK (jsonb_typeof(generation_meta) = 'object'),
+  CONSTRAINT ck_items_source_when CHECK (source_created_at IS NULL OR source_date IS NULL),
   UNIQUE (user_id, object_id, code),
   FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id)                 -- 보호 Lookup
 );
 CREATE INDEX IF NOT EXISTS ix_items_user_obj ON items (user_id, object_id, updated_at DESC) WHERE archived_at IS NULL;
+
+-- ── board 이전 · 연결 장치(2026-10-20, 구현계획 notes/2026-10-20_board-마이그-구현계획.md · r3 T1) ─────────────
+-- 원문은 PC, 서버엔 구조화 데이터만. 활동 = 코어(사용자 정의 오브젝트 아님). 계정 삭제는 db.DELETE_TABLES 순서(관계 → 접수 대응표 → 업무 자료 → 입력원).
+-- 활동·접수 대응표가 참조하는 테이블보다 먼저 만든다(item_links 가 activities 를 가리킨다).
+
+-- 입력원 = 연결 장치(토큰) 또는 board 이전(병행 기간). 장치당 현재 토큰 하나 — 옛 토큰은 감사(admin_audit)에만.
+CREATE TABLE IF NOT EXISTS import_streams (
+  user_id               text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                    text NOT NULL,              -- is_<hex24>
+  channel               text NOT NULL CHECK (channel IN ('device','board_migration')),
+  label                 text NOT NULL CHECK (char_length(label) BETWEEN 1 AND 80 AND label = btrim(label)),
+  token_id              text,                       -- it_<hex16>. 비밀값은 SHA-256 만
+  secret_hash           bytea,
+  token_expires_at      timestamptz,
+  token_revoked_at      timestamptz,
+  last_used_at          timestamptz,
+  hmac_namespace        text,                       -- 키가 아닌 무작위 키 공간 ID(hn_<hex24>)
+  policy                jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(policy) = 'object'),   -- 허용 행동·변환·축(로컬 경로 없음)
+  policy_revision       integer NOT NULL DEFAULT 1 CHECK (policy_revision > 0),
+  migration_started_at  timestamptz,
+  migration_ends_at     timestamptz,
+  migration_closed_at   timestamptz,
+  final_manifest_sha256 bytea,
+  created_at            timestamptz NOT NULL DEFAULT now(),
+  revoked_at            timestamptz,                -- 장치 연결 해제(되살리지 않는다)
+  PRIMARY KEY (user_id, id),
+  UNIQUE (token_id),
+  CHECK (secret_hash IS NULL OR octet_length(secret_hash) = 32),
+  CHECK (final_manifest_sha256 IS NULL OR octet_length(final_manifest_sha256) = 32),
+  CHECK ((channel = 'device' AND token_id IS NOT NULL AND secret_hash IS NOT NULL AND token_expires_at IS NOT NULL)
+      OR (channel = 'board_migration' AND token_id IS NULL AND secret_hash IS NULL AND token_expires_at IS NULL)),
+  CHECK ((migration_started_at IS NULL AND migration_ends_at IS NULL)
+      OR (migration_started_at IS NOT NULL AND migration_ends_at > migration_started_at)),
+  CHECK (channel = 'board_migration' OR (migration_started_at IS NULL AND migration_ends_at IS NULL
+                                         AND migration_closed_at IS NULL AND final_manifest_sha256 IS NULL)),
+  CHECK (migration_closed_at IS NULL OR migration_started_at IS NOT NULL)
+);
+
+-- 활동 = 불변 판. 새 개정은 새 행(옛 판을 가리키는 참조는 그대로). 집계는 import_entries.is_current_applied 가 가리키는 판만.
+-- 제목·본문·메모·URL·실명 열이 없다 — 자동 경로의 핵심 방어는 자유 본문 필드 부재.
+CREATE TABLE IF NOT EXISTS activities (
+  user_id      text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id           text NOT NULL,                       -- a_...
+  stream_id    text NOT NULL,
+  source_id    text NOT NULL,                       -- 일반 출처(sources.activity_provider). 서버가 찾거나 만든다
+  action       text NOT NULL CHECK (action IN ('like','repost','comment','read','save','send','reply')),
+  state        text NOT NULL DEFAULT 'active' CHECK (state IN ('active','retracted')),
+  occurred_on  date,                                -- 확인된 행동 날짜만(일자). 모르면 NULL — 수집일로 대체하지 않는다
+  observed_on  date,                                -- 수집기가 처음 본 날(화면 「처음 수집한 날」). 기간 집계에 쓰지 않는다(구현계획 §2-11 D1)
+  raw_id       text NOT NULL CHECK (raw_id ~ '^[0-9a-f]{48}$'),   -- PC 원문을 찾는 난수 ID. 실체·경로·URL 에서 유도하지 않는다
+  received_at  timestamptz NOT NULL DEFAULT now(),
+  deleted_at   timestamptz,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, stream_id) REFERENCES import_streams(user_id, id),
+  FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)
+);
 
 CREATE TABLE IF NOT EXISTS item_links (
   user_id             text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -262,23 +354,130 @@ CREATE TABLE IF NOT EXISTS item_links (
   target_item_id      text,
   target_record_id    text,
   target_candidate_id text,
+  target_person_id    text,                         -- board 이전: reference 대상 person·source·activity(활동은 특정 판). 옛 DB 는 init_schema 가 더한다
+  target_source_id    text,
+  target_activity_id  text,
   created_at          timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, id),
   CHECK ((source_item_id IS NOT NULL AND source_object_id IS NOT NULL AND source_record_id IS NULL)
       OR (source_item_id IS NULL AND source_object_id IS NULL AND source_record_id IS NOT NULL)),
   CHECK (source_record_id IS NULL OR field_key IN ('attach_to','axes')),
-  CHECK (num_nonnulls(target_item_id, target_record_id, target_candidate_id) = 1),
+  -- 대상 열 정확히 하나. 옛 DB 의 이름 없는 3열 CHECK(item_links_check2)는 init_schema 가 정의로 찾아 지우고 이 이름으로 다시 만든다
+  CONSTRAINT ck_item_links_target CHECK (num_nonnulls(target_item_id, target_record_id, target_candidate_id,
+                                                      target_person_id, target_source_id, target_activity_id) = 1),
   FOREIGN KEY (user_id, source_item_id, source_object_id) REFERENCES items(user_id, id, object_id) ON DELETE CASCADE,
   FOREIGN KEY (user_id, source_object_id, field_key) REFERENCES field_defs(user_id, object_id, key),   -- 보호
   FOREIGN KEY (user_id, source_record_id) REFERENCES records(user_id, id) ON DELETE CASCADE,
   FOREIGN KEY (user_id, target_item_id) REFERENCES items(user_id, id),                -- 보호
   FOREIGN KEY (user_id, target_record_id) REFERENCES records(user_id, id),            -- 보호
-  FOREIGN KEY (user_id, target_candidate_id) REFERENCES candidates(user_id, id)       -- 보호
+  FOREIGN KEY (user_id, target_candidate_id) REFERENCES candidates(user_id, id),      -- 보호
+  CONSTRAINT fk_item_links_person FOREIGN KEY (user_id, target_person_id) REFERENCES people(user_id, id),          -- 보호
+  CONSTRAINT fk_item_links_source FOREIGN KEY (user_id, target_source_id) REFERENCES sources(user_id, id),         -- 보호
+  CONSTRAINT fk_item_links_activity FOREIGN KEY (user_id, target_activity_id) REFERENCES activities(user_id, id)   -- 보호
 );
 CREATE INDEX IF NOT EXISTS ix_links_src_item ON item_links (user_id, source_item_id);
 CREATE INDEX IF NOT EXISTS ix_links_target_item ON item_links (user_id, target_item_id);
 CREATE INDEX IF NOT EXISTS ix_links_target_cand ON item_links (user_id, target_candidate_id);
 CREATE INDEX IF NOT EXISTS ix_links_src_record ON item_links (user_id, source_record_id);
+
+-- 활동·기록의 사람·축·기록 연결(board 이전). 출발 = 활동 또는 기록(기록 출발은 사람만 — 기록의 축·항목은 기존 item_links(record_attach)).
+CREATE TABLE IF NOT EXISTS activity_links (
+  user_id           text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                text NOT NULL,                  -- al_...
+  activity_id       text,
+  record_id         text,
+  person_id         text,
+  axis_item_id      text,
+  linked_record_id  text,
+  relation          text NOT NULL CHECK (relation IN ('author','counterparty','participant','axis','evidence','reaction')),
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, activity_id) REFERENCES activities(user_id, id),
+  FOREIGN KEY (user_id, record_id) REFERENCES records(user_id, id),
+  FOREIGN KEY (user_id, person_id) REFERENCES people(user_id, id),
+  FOREIGN KEY (user_id, axis_item_id) REFERENCES items(user_id, id),
+  FOREIGN KEY (user_id, linked_record_id) REFERENCES records(user_id, id),
+  CHECK (num_nonnulls(activity_id, record_id) = 1),
+  CHECK (num_nonnulls(person_id, axis_item_id, linked_record_id) = 1),
+  CHECK ((relation IN ('author','counterparty','participant') AND person_id IS NOT NULL)
+      OR (relation = 'axis' AND axis_item_id IS NOT NULL)
+      OR (relation IN ('evidence','reaction') AND linked_record_id IS NOT NULL)),
+  CHECK (record_id IS NULL OR person_id IS NOT NULL),
+  CHECK (activity_id <> '' AND record_id <> '' AND person_id <> '' AND axis_item_id <> '' AND linked_record_id <> '')   -- 빈 문자열 ID 금지(NULL 은 통과)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_activity_links_identity ON activity_links
+  (user_id, COALESCE(activity_id, ''), COALESCE(record_id, ''), relation, COALESCE(person_id, ''), COALESCE(axis_item_id, ''),
+   COALESCE(linked_record_id, ''));
+CREATE INDEX IF NOT EXISTS ix_activity_links_person ON activity_links (user_id, person_id) WHERE person_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_activity_links_axis ON activity_links (user_id, axis_item_id) WHERE axis_item_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_activity_links_linked ON activity_links (user_id, linked_record_id) WHERE linked_record_id IS NOT NULL;
+
+-- 원본 개정 대응표 · 수신 결과 · 검토 대기 통합. 본문(payload)은 pending 에서만 — 승인·제외·만료 때 지운다. 해시·식별자·결과는 계정 존속 기간.
+CREATE TABLE IF NOT EXISTS import_entries (
+  user_id              text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                   text NOT NULL,               -- ie_...
+  stream_id            text NOT NULL,
+  original_id          text NOT NULL,               -- PC 가 만든 불투명 ID
+  source_revision      text NOT NULL,               -- 불투명 개정 ID
+  previous_entry_id    text,                        -- 같은 원본·종류의 직전 접수 행. 최초 = NULL
+  kind                 text NOT NULL CHECK (kind IN ('self_text','self_summary','activity',
+                                                     'migration_object','migration_item','migration_record')),
+  request_sha256       bytea NOT NULL CHECK (octet_length(request_sha256) = 32),
+  projection_sha256    bytea NOT NULL CHECK (octet_length(projection_sha256) = 32),
+  state                text NOT NULL CHECK (state IN ('pending','applied','noop','excluded','expired')),
+  is_latest_received   boolean NOT NULL DEFAULT true,
+  is_current_applied   boolean NOT NULL DEFAULT false,
+  payload              jsonb,
+  payload_bytes        integer NOT NULL DEFAULT 0 CHECK (payload_bytes >= 0),
+  expires_at           timestamptz,
+  received_at          timestamptz NOT NULL DEFAULT now(),
+  resolved_at          timestamptz,
+  resolved_by          text CHECK (resolved_by IS NULL OR resolved_by IN ('user','expiry','superseded','system','migration')),
+  target_object_id     text,
+  target_item_id       text,
+  target_record_id     text,
+  target_activity_id   text,
+  target_item_revision integer CHECK (target_item_revision >= 0),
+  batch_id             text,
+  manifest_sha256      bytea,
+  transform_version    text NOT NULL,
+  execution            text CHECK (execution IS NULL OR execution IN ('attended','unattended')),
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, stream_id, original_id, source_revision),
+  UNIQUE (user_id, stream_id, original_id, kind, id),
+  FOREIGN KEY (user_id, stream_id) REFERENCES import_streams(user_id, id),
+  FOREIGN KEY (user_id, stream_id, original_id, kind, previous_entry_id)
+    REFERENCES import_entries (user_id, stream_id, original_id, kind, id),
+  FOREIGN KEY (user_id, target_object_id) REFERENCES object_defs(user_id, id),
+  FOREIGN KEY (user_id, target_item_id) REFERENCES items(user_id, id),
+  FOREIGN KEY (user_id, target_record_id) REFERENCES records(user_id, id),
+  FOREIGN KEY (user_id, target_activity_id) REFERENCES activities(user_id, id),
+  CHECK (manifest_sha256 IS NULL OR octet_length(manifest_sha256) = 32),
+  CHECK (num_nonnulls(target_object_id, target_item_id, target_record_id, target_activity_id) <= 1),
+  CHECK ((state = 'pending' AND payload IS NOT NULL AND expires_at IS NOT NULL AND resolved_at IS NULL)
+      OR (state <> 'pending' AND payload IS NULL AND payload_bytes = 0 AND resolved_at IS NOT NULL)),
+  CHECK (state NOT IN ('applied','noop') OR num_nonnulls(target_object_id, target_item_id, target_record_id, target_activity_id) = 1),
+  CHECK (NOT is_current_applied OR state IN ('applied','noop')),
+  CHECK (target_item_revision IS NULL OR target_item_id IS NOT NULL),
+  CHECK (kind <> 'activity' OR state <> 'pending')
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_import_latest ON import_entries (user_id, stream_id, original_id) WHERE is_latest_received;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_import_current ON import_entries (user_id, stream_id, original_id) WHERE is_current_applied;
+CREATE INDEX IF NOT EXISTS ix_import_pending ON import_entries (user_id, received_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS ix_import_target_activity ON import_entries (user_id, target_activity_id) WHERE target_activity_id IS NOT NULL;
+
+-- 원자적 접수·요청 한도. scope_key = 'user' 또는 장치(입력원) ID, bucket = 서버 고정 열거(imports.BUCKETS). 클라이언트 입력을 그대로 쓰지 않는다.
+-- usage_daily 는 관측용이라 강제 한도에 쓰지 않는다.
+CREATE TABLE IF NOT EXISTS import_counters (
+  user_id       text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope_key     text NOT NULL,
+  period        text NOT NULL CHECK (period IN ('minute','day')),
+  period_start  timestamptz NOT NULL,
+  bucket        text NOT NULL,
+  n             bigint NOT NULL DEFAULT 0 CHECK (n >= 0),
+  bytes         bigint NOT NULL DEFAULT 0 CHECK (bytes >= 0),
+  PRIMARY KEY (user_id, scope_key, period, period_start, bucket)
+);
 
 CREATE TABLE IF NOT EXISTS item_history (
   id            bigserial PRIMARY KEY,
@@ -350,7 +549,9 @@ CREATE TABLE IF NOT EXISTS admin_audit (
   at         timestamptz NOT NULL DEFAULT now(),
   actor_id   text,                                -- 실행자 user id. bootstrap·recover(CLI) 는 NULL
   action     text NOT NULL CHECK (action IN ('bootstrap','recover','role_grant','role_revoke','web_signout','block','unblock',
-                                         'delete_notify','delete_run','delete_cancel')),   -- 삭제 CLI(PR B) 3종. 옛 DB 는 init_schema 가 넓힌다
+                                         'delete_notify','delete_run','delete_cancel',
+                                         'device_connect','device_reissue','device_revoke','device_policy',
+                                         'migration_apply','migration_extend','migration_close')),   -- 삭제 CLI(PR B) 3종 · board 이전 7종. 옛 DB 는 init_schema 가 넓힌다
   target_id  text,
   detail     jsonb NOT NULL DEFAULT '{}'
 );

@@ -15,7 +15,7 @@ import html
 import math
 
 ORIGIN_TEXT = {"core": "코어", "standard": "표준", "template": "선택 템플릿", "custom": "직접 추가"}   # 명세 §9 구분 표시 용어 = app.html ORIGIN_CHIP(시험이 대조)
-CORE_TEXT = {"record": "기록", "candidate": "후보"}
+CORE_TEXT = {"record": "기록", "candidate": "후보", "person": "사람", "source": "출처", "activity": "활동"}   # 뒤 셋 = board 이전 reference 대상
 LOCK_TEXT = "표준 정의 보호"
 
 # 토큰 이름: (밝은 화면, 어두운 화면)

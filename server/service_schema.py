@@ -26,13 +26,18 @@ CORE = (("core-question", "questions", "질문", "사용자가 세운 질문이�
         # PR B 코어 — 「나」 는 users 행 중 표시 이름·상태·새 탐색 수락·만든 때 열만(web.CORE_ONLY)
         ("core-me", "users", "나", "계정 하나에 하나뿐인 「나」예요. 표시 이름은 운영자 화면에 값이 보이지 않아요."),
         ("core-person", "people", "사람", "사용자가 관계를 구분하려고 적은 별칭 이름표예요."),
-        ("core-reflection", "source_reflections", "출처 요약/반응", "출처를 접한 뒤 사용자가 쓴 자기 생각이에요. 판단 근거로 인용하지 않아요."))
+        ("core-reflection", "source_reflections", "출처 요약/반응", "출처를 접한 뒤 사용자가 쓴 자기 생각이에요. 판단 근거로 인용하지 않아요."),
+        # board 이전(2026-10-20) — 연결 장치가 보낸 내 행동(좋아요 등). 원문·제목·URL 은 PC 에만
+        ("core-activity", "activities", "활동", "연결 장치가 보낸 내 행동(좋아요 등)이에요. 원문은 사용자 PC 에만 있어요."))
 # 코어 열 → 서비스 표시명. 소유자 열(user_id)·운영자 전용 열(문의 admin_note·hint)은 core_schema 가 이미 뺐다
 CORE_FIELDS = {
     "questions": {"id": "ID", "text": "질문 글", "status": "상태", "created": "만든 때", "updated": "고친 때"},
     "records": {"id": "ID", "question_id": "질문", "title": "제목", "body": "본문", "source": "기록 당시 표기", "created": "만든 때",
                 "deleted_at": "지운 때", "notes": "메모", "author_kind": "작성자", "text_process": "가공 방식",
-                "provenance_history": "작성 판정 이력", "source_id": "출처"},
+                "provenance_history": "작성 판정 이력", "source_id": "출처",
+                # board 이전(2026-10-20) — 들어온 경로·원본 날짜·생성 경위(연결 장치 신고)
+                "received_at": "받은 때", "source_created_at": "원본 시각", "source_date": "원본 날짜", "ingest_kind": "들어온 경로",
+                "generation_kind": "생성 경위", "generation_meta": "생성 정보(장치 신고)", "import_batch_id": "이전 배치"},
     "candidates": {"id": "ID", "record_id": "근거 기록", "question_id": "질문", "text": "판단 문장", "quote": "인용",
                    "quote_start": "인용 시작 위치", "quote_end": "인용 끝 위치", "origin": "누가 뽑았나", "decision": "결정 상태",
                    "edited_by_user": "사용자 수정 여부", "created": "만든 때", "updated": "고친 때", "revision": "변경 번호",
@@ -40,13 +45,18 @@ CORE_FIELDS = {
     "tickets": {"id": "ID", "kind": "종류", "text": "문의 글", "via": "경로", "page": "화면", "tool": "도구", "ua_family": "브라우저",
                 "status": "상태", "created": "접수", "updated": "갱신", "closed_at": "종결", "reply": "공개 답변", "reply_at": "답변 시각",
                 "public_updated": "공개 갱신"},
-    "sources": {"id": "ID", "kind": "종류", "name": "이름", "location": "위치", "created": "만든 때"},
+    "sources": {"id": "ID", "kind": "종류", "name": "이름", "location": "위치", "created": "만든 때",
+                "activity_provider": "활동 제공자 종류"},   # board 이전 — 연결 장치 활동의 일반 출처
     "users": {"display_name": "표시 이름", "status": "상태", "nav_accepted_at": "새 탐색 수락", "created": "만든 때"},
-    "people": {"id": "ID", "alias": "별칭", "revision": "변경 번호", "created": "만든 때", "updated": "고친 때"},
+    "activities": {"id": "ID", "source_id": "출처", "action": "행동", "state": "상태", "occurred_on": "행동 날짜",
+                   "observed_on": "처음 수집한 날", "raw_id": "원문 ID", "received_at": "받은 때", "deleted_at": "지운 때"},
+    "people": {"id": "ID", "alias": "별칭", "revision": "변경 번호", "created": "만든 때", "updated": "고친 때",
+               "hmac_namespace": "식별자 키 공간", "identity_hmac": "식별자(HMAC)"},   # board 이전 — 키·원본 대응표는 PC 에만
     "source_reflections": {"id": "ID", "source_id": "출처", "kind": "유형", "body": "본문", "review": "검토 상태", "revision": "변경 번호",
                            "reviewed_revision": "검토한 변경 번호", "reviewed_at": "검토 시각", "created": "만든 때", "updated": "고친 때"},
 }
-SQL_TYPES = {"text": "글", "timestamptz": "시각", "integer": "정수", "boolean": "예/아니오", "jsonb": "구조 자료"}
+SQL_TYPES = {"text": "글", "timestamptz": "시각", "integer": "정수", "boolean": "예/아니오", "jsonb": "구조 자료", "date": "날짜",
+             "bytea": "이진 값"}
 VALUE_TYPES = {"text": "글", "number": "숫자", "boolean": "예/아니오", "date": "날짜", "select": "선택", "text_list": "글 목록",
                "reference": "참조"}
 # 코어 안에서 오브젝트가 아닌 연결 — 표시명·대상 설명. 그래프 선은 긋지 않는다(대상이 8개 안에 없다)
@@ -120,7 +130,8 @@ def _def_objects(doc: dict, plan, origin: str, version: str, lock: dict, descs: 
         if key not in by_key:
             raise ValueError(f"{version} 에 오브젝트 하나가 없어요")
         pub[by_key[key]["id"]] = oid
-    core_t = {"candidate": "core-candidate", "record": "core-record"}
+    core_t = {"candidate": "core-candidate", "record": "core-record", "person": "core-person", "source": "core-source",
+              "activity": "core-activity"}
     out = []
     for oid, key in plan:
         o = by_key[key]

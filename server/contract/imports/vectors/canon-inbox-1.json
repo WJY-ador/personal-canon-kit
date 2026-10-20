@@ -1,0 +1,2023 @@
+{
+ "contract": "canon-inbox/1",
+ "schema_revision": 2,
+ "jcs": "json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False) — 실수 없음, 키 ASCII",
+ "error_shape": "CONTRACT-INVALID, message '<field>: <rule>'",
+ "request_cases": [
+  {
+   "name": "activity_minimal_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "activity_no_people_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": null,
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "activity_missing_observed_on",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "observed_on",
+    "rule": "required"
+   }
+  },
+  {
+   "name": "activity_dated_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": "2026-10-18",
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "activity_retracted_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": "v_e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "retracted",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "self_text_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "self_text_no_title_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "body": "합성 자기 글 본문입니다.\n둘째 줄."
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "self_text_activity_ref_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": "a_Syn7h3tic",
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "self_summary_valid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "unknown",
+     "input_scope": "self_only",
+     "inputs": [
+      {
+       "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+       "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+       "sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+     ]
+    }
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "unknown_field",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [],
+    "note": "x"
+   },
+   "expect": {
+    "field": "note",
+    "rule": "unknown_field"
+   }
+  },
+  {
+   "name": "activity_has_body",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [],
+    "body": "x"
+   },
+   "expect": {
+    "field": "body",
+    "rule": "unknown_field"
+   }
+  },
+  {
+   "name": "activity_has_title",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [],
+    "title": "x"
+   },
+   "expect": {
+    "field": "title",
+    "rule": "unknown_field"
+   }
+  },
+  {
+   "name": "activity_has_url_field",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [],
+    "url": "x"
+   },
+   "expect": {
+    "field": "url",
+    "rule": "unknown_field"
+   }
+  },
+  {
+   "name": "missing_required",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "raw_id",
+    "rule": "required"
+   }
+  },
+  {
+   "name": "bad_contract",
+   "request": {
+    "contract": "canon-inbox/2",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "contract",
+    "rule": "const"
+   }
+  },
+  {
+   "name": "bad_schema_revision",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 1,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "schema_revision",
+    "rule": "const"
+   }
+  },
+  {
+   "name": "schema_revision_bool",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": true,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "schema_revision",
+    "rule": "const"
+   }
+  },
+  {
+   "name": "bad_kind",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "note",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "kind",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "bad_source_instance_id",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "device-1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "source_instance_id",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "original_id_is_url",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "https://example.com/p/1",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "original_id",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "bad_revision",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_1",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "revision",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "previous_same_as_revision",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "previous_revision",
+    "rule": "same_as_revision"
+   }
+  },
+  {
+   "name": "bad_execution",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "cron",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "execution",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "unregistered_transform",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "feed/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "transform_version",
+    "rule": "unregistered"
+   }
+  },
+  {
+   "name": "transform_kind_mismatch",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "transform_version",
+    "rule": "kind_mismatch"
+   }
+  },
+  {
+   "name": "policy_revision_zero",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 0,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "policy_revision",
+    "rule": "positive_int"
+   }
+  },
+  {
+   "name": "bad_action",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "view",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "action",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "action_not_in_transform",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "read",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "action",
+    "rule": "not_in_transform"
+   }
+  },
+  {
+   "name": "bad_state",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "deleted",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "state",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "occurred_on_datetime",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": "2026-10-18T10:00:00+09:00",
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "occurred_on",
+    "rule": "date_required"
+   }
+  },
+  {
+   "name": "occurred_on_invalid",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": "2026-02-30",
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "occurred_on",
+    "rule": "date_invalid"
+   }
+  },
+  {
+   "name": "bad_provider",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "threads",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "provider",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "provider_not_in_transform",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "mail",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "provider",
+    "rule": "not_in_transform"
+   }
+  },
+  {
+   "name": "raw_id_short",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "abababababababababab",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "raw_id",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "people_name_field",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author",
+      "name": "x"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "people[0].name",
+    "rule": "unknown_field"
+   }
+  },
+  {
+   "name": "people_bad_hmac",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "XYZ",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "people[0].hmac",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "people_bad_role",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "friend"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "people[0].role",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "people_duplicate",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     },
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "people[1]",
+    "rule": "duplicate"
+   }
+  },
+  {
+   "name": "people_too_many",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000000",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000001",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000002",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000003",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000004",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000005",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000006",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000007",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000008",
+      "role": "participant"
+     },
+     {
+      "hmac": "0000000000000000000000000000000000000000000000000000000000000009",
+      "role": "participant"
+     },
+     {
+      "hmac": "000000000000000000000000000000000000000000000000000000000000000a",
+      "role": "participant"
+     }
+    ],
+    "axes": []
+   },
+   "expect": {
+    "field": "people",
+    "rule": "list_max_10"
+   }
+  },
+  {
+   "name": "axes_bad_id",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [
+     "axis-1"
+    ]
+   },
+   "expect": {
+    "field": "axes[0]",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "axes_duplicate",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "activity",
+    "execution": "unattended",
+    "transform_version": "board-likes/1",
+    "policy_revision": 1,
+    "action": "like",
+    "state": "active",
+    "occurred_on": null,
+    "observed_on": "2026-10-20",
+    "provider": "sns",
+    "raw_id": "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6",
+    "people": [
+     {
+      "hmac": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "role": "author"
+     }
+    ],
+    "axes": [
+     "i_axis01",
+     "i_axis01"
+    ]
+   },
+   "expect": {
+    "field": "axes",
+    "rule": "duplicate"
+   }
+  },
+  {
+   "name": "body_empty",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "   ",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "empty"
+   }
+  },
+  {
+   "name": "body_too_long",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "too_long"
+   }
+  },
+  {
+   "name": "body_has_url",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 본문 https://example.com/x",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "url_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_www",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 www.example.com 참고",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "url_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_email",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "연락 someone@example.com",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "email_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_path",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "파일 /Users/<user>/x.md",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "path_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_bare_domain",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 참고 example.com/abc 자료",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "url_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_wss",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 wss://example.invalid/x 연결",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "url_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_volumes_path",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "파일 /Volumes/disk/x.md",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "path_not_allowed"
+   }
+  },
+  {
+   "name": "body_has_unc_path",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "공유 \\\\server\\share\\x",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "body",
+    "rule": "path_not_allowed"
+   }
+  },
+  {
+   "name": "title_multiline",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "첫 줄\n둘째 줄",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "title",
+    "rule": "single_line"
+   }
+  },
+  {
+   "name": "title_too_long",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가가",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "title",
+    "rule": "too_long"
+   }
+  },
+  {
+   "name": "both_source_dates",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    },
+    "source_created_at": "2026-10-19T09:00:00+09:00"
+   },
+   "expect": {
+    "field": "source_date",
+    "rule": "exclusive_with_source_created_at"
+   }
+  },
+  {
+   "name": "source_created_at_no_offset",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "activity_ref": null,
+    "generation": {
+     "method": "none"
+    },
+    "source_created_at": "2026-10-19T09:00:00"
+   },
+   "expect": {
+    "field": "source_created_at",
+    "rule": "timestamp_with_offset_required"
+   }
+  },
+  {
+   "name": "self_text_generation_ai",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": null,
+    "generation": {
+     "method": "ai_summary"
+    }
+   },
+   "expect": {
+    "field": "generation.method",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "self_text_bad_activity_ref",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_text",
+    "execution": "attended",
+    "transform_version": "self-text/1",
+    "policy_revision": 1,
+    "title": "합성 메모 제목",
+    "body": "합성 자기 글 본문입니다.\n둘째 줄.",
+    "source_date": "2026-10-19",
+    "activity_ref": "activity-1",
+    "generation": {
+     "method": "none"
+    }
+   },
+   "expect": {
+    "field": "activity_ref",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "summary_missing_generation",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00"
+   },
+   "expect": {
+    "field": "generation",
+    "rule": "required"
+   }
+  },
+  {
+   "name": "summary_bad_scope",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "unknown",
+     "input_scope": "mixed",
+     "inputs": [
+      {
+       "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+       "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+       "sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "field": "generation.input_scope",
+    "rule": "enum"
+   }
+  },
+  {
+   "name": "summary_model_free_text",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "Some Model 4 (2026)",
+     "input_scope": "self_only",
+     "inputs": [
+      {
+       "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+       "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+       "sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "field": "generation.model",
+    "rule": "code"
+   }
+  },
+  {
+   "name": "summary_no_inputs",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "unknown",
+     "input_scope": "self_only",
+     "inputs": []
+    }
+   },
+   "expect": {
+    "field": "generation.inputs",
+    "rule": "list_1_20"
+   }
+  },
+  {
+   "name": "summary_input_bad_sha",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "unknown",
+     "input_scope": "self_only",
+     "inputs": [
+      {
+       "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+       "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+       "sha256": "x"
+      }
+     ]
+    }
+   },
+   "expect": {
+    "field": "generation.inputs[0].sha256",
+    "rule": "format"
+   }
+  },
+  {
+   "name": "summary_activity_ref_not_allowed",
+   "request": {
+    "contract": "canon-inbox/1",
+    "schema_revision": 2,
+    "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "original_id": "o_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f",
+    "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+    "previous_revision": null,
+    "kind": "self_summary",
+    "execution": "unattended",
+    "transform_version": "self-summary/1",
+    "policy_revision": 1,
+    "title": "합성 요약",
+    "body": "합성 요약 본문.",
+    "source_created_at": "2026-10-20T09:00:00+09:00",
+    "generation": {
+     "method": "ai_summary",
+     "tool": "claude-cli",
+     "model": "unknown",
+     "input_scope": "self_only",
+     "inputs": [
+      {
+       "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+       "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+       "sha256": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      }
+     ]
+    },
+    "activity_ref": null
+   },
+   "expect": {
+    "field": "activity_ref",
+    "rule": "unknown_field"
+   }
+  }
+ ],
+ "raw_cases": [
+  {
+   "name": "raw_duplicate_key",
+   "raw": "{\"kind\":\"activity\",\"kind\":\"activity\"}",
+   "expect": {
+    "field": "$",
+    "rule": "duplicate_key"
+   }
+  },
+  {
+   "name": "raw_float",
+   "raw": "{\"contract\": \"canon-inbox/1\", \"schema_revision\": 2, \"source_instance_id\": \"is_a1a1a1a1a1a1a1a1a1a1a1a1\", \"original_id\": \"o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\", \"revision\": \"v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\", \"previous_revision\": null, \"kind\": \"activity\", \"execution\": \"unattended\", \"transform_version\": \"board-likes/1\", \"policy_revision\": 1.0, \"action\": \"like\", \"state\": \"active\", \"occurred_on\": null, \"observed_on\": \"2026-10-20\", \"provider\": \"sns\", \"raw_id\": \"f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6\", \"people\": [{\"hmac\": \"1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\", \"role\": \"author\"}], \"axes\": []}",
+   "expect": {
+    "field": "$",
+    "rule": "float_not_allowed"
+   }
+  },
+  {
+   "name": "raw_array",
+   "raw": "[]",
+   "expect": {
+    "field": "$",
+    "rule": "object_required"
+   }
+  },
+  {
+   "name": "raw_not_json",
+   "raw": "{kind:",
+   "expect": {
+    "field": "$",
+    "rule": "json"
+   }
+  },
+  {
+   "name": "raw_nan",
+   "raw": "{\"x\": NaN}",
+   "expect": {
+    "field": "$",
+    "rule": "nan_not_allowed"
+   }
+  }
+ ],
+ "idempotency_keys": [
+  {
+   "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+   "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+   "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+   "key": "ci1_161f027dfcde0f58f1e88b488c7f111adfeec7b421037f82eca09e089ffb81a7"
+  },
+  {
+   "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+   "original_id": "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+   "revision": "v_e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5",
+   "key": "ci1_813dab451cc810c2ecc47d3236cb174317bcf9d47035b5a92b9bbb0bc3e54bb6"
+  },
+  {
+   "source_instance_id": "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+   "original_id": "o_c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+   "revision": "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+   "key": "ci1_64f810a0186d9ab9f1a57183d1657ba1bffc8968b75cce728516dd818813fc38"
+  }
+ ],
+ "jcs_cases": [
+  {
+   "value": {
+    "b": 1,
+    "a": [
+     true,
+     null,
+     "가"
+    ]
+   },
+   "jcs_utf8": "{\"a\":[true,null,\"가\"],\"b\":1}",
+   "sha256": "2fb13e5ec8de21fc0dd45bf1256b30bdc90c326e2c720121734466bdecff41e0"
+  },
+  {
+   "value": [
+    "canon-inbox/1",
+    2,
+    "is_a1a1a1a1a1a1a1a1a1a1a1a1",
+    "o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4"
+   ],
+   "jcs_utf8": "[\"canon-inbox/1\",2,\"is_a1a1a1a1a1a1a1a1a1a1a1a1\",\"o_b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"v_d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4\"]",
+   "sha256": "161f027dfcde0f58f1e88b488c7f111adfeec7b421037f82eca09e089ffb81a7"
+  },
+  {
+   "value": {
+    "t": "줄\n바꿈\t탭\"따옴표\\"
+   },
+   "jcs_utf8": "{\"t\":\"줄\\n바꿈\\t탭\\\"따옴표\\\\\"}",
+   "sha256": "39ac36ff869f30444b28aa260ade187fda61bddb01026e0c2529668ffa438bcc"
+  }
+ ]
+}

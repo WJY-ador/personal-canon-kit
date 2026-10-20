@@ -93,6 +93,53 @@ jobs:
       - name: "④ 서버 시험 (test_tools.py)"
         run: python server/test_tools.py
 
+      # board 이전(2026-10-20) — 웹 화면 경로·이전 CLI 시험. 둘 다 시작 가드가 DB 이름 허용 목록(crm_test*)을 보므로
+      # 같은 Postgres 서비스에 전용 DB 를 만들고 그 단계에만 DATABASE_URL 을 덮어쓴다(서버 시험 ④ 는 job env 그대로)
+      - name: "④-0 board 이전 시험 DB 만들기"
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:crm@localhost:5432/crm", autocommit=True) as c:
+              for name in ("crm_test_web", "crm_test_bi_mig"):
+                  c.execute(f"CREATE DATABASE {name}")
+          PY
+
+      - name: "④-a 웹 가져오기 화면 시험 (test_web_import.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_web
+        run: python server/test_web_import.py
+
+      # 이전 CLI 시험 가드는 DB 이름을 crm_test_bi_mig 하나로 고정한다(test_migrate_cli.ALLOWED_DBS)
+      - name: "④-c board 이전 CLI 시험 (test_migrate_cli.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_bi_mig
+          # reset_db 가 dropdb·createdb 를 부른다 — CI Postgres 는 TCP 만(유닉스 소켓 없음)
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: crm
+        run: python server/test_migrate_cli.py
+
+      # board 이전(2026-10-20) — 로컬 에이전트(agent/, 표준 라이브러리만). 서버 DB 를 쓰지 않는다
+      - name: "④-b 로컬 에이전트 시험 (agent/tests)"
+        run: python -m unittest discover -s agent/tests -t . -v
+
       - name: "⑤ crm.py check (참고용)"
         continue-on-error: true
         run: python crm.py check
+
+  # 로컬 에이전트는 키트와 같은 Python ≥3.9 약속(manifest requires) — 서버 시험(test, 3.13)과 별도 job.
+  # 3.9 는 지원 종료라 ubuntu-latest 매니페스트에서 빠질 수 있어 ubuntu-22.04 에 고정. DB·서비스 없음
+  agent-py39:
+    name: agent-py39
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: "로컬 에이전트 시험 (Python 3.9)"
+        run: python --version && python -m unittest discover -s agent/tests -t . -v
