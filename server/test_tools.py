@@ -48,6 +48,8 @@
    · 잠금 표(거절·허용, propose·apply, 플래그 off 에서도, select 선택지) · 일일 한도·template_slot 백필 제외 · init_schema 2회 멱등
 21) Q3 축소(PR #20 6단계): 출처(SOURCES off 기록만·on 찾거나 만들기·사용자별·FK·옛 기록 미확인·본인만·MCP 인자) · 분류 역할(이관·멱등·시드·
    늦은 축·record_attach 역할 경유·CLASSIFY-OFF) · 확정 재검사 4사유·review(웹=MCP)·해제 · external 거절·정정 허용 · init_schema 2회 멱등
+23) PR A 운영 Setup: 왼쪽 메뉴·Quick Find(GET /admin/find, 서비스 정의만)·Setup Home 3구역·Object Manager(코어 5 + std@1 3, 상세·템플릿 구역)
+   — 새 GET 404 · 노출·key 0 · DB 조회 0 · 결정성 · 정의 일치 · std@1·사용자 DMO 바이트 · 옛 URL·POST · cascade 회귀
 
 실행: server/.venv/bin/python server/test_tools.py   (어느 폴더에서든)
 시험 사용자 tester@example.com · other@example.com 은 시작·끝에 지운다(cascade).
@@ -2873,7 +2875,8 @@ async def test_beta2_bootstrap():
 # 표식 시험이 도는 관리자 응답 — 새 /admin 페이지·리포트는 여기에 더한다(P4). (method, path, form/json)
 ADB = {"admin": "adb-admin@example.com", "user": "adb-user@example.com"}
 ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/api/state", "/api/feedback", "/admin/schema", "/admin/reports", "/admin/tickets",
-              "/admin/users")
+              "/admin/users", "/admin/find", "/admin/find?q=%EA%B8%B0%EC%A4%80", "/admin/schema/objects/std-principle",
+              "/admin/schema/templates/author-1", "/admin/schema/templates/author-1/objects/tpl-homework")   # PR A 새 GET(Quick Find·Object Manager 상세)
 # P4: 리포트는 프리셋 전부 + 데이터셋별 차원 하나씩, 스키마는 사용자 트리(?u=)까지 — 동적 URL 이라 admin_report_urls() 가 만든다
 ADB_ALLOWED_DB = {"CrmError"}   # /admin·관리자 문의 핸들러 구간에서 허용하는 db.<이름> — 예외만, 조회 함수 없음(처리방침 동의 표시는 뺐다)
 ADB_BODY_COLS = re.compile(r"\b(title|body|data|doc|draft_doc|history|provenance_history|prev_state|quote|value)\b", re.I)
@@ -3660,24 +3663,29 @@ async def test_admin_screens():
         cnt = admin_db.structure_counts(admin_db.report_rows("admin", "structure"))
         assert cnt[U["g"]] == (7, sum(len(o["fields"]) for o in web.template_schema()["objects"]) + 2), cnt[U["g"]]
         assert sum(r_["values"]["users"] for r_ in dist["rows"]) == len(cnt), "구간 = 사용자 전원(0 구간 포함)"
-        # ── 스키마: 표준 구조 · 사용자 목록 ──
+        # ── Object Manager(PR A): 서비스 표준(코어 5 + std@1 3) · 별도 템플릿 구역 · 사용자 목록은 Users 로 옮겼다 ──
         r = await get("/admin/schema")
         t = clean(r, "/admin/schema")
-        assert "tpl:axes" in t and "tpl:principles" in t and "author@1" in t, "템플릿 구조"
-        for w in ("questions", "records", "candidates", "record_id", "provenance_history", "M-D", "attach_to"):
-            assert w in t, ("코어 표준 오브젝트", w)
+        assert "이전 원작자 템플릿 · author@1" in t and 'href="/admin/schema/templates/author-1"' in t, "템플릿 구역"
+        for oid in ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "std-axis", "std-decision", "std-principle"):
+            assert f'href="/admin/schema/objects/{oid}"' in t, ("서비스 오브젝트", oid)
+        for w in ("M-D", "Lookup", "근거 기록", "변경 이력", "붙는 곳 · 관심 축"):
+            assert w in t, ("관계", w)
         # 문의(tickets)도 코어 표준 오브젝트 — 필드는 schema.sql 그대로, 이력은 부모 쪽 M-D 관계로만, 소유자·운영자 전용 열은 없다
         std = [x for x in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8")) if x["table"] == "tickets"]
         assert len(std) == 1 and std[0]["label"] == "문의", std
         names = {f["name"] for f in std[0]["fields"]}
         assert {"kind", "status", "via", "page", "text", "reply", "reply_at", "public_updated", "closed_at"} <= names, names
         assert not names & {"user_id", "admin_note", "hint"}, ("소유자·운영자 전용 열은 표준 구조에 없다", names)
-        assert std[0]["links"] == [{"field": "ticket_history.ticket_id", "target": "tickets", "kind": "M-D"}], std[0]["links"]
-        assert [x["table"] for x in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))] == ["questions", "records", "candidates", "tickets"]
-        assert ">tickets</span> <span class=\"lbl\">「문의」</span>" in t and "ticket_history.ticket_id" in t and "→ tickets(문의)" in t, "문의 오브젝트·이력 관계"
-        std_html = t[t.index("코어 표준 오브젝트</h3>"):]
-        assert "admin_note" not in std_html and ">hint<" not in std_html, "표준 구조 화면에도 운영자 전용 열이 없다"
+        assert std[0]["links"] == [{"field": "ticket_history.ticket_id", "target": "tickets", "kind": "M-D", "required": True}], std[0]["links"]
+        assert [x["table"] for x in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))] == ["questions", "records", "candidates", "tickets", "sources"]
+        r = await get("/admin/schema/objects/core-ticket")
+        d = clean(r, "/admin/schema/objects/core-ticket")
+        assert "<h1>문의</h1>" in d and "문의 변경 이력(오브젝트 아님)" in d and "공개 답변" in d, "문의 오브젝트·이력 관계"
+        assert "admin_note" not in d and "내부 메모" not in d and "개인정보 의심" not in d, "표준 구조 화면에도 운영자 전용 열이 없다"
         assert "G-RENAMED" not in t and "G-FLD" not in t and "admin_audit" not in t and "usage_daily" not in t, "목록엔 사용자 이름·DB 내부 테이블 없음"
+        assert "/admin/users/" not in t, "사용자 목록 표는 Users 로"
+        t = clean(await get("/admin/users"), "/admin/users")
         for k in ("g", "n", "w", "o"):
             assert f'href="/admin/users/{site._opaque(U[k])}"' in t, k
         # ── 옛 사용자 트리(/admin/schema?u=) → 새 상세로 302. 상세: 동의자만 현재 이름(PR #20 Q5 — 계약 출력) ──
@@ -3818,6 +3826,7 @@ async def run():
         await test_q3()
         await test_q5_admin()
         await test_q45_user()
+        await test_prA_setup()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3965,7 +3974,8 @@ async def test_app_account_menu():
 # /admin 의 GET 화면 전부(개요·Setup·옛 재인증 링크·문의·스키마·리포트).
 INT = {"a": "int-admin@example.com", "b": "int-admin2@example.com", "o": "int-owner@example.com", "x": "int-other@example.com",
        "n": "int-names@example.com"}
-INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports", "/admin/users")
+INT_ADMIN_GETS = ("/admin", "/admin/setup", "/admin/reauth", "/admin/tickets", "/admin/schema", "/admin/reports", "/admin/users",
+                  "/admin/find", "/admin/schema/objects/core-record", "/admin/schema/templates/author-1", "/admin/schema/templates/author-1/objects/tpl-axis")
 INT_TICKET_OPS = (("status", {"status": "doing"}), ("reply", {"reply": "공개 답변"}), ("note", {"admin_note": "내부 메모 INTNOTE"}),
                   ("reclassify", {"kind": "request", "reason": ""}))
 
@@ -5762,6 +5772,369 @@ async def test_q45_user():
     print("OK — Q4·Q5 사용자 화면(app.html 정적·structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
           "·구조 그래프 structure_svg = render(structure)·script·on* 0·토큰 data-theme"
           "·출처 미확인·재검토·관리자 /app 대화창) 통과")
+
+
+# ── 23) PR A 운영 Setup — 왼쪽 메뉴 · Quick Find · Setup Home · Object Manager(서비스 표준 조회) ─────────
+PRA = {k: f"pra{k}@example.com" for k in ("a", "u", "m")}   # a 관리자 · u 일반 사용자 · m 금지 값 표식 사용자
+TEST_EMAILS += tuple(PRA.values())
+PRA_SVG_SHA = "c005852b5f2b51a12557ce4f2205204f15d125e4382836cd9b4bada625b0ad2b"   # 사용자 DMO SVG(contract 예제 × 수신자, PR A 전 바이트)
+PRA_STD_SHA = "c08007a2db55f219d7f5b16b5aa518e2b2081f95e1a3adfee52240d1380d00bf"   # templates/std@1.json 동결
+PRA_OBJECTS = ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "std-axis", "std-decision", "std-principle")
+PRA_TPL = ("tpl-axis", "tpl-decision", "tpl-principle", "tpl-homework", "tpl-publication", "tpl-method")
+
+
+def _pra_visible(t, skip=()):
+    """노출 검사 대상 — 보이는 글자(태그 제거) + href·title·aria-label·id 속성 값(skip = 운영 메뉴 경로처럼 원래 있는 값). <style> 은 뺀다."""
+    import html
+    t = re.sub(r"<style>.*?</style>", "", t, flags=re.S)
+    attrs = " ".join(v for v in re.findall(r'\b(?:href|title|aria-label|id)="([^"]*)"', t) if v not in skip)
+    return html.unescape(re.sub(r"<[^>]+>", " ", t)) + " " + html.unescape(attrs)
+
+
+async def test_prA_setup():
+    """PR A: 접근 통제(새 GET 전부 무세션·일반·DEV 404, 모르는 ID·판·조합 404) · 노출 0(본문·이름표·출처 이름·위치·key·선택지 값 표식)
+    · 동의 경계 · DB 경계(서비스 정의·Quick Find 사용자 DB 0) · 옛 URL · Quick Find 경계값 · 스크립트 0 · 보안 헤더 · Object Manager 정확히 8
+    · 결정성(반복·입력 순서·재시작) · 정의 일치 · std@1 동결·사용자 DMO 바이트 · 옛 _admin_page 호환 · user_delete cascade 회귀."""
+    import hashlib
+    import html as _html
+    import subprocess
+    import unicodedata
+    from urllib.parse import quote, urlencode
+    import admin_db
+    import service_schema
+    import structure_svg
+    from psycopg.types.json import Jsonb
+    site = main.site
+    U = {k: db.user_by_subject(f"pra_{k}_sub", e)["id"] for k, e in PRA.items()}
+    A, M = U["a"], U["m"]
+    _set_role(A, "admin")
+    mk = "PRAMK" + secrets.token_hex(4)   # 모든 금지 값에 들어간다 — 어떤 새 화면에도 없어야 한다
+    with db.tx() as c:
+        c.execute("INSERT INTO questions (id,user_id,text) VALUES (%s,%s,%s)", (f"q_{mk}", M, mk + "-Q"))
+        c.execute("INSERT INTO sources (user_id,id,kind,name,location) VALUES (%s,%s,'file',%s,%s)", (M, f"s_{mk}", mk + "-SRCNAME", mk + "-SRCLOC"))
+        c.execute("INSERT INTO records (id,user_id,title,body,source_id) VALUES (%s,%s,%s,%s,%s)", (f"r_{mk}", M, mk + "-RT", mk + "-RB", f"s_{mk}"))
+        c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES (%s,%s,%s,%s,'collection',1)",
+                  (M, f"od_{mk}", f"key{mk}", mk + "-PEOPLE"))
+        c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,options) VALUES (%s,%s,%s,%s,'select',%s)",
+                  (M, f"od_{mk}", f"fkey{mk}", mk + "-FL", Jsonb([{"value": f"val{mk}", "label": mk + "-OPT"}])))
+        c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,body,data,revision) VALUES (%s,%s,%s,1,%s,%s,%s,1)",
+                  (M, f"i_{mk}", f"od_{mk}", mk + "-IT", mk + "-IB", Jsonb({f"fkey{mk}": f"val{mk}"})))
+    tk = "tk_pra" + secrets.token_hex(3)   # 문의 id 는 목록 링크에 나온다(허용) — 표식을 넣지 않는다
+    with db.tx() as c:
+        c.execute("INSERT INTO tickets (id,user_id,kind,text,via) VALUES (%s,%s,'privacy',%s,'web')", (tk, M, mk + "-TK"))
+    sd = web.service_def()
+    new_gets = (["/admin/find", "/admin/find?q=" + quote("기준"), "/admin/find?q=" + mk, "/admin/schema", "/admin/schema/templates/author-1"]
+                + [f"/admin/schema/objects/{o}" for o in PRA_OBJECTS] + [f"/admin/schema/templates/author-1/objects/{o}" for o in PRA_TPL])
+    bad_ids = ("/admin/schema/objects/axes", "/admin/schema/objects/questions", "/admin/schema/objects/tpl-homework", "/admin/schema/objects/record",
+               "/admin/schema/objects/core-%3Cscript%3E", "/admin/schema/templates/std@1", "/admin/schema/templates/author@1",
+               "/admin/schema/templates/author", "/admin/schema/templates/author-1/objects/std-axis", "/admin/schema/templates/nope/objects/tpl-axis",
+               "/admin/schema/templates/author-1/objects/open_questions", "/admin/schema/objects/" + mk)
+    # 서비스 정의에서도 보이면 안 되는 것 — 운영자 전용 열·소유자 열·선택지 값·정의 파일 안 id·내부 파일·테이블 이름.
+    # (코어 열·std@1·author@1 key 는 「API 이름」으로 보인다 — 서비스가 정한 제품 문자열. key 0 규칙은 사용자 구조에만)
+    keys = {"user_id", "admin_note", "hint", "item_links", "schema.sql", "templates/"}
+    for doc in (json.loads(web.STD_PATH.read_text(encoding="utf-8")), web.template_schema()):
+        keys |= {op["value"] for o in doc["objects"] for f in o["fields"] for op in f["options"]}
+        keys |= {o["id"] for o in doc["objects"]}
+    real = (site.dev, site.dev_user)
+    site.dev, site.dev_user = False, ""
+    good = site.session_value(A)
+
+    async def req(method, path, cookie=good, **kw):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            if cookie:
+                h.cookies.set("crm_session", cookie)
+            return await h.request(method, path, **kw)
+
+    def clean(r, path, status=200):
+        """상태 · CSP·no-store · 스크립트·이벤트 속성·javascript: 0 · 금지 값 표식 0."""
+        out = r.text + json.dumps(dict(r.headers), ensure_ascii=False)
+        assert r.status_code == status, (path, r.status_code, r.text[-300:])
+        assert mk not in out, (path, "금지 값 노출")
+        assert "script-src 'self'" in r.headers["content-security-policy"] and "unsafe-inline" not in r.headers["content-security-policy"], path
+        assert r.headers["cache-control"] == "no-store", path
+        t = r.text
+        assert "<script" not in t.lower() and not re.search(r"\son[a-z]+\s*=", t, re.I) and "javascript:" not in t.lower(), (path, "스크립트 0")
+        return t
+
+    def no_keys(t, path):
+        vis = _pra_visible(t, {h for _, h, _, _, _ in web.ADMIN_MENU})
+        hit = sorted(k for k in keys if re.search(rf"(?<![\w-]){re.escape(k)}(?![\w-])", vis))
+        assert not hit, (path, "운영자 전용 열·선택지 값·내부 이름 노출", hit)
+    try:
+        # ── 접근 통제: 무세션·일반 사용자·DEV 404(본문 없음) ──
+        for cookie in (None, site.session_value(U["u"]), site.session_value(M)):
+            for path in new_gets + list(bad_ids):
+                r = await req("GET", path, cookie)
+                assert r.status_code == 404 and "<" not in r.text and mk not in r.text, (path, r.status_code)
+        site.dev, site.dev_user = True, PRA["a"]
+        try:
+            for path in new_gets:
+                assert (await req("GET", path)).status_code == 404, ("DEV", path)
+        finally:
+            site.dev, site.dev_user = False, ""
+        # ── 관리자: 새 GET 전부 200 · 노출 0 · key 0 · 편집 form 없음(Quick Find GET form 하나뿐) ──
+        for path in new_gets:
+            r = await req("GET", path)
+            t = clean(r, path)
+            no_keys(t, path)
+            forms = re.findall(r"<form\b[^>]*>", t)
+            assert forms == ['<form class="qf" method="get" action="/admin/find" role="search">'], (path, forms)
+            assert "<button" not in t.replace('<button type="submit">찾기</button>', ""), (path, "편집·설치 버튼 없음")
+            assert all(f'href="{h}"' in t for _, h, _, _, _ in web.ADMIN_MENU) and 'href="/app"' in t, (path, "왼쪽 메뉴")
+            assert re.search(r'<input id="qf" type="search" name="q" maxlength="100"[^>]*>', t) and " value=" not in re.search(r"<input id=\"qf\"[^>]*>", t).group(0), \
+                (path, "검색어를 입력창에 되비추지 않는다")
+        # 모르는 ID·판·조합 → 404(관리자에게도) · 입력 되비춤 없음 · 헤더 유지 · 쿼리 키 400
+        for path in bad_ids:
+            r = await req("GET", path)
+            assert r.status_code == 404, (path, r.status_code)
+            if "<html" in r.text:
+                clean(r, path, 404)
+                assert "NOT-FOUND" in r.text and path.rsplit("/", 1)[1] not in r.text.replace("/admin/schema", ""), path
+        for path in ("/admin/schema/objects/std-axis?x=1", "/admin/schema/templates/author-1?u=1", "/admin/schema/templates/author-1/objects/tpl-axis?x=",
+                     "/admin/find?q=a&q=b", "/admin/find?x=1", "/admin/find?q=a&zz=1"):
+            r = await req("GET", path)
+            clean(r, path, 400)
+            assert "ARG-INVALID" in r.text, path
+        # ── 메뉴 · breadcrumb · 좁은 화면 ──
+        labels = [m[2] for m in web.ADMIN_MENU]
+        assert labels == ["Setup Home", "Object Manager", "Users", "Reports", "Support", "Administration"], labels
+        for key, href, label, _, _ in web.ADMIN_MENU:
+            t = clean(await req("GET", href), href)
+            nav = t[t.index('<nav class="side"'):t.index("</nav>", t.index('<nav class="side"'))]
+            assert re.findall(r">([^<]+)</a></li>", nav) == labels, (href, "메뉴 순서")
+            assert re.findall(r"<a [^>]*aria-current", t) == [f'<a href="{href}" aria-current'], (href, "현재 메뉴 하나")
+        t = clean(await req("GET", "/admin/schema/templates/author-1/objects/tpl-homework"), "tpl-homework")
+        assert ('<nav class="crumbs" aria-label="위치"><a href="/admin">Setup Home</a> › <a href="/admin/schema">Object Manager</a> › '
+                '<a href="/admin/schema/templates/author-1">이전 원작자 템플릿 · author@1</a> › <span aria-current="page">숙제</span></nav>') in t, t[:3000]
+        assert '<a href="/admin/schema" aria-current=page>' in t, "상세는 상위 메뉴 활성"
+        assert "@media (max-width:760px){.shell{grid-template-columns:1fr" in web._ADMIN_CSS and "prefers-color-scheme" not in web._ADMIN_CSS
+        # 옛 _admin_page 호출(위치 인자 4개) 그대로 동작
+        r = web._admin_page("옛 호출", "<p>본문</p>", 200, "users")
+        t = r.body.decode()
+        assert r.status_code == 200 and '<a href="/admin/users" aria-current=page>' in t and '<span aria-current="page">Users</span>' in t
+        assert r.headers["cache-control"] == "no-store" and "script-src 'self'" in r.headers["content-security-policy"]
+        # ── Setup Home · Support · Users · Administration 재배치 ──
+        t = clean(await req("GET", "/admin"), "/admin")
+        assert [x for x in re.findall(r"<h2>([^<]+)", t)] == ["개요", "확인할 오류", "문의"], re.findall(r"<h2>([^<]+)", t)
+        assert "코어 + std@1" in t and "표준 정의 조회 전용" in t and "처리 상태별 건수는 이 화면에서 확인할 수 없어요" in t
+        assert "배포" not in t, "배포 상태 표시 없음"
+        t = clean(await req("GET", "/admin/tickets?status=all&kind=privacy&sort=new&cols=via,closed"), "/admin/tickets")
+        assert f"운영자 확인 후 처리하며, {admin_db.PRIVACY_DUE_DAYS}일 안에 처리 결과를 안내합니다." in t and PRA["m"] in t
+        assert "삭제" not in t, "삭제 실행 버튼·안내 없음"
+        r = await req("GET", f"/admin/tickets/{tk}")
+        t = r.text
+        assert r.status_code == 200 and r.headers["cache-control"] == "no-store" and mk + "-TK" in t and '<span aria-current="page">문의 상세</span>' in t, "문의 레코드 = 허용 응답(원문) · breadcrumb"
+        t = clean(await req("GET", "/admin/users"), "/admin/users")
+        assert '<th class="num">필드</th>' in t and f'href="/admin/users/{site._opaque(M)}"' in t, "옛 스키마 사용자 표 → Users"
+        t = clean(await req("GET", "/admin/setup"), "/admin/setup")
+        assert "<h1>Administration</h1>" in t and 'action="/admin/role"' in t and 'action="/admin/block"' in t
+        # ── 옛 URL · POST 경로 ──
+        r = await req("GET", "/admin/reauth")
+        assert r.status_code == 302 and r.headers["location"] == "/admin"
+        r = await req("GET", f"/admin/schema?u={site._opaque(M)}")
+        assert r.status_code == 302 and r.headers["location"] == f"/admin/users/{site._opaque(M)}" and mk not in r.text
+        for path, code in ((f"/admin/schema?u={'0' * 12}", 404), ("/admin/schema?u=x&u=y", 400), ("/admin/schema?x=1", 400)):
+            assert (await req("GET", path)).status_code == code, path
+        for path in ("/admin/reports?ds=usage&g1=day", "/admin/tickets?status=all&kind=bug&sort=new&cols=via,closed"):
+            clean(await req("GET", path), path)
+        for path, form in (("/admin/role", {"uid": U["u"], "role": "admin"}), ("/admin/block", {"uid": U["u"]}),
+                           (f"/admin/tickets/{tk}/status", {"status": "ack"})):
+            r = await req("POST", path, data=form, headers={"origin": "https://evil.example"})
+            assert r.status_code == 403 and "ORIGIN" in r.text, (path, r.status_code)
+            assert (await req("POST", path, site.session_value(U["u"]), data=form, headers={"origin": PUBLIC})).status_code == 404, path
+        assert _urow(U["u"])["role"] == "user" and not _urow(U["u"])["blocked_at"]
+        # ── Object Manager: 정확히 코어 5 + std@1 3, 템플릿·PR B·사용자 정의 혼입 없음 ──
+        t = clean(await req("GET", "/admin/schema"), "/admin/schema")
+        svg = t[t.index("<svg"):t.index("</svg>") + 6]
+        assert [o["id"] for o in sd["objects"]] == list(PRA_OBJECTS) and [o["name"] for o in sd["objects"]] == ["질문", "기록", "후보", "문의", "출처", "축", "결정", "기준"]
+        assert sorted(set(re.findall(r'href="/admin/schema/objects/([\w-]+)"', t))) == sorted(PRA_OBJECTS)
+        assert svg.count('r="42"') == 8 and svg.count("stroke-dasharray") == 3, "노드 8 · 정의상 잠금 = std@1 3"
+        assert re.findall(r'<a href="(/admin/schema/objects/[\w-]+)" aria-label', svg) == [f"/admin/schema/objects/{o}" for o in PRA_OBJECTS], "노드 링크 = 상세"
+        assert "tpl-" not in t and all(w not in _pra_visible(t) for w in ("숙제", "발행", "접근 방식", "std@2", "사람", "요약", "반응")), "템플릿·PR B 혼입 없음"
+        assert "이전 원작자 템플릿 · author@1" in t and 'href="/admin/schema/templates/author-1"' in t and "현재 표준" not in t.replace("현재 표준이 아니에요", "")
+        assert "서비스 정의이며, 개별 계정에 설치된 구조와 다를 수 있습니다." in t and 'href="/admin/users"' in t
+        assert f'href="/admin/users/' not in t, "Object Manager 엔 사용자 목록이 없다"
+        # 관계 = 정의에서 확인된 것만(schema.sql FK · std@1 참조 필드). 그래프 선 8 · 그리지 않는 연결 2(분류 연결 · 문의 이력)
+        names = service_schema.names_of(sd["objects"])
+        drawn = [(names[r["from"]], r["name"], names[r["to"]]) for o in sd["objects"] for r in o["relations"] if r["graph"]]
+        assert drawn == [("기록", "출처", "출처"), ("기록", "질문", "질문"), ("후보", "근거 기록", "기록"), ("후보", "질문", "질문"), ("결정", "판단", "후보"),
+                         ("기준", "근거 판단", "후보"), ("기준", "근거 결정", "결정"), ("기준", "관심 축", "축")], drawn
+        assert svg.count("<line ") == 2 * len(drawn), "관계마다 선(+투명 넓은 선) 하나"
+        assert [(r["name"], r["to_text"] or r["from_text"]) for o in sd["objects"] for r in o["relations"] if not r["graph"]] == [
+            ("붙는 곳 · 관심 축", "항목 — 대상 오브젝트 모름(정의 미확인) · 분류 대상은 사용자별 역할로 정함"), ("변경 이력", "문의 변경 이력(오브젝트 아님)")]
+        # 코어 표시명 = 기존 정본(web.CORE_LABEL · app.html LABELS). 출처는 두 정본에 없다(보고)
+        app = (HERE / "app.html").read_text(encoding="utf-8")
+        assert [o["name"] for o in sd["objects"][:4]] == [web.CORE_LABEL[t_] for _, t_, _, _ in service_schema.CORE[:4]]
+        assert all(f'{k}: "{v}"' in app for k, v in (("question", "질문"), ("record", "기록"), ("candidate", "후보"))), "app.html LABELS"
+        # API 이름 = 코어 열·테이블 · std@1 key(Salesforce API Name 꼴) — 표시명과 함께
+        assert [o["api"] for o in sd["objects"]] == ["questions", "records", "candidates", "tickets", "sources", "axes", "decision_events", "principles"]
+        assert '<td class="api">records</td>' in t and '<td class="api">decision_events</td>' in t and '<th>API 이름</th>' in t
+        assert t.count('<div class="tbl fit">') == 2 and '<div class="tbl">' not in t, "Object Manager 표는 칸 줄바꿈(가로 넘침 0)"
+        for p_ in new_gets + [h for _, h, _, _, _ in web.ADMIN_MENU]:   # 모든 /admin 표는 가로 스크롤 래퍼(.tbl overflow-x:auto) 안 — 문서 넘침 0
+            t_ = (await req("GET", p_)).text
+            assert t_.count("<table") == len(re.findall(r'<div class="tbl(?: fit)?"><table>', t_)), (p_, "래퍼 밖 표")
+        assert ".tbl{overflow-x:auto}" in web._ADMIN_CSS
+        rk = {(names[r["from"]], r["name"]): (r["kind"], r["required"], r["cardinality"]) for o in sd["objects"] for r in o["relations"] if r["graph"]}
+        assert rk[("후보", "근거 기록")] == ("M-D", True, "N:1") and rk[("후보", "질문")] == ("Lookup", False, "N:1") and rk[("기록", "출처")] == ("Lookup", False, "N:1")
+        assert rk[("기준", "관심 축")] == (None, False, "N:N"), "std@1 관계 종류는 정의에 없다 → 모름"
+        assert all(o["lock"]["state"] is None for o in sd["objects"][:5]) and all(o["lock"]["state"] is True for o in sd["objects"][5:])
+        assert all(o["lock"]["state"] is False for o in sd["templates"]["author-1"]["objects"])
+        # 필드 = 정의 전부(조용히 빼지 않음). 코어 = schema.sql 열(소유자·운영자 전용 열 제외) · std@1 = 정본 필드
+        core = {t_["table"]: t_ for t_ in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))}
+        std = {o["key"]: o for o in json.loads(web.STD_PATH.read_text(encoding="utf-8"))["objects"]}
+        want = [len(core[tb]["fields"]) for _, tb, _, _ in service_schema.CORE] + [len(std[k]["fields"]) for _, k, _ in service_schema.STD]
+        assert [len(o["fields"]) for o in sd["objects"]] == want, want
+        assert sd["objects"][3]["fields"][-1]["name"] == "공개 갱신" and "내부 메모" not in json.dumps(sd, ensure_ascii=False)
+        assert [f["choices"] for f in sd["objects"][3]["fields"] if f["choices"] is not None] == [4, 2, 5], "문의 열거 CHECK 개수(종류·경로·상태)"
+        with pytest_raises(ValueError):
+            service_schema.build([{**core["questions"], "fields": core["questions"]["fields"] + [{"name": "zz_new", "type": "text", "required": False,
+                                                                                                  "choices": None}]}] + list(core.values())[1:],
+                                 json.loads(web.STD_PATH.read_text(encoding="utf-8")), web.template_schema())
+        # ── 정의 일치: 목록·그래프·상세·검색의 표시명·링크가 같다 ──
+        idx = web.find_index()
+        for o in sd["objects"]:
+            href = f"/admin/schema/objects/{o['id']}"
+            assert f'<a href="{href}">{o["name"]}</a>' in t, (o["id"], "목록")
+            assert re.search(rf'<a href="{href}" aria-label="{re.escape(o["name"])} · ', svg), (o["id"], "그래프")
+            d = clean(await req("GET", href), href)
+            assert f"<h1>{o['name']}</h1>" in d and f'<span aria-current="page">{o["name"]}</span>' in d
+            assert d.count('<tr id="f') == len(o["fields"]) and d.count('<tr id="r') == len(o["relations"]), o["id"]
+            hits = [e for e in service_schema.find(o["name"], idx)[1] if e["kind"] == "object"]
+            assert {"title": o["name"], "href": href} in [{"title": e["title"], "href": e["href"]} for e in hits], (o["id"], "검색")
+        d = clean(await req("GET", "/admin/schema/objects/core-question"), "core-question")
+        assert "들어오는 관계 2" in d and "모름(정의 미확인)" in d, "질문 = 기록·후보가 가리킨다 · 코어 잠금 모름"
+        d = clean(await req("GET", "/admin/schema/objects/std-principle"), "std-principle")
+        assert structure_svg.LOCK_TEXT in d and "조회 전용과 다른 뜻" in d and '<td class="api">evidence_claims</td>' in d
+        d = clean(await req("GET", "/admin/schema/objects/core-candidate"), "core-candidate")
+        assert '<td>근거 기록</td><td class="api">record_id</td>' in d, "필드 표시명 · API 이름"
+        d = clean(await req("GET", "/admin/schema/templates/author-1/objects/tpl-principle"), "tpl-principle")
+        assert '<td class="api">register</td>' in d and "customer" not in d and "고객 업무" not in d, "템플릿 API 이름 · 선택지 값·이름 0(개수만)"
+        # ── 결정성: 반복 · 입력 순서 · 재시작 ──
+        om = web.render_object_manager()
+        assert om == web.render_object_manager()
+        sh = lambda d_: {**d_, "objects": list(reversed(d_["objects"]))}   # noqa: E731
+        again = service_schema.build(list(reversed(list(core.values()))), sh(json.loads(web.STD_PATH.read_text(encoding="utf-8"))), sh(web.template_schema()))
+        assert again == sd, "입력 순서를 바꿔도 같은 자료"
+        g1, h1, _ = service_schema.graph(again["objects"])
+        g0, h0, _ = service_schema.graph(sd["objects"])
+        assert structure_svg.render(g1, h1) == structure_svg.render(g0, h0) == svg
+        code = "import hashlib, web; print(hashlib.sha256(web.render_object_manager().encode()).hexdigest())"
+        outs = {subprocess.run([sys.executable, "-c", code], cwd=HERE, capture_output=True, text=True, check=True).stdout.strip() for _ in range(2)}
+        assert outs == {hashlib.sha256(om.encode()).hexdigest()}, outs
+        # ── std@1 동결 · 사용자 DMO 바이트 그대로 · 계약 예제 그대로 ──
+        assert hashlib.sha256(web.STD_PATH.read_bytes()).hexdigest() == PRA_STD_SHA, "std@1 정본이 바뀌었다"
+        hh = hashlib.sha256()
+        for name in contract.EXAMPLES:
+            for v in contract.VIEWERS:
+                resp = contract.respond(contract.EXAMPLES[name], v)
+                assert contract.dump(resp) == contract.example_path(name, v).read_text(encoding="utf-8"), (name, v)
+                hh.update(structure_svg.render(resp).encode())
+        assert hh.hexdigest() == PRA_SVG_SHA, "사용자 DMO SVG 바이트가 바뀌었다"
+        # ── Quick Find 경계값 ──
+        f = service_schema.find
+        st, hits, over = f("", idx)
+        assert st == "empty" and [e["title"] for e in hits] == labels and not over
+        assert f("   \t ", idx)[0] == "empty"
+        st, hits, _ = f("기준", idx)
+        order = {"menu": 0, "object": 1, "field": 2, "relation": 2}
+        assert st == "ok" and hits and [order[e["kind"]] for e in hits] == sorted(order[e["kind"]] for e in hits), "운영 메뉴 → 오브젝트 → 필드·관계"
+        assert hits[0]["href"] == "/admin/schema/objects/std-principle"
+        assert f(unicodedata.normalize("NFD", "기준"), idx)[1] == hits, "NFC 정규화"
+        assert f("  기준  ", idx)[1] == hits, "앞뒤 공백"
+        assert [e["href"] for e in f("OBJECT manager", idx)[1]] == ["/admin/schema"] and f("setup HOME", idx)[1][0]["href"] == "/admin", "대소문자 무시"
+        both = f("기준 근거", idx)[1]
+        assert both and all("기준" in e["hay"] and "근거" in e["hay"] for e in both) and len(both) < len(hits), "AND"
+        assert f("가" * 100, idx)[0] == "ok" and f(" " + "가" * 100 + " ", idx)[0] == "ok" and f("가" * 101, idx)[0] == "too_long", "100자 경계"
+        for q in ("숙제", "발행", "접근 방식", "open_questions", "craft", "admin_note", "hint", "customer", mk, f"key{mk}", mk + "-PEOPLE", PRA["m"],
+                  "SRCNAME", "없는말xyz", ".*", "%", "[a-z]+"):
+            assert f(q, idx)[1] == [], (q, "템플릿 내부·운영자 전용 열·선택지 값·사용자 정의 key·label·사용자 자료·정규식은 찾지 않는다")
+        # API 이름도 찾는다 — 서비스 정의(코어 + std@1)만
+        assert f("principles", idx)[1][0]["href"] == "/admin/schema/objects/std-principle"
+        assert [e["title"] for e in f("record_id", idx)[1]] == ["후보 · 근거 기록", "후보 · 근거 기록 → 기록"], f("record_id", idx)[1]
+        assert [e["title"] for e in f("EVIDENCE_claims", idx)[1]] == ["기준 · 근거 판단", "기준 · 근거 판단 → 후보"]
+        paren = f("(", idx)[1]
+        assert paren and all("(" in e["hay"] for e in paren), "특수문자는 글자 그대로(정규식 아님)"
+        many = [{"kind": "object", "title": f"t{i}", "desc": "", "href": "/admin/schema", "hay": "같은말"} for i in range(60)]
+        st, hits, over = f("같은말", many)
+        assert len(hits) == service_schema.FIND_LIMIT and over and hits[0]["title"] == "t0"
+        assert not any(set(e) - {"kind", "title", "desc", "href", "hay"} for e in idx), "색인 = 허용 글자만"
+        # HTTP — 되비춤 없음 · 400 · 넘침 문구 · 결과 없음
+        for q in ("<b>xss</b>", '"><i>q', "zz되비춤zz", mk):   # 결과에 없는 검색어 — 화면 어디에도(본문·속성) 나오면 되비춤이다
+            r = await req("GET", "/admin/find?" + urlencode({"q": q}))
+            t = clean(r, q)
+            assert q not in t and _html.escape(q) not in t and quote(q) not in t, (q, "검색어 되비춤")
+        t = clean(await req("GET", "/admin/find?" + urlencode({"q": "기준"})), "기준")
+        assert '<a href="/admin/schema/objects/std-principle">기준</a>' in t and "결과 " in t
+        t = clean(await req("GET", "/admin/find?" + urlencode({"q": "가" * 101})), "101", 400)
+        assert "100자까지" in t and "가" * 101 not in t
+        clean(await req("GET", "/admin/find?" + urlencode({"q": "가" * 100})), "100")
+        assert "찾은 항목이 없어요" in clean(await req("GET", "/admin/find?q=" + quote("없는말xyz")), "none")
+        t = clean(await req("GET", "/admin/find"), "/admin/find")
+        assert "운영 메뉴 6" in t
+        saved = web._FIND_INDEX
+        web._FIND_INDEX = many
+        try:
+            t = clean(await req("GET", "/admin/find?q=" + quote("같은말")), "many")
+            assert t.count('<li><span class="tag">') == 50 and "검색어를 더 구체적으로 입력하세요." in t
+        finally:
+            web._FIND_INDEX = saved
+        # ── DB 경계: 서비스 정의·Quick Find 는 admin_db 조회 0 · 순수 모듈 ──
+        real_check = admin_db._check
+
+        def boom(*a, **k):
+            raise AssertionError("서비스 정의 화면이 운영 DB 조회를 불렀다")
+        admin_db._check = boom
+        try:
+            for path in new_gets:
+                clean(await req("GET", path), path)
+        finally:
+            admin_db._check = real_check
+        ssrc = (HERE / "service_schema.py").read_text(encoding="utf-8")
+        assert not re.search(r"^\s*(import|from)\s+(db|admin_db|psycopg|httpx)\b", ssrc, re.M), "service_schema 는 순수 모듈"
+        _, blk = _web_admin_block()
+        assert set(re.findall(r"\bdb\.(\w+)", blk)) <= ADB_ALLOWED_DB
+        wsrc = (HERE / "web.py").read_text(encoding="utf-8")
+        assert 'Route("/admin/find", self.admin_find)' in wsrc and '"web:find' not in wsrc, "Quick Find 검색어를 사용 집계로 남기지 않는다"
+        # ── 동의 경계: 비동의·동의 모두 기존 contract 결과 · 항상 금지 값(key·선택지 값·출처 이름·위치·본문)은 동의해도 0 ──
+        path = f"/admin/users/{site._opaque(M)}"
+        t = (await req("GET", path)).text
+        assert mk not in t and "동의 없음" in t
+        db.optional_consent_set(M, "struct_names", True)
+        t = (await req("GET", path)).text
+        assert mk + "-PEOPLE" in t and mk + "-FL" in t and mk + "-OPT" in t, "동의 = 현재 label·선택지 label"
+        assert all(x not in t for x in (f"key{mk}", f"fkey{mk}", f"val{mk}", mk + "-SRCNAME", mk + "-SRCLOC", mk + "-RB", mk + "-RT", mk + "-IB", mk + "-Q")), \
+            "항상 금지 값은 동의해도 0"
+        for p_ in new_gets + ["/admin/users", "/admin/find?q=" + quote(mk + "-PEOPLE"), f"/admin/find?q=key{mk}"]:
+            t = clean(await req("GET", p_), p_)   # 동의해도 서비스 정의 화면·Users 목록·Quick Find 엔 사용자 정의 key·label 0
+            if p_.startswith("/admin/find?q=") and mk in p_:
+                assert "찾은 항목이 없어요" in t, p_
+        db.optional_consent_set(M, "struct_names", False)
+        # ── user_delete cascade 회귀(삭제 CLI 시험 아님 — PR B) ──
+        db.user_delete(M)
+        with db.tx() as c:
+            left = {tb: c.execute(f"SELECT count(*) AS n FROM {tb} WHERE user_id=%s", (M,)).fetchone()["n"]
+                    for tb in ("questions", "sources", "records", "object_defs", "field_defs", "items", "tickets", "optional_consents")}
+        assert not any(left.values()), left
+        r = await req("GET", f"/admin/tickets/{tk}")
+        assert r.status_code == 404 and mk not in r.text
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 23 PR A 운영 Setup(새 GET 404 무세션·일반·DEV · 모르는 ID·판 404 · 사용자 자료·사용자 key·label 0 · 표시명+API 이름 · 편집 form 0 · 메뉴 6 순서·활성 1·breadcrumb · "
+          "Setup Home 3구역 · Support 안내 · 옛 URL·POST · Object Manager 8·선 8·잠금 3 · 정의 일치 · 결정성(반복·순서·재시작) · std@1·DMO 바이트 · "
+          "Quick Find 경계값 · DB 조회 0 · 동의 경계 · cascade) 통과")
+
+
+class pytest_raises:
+    """새 프레임워크 없이 예외 기대(with 블록)."""
+    def __init__(self, exc):
+        self.exc = exc
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, et, ev, tb):
+        assert et is not None and issubclass(et, self.exc), f"{self.exc.__name__} 를 기대했다"
+        return True
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
