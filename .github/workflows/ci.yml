@@ -113,6 +113,11 @@ jobs:
       - name: "④-c board 이전 CLI 시험 (test_migrate_cli.py)"
         env:
           DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_bi_mig
+          # reset_db 가 dropdb·createdb 를 부른다 — CI Postgres 는 TCP 만(유닉스 소켓 없음)
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: crm
         run: python server/test_migrate_cli.py
 
       # board 이전(2026-10-20) — 로컬 에이전트(agent/, 표준 라이브러리만). 서버 DB 를 쓰지 않는다
@@ -123,10 +128,18 @@ jobs:
         continue-on-error: true
         run: python crm.py check
 
-      # 로컬 에이전트는 키트와 같은 Python ≥3.9 약속(manifest requires) — 서버 시험(3.13)과 별개로 3.9 에서도 돈다
+  # 로컬 에이전트는 키트와 같은 Python ≥3.9 약속(manifest requires) — 서버 시험(test, 3.13)과 별도 job.
+  # 3.9 는 지원 종료라 ubuntu-latest 매니페스트에서 빠질 수 있어 ubuntu-22.04 에 고정. DB·서비스 없음
+  agent-py39:
+    name: agent-py39
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
 
-      - name: "⑥ 로컬 에이전트 시험 (Python 3.9)"
+      - name: "로컬 에이전트 시험 (Python 3.9)"
         run: python --version && python -m unittest discover -s agent/tests -t . -v
