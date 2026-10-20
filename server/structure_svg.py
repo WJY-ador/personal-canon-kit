@@ -134,8 +134,10 @@ def _node_text(nd) -> str:
     return " · ".join(bits + ([LOCK_TEXT] if nd["locked"] else []))
 
 
-def render(resp: dict) -> str:
+def render(resp: dict, node_href: dict | None = None) -> str:
+    """node_href = {노드 앵커: 링크} — 서비스 정의 그래프(운영 Object Manager)가 노드를 상세 화면으로 잇는다. 없으면 순번 앵커(사용자 DMO 바이트 그대로)."""
     nodes, rels = _model(resp)
+    node_href = node_href or {}
     k = len(nodes)
     big = 0.0 if k <= 1 else max(140.0, k * 116 / (2 * math.pi))
     pad = NODE_R + 40
@@ -186,7 +188,8 @@ def render(resp: dict) -> str:
         o = nd["origin"] if nd["origin"] in ORIGIN_TEXT else "custom"
         bg, st = _var(f"--dmo-{o}-bg"), _var(f"--dmo-{o}-line")
         t = _esc(_node_text(nd))
-        out.append(f'<a href="#{nd["anchor"]}" aria-label="{t}"><title>{t}</title>'
+        href = _esc(node_href[nd["anchor"]]) if nd["anchor"] in node_href else f'#{nd["anchor"]}'
+        out.append(f'<a href="{href}" aria-label="{t}"><title>{t}</title>'
                    f'<circle cx="{_n(x)}" cy="{_n(y)}" r="{NODE_R}" style="fill:{bg};stroke:{st}" stroke-width="1.6"/>')
         if nd["locked"]:
             out.append(f'<circle cx="{_n(x)}" cy="{_n(y)}" r="{NODE_R - 5}" fill="none" style="stroke:{st}" stroke-width="1" '

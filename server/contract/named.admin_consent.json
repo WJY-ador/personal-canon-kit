@@ -1,0 +1,43 @@
+{
+  "contract": 1,
+  "viewer": "admin_consent",
+  "std": {
+    "version": "std@1",
+    "state": "seeded",
+    "objects": {
+      "axes": "seeded",
+      "decision_events": "seeded",
+      "principles": "seeded"
+    }
+  },
+  "counts": {
+    "objects": 1,
+    "fields": 1,
+    "relations": 0,
+    "sources": 1
+  },
+  "objects": [
+    {
+      "ref": "오브젝트 1",
+      "std_name": "축",
+      "semantic_kind": "collection",
+      "origin": "standard",
+      "std_id": "std:axes",
+      "locked": true,
+      "label": "관심 NLBL01",
+      "fields": [
+        {
+          "ref": "필드 a",
+          "std_name": "검색어",
+          "origin": "standard",
+          "std_id": "std:axes.keywords",
+          "locked": true,
+          "label": "단어 NLBL02",
+          "options": []
+        }
+      ]
+    }
+  ],
+  "relations": [],
+  "core": []
+}

@@ -1,0 +1,84 @@
+{
+  "contract": 1,
+  "viewer": "self",
+  "std": {
+    "version": "std@1",
+    "state": "seeded",
+    "objects": {
+      "axes": "seeded",
+      "decision_events": "seeded",
+      "principles": "seeded"
+    }
+  },
+  "counts": {
+    "objects": 1,
+    "fields": 1,
+    "relations": 0,
+    "sources": 1
+  },
+  "objects": [
+    {
+      "id": "od_axes",
+      "key": "axes",
+      "label": "관심 NLBL01",
+      "semantic_kind": "collection",
+      "origin": "standard",
+      "std_id": "std:axes",
+      "locked": true,
+      "fields": [
+        {
+          "key": "keywords",
+          "label": "단어 NLBL02",
+          "value_type": "text_list",
+          "required": false,
+          "multiple": false,
+          "target_kind": null,
+          "target_object_id": null,
+          "options": [],
+          "origin": "standard",
+          "std_id": "std:axes.keywords",
+          "locked": true,
+          "std_name": "검색어"
+        }
+      ],
+      "std_name": "축"
+    }
+  ],
+  "relations": [],
+  "core": [],
+  "sources": [
+    {
+      "id": "src_named1",
+      "kind": "url",
+      "name": "읽은 글 SRCNAME03",
+      "location": "https://SRCLOC03.example/post"
+    }
+  ],
+  "display_name": "별칭 DNAME01",
+  "people": [
+    {
+      "id": "p_named1",
+      "alias": "동료 PALIAS01"
+    },
+    {
+      "id": "p_named2",
+      "alias": "선배 PALIAS02"
+    }
+  ],
+  "reflections": [
+    {
+      "id": "sr_named1",
+      "source_id": "src_named1",
+      "kind": "summary",
+      "review": "pending",
+      "body": "내 요약 SRBODY01"
+    },
+    {
+      "id": "sr_named2",
+      "source_id": "src_named1",
+      "kind": "reaction",
+      "review": "reviewed",
+      "body": "내 반응 SRBODY02"
+    }
+  ]
+}

@@ -44,7 +44,10 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
+      # 24e 옛 코드 호환 시험이 5704546 을 git archive 로 꺼낸다 — 전체 이력이 있어야 한다
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # 3.13 고정 — 루트 .python-version 에서 읽는다(Render 도 같은 파일)(매트릭스 없음)
       - uses: actions/setup-python@v5

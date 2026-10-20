@@ -20,8 +20,8 @@ VIEWER_ADMIN = "admin"
 ALLOW = {
     # /admin/setup 사용자 표.
     "setup.users": {
-        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before FROM users u ORDER BY u.created, u.id",
-        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before"),
+        "sql": "SELECT u.id,u.email,u.created,u.role,u.blocked_at,u.web_revoked_before,u.status FROM users u ORDER BY u.created, u.id",
+        "cols": ("id", "email", "created", "role", "blocked_at", "web_revoked_before", "status"),   # status = PR B 「삭제됨」 코드
         "viewer": VIEWER_ADMIN, "consent": None,
     },
     # /admin/setup 감사 로그 — 실행자·대상 이메일(지워진 계정이면 NULL).

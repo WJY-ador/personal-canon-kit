@@ -11,7 +11,15 @@ CREATE TABLE IF NOT EXISTS users (
   blocked_at         timestamptz,                 -- 차단(웹·MCP 둘 다 거절). 해제 = NULL
   web_revoked_before timestamptz,                 -- 이 시각 전에 발급한 웹 세션 쿠키(iat) 무효
   mcp_revoked_before timestamptz,                 -- 이 시각 전에 발급한 MCP 토큰(iat) 무효
-  desk_hidden        boolean NOT NULL DEFAULT false -- P5: /app 문의 섹션 숨김(계정 메뉴). 옛 DB 는 db._init_schema 가 더한다
+  desk_hidden        boolean NOT NULL DEFAULT false, -- P5: /app 문의 섹션 숨김(계정 메뉴). 옛 DB 는 db._init_schema 가 더한다
+  -- PR B(2026-10-20): 「나」 = 이 행. 옛 DB 는 db._init_schema 가 같은 모양(열 → 이름 붙은 CHECK)으로 더한다.
+  display_name       text,                        -- 표시 이름(필수는 쓰기 관문 NAME-REQUIRED 가 보장 — 옛 코드 INSERT 때문에 NOT NULL 아님)
+  status             text NOT NULL DEFAULT 'active',   -- deleted = 삭제 CLI 실행됨(행은 남긴다). 차단(blocked_at)과 다른 말이다
+  deleted_at         timestamptz,
+  nav_accepted_at    timestamptz,                 -- 새 탐색 수락 시각. NULL = 기존 화면
+  CONSTRAINT ck_users_display_name CHECK (display_name IS NULL OR (char_length(display_name) BETWEEN 1 AND 80 AND display_name = btrim(display_name))),
+  CONSTRAINT ck_users_status CHECK (status IN ('active','deleted')),
+  CONSTRAINT ck_users_deleted CHECK ((status = 'deleted') = (deleted_at IS NOT NULL))
 );
 
 CREATE TABLE IF NOT EXISTS agreements (
@@ -70,6 +78,37 @@ CREATE TABLE IF NOT EXISTS records (
   CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array')
 );
 CREATE INDEX IF NOT EXISTS ix_records_user ON records (user_id, created DESC) WHERE deleted_at IS NULL;
+
+-- PR B 코어 「사람」(2026-10-20). 사용자 소유 별칭 이름표 하나뿐 — 다른 개인정보 열을 만들지 않는다. 기록·요약/반응과 관계 없음.
+CREATE TABLE IF NOT EXISTS people (
+  user_id  text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id       text NOT NULL,                         -- p_...
+  alias    text NOT NULL CHECK (char_length(alias) BETWEEN 1 AND 80 AND alias = btrim(alias)),
+  revision integer NOT NULL DEFAULT 0,
+  created  timestamptz NOT NULL DEFAULT now(),
+  updated  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id)                       -- 별칭 중복 허용
+);
+
+-- PR B 코어 「출처 요약/반응」. 출처를 접한 뒤 내가 한 생각(자기 성찰). records 와 분리 — 인용 적격 경로(후보 근거·관계 대상)에 들어가지 않는다.
+-- 검토 완료(reviewed) ≠ 판단 확정. 출처 FK 는 NO ACTION — 요약/반응이 달린 출처는 지울 수 없다.
+CREATE TABLE IF NOT EXISTS source_reflections (
+  user_id           text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id                text NOT NULL,                -- sr_...
+  source_id         text NOT NULL,
+  kind              text NOT NULL CHECK (kind IN ('summary','reaction')),
+  body              text NOT NULL CHECK (char_length(body) BETWEEN 1 AND 8000),
+  review            text NOT NULL DEFAULT 'pending' CHECK (review IN ('pending','reviewed')),
+  revision          integer NOT NULL DEFAULT 0,
+  reviewed_revision integer,
+  reviewed_at       timestamptz,
+  created           timestamptz NOT NULL DEFAULT now(),
+  updated           timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),
+  CHECK ((review = 'reviewed') = (reviewed_at IS NOT NULL AND reviewed_revision IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_reflections_source ON source_reflections (user_id, source_id);
 
 CREATE TABLE IF NOT EXISTS candidates (
   id             text PRIMARY KEY,                -- c_...
@@ -310,7 +349,8 @@ CREATE TABLE IF NOT EXISTS admin_audit (
   id         bigserial PRIMARY KEY,
   at         timestamptz NOT NULL DEFAULT now(),
   actor_id   text,                                -- 실행자 user id. bootstrap·recover(CLI) 는 NULL
-  action     text NOT NULL CHECK (action IN ('bootstrap','recover','role_grant','role_revoke','web_signout','block','unblock')),
+  action     text NOT NULL CHECK (action IN ('bootstrap','recover','role_grant','role_revoke','web_signout','block','unblock',
+                                         'delete_notify','delete_run','delete_cancel')),   -- 삭제 CLI(PR B) 3종. 옛 DB 는 init_schema 가 넓힌다
   target_id  text,
   detail     jsonb NOT NULL DEFAULT '{}'
 );
@@ -352,7 +392,7 @@ CREATE TABLE IF NOT EXISTS ticket_history (
   at          timestamptz NOT NULL DEFAULT now(),
   actor_id    text,                                -- 실행한 관리자 user id(FK 없음 — 계정이 지워져도 남는다)
   visibility  text NOT NULL CHECK (visibility IN ('public','internal')),
-  kind        text NOT NULL CHECK (kind IN ('status','reply','note','reclassify')),
+  kind        text NOT NULL CHECK (kind IN ('status','reply','note','reclassify','deleted')),   -- deleted = 삭제 CLI 실행(PR B, public·값 없음)
   from_val    text CHECK (from_val IS NULL OR from_val IN ('open','ack','doing','done','wontfix','bug','request','question','privacy')),
   to_val      text CHECK (to_val IS NULL OR to_val IN ('open','ack','doing','done','wontfix','bug','request','question','privacy')),
   reason      text CHECK (reason IS NULL OR reason IN ('not_privacy','duplicate','other'))
@@ -394,3 +434,22 @@ CREATE TABLE IF NOT EXISTS user_roles (
   PRIMARY KEY (user_id, role),
   FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE
 );
+
+-- PR B 삭제 통지 메타 + contact(2026-10-20). 계정당 한 행. 실행 때 이메일·auth_subject 를 users 에서 여기로 옮긴다.
+-- users FK 없음(옛 코드 user_delete 뒤에도 남게) · tickets FK 없음(파기 순서는 db.contacts_purge 가 정한다).
+-- 이 행이 가리키는 문의는 180일 파기(db.tickets_purge)에서 빠지고, purge_after(= deleted_at + 1년) 뒤 이 행과 함께 파기된다.
+CREATE TABLE IF NOT EXISTS deletion_contacts (
+  user_id      text PRIMARY KEY,
+  ticket_id    text NOT NULL,                     -- 삭제 요청 문의(kind='privacy')
+  requested_at timestamptz NOT NULL,              -- = 그 문의 created
+  notified_at  timestamptz NOT NULL,              -- 공개 통지 시각
+  delete_after timestamptz NOT NULL,              -- = notified_at + 7일
+  email        text,
+  auth_subject text,
+  deleted_at   timestamptz,
+  purge_after  timestamptz,
+  CHECK ((deleted_at IS NULL) = (purge_after IS NULL)),
+  CHECK (deleted_at IS NOT NULL OR (email IS NULL AND auth_subject IS NULL))
+);
+CREATE INDEX IF NOT EXISTS ix_deletion_contacts_email ON deletion_contacts (email) WHERE email IS NOT NULL;
+CREATE INDEX IF NOT EXISTS ix_deletion_contacts_subject ON deletion_contacts (auth_subject) WHERE auth_subject IS NOT NULL;
