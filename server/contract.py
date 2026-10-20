@@ -1,4 +1,5 @@
-"""PR #20 R2 — 수신자별 응답 계약 · 기능 플래그 · 신규 오류 코드 문구. 명세: notes 「PR20 실행명세」 §0·§1·§6·§7·§8.
+"""PR #20 R2 — 수신자별 응답 계약 · 신규 오류 코드 문구. 명세: notes 「PR20 실행명세」 §0·§1·§6·§8 · 「PR-B 구조 구현계획」 §4·§7.
+기능 플래그 두 개(표준·출처)는 PR B 에서 코드에서 뺐다 — 표준 시드·출처 연결은 상시 켬.
 
 순수 모듈이다 — db·네트워크를 부르지 않는다(시험·예제 재생성이 DB 없이 돈다). db.py 가 오류 문구를 여기서 가져간다.
 
@@ -8,8 +9,12 @@
   std_marks    {version, state} 또는 None(표식 없음 — version·state 가 null)
   std_choices  {std_key: 표준 상태} — 표식 유무와 무관하게 그대로, 없는 key 는 none
   sources      [{id, kind, name, location}] — 없으면 []
+  display_name 표시 이름 또는 None (PR B — 「나」. 아래 셋 중 하나라도 키가 있으면 본인 응답에 셋 다 싣는다)
+  people       [{id, alias}] — 없으면 [] (PR B 코어 「사람」)
+  reflections  [{id, source_id, kind, review, body}] — 없으면 [] (PR B 코어 「출처 요약/반응」)
 응답 = respond(user, viewer), viewer ∈ VIEWERS. 본인 = 모든 이름 + 메타 · 운영자 비동의 = §8 허용 목록만 · 운영자 동의 = 비동의 + 현재 label·선택지 label.
 key·선택지 값·출처 name·location·오브젝트 id 는 운영자에게 동의와 무관하게 0.
+표시 이름·사람·요약/반응(값·개수 모두)은 본인 응답에만 있다 — 운영자 응답은 동의와 무관하게 0(PR B §7).
 
 고정 예제(server/contract/*.json)는 EXAMPLES 를 이 함수로 만든 것이다. 손으로 고치지 않는다.
 재생성: cd server && .venv/bin/python contract.py      # EXAMPLES 를 바꾼 뒤에만. test_tools 18) 이 「함수 출력 == 동결 파일」을 본다
@@ -18,29 +23,8 @@ import json
 import sys
 from pathlib import Path
 
-import envnames
-
 HERE = Path(__file__).resolve().parent
 EXAMPLES_DIR = HERE / "contract"
-
-# ── 기능 플래그 (§7) ──
-# 값 `on` 만 켠다. 미설정·빈 값·`ON`·`1`·앞뒤 공백 등 그 밖은 전부 off. 호출마다 env 를 읽는다(시험이 실행 중에 바꾼다).
-FEATURES = ("STANDARD", "SOURCES")   # CRM_FEATURE_<이름>
-
-
-def feature_on(name: str) -> bool:
-    if name not in FEATURES:
-        raise ValueError(f"모르는 기능 플래그: {name}")
-    return envnames.env(f"FEATURE_{name}") == "on"
-
-
-def standard_on() -> bool:
-    return feature_on("STANDARD")
-
-
-def sources_on() -> bool:
-    return feature_on("SOURCES")
-
 
 # ── 표준 std@1 (§0) ──
 # 운영자 표준명·std 상태 key 의 출처 = 명세 파일 templates/std@1.json(key·label). 식별자 std:<key> 는 파일에 없고 key 로 만든다.
@@ -133,7 +117,15 @@ def common(user):
             "objects": objects, "relations": rels,
             "core": [{"kind": k, "origin": "core"} for k in CORE_TARGETS if any(r["target_kind"] == k for r in rels)],
             "sources": [{"id": s["id"], "kind": s["kind"], "name": s["name"], "location": s["location"]}
-                        for s in user.get("sources") or []]}
+                        for s in user.get("sources") or []],
+            "me": None if not any(k in user for k in ME_KEYS) else {
+                "display_name": user.get("display_name"),
+                "people": [{"id": p["id"], "alias": p["alias"]} for p in user.get("people") or []],
+                "reflections": [{"id": r["id"], "source_id": r["source_id"], "kind": r["kind"], "review": r["review"], "body": r["body"]}
+                                for r in user.get("reflections") or []]}}
+
+
+ME_KEYS = ("display_name", "people", "reflections")   # PR B 「나」 데이터 — 입력에 하나라도 있으면 본인 응답에 셋 다 싣는다(운영자 응답엔 없음)
 
 
 # ── 수신자별 응답 (§8) ──
@@ -168,12 +160,13 @@ def _self(cd):
     objs = [{**o, "std_name": std_name(o["std_id"]),
              "fields": [{**f, "std_name": std_name(f["std_id"])} for f in o["fields"]]} for o in cd["objects"]]
     return {"contract": CONTRACT_VERSION, "viewer": "self", "std": cd["std"], "counts": _counts(cd), "objects": objs,
-            "relations": cd["relations"], "core": cd["core"], "sources": cd["sources"]}
+            "relations": cd["relations"], "core": cd["core"], "sources": cd["sources"], **(cd["me"] or {})}   # PR B 키 — 본인만, 입력에 있을 때만
 
 
 def _admin(cd, consent):
     """허용 목록 = 자리표 · 편입된 것만 표준명 · semantic_kind · origin · std_id · locked · cardinality · 개수 · 표준 상태 코드.
-    동의면 현재 label·선택지 label 을 더한다. 사용자 id·key·선택지 값·출처 name·location 은 어느 쪽에도 없다."""
+    동의면 현재 label·선택지 label 을 더한다. 사용자 id·key·선택지 값·출처 name·location 은 어느 쪽에도 없다.
+    표시 이름·사람·요약/반응(PR B)은 값도 개수도 넣지 않는다 — _counts 는 정의·관계·출처만 센다."""
     oref = {o["id"]: object_ref(i) for i, o in enumerate(cd["objects"])}
     fref = {}
     objs = []
@@ -241,9 +234,9 @@ REVIEW_MSG = {
     "deleted": "근거 기록이 삭제돼 이 후보를 확정할 수 없어요.",
 }
 REVIEW_ACT = {
-    "author_unknown": "작성자 정보가 실제로 틀렸을 때만 record_provenance_set 으로 정정하세요. 제외·보류는 할 수 있어요.",
+    "author_unknown": "작성자 정보가 실제로 틀렸을 때만 연결한 AI 대화에서 record_provenance_set 으로 정정하세요. 제외·보류는 할 수 있어요.",
     "external": "제외·보류는 할 수 있어요.",
-    "processed": "가공 방식 정보가 실제로 틀렸을 때만 record_provenance_set 으로 정정하세요. 제외·보류는 할 수 있어요.",
+    "processed": "가공 방식 정보가 실제로 틀렸을 때만 연결한 AI 대화에서 record_provenance_set 으로 정정하세요. 제외·보류는 할 수 있어요.",
     "deleted": "제외·보류는 할 수 있어요.",
 }
 
@@ -264,10 +257,10 @@ def review_reason(record):
 SCOPE_MSG = "남이 쓴 글(author_kind=external)은 기록으로 넣을 수 없어요."
 SCOPE_ACT = "직접 쓴 내 기록만 넣어요. 남의 말·AI 요약은 넣지 않아요."
 
-# 기능 플래그 꺼짐 거절(4단계 추가 — §8 신규 3종 밖). 표준 보류·거절 기록이 STANDARD 를 따르는지 명세 미정 → 기본은 따른다(db.STD_CHOICE_NEEDS_FLAG)
-FEATURE_OFF = "FEATURE-OFF"
-FEATURE_OFF_MSG = {"STANDARD": "표준 정의 선택은 아직 열리지 않았어요.", "SOURCES": "출처 기능은 아직 열리지 않았어요."}
-FEATURE_OFF_ACT = "운영자가 기능을 켠 뒤 다시 하세요. 읽기(미리보기·목록)는 지금도 돼요."
+# 표시 이름 관문(PR B 결정 3) — 이름 없는 계정의 쓰기 거절. 읽기·help_get·feedback_send·ticket_*·표시 이름 설정은 통과(db.NAME_EXEMPT·main 도구 분류)
+NAME_REQUIRED = "NAME-REQUIRED"
+NAME_REQUIRED_MSG = "대시보드에서 표시 이름을 정해 주세요."
+NAME_REQUIRED_ACT = "대시보드(/app)에 로그인하면 이름 입력 화면이 나와요. 이름을 정한 뒤 다시 하세요."
 
 # 분류 대상 없음(6단계 추가 — §8 신규 3종 밖). 분류(기록 → 항목 axes 링크)만 꺼지고 나머지는 그대로(§5)
 CLASSIFY_OFF = "CLASSIFY-OFF"
@@ -340,7 +333,22 @@ _PARTIAL = {
     "sources": [{"id": "src_part1", "kind": "url", "name": "블로그 SRCNAME02", "location": "https://SRCLOC02.example/feed"}],
 }
 
-EXAMPLES = {"full": _FULL, "partial": _PARTIAL}
+# named(PR B) — 표시 이름·사람·요약/반응이 채워진 본인. 운영자 응답(동의·비동의)엔 DNAME·PALIAS·SRBODY 표식이 0 이어야 한다
+_NAMED = {
+    "definitions": [
+        _od("od_axes", "axes", "관심 NLBL01", "collection", std=std_id_of("axes"), fields=[
+            _fd("keywords", "단어 NLBL02", "text_list", std=std_id_of("axes", "keywords"))]),
+    ],
+    "std_marks": {"version": STD_VERSION, "state": "seeded"},
+    "std_choices": {"axes": "seeded", "decision_events": "seeded", "principles": "seeded"},
+    "sources": [{"id": "src_named1", "kind": "url", "name": "읽은 글 SRCNAME03", "location": "https://SRCLOC03.example/post"}],
+    "display_name": "별칭 DNAME01",
+    "people": [{"id": "p_named1", "alias": "동료 PALIAS01"}, {"id": "p_named2", "alias": "선배 PALIAS02"}],
+    "reflections": [{"id": "sr_named1", "source_id": "src_named1", "kind": "summary", "review": "pending", "body": "내 요약 SRBODY01"},
+                    {"id": "sr_named2", "source_id": "src_named1", "kind": "reaction", "review": "reviewed", "body": "내 반응 SRBODY02"}],
+}
+
+EXAMPLES = {"full": _FULL, "partial": _PARTIAL, "named": _NAMED}
 
 
 def example_path(name, viewer):

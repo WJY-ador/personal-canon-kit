@@ -93,11 +93,12 @@ def user_id_for(tok: AccessToken) -> str:
     β2: uid 를 정한 뒤 그 행으로 차단(AUTH-BLOCKED)·MCP 끊기(토큰 iat < mcp_revoked_before → AUTH-REVOKED)를 본다(db.check_token_user).
     웹 로그인 콜백도 이 함수를 지난다 — 차단 계정은 웹 로그인도 안 된다. 웹 로그인 끊기(web_revoked_before)는 여기서 보지 않는다."""
     sub = tok.subject or ""
+    iat = (tok.claims or {}).get("iat")   # PR B: 삭제 계정 contact 대조(iat < deleted_at → AUTH-REVOKED, 새 계정이면 새 uid)
     try:
-        row = db.user_by_subject(sub, "")
+        row = db.user_by_subject(sub, "", iat)
     except db.CrmError as e:
         if e.code != "AUTH-INVALID" or not sub:
             raise
-        row = db.user_by_subject(sub, _userinfo_email(tok))
-    db.check_token_user(row, (tok.claims or {}).get("iat"))
+        row = db.user_by_subject(sub, _userinfo_email(tok), iat)
+    db.check_token_user(row, iat)
     return row["id"]

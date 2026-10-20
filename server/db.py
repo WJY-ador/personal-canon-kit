@@ -4,12 +4,15 @@
 사용자 구분은 users.id. 모든 조회·쓰기는 user_id 로 묶이고, 자식 테이블은 복합 FK 로 다른 사용자 행을 참조 못 한다.
 연결: 환경변수 DATABASE_URL (Supabase 는 Session pooler, 5432).
 """
+import base64
+import hashlib
 import json
 import os
 import re
 import secrets
 import threading
 import time
+import unicodedata
 import datetime as _dt
 from contextlib import contextmanager
 from pathlib import Path
@@ -75,10 +78,25 @@ WRITE_LIMITS = {
     "item_decide": {},
     "record_attach": {},
     "feedback_send": {"text": LIMIT_TICKET, "tool": LIMIT_TEXT},
+    # PR B 코어(나·사람·출처·출처 요약/반응). 별칭·표시 이름은 80자 CHECK 가 따로 있다 — 여기는 바이트 상한
+    "display_name_set": {"display_name": LIMIT_TEXT},
+    "person_save": {"alias": LIMIT_TEXT},
+    "person_delete": {},
+    "source_create": {"name": LIMIT_TEXT, "location": LIMIT_TEXT},
+    "source_reflection_save": {"body": LIMIT_BODY},
+    "source_reflection_review": {},
+    "source_reflection_delete": {},
+    # R5 결함(PR B 범위 추가) — 출처 판정 정정 · 사용자 오브젝트 보관/복구
+    "record_provenance_set": {"reason": LIMIT_TEXT},
+    "definition_archive": {},
+    "definition_restore": {},
 }
 # ③ 전역 DB 크기 거절(QUOTA-GLOBAL) 면제 — 저장 공간이 찼다는 문의도 받아야 한다. 길이 검사(②)는 그대로.
 # 대신 문의 한도(사용자 하루 10건·전역 100건, ticket_add)가 건다.
 QUOTA_EXEMPT = frozenset({"feedback_send"})
+# 표시 이름 관문(NAME-REQUIRED, PR B 결정 3) 면제 쓰기 — 문의와 표시 이름 설정 자체. 그 밖의 쓰기 진입(write_gate)은 전부 이름이 있어야 한다.
+# 웹 전용 진입(std_choose·nav_accept·사람·요약/반응 경로)도 write_gate 를 지나므로 같은 관문을 받는다. 읽기는 write_gate 를 안 지난다.
+NAME_EXEMPT = frozenset({"feedback_send", "display_name_set"})
 
 # 관리자 = users.role='admin'(β2). ③ 전역 DB 크기 거절의 예외 판정도 is_admin(DB 조회)이다. env 는 첫 지정(admin_bootstrap)에만 쓴다.
 
@@ -97,8 +115,10 @@ OPTIONAL_VERSIONS = {"struct_names": STRUCT_NAMES_VERSION}
 # ── 일일 한도 (α2) ─────────────────────────────────────
 # 계정 하나가 하루(KST 0시 기준, _KST_TODAY)에 쓸 수 있는 양. 각 쓰기 함수의 기존 트랜잭션 안 맨 앞에서 users 행을 잠그고 센다.
 # 관리자도 같다(QUOTA-GLOBAL 만 관리자 예외).
-DAILY_LIMITS = {"records": 50, "candidates": 150, "decisions": 300, "proposals": 100, "questions": 50}
-_DAILY_NAMES = {"records": "기록은", "candidates": "후보는", "decisions": "결정은", "proposals": "제안은", "questions": "질문은"}   # 조사까지
+DAILY_LIMITS = {"records": 50, "candidates": 150, "decisions": 300, "proposals": 100, "questions": 50,
+                "people": 50, "reflections": 50}   # PR B 메인 확정 ⓔ — 사람·출처 요약/반응은 기록과 같은 급(생성만 센다)
+_DAILY_NAMES = {"records": "기록은", "candidates": "후보는", "decisions": "결정은", "proposals": "제안은", "questions": "질문은",
+                "people": "사람은", "reflections": "출처 요약/반응은"}   # 조사까지
 # 종류 → 세는 (테이블, 시각 열[, 추가 조건]) 목록. 합계를 센다.
 _DAILY_SOURCES = {
     "records": (("records", "created"),),
@@ -106,6 +126,8 @@ _DAILY_SOURCES = {
     "decisions": (("candidate_history", "at"), ("item_history", "at")),
     "proposals": (("object_defs", "created_at", "std_id IS NULL"), ("items", "created_at")),   # 표준 정의(시드·편입)는 사용자 제안이 아니다
     "questions": (("questions", "created"),),
+    "people": (("people", "created"),),
+    "reflections": (("source_reflections", "created"),),
 }
 
 
@@ -222,6 +244,7 @@ def optional_consent_set(uid, kind, on):
     if kind not in OPTIONAL_VERSIONS or not isinstance(on, bool):
         raise CrmError("ARG-INVALID", f"선택 동의는 {', '.join(OPTIONAL_VERSIONS)} 중 하나, on 은 true·false 예요.")
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → optional_consents
         changed = _optional_apply(c, uid, kind, on)
     return {"kind": kind, "on": on, "changed": changed}
 
@@ -233,12 +256,22 @@ def optional_consent_ok(uid, kind) -> bool:
                     (uid, kind, OPTIONAL_VERSIONS.get(kind))) is not None
 
 
+def name_gate(uid):
+    """표시 이름 관문 — users.display_name 이 비면 NAME-REQUIRED. PK 조회 1건. 판정 = display_name IS NULL 하나."""
+    with tx() as c:
+        r = _one(c, "SELECT display_name FROM users WHERE id=%s", (uid,))
+    if r is not None and r["display_name"] is None:
+        raise CrmError(contract.NAME_REQUIRED, contract.NAME_REQUIRED_MSG, contract.NAME_REQUIRED_ACT)
+
+
 def write_gate(op: str, args: dict, uid, quota: bool = True):
-    """쓰기 진입 한 곳 — ② 길이 → uid 풀기 → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
+    """쓰기 진입 한 곳 — ② 길이 → uid 풀기 → 표시 이름 관문(NAME_EXEMPT 밖) → ③ 전역 크기. MCP guard 와 웹 쓰기 API 가 같은 이 함수를 부른다.
     uid 는 문자열 또는 함수 — 여기서 푼다(MCP 사용 집계가 도구 본문이 실패해도 그 uid 로 센다. 옛 동의 검사가 하던 조회 1회).
     quota=False 는 QUOTA_EXEMPT(문의) 만 — 호출하는 쪽이 넘긴다."""
     check_lengths(op, args)
     uid = uid() if callable(uid) else uid
+    if op not in NAME_EXEMPT:
+        name_gate(uid)
     if quota:
         check_global_quota(uid)
 
@@ -248,8 +281,9 @@ def write_gate(op: str, args: dict, uid, quota: bool = True):
 def _user_lock(c, uid):
     """사용자 행 잠금 — 같은 사용자의 한도 검사·쓰기를 직렬화한다. 잠금 순서 = users 행 → 기존 자식 잠금.
     FOR NO KEY UPDATE: 게이트끼리는 서로 막지만(직렬화), 자식 INSERT 의 FK 검사(FOR KEY SHARE)와는 충돌하지 않는다.
-    FOR UPDATE 면 record_attach(records 잠금 → item_links INSERT 가 users KEY SHARE 대기)와 candidates_propose(users 잠금 → records 잠금 대기)가 교착한다."""
-    if not _one(c, "SELECT id FROM users WHERE id=%s FOR NO KEY UPDATE", (uid,)):
+    FOR UPDATE 면 record_attach(records 잠금 → item_links INSERT 가 users KEY SHARE 대기)와 candidates_propose(users 잠금 → records 잠금 대기)가 교착한다.
+    PR B: status='active' 만 — 삭제 CLI(같은 잠금 뒤 status=deleted)가 커밋된 뒤 기다리던 쓰기는 다시 읽어 AUTH-INVALID(삭제 뒤 자료 생성 0)."""
+    if not _one(c, "SELECT id FROM users WHERE id=%s AND status='active' FOR NO KEY UPDATE", (uid,)):
         raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
 
 
@@ -304,12 +338,18 @@ def usage_flush() -> int:
         batch, _usage = _usage, {}
     if not batch:
         return 0
-    keys = list(batch)
-    days, uids, names, codes = ([k[i] for k in keys] for i in range(4))
-    ns = [batch[k] for k in keys]
     try:
         with _flush_lock, _usage_conn() as c:
             with c.transaction():
+                # PR B: 삭제된 계정(status=deleted)의 카운터는 버린다. FOR SHARE = 삭제 CLI 의 사용자 행 잠금과 직렬화(커밋 뒤 상태로 판정)
+                ids = sorted({k[1] for k in batch if k[1]})
+                gone = {r["id"] for r in c.execute("SELECT id,status FROM users WHERE id = ANY(%s) ORDER BY id FOR SHARE", (ids,)).fetchall()
+                        if r["status"] == "deleted"} if ids else set()
+                keys = [k for k in batch if k[1] not in gone]
+                if not keys:
+                    return 0
+                days, uids, names, codes = ([k[i] for k in keys] for i in range(4))
+                ns = [batch[k] for k in keys]
                 c.execute(
                     "INSERT INTO usage_daily (day,user_id,name,code,n) "
                     "SELECT d, u, nm, cd, sum(n)::integer "
@@ -318,7 +358,7 @@ def usage_flush() -> int:
                     "ON CONFLICT (day,user_id,name,code) DO UPDATE SET n = usage_daily.n + EXCLUDED.n",
                     (days, uids, names, codes, ns))
     except Exception:
-        print(f"[usage] flush 실패 — {len(keys)}건 버림", flush=True)
+        print(f"[usage] flush 실패 — {len(batch)}건 버림", flush=True)
         return 0
     return len(keys)
 
@@ -395,6 +435,14 @@ def _init_schema(c):
         for n, ddl in _USERS_P5_COLS:   # P5 — 옛 users 에 문의 섹션 숨김 열. schema.sql 최종형과 같은 모양
             if not _has_col(c, "users", n):
                 c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
+        for n, ddl in _USERS_PRB_COLS:   # PR B — 옛 users 에 표시 이름·상태·삭제 시각·새 탐색 수락. 열 먼저, CHECK 는 이름으로 뒤에
+            if not _has_col(c, "users", n):
+                c.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {n} {ddl}")
+        for name, ddl in _USERS_PRB_CHECKS:
+            if not _has_constraint(c, "users", name):
+                c.execute(f"ALTER TABLE users ADD CONSTRAINT {name} {ddl}")
+        for t, name, col, vals in _WIDEN_CHECKS:   # PR B — 열거 CHECK 허용값 확장(기존 값은 그대로). 이미 넓으면 손대지 않는다
+            _widen_check(c, t, name, col, vals)
         for t in ("object_defs", "field_defs"):   # 열이 있으면 ALTER 를 안 부른다(IF NOT EXISTS 여도 테이블을 잠근다)
             if not _has_col(c, t, "template_slot"):
                 c.execute(f"ALTER TABLE {t} ADD COLUMN IF NOT EXISTS template_slot text")
@@ -420,6 +468,28 @@ _USERS_P5_COLS = (("desk_hidden", "boolean NOT NULL DEFAULT false"),)
 
 _USERS_B2_COLS = (("role", "text NOT NULL DEFAULT 'user' CHECK (role IN ('user','admin'))"), ("blocked_at", "timestamptz"),
                   ("web_revoked_before", "timestamptz"), ("mcp_revoked_before", "timestamptz"))
+# PR B — schema.sql users 최종형과 같은 모양. 옛 코드 INSERT(새 열 없이)는 기본값(이름 NULL·active·미수락)으로 성공한다
+_USERS_PRB_COLS = (("display_name", "text"), ("status", "text NOT NULL DEFAULT 'active'"), ("deleted_at", "timestamptz"),
+                   ("nav_accepted_at", "timestamptz"))
+_USERS_PRB_CHECKS = (
+    ("ck_users_display_name", "CHECK (display_name IS NULL OR (char_length(display_name) BETWEEN 1 AND 80 AND display_name = btrim(display_name)))"),
+    ("ck_users_status", "CHECK (status IN ('active','deleted'))"),
+    ("ck_users_deleted", "CHECK ((status = 'deleted') = (deleted_at IS NOT NULL))"))
+# 열거 CHECK 확장 — (테이블, 제약 이름(인라인 CHECK 의 자동 이름), 열, 최종 허용값). schema.sql 인라인 값과 같다
+_WIDEN_CHECKS = (
+    ("admin_audit", "admin_audit_action_check", "action",
+     ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock", "delete_notify", "delete_run", "delete_cancel")),
+    ("ticket_history", "ticket_history_kind_check", "kind", ("status", "reply", "note", "reclassify", "deleted")))
+
+
+def _widen_check(c, t, name, col, vals):
+    """열거 CHECK 를 vals 로 넓힌다 — 지금 정의에 없는 값이 있을 때만 DROP → 같은 이름으로 ADD(멱등). 옛 값은 vals 에 다 있다."""
+    r = _one(c, "SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = %s::regclass AND conname = %s", (t, name))
+    if r and all(f"'{v}'" in r["d"] for v in vals):
+        return
+    if r:
+        c.execute(f"ALTER TABLE {t} DROP CONSTRAINT {name}")
+    c.execute(f"ALTER TABLE {t} ADD CONSTRAINT {name} CHECK ({col} IN ({','.join(repr(v) for v in vals)}))")
 
 
 def template_slot_of(template, object_key, field_key=None):
@@ -600,19 +670,40 @@ def user_by_email(email):
     with tx() as c:
         r = _one(c, "SELECT * FROM users WHERE email=%s", (email,))
         if r:
-            _std_retry(c, r["id"])   # PR #20 — seed_pending 계정만(플래그 on · 정의 0개)
+            _std_retry(c, r["id"])   # PR #20 — seed_pending 계정만(정의 0개)
             return _iso(r)
         uid = new_id("u")
-        c.execute("INSERT INTO users (id,email) VALUES (%s,%s)", (uid, email))
+        c.execute("INSERT INTO users (id,email,nav_accepted_at) VALUES (%s,%s,now())", (uid, email))   # PR B ⓐ 신규 = 새 탐색
         _std_on_create(c, uid)   # PR #20 신규 계정 시드 — 같은 트랜잭션, 실패해도 사용자 생성은 산다
         return _iso(_one(c, "SELECT * FROM users WHERE id=%s", (uid,)))
 
 
-def user_by_subject(sub, email):
+_REVOKED = ("AUTH-REVOKED", "이 연결은 끊겼어요.", "커넥터를 다시 연결해 주세요.")
+
+
+def _iat_num(iat):
+    return iat if isinstance(iat, (int, float)) and not isinstance(iat, bool) else None
+
+
+def _contact_check(c, sub, email, iat, strict):
+    """삭제 계정 contact(deletion_contacts, deleted_at 있음)와 sub 또는 이메일이 맞고 토큰 iat < deleted_at 이면 AUTH-REVOKED.
+    strict(새 계정을 만들기 직전) = iat 가 없어도 거절(보수 — 실제 토큰에 iat 가 늘 있는지 모름). 아니면(기존 행 조회) iat 없으면 넘어간다."""
+    rows = _all(c, "SELECT deleted_at FROM deletion_contacts WHERE deleted_at IS NOT NULL "
+                   "AND ((auth_subject IS NOT NULL AND auth_subject=%s) OR (email IS NOT NULL AND email=%s))", (sub, email))
+    iat = _iat_num(iat)
+    for r in rows:
+        if (iat is None and strict) or (iat is not None and iat < r["deleted_at"].timestamp()):
+            raise CrmError(*_REVOKED)
+
+
+def user_by_subject(sub, email, iat=None):
     """인증된 sub 로 먼저 찾는다. 없으면 검증된 이메일로 찾아 sub 를 붙이고, 그것도 없으면 새로 만든다.
     같은 이메일 = 한 사용자(Google·매직링크 어느 쪽이든).
-    PR #20(§2): 새 사용자는 INSERT 직후 같은 트랜잭션에서 표준 시드(_std_on_create, STANDARD=on 만). 기존 사용자 갈래는 seed_pending
-    계정만 재시도(_std_retry). 웹 로그인 콜백·MCP 호출이 둘 다 auth.user_id_for → 여기를 지난다. 시드가 실패해도 사용자는 돌려준다."""
+    PR #20(§2): 새 사용자는 INSERT 직후 같은 트랜잭션에서 표준 시드(_std_on_create). 기존 사용자 갈래는 seed_pending
+    계정만 재시도(_std_retry). 웹 로그인 콜백·MCP 호출이 둘 다 auth.user_id_for → 여기를 지난다. 시드가 실패해도 사용자는 돌려준다.
+    PR B: iat = 토큰 발급 시각(auth 가 넘긴다, 옛 호출은 없음). 삭제된 계정은 auth_subject 가 비고 이메일이 자리값이라 여기서 다시
+    찾히지 않는다 — 새 계정을 만들기 직전 contact 와 대조해 옛 토큰(iat < deleted_at·iat 없음)은 AUTH-REVOKED, 새 토큰이면 새 uid
+    (옛 행·contact 와 연결 없음). 기존 행을 찾은 갈래도 iat 가 contact 의 deleted_at 보다 앞이면 거절한다. 신규 = 새 탐색 수락 상태."""
     sub = (sub or "").strip()
     email = (email or "").strip().lower()
     if not sub:
@@ -620,19 +711,26 @@ def user_by_subject(sub, email):
     with tx() as c:
         r = _one(c, "SELECT * FROM users WHERE auth_subject=%s", (sub,))
         if r:
+            if r["status"] == "deleted":
+                raise CrmError(*_REVOKED)
+            _contact_check(c, sub, email, iat, False)
             _std_retry(c, r["id"])
             return _iso(r)
         if not email:
             raise CrmError("AUTH-INVALID", "처음 연결할 땐 검증된 이메일이 필요해요.")
         r = _one(c, "SELECT * FROM users WHERE email=%s", (email,))
         if r:
+            if r["status"] == "deleted":
+                raise CrmError(*_REVOKED)
             if r["auth_subject"] and r["auth_subject"] != sub:
                 raise CrmError("AUTH-CONFLICT", "이 이메일은 다른 로그인 계정에 이미 연결돼 있어요.")
+            _contact_check(c, sub, email, iat, False)
             c.execute("UPDATE users SET auth_subject=%s WHERE id=%s", (sub, r["id"]))
             _std_retry(c, r["id"])
             return _iso(_one(c, "SELECT * FROM users WHERE id=%s", (r["id"],)))
+        _contact_check(c, sub, email, iat, True)
         uid = new_id("u")
-        c.execute("INSERT INTO users (id,email,auth_subject) VALUES (%s,%s,%s)", (uid, email, sub))
+        c.execute("INSERT INTO users (id,email,auth_subject,nav_accepted_at) VALUES (%s,%s,%s,now())", (uid, email, sub))
         _std_on_create(c, uid)
         return _iso(_one(c, "SELECT * FROM users WHERE id=%s", (uid,)))
 
@@ -646,11 +744,11 @@ def user_get(uid):
 
 
 def desk_hidden_set(uid, hidden):
-    """/app 문의 섹션 숨김 저장(계정 메뉴). 반환 {hidden}."""
+    """/app 문의 섹션 숨김 저장(계정 메뉴). 반환 {hidden}. 삭제된 계정 행은 바꾸지 않는다."""
     if not isinstance(hidden, bool):
         raise CrmError("ARG-INVALID", "hidden 은 true·false 예요.")
     with tx() as c:
-        c.execute("UPDATE users SET desk_hidden=%s WHERE id=%s", (hidden, uid))
+        c.execute("UPDATE users SET desk_hidden=%s WHERE id=%s AND status='active'", (hidden, uid))
     return {"hidden": hidden}
 
 
@@ -759,8 +857,8 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     """body 는 받은 그대로 저장한다. 공백도 안 다듬는다.
     출처 기본값 self·verbatim = MCP record_add(사용자가 대화에서 직접 준 말). 확인 못 한 출처는 호출자가 unknown 으로 넘긴다.
     수집 범위(§6): author_kind='external'(남이 쓴 글)은 SCOPE-SELF-ONLY. 메타데이터 검사일 뿐 — 실제 작성자는 검증하지 않는다.
-    source = 옛 출처 문자열(그대로 저장). source_ref = 출처 연결 {kind, name, location}(§4): SOURCES=on 이면 같은 사용자의 같은 출처를
-    찾거나 만들어 source_id 로 잇는다. off 면 연결하지 않고(기록은 저장) 결과의 source_linked=false 로 알린다. 인자가 없으면 source_linked=None."""
+    source = 옛 출처 문자열(그대로 저장). source_ref = 출처 연결 {kind, name, location}(§4): 같은 사용자의 같은 출처를
+    찾거나 만들어 source_id 로 잇는다(PR B 부터 플래그 없이 상시 — source_linked=true). 인자가 없으면 source_linked=None."""
     title = (title or "").strip()
     body = body or ""
     if not body.strip():
@@ -769,7 +867,7 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     if author_kind == "external":
         raise _scope_self()
     ref = None
-    if source_ref is not None and contract.sources_on():
+    if source_ref is not None:
         ref = _source_norm(source_ref)
     if not title:
         title = body.strip().splitlines()[0][:40]
@@ -1044,6 +1142,7 @@ def candidate_restore(uid, cid, history_id, expected_revision=None):
     승인(wording_approved)은 어느 쪽이든 false — 승인은 그 revision 에 대한 것이라 새 revision 으로 넘기지 않는다.
     MCP 도구엔 안 붙인다(웹 API 는 다음 PR)."""
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → candidates
         r = _cand_lock(c, uid, cid)
         if expected_revision is not None and r["revision"] != expected_revision:
             raise _conflict(f"지금 revision {r['revision']}")
@@ -1102,6 +1201,7 @@ def profile_set(uid, key, value, status, source=""):
         if len(value) > 3:
             raise CrmError("ARG-INVALID", "매일 볼 것은 최대 3개예요.")
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → profile
         c.execute("INSERT INTO profile (user_id,key,value,status,source,updated) VALUES (%s,%s,%s,%s,%s,now()) "
                   "ON CONFLICT (user_id,key) DO UPDATE SET value=excluded.value,status=excluded.status,source=excluded.source,updated=now()",
                   (uid, key, json.dumps(value, ensure_ascii=False), status, source or ""))
@@ -1164,10 +1264,6 @@ def _scope_self():
     return CrmError(contract.SCOPE_SELF_ONLY, contract.SCOPE_MSG, contract.SCOPE_ACT)
 
 
-def _feature_off(name):
-    return CrmError(contract.FEATURE_OFF, contract.FEATURE_OFF_MSG[name], contract.FEATURE_OFF_ACT)
-
-
 # ── 정의 정규화·검증 (DB 없이 — 시드 --dry-run 도 같은 함수) ──
 
 def _norm_options(raw, fkey):
@@ -1188,10 +1284,29 @@ def _norm_options(raw, fkey):
     return out
 
 
+# 정의 JSON 이 받는 키. 읽기 전용 키(definitions_get 응답을 그대로 되돌려 보낸 것)는 받되 무시한다 — archived_at 은 비어 있을 때만.
+# 그 밖의 키(예 "archived")는 조용히 무시하지 않고 ARG-INVALID(R5 결함 R-5). 보관은 definition_archive.
+DEF_KEYS = frozenset({"id", "key", "label", "semantic_kind", "policy", "fields"})
+DEF_READONLY = frozenset({"revision", "created_at", "updated_at", "template_slot", "std_id", "proposal", "draft", "archived_at"})
+FIELD_KEYS = frozenset({"key", "label", "value_type", "required", "options", "target_kind", "target_object_id", "multiple"})
+FIELD_READONLY = frozenset({"position", "template_slot", "std_id", "archived_at"})
+
+
+def _unknown_keys(d, allowed, readonly, where):
+    bad = sorted(str(k) for k in d if k not in allowed and k not in readonly)
+    if bad:
+        raise CrmError("ARG-INVALID", f"{where}에 모르는 키가 있어요: {', '.join(bad)}",
+                       "보관·복구는 definition_archive·definition_restore 로 해요. 받는 키: " + ", ".join(sorted(allowed)))
+    if d.get("archived_at") is not None:
+        raise CrmError("ARG-INVALID", f"{where}의 archived_at 은 정의 JSON 으로 바꿀 수 없어요.",
+                       "보관·복구는 definition_archive·definition_restore 로 해요.")
+
+
 def normalize_definition(d):
     """definition_json → 저장 형태. 형식만 본다(대상 오브젝트·기존 항목은 _check_definition)."""
     if not isinstance(d, dict):
         raise _bad_def("정의는 JSON 객체여야 해요.")
+    _unknown_keys(d, DEF_KEYS, DEF_READONLY, "정의")
     key, label, kind = d.get("key"), str(d.get("label") or "").strip(), d.get("semantic_kind")
     if not isinstance(key, str) or not _KEY_RE.match(key):
         raise _bad_def("key 는 영문 소문자로 시작하는 40자 이내 [a-z0-9_] 예요.")
@@ -1209,6 +1324,7 @@ def normalize_definition(d):
     for f in raw_fields:
         if not isinstance(f, dict):
             raise _bad_def("필드 정의는 JSON 객체예요.")
+        _unknown_keys(f, FIELD_KEYS, FIELD_READONLY, f"필드 {f.get('key')!r} ")
         fk, vt = f.get("key"), f.get("value_type")
         if not isinstance(fk, str) or not _KEY_RE.match(fk):
             raise _bad_def(f"필드 key 형식이 틀렸어요: {fk!r}")
@@ -1367,8 +1483,9 @@ def _def_out(c, uid, row, include_archived=False):
 
 
 def definitions(uid, object_ids=None, include_archived=False):
-    """적용된(revision>0) 정의 + 필드. 적용 전 새 오브젝트 제안은 definition_propose 결과의 proposal_id 로만 다룬다."""
-    sql = f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND revision > 0"
+    """적용된(revision>0) 정의 + 필드. object_ids 로 콕 집어 물으면 적용 전 새 오브젝트 제안(revision 0)도 돌려주고 draft=true 를 단다
+    (R5 결함 R-4 — 응답 모양은 키 추가만. 전체 목록(object_ids 없음)엔 초안을 넣지 않는다)."""
+    sql = f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s" + ("" if object_ids else " AND revision > 0")
     args = [uid]
     if not include_archived:
         sql += " AND archived_at IS NULL"
@@ -1376,13 +1493,52 @@ def definitions(uid, object_ids=None, include_archived=False):
         sql += " AND id = ANY(%s)"
         args.append(list(object_ids))
     with tx() as c:
-        return [_def_out(c, uid, r, include_archived) for r in _all(c, sql + " ORDER BY created_at, id", args)]
+        out = []
+        for r in _all(c, sql + " ORDER BY created_at, id", args):
+            d = _def_out(c, uid, r, include_archived)
+            if r["revision"] == 0:
+                d["draft"] = True
+            out.append(d)
+        return out
 
 
-def _check_definition(c, uid, oid, row, nd):
+def _def_archive_set(uid, object_id, archive):
+    """사용자 오브젝트 보관(archive=True)·복구 — archived_at 만 바꾼다(revision·이력·항목 그대로). 표준(std_id)은 STANDARD-LOCKED,
+    적용 전 초안은 ARG-INVALID. 보관해도 항목은 지우지 않는다 — 결과 impact = 살아 있는 항목 수 · 이 오브젝트를 가리키는 다른 필드 수."""
+    with tx() as c:
+        _user_lock(c, uid)
+        row = _one(c, "SELECT id,revision,archived_at,std_id FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, str(object_id or "")))
+        if not row:
+            raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}", "definitions_get 으로 ID 를 확인하세요.")
+        if row["std_id"]:
+            raise _std_locked("archive", row["std_id"])
+        if row["revision"] == 0:
+            raise CrmError("ARG-INVALID", "적용 전 제안은 보관할 수 없어요.", "새 제안으로 덮거나 그대로 두세요.")
+        changed = (row["archived_at"] is None) is archive
+        if changed:
+            c.execute("UPDATE object_defs SET archived_at = CASE WHEN %s THEN now() ELSE NULL END, updated_at=now() WHERE user_id=%s AND id=%s",
+                      (archive, uid, row["id"]))
+        items_n = _one(c, "SELECT count(*) AS n FROM items WHERE user_id=%s AND object_id=%s AND archived_at IS NULL", (uid, row["id"]))["n"]
+        refs_n = _one(c, "SELECT count(*) AS n FROM field_defs WHERE user_id=%s AND target_object_id=%s AND object_id <> %s AND archived_at IS NULL",
+                      (uid, row["id"], row["id"]))["n"]
+        out = _def_out(c, uid, _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, row["id"])), True)
+    out["changed"], out["impact"] = changed, {"items": items_n, "referencing_fields": refs_n}
+    return out
+
+
+def definition_archive(uid, object_id):
+    return _def_archive_set(uid, object_id, True)
+
+
+def definition_restore(uid, object_id):
+    return _def_archive_set(uid, object_id, False)
+
+
+def _check_definition(c, uid, oid, row, nd, given=None):
     """표준 잠금(STANDARD-LOCKED, 편입된 것만·플래그 무관) → 대상 오브젝트·기존 항목과 맞는지(DEF-INVALID).
-    propose·apply 둘 다 부른다 — apply 는 FOR UPDATE 로 다시 읽은 최신 행으로 재검증한다."""
-    _std_lock_check(c, uid, oid, row, nd)
+    propose·apply 둘 다 부른다 — apply 는 FOR UPDATE 로 다시 읽은 최신 행으로 재검증한다.
+    given = 제안 JSON 에 사용자가 실제로 보낸 필드 key(propose 만). 정규화가 되살린 필드(근거 판단 evidence_claims)는 빼고 본다."""
+    _std_lock_check(c, uid, oid, row, nd, given)
     for f in nd["fields"]:
         to = f["target_object_id"]
         if to and to != oid:
@@ -1414,6 +1570,7 @@ def _check_definition(c, uid, oid, row, nd):
 def definition_propose(uid, object_id, expected_revision, definition):
     """정의 제안을 draft 로 저장한다(행당 하나, 새 제안이 이전 제안을 덮는다). 적용은 definition_apply."""
     nd = normalize_definition(definition)
+    given = {f.get("key") for f in definition.get("fields") or [] if isinstance(f, dict)}   # 정규화 전 — 되살린 필드와 구별
     with tx() as c:
         _user_lock(c, uid)   # 잠금 순서 = users 행 → object_defs. 한도는 새 행을 만드는 경로에서만 센다
         if not object_id:
@@ -1444,7 +1601,7 @@ def definition_propose(uid, object_id, expected_revision, definition):
             if row["archived_at"]:
                 raise _bad_def("보관된 오브젝트는 고칠 수 없어요.")
         nd.pop("id", None)
-        _check_definition(c, uid, oid, row, nd)
+        _check_definition(c, uid, oid, row, nd, given)
         pid = new_id("dp")
         c.execute("UPDATE object_defs SET draft_doc=%s, draft_id=%s, draft_base_revision=%s, updated_at=now() WHERE user_id=%s AND id=%s",
                   (Jsonb(nd), pid, row["revision"], uid, oid))
@@ -1455,6 +1612,7 @@ def definition_propose(uid, object_id, expected_revision, definition):
 def definition_apply(uid, object_id, proposal_id, expected_revision):
     """제안 ID·기반 revision 이 맞을 때만 적용. revision+1, history 에 전체 정의 스냅샷, field_defs 동기화(빠진 필드는 archived_at)."""
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → object_defs
         row = _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, object_id))
         if not row:
             raise CrmError("ARG-INVALID", f"오브젝트를 찾을 수 없어요: {object_id}")
@@ -1507,7 +1665,6 @@ def definition_history(uid, object_id):
 # 명세 §0·§1·§3. 시드·편입 적용·잠금 검사는 5단계. 자동 분류·편입 없음 — 미리보기는 행을 쓰지 않는다.
 
 STD_CHOICE_STATES = ("deferred", "refused")   # std_choose 의 기록만 하는 값. incorporated 는 편입 적용 갈래, seeded 는 시드만
-STD_CHOICE_NEEDS_FLAG = True   # 선택 기록(쓰기)이 CRM_FEATURE_STANDARD=on 을 요구하는가 — 명세 §7 미명시, 기본 요구(FEATURE-OFF). 미리보기는 무관
 STD_READY = ("seeded", "incorporated")   # 참조 대상이 이 상태여야 그 참조를 가진 표준 오브젝트를 편입할 수 있다(§3 참조 의존)
 STD_STRUCTURES = ("match", "extend", "missing", "conflict")   # 일치 · 확장(표준 + 사용자 필드) · 누락(같은 key 없음) · 충돌
 # 충돌 사유 — field=None 이면 오브젝트 단위, 아니면 표준 필드 key 하나
@@ -1530,7 +1687,7 @@ def std_doc():
 _STD_SHAPE = ("value_type", "target_kind", "target_object_id", "multiple", "required")   # 표준 필드에서 잠기는 모양(§1)
 
 
-def _std_lock_check(c, uid, oid, row, nd):
+def _std_lock_check(c, uid, oid, row, nd, given=None):
     """편입된 정의(object_defs.std_id 있음)의 잠금(§1) — 깨면 STANDARD-LOCKED(첫 위반 하나). 플래그와 무관하게 항상 검사한다.
     잠금: key · semantic_kind · 표준 필드(field_defs.std_id 있음)의 존재(빼면 보관 = 삭제)·value_type·target_kind·target_object_id
           (= 그 사용자의 대응 오브젝트)·multiple·required · 명세에 있는 select 선택지 값 삭제.
@@ -1549,7 +1706,7 @@ def _std_lock_check(c, uid, oid, row, nd):
                        "WHERE user_id=%s AND object_id=%s AND std_id IS NOT NULL AND archived_at IS NULL ORDER BY position, key",
                     (uid, oid)):
         nf = byk.get(cur["key"])
-        if nf is None:
+        if nf is None or (given is not None and cur["key"] not in given):   # R-3: 정규화가 되살린 표준 필드도 「뺀 것」이다
             raise _std_locked("field_remove", cur["std_id"])
         if any(nf[a] != cur[a] for a in _STD_SHAPE):
             raise _std_locked("field_shape", cur["std_id"])
@@ -1755,21 +1912,17 @@ def _std_seed_try(c, uid, where):
 
 
 def _std_on_create(c, uid):
-    """user_by_subject·user_by_email 의 사용자 INSERT 직후, 같은 트랜잭션. STANDARD=on 일 때만:
+    """user_by_subject·user_by_email 의 사용자 INSERT 직후, 같은 트랜잭션(PR B 부터 플래그 없이 상시):
     std_marks(seed_pending) → savepoint 안에서 시드. 새 사용자 행은 아직 커밋 전이라 다른 트랜잭션이 볼 수 없다(동시 실행 없음)."""
-    if not contract.standard_on():
-        return
     c.execute("INSERT INTO std_marks (user_id,version,state) VALUES (%s,%s,'seed_pending') ON CONFLICT (user_id,version) DO NOTHING",
               (uid, contract.STD_VERSION))
     _std_seed_try(c, uid, "create")
 
 
 def _std_retry(c, uid):
-    """기존 사용자 갈래(조회·이메일 연결)에서 — STANDARD=on 이고 표식이 seed_pending 일 때만 자동 재시도.
+    """기존 사용자 갈래(조회·이메일 연결)에서 — 표식이 seed_pending 일 때만 자동 재시도.
     users 행 잠금(동시 요청 직렬화) → 표식 재확인 → 그 사용자 소유 정의가 출처와 무관하게(초안 포함) 0개일 때만 시드.
     정의가 하나라도 있으면 시드하지 않는다(표식은 seed_pending 그대로 — §3 편입으로). 표식 없는 사용자는 아무것도 안 한다."""
-    if not contract.standard_on():
-        return
     m = _one(c, "SELECT state FROM std_marks WHERE user_id=%s AND version=%s", (uid, contract.STD_VERSION))
     if not m or m["state"] != "seed_pending":
         return
@@ -1789,7 +1942,7 @@ def _std_stale(why):
 
 
 def std_choose(uid, std_key, state, confirmed_meaning=False, expected_revision=None):
-    """표준 오브젝트 하나의 선택(§3). STANDARD off 면 FEATURE-OFF(STD_CHOICE_NEEDS_FLAG — 보류·거절·편입 모두).
+    """표준 오브젝트 하나의 선택(§3). 기능 플래그 없음(PR B — 상시 켬).
     deferred·refused: 기록만, 다시 고르면 덮어쓴다(이력 없음), confirmed_meaning=false. def_id·def_revision = 지금 대응 오브젝트
       (있으면 — 초안·보관 포함). 이 기록은 정의·항목 쓰기를 막지 않는다 — 다른 쓰기 경로는 std_choices 를 읽지 않는다.
     incorporated: 편입 적용(_std_incorporate). confirmed_meaning=True 필수 — 기존 오브젝트면 「같은 뜻 + 잠금 영향 확인」,
@@ -1805,8 +1958,6 @@ def std_choose(uid, std_key, state, confirmed_meaning=False, expected_revision=N
                            "이 오브젝트를 표준과 같은 뜻으로 쓰는지, 잠금 영향을 확인한 뒤 다시 보내세요.")
         if expected_revision is not None and (not isinstance(expected_revision, int) or isinstance(expected_revision, bool)):
             raise CrmError("ARG-INVALID", "expected_revision 은 정수 또는 null 이에요.")
-    if STD_CHOICE_NEEDS_FLAG and not contract.standard_on():
-        raise _feature_off("STANDARD")
     with tx() as c:
         _user_lock(c, uid)   # 잠금 순서 = users 행 → object_defs → std_choices
         if state == "incorporated":
@@ -1978,6 +2129,7 @@ def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unatta
     대상은 역할 매핑 — 없으면 CLASSIFY-OFF, 나머지 칸은 그대로 쓸 수 있다. 저장 키 axes 는 이관 없이 그대로)
     · 쓸 자리·아직 안 붙는 것 → records.notes. None 인 인자는 그대로 두고, 값이 오면(빈 목록·빈 문자열 포함) 바꾼다. 원문은 안 바뀐다."""
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → records
         rec = _one(c, "SELECT id,notes FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
         if not rec:
             raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
@@ -2355,6 +2507,7 @@ def ticket_add(uid, kind, text, via, page="other", tool="", ua_family=""):
     hint = "privacy?" if kind != "privacy" and _PRIVACY_HINT.search(text) else ""
     tid = new_id("tk")
     with tx() as c:
+        _user_lock(c, uid)   # PR B — 삭제 CLI 와 직렬화(삭제 뒤 자료 생성 0). 잠금 순서 = users 행 → tickets(한도 COUNT 는 여전히 전역 잠금 없음)
         n_me = _one(c, f"SELECT count(*) AS n FROM tickets WHERE user_id=%s AND created >= {_KST_TODAY}", (uid,))["n"]
         if n_me >= TICKET_DAILY_USER:
             raise CrmError("RATE-LIMIT", f"오늘 문의는 {TICKET_DAILY_USER}건까지예요.", "내일 다시 보내 주세요.")
@@ -2502,10 +2655,12 @@ def ticket_reclassify(actor_id, tid, kind, reason=None):
 
 def tickets_purge():
     """종결(closed_at 있음) 180일 지난 문의를 지운다. 서버 시작 때 1회(main.lifespan) — 배치 잡 없음.
-    다시 연 문의(closed_at NULL)는 남는다. privacy_log 는 FK 가 없어 그대로. 지운 건수를 돌려준다."""
+    다시 연 문의(closed_at NULL)는 남는다. privacy_log 는 FK 가 없어 그대로. 지운 건수를 돌려준다.
+    PR B: 삭제 통지·contact 가 가리키는 문의(deletion_contacts.ticket_id)는 빼고 — 그 문의는 contacts_purge 가 purge_after 뒤에 지운다."""
     with tx() as c:
         c.execute("SET LOCAL statement_timeout = '5s'")
-        return c.execute("DELETE FROM tickets WHERE closed_at < now() - make_interval(days => %s)", (TICKET_KEEP_DAYS,)).rowcount
+        return c.execute("DELETE FROM tickets AS t WHERE t.closed_at < now() - make_interval(days => %s) "
+                         "AND NOT EXISTS (SELECT 1 FROM deletion_contacts d WHERE d.ticket_id = t.id)", (TICKET_KEEP_DAYS,)).rowcount
 
 
 # ── 관리자 · 세션 끊기 · 차단 (β2) ──────────────────────
@@ -2516,7 +2671,8 @@ def tickets_purge():
 ADMIN_LOCK = 0x63616E6F6E0B32       # 관리자 변경·bootstrap·복구를 직렬화하는 advisory lock 키(상수)
 AUDIT_KEEP_DAYS = 365
 AUDIT_LIST = 100                    # /admin/setup 감사 로그 최근 건수
-ADMIN_ACTIONS = ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock")
+ADMIN_ACTIONS = ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock",
+                 "delete_notify", "delete_run", "delete_cancel")   # 삭제 CLI 3종(PR B) — detail 은 ticket_id·result 만
 _iat_missing_logged = False
 
 
@@ -2526,9 +2682,9 @@ def _audit(c, action, actor_id, target_id, detail=None):
 
 
 def session_user(uid):
-    """웹 세션 검사용 users 행(PK 1건) — {id, role, blocked_at, web_revoked_before}, datetime 그대로. 없으면 None."""
+    """웹 세션 검사용 users 행(PK 1건) — {id, role, blocked_at, web_revoked_before, status}, datetime 그대로. 없으면 None."""
     with tx() as c:
-        return _one(c, "SELECT id,role,blocked_at,web_revoked_before FROM users WHERE id=%s", (uid,))
+        return _one(c, "SELECT id,role,blocked_at,web_revoked_before,status FROM users WHERE id=%s", (uid,))
 
 
 def check_token_user(row, iat):
@@ -2536,6 +2692,8 @@ def check_token_user(row, iat):
     차단이면 AUTH-BLOCKED. mcp_revoked_before 가 있고 토큰 iat 가 그보다 앞이면 AUTH-REVOKED.
     토큰에 iat 가 없으면 revoked 검사는 건너뛰고 로그 1줄(프로세스 최초 1회) — 차단은 그대로 동작."""
     global _iat_missing_logged
+    if row.get("status") == "deleted":   # PR B 방어 — 삭제된 계정 행은 조회 갈래에서 이미 거른다
+        raise CrmError(*_REVOKED)
     if row.get("blocked_at"):
         raise CrmError("AUTH-BLOCKED", "이 계정은 지금 쓸 수 없어요.", "운영자에게 문의해 주세요.")
     rb = row.get("mcp_revoked_before")
@@ -2640,6 +2798,540 @@ def admin_audit_purge():
         c.execute("SET LOCAL statement_timeout = '5s'")
         return c.execute("DELETE FROM admin_audit WHERE at < now() - make_interval(days => %s) "
                          "AND action NOT IN ('bootstrap','recover')", (AUDIT_KEEP_DAYS,)).rowcount
+
+
+# ── 계정 삭제 CLI (PR B 결정 4·5·8·10) — admin_cli.py delete-notify·preview·run·cancel 이 부른다 ──
+# 대상 = 「개인정보 요청」 문의(kind=privacy)의 소유자. 이메일로 대상을 고르지 않는다. 실행자는 활성 관리자, 대상은 관리자가 아니어야 한다.
+# 통지(notify) → 유예 7일 → 미리보기(preview, 읽기 전용) → 실행(run, 한 트랜잭션: 잠금·재조회·자료 삭제·contact 이동·계정 닫기·이력·감사).
+# 남기는 것: users 행(자리값으로 갱신) · deletion_contacts 행 · 그 삭제 요청 문의 1건과 ticket_history · admin_audit · privacy_log
+# (실행이 그 요청의 privacy_log 행에 처리일·result=done 을 채운다 — 다른 행은 건드리지 않는다).
+# users.email 자리값 `deleted:<uid>` — email 열엔 형식 CHECK 가 없고(UNIQUE 만) uid 가 유일해 겹치지 않는다. '@' 가 없어 인증 서버가
+# 검증된 이메일로 내줄 수 없는 값이라 로그인 경로(user_by_subject 의 이메일 조회)로는 이 행을 찾을 수 없다.
+# 감사 detail 은 ticket_id·result 만. 반환값에 이메일·표시 이름·본문·별칭·출처 값·답변이 없다(건수·시각·코드만).
+
+DELETE_GRACE_DAYS = 7
+CONTACT_KEEP_DAYS = 365
+DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. 이메일과 이 삭제 요청 문의·처리 이력은 처리 증빙과 분쟁 대응을 위해 "
+                 "삭제 실행일부터 1년 보관한 뒤 파기합니다. 삭제 결과는 이 문의 이력에 남습니다. "
+                 "그 전에 취소하려면 이 문의에 「취소」라고 남겨 주세요.")
+# 지울 테이블 = schema.sql 에서 user_id 열을 가진 테이블 − deletion_contacts. 순서 = 보호 Lookup(NO ACTION·RESTRICT) 자식부터.
+# tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
+DELETE_TABLES = ("item_links", "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
+                 "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
+                 "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
+DELETE_KEEP_TABLES = ("deletion_contacts",)
+
+
+def _delete_fault(step):
+    """시험 전용 실패 주입 자리 — 실행 단계(③~⑦) 사이마다 부른다. 운영에선 아무것도 안 한다."""
+
+
+def _del_err(code, msg, act=""):
+    return CrmError(code, msg, act)
+
+
+def _del_actor(c, actor_id):
+    a = _one(c, "SELECT role,blocked_at,status FROM users WHERE id=%s", (str(actor_id or ""),))
+    if not a or a["role"] != "admin" or a["blocked_at"] is not None or a["status"] != "active":
+        raise CrmError("FORBIDDEN", "활성 관리자만 할 수 있어요.", "--actor 에 관리자 user id 를 넣으세요.")
+
+
+def _del_ticket(c, tid, lock=False):
+    """문의 → (문의 행, 소유자 행). 공통 거절: 없음 · kind≠privacy · 소유자가 관리자 · 소유자 삭제됨. lock 이면 소유자 → 문의 순으로 잠근다."""
+    t = _one(c, "SELECT id,user_id,kind,status,created FROM tickets WHERE id=%s", (str(tid or ""),))
+    if not t:
+        raise CrmError(*_TICKET_NF)
+    # lock: 소유자 users 행 → 문의 행. 사용자 쓰기(_user_lock)와 같은 잠금(FOR NO KEY UPDATE)·순서 — 상태 필터 없이 잠그고 아래에서 거절한다
+    u = _one(c, "SELECT id,role,status,email,auth_subject FROM users WHERE id=%s" + (" FOR NO KEY UPDATE" if lock else ""), (t["user_id"],))
+    if lock:
+        t = _one(c, "SELECT id,user_id,kind,status,created FROM tickets WHERE id=%s FOR UPDATE", (t["id"],))
+    if t["kind"] != "privacy":
+        raise _del_err("DELETE-NOT-PRIVACY", "개인정보 요청 문의가 아니에요.", "삭제 요청은 kind=privacy 문의로만 처리해요.")
+    if u["role"] == "admin":
+        raise _del_err("DELETE-ADMIN-TARGET", "관리자 계정은 지울 수 없어요.", "먼저 관리자 권한을 회수하세요.")
+    if u["status"] == "deleted":
+        raise _del_err("DELETE-ALREADY", "이미 삭제된 계정이에요.")
+    return t, u
+
+
+def _del_counts(c, uid, keep_tid):
+    out = {}
+    for t in DELETE_TABLES:
+        extra = " AND id <> %s" if t == "tickets" else ""
+        out[t] = _one(c, f"SELECT count(*) AS n FROM {t} WHERE user_id=%s{extra}", (uid, keep_tid) if extra else (uid,))["n"]
+    return out
+
+
+def _del_value(uid, t, contact, counts):
+    """미리보기 값 — 대상 자료 건수 · contact 행 · 문의 상태로 만든 짧은 해시. 실행이 잠근 뒤 다시 만들어 비교한다."""
+    raw = json.dumps({"uid": uid, "ticket": [t["id"], t["status"]], "counts": counts,
+                      "contact": [contact["ticket_id"], contact["notified_at"].isoformat(), contact["delete_after"].isoformat(),
+                                  contact["deleted_at"].isoformat() if contact["deleted_at"] else None] if contact else None},
+                     sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()[:12]
+
+
+def _contact_row(c, uid, lock=False):
+    return _one(c, "SELECT user_id,ticket_id,notified_at,delete_after,deleted_at FROM deletion_contacts WHERE user_id=%s"
+                + (" FOR UPDATE" if lock else ""), (uid,))
+
+
+def delete_notify(actor_id, tid):
+    """사전 통지 — 한 트랜잭션: 고정 통지문을 문의 공개 답변에(상태 → doing) + 공개 이력 + deletion_contacts 행 + 감사 delete_notify.
+    이미 통지 행이 있으면 거절. 반환 {ticket_id, notified_at, delete_after, within_10_days}."""
+    with tx() as c:
+        _del_actor(c, actor_id)
+        t, u = _del_ticket(c, tid, lock=True)
+        if _contact_row(c, u["id"], lock=True):
+            raise _del_err("DELETE-NOTIFIED", "이미 통지했어요.", "delete-preview 로 상태를 보세요. 취소는 delete-cancel.")
+        c.execute("UPDATE tickets SET reply=%s, reply_at=now(), public_updated=now(), updated=now(), status='doing', closed_at=NULL "
+                  "WHERE id=%s", (DELETE_NOTICE, t["id"]))
+        if t["status"] != "doing":
+            _ticket_event(c, t["id"], actor_id, "public", "status", t["status"], "doing")
+        _ticket_event(c, t["id"], actor_id, "public", "reply")
+        r = _one(c, "INSERT INTO deletion_contacts (user_id,ticket_id,requested_at,notified_at,delete_after) "
+                    "VALUES (%s,%s,%s,now(),now() + make_interval(days => %s)) RETURNING notified_at,delete_after, "
+                    "(now() AT TIME ZONE 'Asia/Seoul')::date <= (%s::timestamptz AT TIME ZONE 'Asia/Seoul')::date + %s AS ok10",
+                 (u["id"], t["id"], t["created"], DELETE_GRACE_DAYS, t["created"], PRIVACY_DAYS))
+        _audit(c, "delete_notify", actor_id, u["id"], {"ticket_id": t["id"], "result": "ok"})
+    return {"ticket_id": t["id"], "notified_at": r["notified_at"], "delete_after": r["delete_after"], "within_10_days": r["ok10"]}
+
+
+def delete_preview(actor_id, tid):
+    """미리보기 — 읽기 전용(READ ONLY). 지울 테이블별 건수 · 보존(문의 1 · 이력 n · contact) · 실행 가능 여부와 사유 코드 · 미리보기 값."""
+    with tx() as c:
+        c.execute("SET TRANSACTION READ ONLY")
+        _del_actor(c, actor_id)
+        t, u = _del_ticket(c, tid)
+        contact = _contact_row(c, u["id"])
+        counts = _del_counts(c, u["id"], t["id"])
+        hist = _one(c, "SELECT count(*) AS n FROM ticket_history WHERE ticket_id=%s", (t["id"],))["n"]
+        reasons = []
+        if not contact:
+            reasons.append("no_notice")
+        elif contact["ticket_id"] != t["id"]:
+            reasons.append("other_ticket")
+        elif _one(c, "SELECT now() < %s AS early", (contact["delete_after"],))["early"]:
+            reasons.append("grace")
+        value = _del_value(u["id"], t, contact, counts)
+    return {"ticket_id": t["id"], "counts": counts, "total": sum(counts.values()),
+            "keep": {"tickets": 1, "ticket_history": hist, "deletion_contacts": 1 if contact else 0},
+            "notified_at": contact["notified_at"] if contact else None, "delete_after": contact["delete_after"] if contact else None,
+            "ready": not reasons, "reasons": reasons, "value": value}
+
+
+def delete_run(actor_id, tid, value):
+    """실행 — 한 트랜잭션. ① 소유자 행 잠금(사용자 쓰기와 같은 순서) + contact FOR UPDATE ② 재조회(공통 거절 · 통지 있음 · 유예 끝남 ·
+    미리보기 값 일치) ③ 자료 삭제(DELETE_TABLES, 보존 문의 제외) ④ contact 로 이메일·auth_subject 이동, deleted_at·purge_after
+    ⑤ users 자리값·상태 deleted·끊기 ⑥ 보존 문의 done + 공개 이력(status·deleted) ⑦ 감사 delete_run ok.
+    실패하면 전체 롤백 뒤 별도 트랜잭션으로 감사 delete_run(result = 오류 코드) — 실행자가 활성 관리자일 때만. 반환 {ticket_id, deleted, deleted_at}."""
+    state = {"actor_ok": False, "target": None}
+    try:
+        with tx() as c:
+            _del_actor(c, actor_id)
+            state["actor_ok"] = True
+            t, u = _del_ticket(c, tid, lock=True)
+            uid = state["target"] = u["id"]
+            contact = _contact_row(c, uid, lock=True)
+            if not contact or contact["ticket_id"] != t["id"]:
+                raise _del_err("DELETE-NO-NOTICE", "이 문의로 통지한 기록이 없어요.", "delete-notify 로 먼저 통지하세요.")
+            if contact["deleted_at"] is not None:
+                raise _del_err("DELETE-ALREADY", "이미 삭제된 계정이에요.")
+            if _one(c, "SELECT now() < %s AS early", (contact["delete_after"],))["early"]:
+                raise _del_err("DELETE-GRACE", "유예 기간(통지 뒤 7일)이 끝나지 않았어요.", "delete_after 뒤에 다시 하세요.")
+            counts = _del_counts(c, uid, t["id"])
+            if str(value or "") != _del_value(uid, t, contact, counts):
+                raise _del_err("DELETE-STALE", "미리보기 뒤에 자료가 바뀌었어요.", "delete-preview 를 다시 보고 새 값으로 실행하세요.")
+            _delete_fault(3)
+            for tb in DELETE_TABLES:   # ③
+                if tb == "tickets":
+                    c.execute("DELETE FROM tickets WHERE user_id=%s AND id <> %s", (uid, t["id"]))
+                else:
+                    c.execute(f"DELETE FROM {tb} WHERE user_id=%s", (uid,))
+            _delete_fault(4)
+            at = _one(c, "UPDATE deletion_contacts SET email=%s, auth_subject=%s, deleted_at=now(), "   # ④
+                         "purge_after = now() + make_interval(days => %s) WHERE user_id=%s RETURNING deleted_at",
+                      (u["email"], u["auth_subject"], CONTACT_KEEP_DAYS, uid))["deleted_at"]
+            _delete_fault(5)
+            c.execute("UPDATE users SET email=%s, auth_subject=NULL, display_name=NULL, nav_accepted_at=NULL, status='deleted', "   # ⑤
+                      "deleted_at=now(), web_revoked_before=now(), mcp_revoked_before=now(), desk_hidden=false WHERE id=%s",
+                      (f"deleted:{uid}", uid))
+            _delete_fault(6)
+            c.execute("UPDATE tickets SET status='done', closed_at=COALESCE(closed_at, now()), updated=now(), public_updated=now() "   # ⑥
+                      "WHERE id=%s", (t["id"],))
+            if t["status"] != "done":
+                _ticket_event(c, t["id"], actor_id, "public", "status", t["status"], "done")
+            _ticket_event(c, t["id"], actor_id, "public", "deleted")
+            # 그 삭제 요청의 처리 사실(privacy_log, 식별정보 없음) — 종결(ticket_set_status done)과 같은 값: 처리일·result done
+            c.execute("UPDATE privacy_log SET notified = COALESCE(notified, (now() AT TIME ZONE 'Asia/Seoul')::date), result='done' "
+                      "WHERE ticket_id=%s", (t["id"],))
+            _delete_fault(7)
+            _audit(c, "delete_run", actor_id, uid, {"ticket_id": t["id"], "result": "ok"})   # ⑦
+    except Exception as e:
+        if state["actor_ok"]:
+            code = e.code if isinstance(e, CrmError) else "EXC"
+            with tx() as c:
+                _audit(c, "delete_run", actor_id, state["target"], {"ticket_id": str(tid or ""), "result": code})
+        raise
+    with _usage_lock:   # 이 프로세스의 메모리 카운터(서버 프로세스는 usage_flush 가 deleted uid 를 버린다)
+        for k in [k for k in _usage if k[1] == uid]:
+            del _usage[k]
+    return {"ticket_id": t["id"], "deleted": sum(counts.values()), "deleted_at": at}
+
+
+def delete_cancel(actor_id, tid):
+    """취소 — 유예 중(deleted_at NULL) contact 행 삭제 + 감사 delete_cancel. 사용자에게 알리는 답변은 운영자가 /admin 문의 화면에서 쓴다."""
+    with tx() as c:
+        _del_actor(c, actor_id)
+        t, u = _del_ticket(c, tid, lock=True)
+        contact = _contact_row(c, u["id"], lock=True)
+        if not contact or contact["ticket_id"] != t["id"] or contact["deleted_at"] is not None:
+            raise _del_err("DELETE-NO-NOTICE", "취소할 통지가 없어요.")
+        c.execute("DELETE FROM deletion_contacts WHERE user_id=%s", (u["id"],))
+        _audit(c, "delete_cancel", actor_id, u["id"], {"ticket_id": t["id"], "result": "ok"})
+    return {"ticket_id": t["id"], "cancelled": True}
+
+
+def contacts_purge():
+    """purge_after 지난 contact — 그 문의(ticket_history cascade) 삭제 → contact 행 삭제, 한 트랜잭션. 유예 중 행(deleted_at NULL)은 대상 아님.
+    main.purge_once 가 부른다. 지운 contact 수."""
+    with tx() as c:
+        c.execute("SET LOCAL statement_timeout = '5s'")
+        rows = _all(c, "SELECT user_id,ticket_id FROM deletion_contacts WHERE purge_after IS NOT NULL AND purge_after < now() FOR UPDATE")
+        if not rows:
+            return 0
+        c.execute("DELETE FROM tickets WHERE id = ANY(%s)", ([r["ticket_id"] for r in rows],))
+        return c.execute("DELETE FROM deletion_contacts WHERE user_id = ANY(%s)", ([r["user_id"] for r in rows],)).rowcount
+
+
+# ── PR B 코어: 나(users 행) · 사람 · 출처 · 출처 요약/반응 ─────────────
+# 설계: notes PR-B 구현계획 §3~§5. 모든 조회·쓰기는 user_id 로 묶고, 남의 id 와 없는 id 는 같은 NOT-FOUND 다.
+# 수정·삭제는 expected_revision 필수(다르면 CONFLICT), 생성은 받지 않는다. 바뀔 때마다 revision +1(같은 값이면 무동작).
+# 출처 요약/반응은 records 와 다른 테이블이라 인용 적격 경로(후보 근거·관계 대상·record_attach)에 들어가지 않는다 — 그 경로는 records 만 찾는다.
+
+LABEL_MAX = 80                     # 표시 이름·별칭 글자 수(schema CHECK 와 같다)
+REFLECTION_MAX = 8000              # 요약/반응 본문 글자 수(schema CHECK 와 같다)
+REFLECTION_KINDS = ("summary", "reaction")
+REFLECTION_REVIEWS = ("pending", "reviewed")
+PAGE_DEFAULT, PAGE_MAX = 50, 100
+_PERSON_COLS = "id,alias,revision,created,updated"
+_REFL_COLS = "id,source_id,kind,body,review,revision,reviewed_revision,reviewed_at,created,updated"
+
+
+def _label(v, what):
+    """표시 이름·별칭 — 앞뒤 공백 제거 뒤 1~80자, 줄바꿈·제어문자 거절. 자동으로 채우지 않는다."""
+    if not isinstance(v, str):
+        raise CrmError("ARG-INVALID", f"{what}은 문자열이에요.")
+    v = v.strip()
+    if not v:
+        raise CrmError("ARG-INVALID", f"{what}이 비었어요.")
+    if len(v) > LABEL_MAX:
+        raise CrmError("ARG-INVALID", f"{what}은 {LABEL_MAX}자까지예요.")
+    if any(unicodedata.category(ch) in ("Cc", "Zl", "Zp") for ch in v):
+        raise CrmError("ARG-INVALID", f"{what}에 줄바꿈·제어문자는 넣을 수 없어요.")
+    return v
+
+
+def _rev_arg(v, required=True):
+    if v is None and not required:
+        return None
+    if not isinstance(v, int) or isinstance(v, bool):
+        raise CrmError("ARG-INVALID", "expected_revision 은 정수예요.")
+    return v
+
+
+def _nf(what):
+    return CrmError("NOT-FOUND", f"{what}을 찾지 못했어요.", "목록을 다시 보고 id 를 확인하세요.")
+
+
+def _page_args(cursor, limit):
+    """목록 limit(기본 50·최대 100) · cursor(불투명 문자열 — (created, id) 를 담는다, 빈 값 = 처음)."""
+    if limit is None:
+        limit = PAGE_DEFAULT
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= PAGE_MAX:
+        raise CrmError("ARG-INVALID", f"limit 은 1~{PAGE_MAX} 정수예요.")
+    if not cursor:
+        return None, limit
+    try:
+        at, cid = json.loads(base64.urlsafe_b64decode(str(cursor).encode()).decode())
+        return (_dt.datetime.fromisoformat(at), str(cid)), limit
+    except Exception:
+        raise CrmError("ARG-INVALID", "cursor 가 맞지 않아요.", "처음부터(cursor 빈 값) 다시 보세요.")
+
+
+def _page(rows, limit):
+    """limit+1 개를 읽어 다음 cursor 를 만든다. 반환 (행, next_cursor 또는 "")."""
+    if len(rows) <= limit:
+        return rows, ""
+    rows = rows[:limit]
+    last = rows[-1]
+    return rows, base64.urlsafe_b64encode(json.dumps([last["created"].isoformat(), last["id"]]).encode()).decode()
+
+
+def _like(q):
+    return "%" + str(q).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+# ── 나 ──
+
+def display_name_set(uid, display_name):
+    """표시 이름 저장(「나」 = users.display_name 한 곳). 빈 값으로 바꾸기 거절. 관문 면제(NAME_EXEMPT). 반환 {display_name}."""
+    name = _label(display_name, "표시 이름")
+    with tx() as c:
+        _user_lock(c, uid)
+        c.execute("UPDATE users SET display_name=%s WHERE id=%s", (name, uid))
+    return {"display_name": name}
+
+
+def nav_accept(uid):
+    """새 탐색 수락(계정별 1회) — nav_accepted_at = now(), 이미 있으면 그대로(멱등). 표준 편입 상태는 읽지도 바꾸지도 않는다."""
+    with tx() as c:
+        _user_lock(c, uid)
+        r = _one(c, "UPDATE users SET nav_accepted_at = COALESCE(nav_accepted_at, now()) WHERE id=%s RETURNING nav_accepted_at", (uid,))
+    return {"nav": "new", "accepted_at": r["nav_accepted_at"].isoformat()}
+
+
+def me_home(uid):
+    """「나」 홈 데이터 — 표시 이름 · 새 탐색 수락 여부 · 개수. 기존 조회로 센다(따로 저장하지 않는다).
+    판단 = 확정 후보(지워지지 않은 기록) · 기준 = principle 오브젝트의 적용·미보관·확정 항목 · 결정 = event 오브젝트의 적용·미보관 항목."""
+    with tx() as c:
+        u = _one(c, "SELECT display_name,nav_accepted_at FROM users WHERE id=%s", (uid,))
+        if not u:
+            raise CrmError("AUTH-INVALID", "사용자를 찾을 수 없어요. 다시 로그인하세요.")
+        n = lambda sql: _one(c, sql, (uid,))["n"]
+        counts = {
+            "claims": n("SELECT count(*) AS n FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
+                        "AND r.deleted_at IS NULL WHERE c.user_id=%s AND c.decision='confirmed'"),
+            "principles": n("SELECT count(*) AS n FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                            "WHERE i.user_id=%s AND o.semantic_kind='principle' AND i.revision > 0 AND i.archived_at IS NULL "
+                            "AND i.decision='confirmed'"),
+            "decisions": n("SELECT count(*) AS n FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                           "WHERE i.user_id=%s AND o.semantic_kind='event' AND i.revision > 0 AND i.archived_at IS NULL"),
+            "people": n("SELECT count(*) AS n FROM people WHERE user_id=%s"),
+            "sources": n("SELECT count(*) AS n FROM sources WHERE user_id=%s"),
+            "reflections": n("SELECT count(*) AS n FROM source_reflections WHERE user_id=%s"),
+        }
+    return {"display_name": u["display_name"], "nav": "new" if u["nav_accepted_at"] else "old", "counts": counts}
+
+
+# ── 사람 (별칭 이름표만) ──
+
+def person_list(uid, query="", cursor="", limit=PAGE_DEFAULT):
+    """사람 목록(최근 순). query = 별칭 부분 일치. 반환 {people, next_cursor}."""
+    after, limit = _page_args(cursor, limit)
+    sql, args = f"SELECT {_PERSON_COLS} FROM people WHERE user_id=%s", [uid]
+    if query:
+        sql += " AND alias ILIKE %s"; args.append(_like(query))
+    if after:
+        sql += " AND (created, id) < (%s, %s)"; args += list(after)
+    with tx() as c:
+        rows, nxt = _page(_all(c, sql + " ORDER BY created DESC, id DESC LIMIT %s", args + [limit + 1]), limit)
+    return {"people": [_iso(r) for r in rows], "next_cursor": nxt}
+
+
+def people_all(uid):
+    """/api/state 용 — 본인 사람 전부(최근 순)."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, f"SELECT {_PERSON_COLS} FROM people WHERE user_id=%s ORDER BY created DESC, id DESC", (uid,))]
+
+
+def person_get(uid, pid):
+    with tx() as c:
+        r = _one(c, f"SELECT {_PERSON_COLS} FROM people WHERE user_id=%s AND id=%s", (uid, str(pid or "")))
+    if not r:
+        raise _nf("그 사람")
+    return _iso(r)
+
+
+def person_save(uid, alias, person_id="", expected_revision=None):
+    """person_id 없으면 생성(일일 한도 people, revision 0), 있으면 별칭 수정(expected_revision 필수, revision +1). 별칭 외 필드는 없다."""
+    alias = _label(alias, "별칭")
+    with tx() as c:
+        if not person_id:
+            if expected_revision is not None:
+                raise CrmError("ARG-INVALID", "새로 만들 땐 expected_revision 을 보내지 않아요.")
+            _daily_gate(c, uid, "people")
+            pid = new_id("p")
+            c.execute("INSERT INTO people (user_id,id,alias) VALUES (%s,%s,%s)", (uid, pid, alias))
+        else:
+            rev = _rev_arg(expected_revision)
+            _user_lock(c, uid)
+            pid = str(person_id)
+            r = _one(c, "SELECT revision,alias FROM people WHERE user_id=%s AND id=%s FOR UPDATE", (uid, pid))
+            if not r:
+                raise _nf("그 사람")
+            if r["revision"] != rev:
+                raise _conflict(f"지금 revision {r['revision']}")
+            if r["alias"] != alias:
+                c.execute("UPDATE people SET alias=%s, revision=revision+1, updated=now() WHERE user_id=%s AND id=%s", (alias, uid, pid))
+        return _iso(_one(c, f"SELECT {_PERSON_COLS} FROM people WHERE user_id=%s AND id=%s", (uid, pid)))
+
+
+def person_delete(uid, person_id, expected_revision):
+    rev = _rev_arg(expected_revision)
+    with tx() as c:
+        _user_lock(c, uid)
+        r = _one(c, "SELECT revision FROM people WHERE user_id=%s AND id=%s FOR UPDATE", (uid, str(person_id or "")))
+        if not r:
+            raise _nf("그 사람")
+        if r["revision"] != rev:
+            raise _conflict(f"지금 revision {r['revision']}")
+        c.execute("DELETE FROM people WHERE user_id=%s AND id=%s", (uid, str(person_id)))
+    return {"id": str(person_id), "deleted": True}
+
+
+# ── 출처 ──
+
+_SRC_COLS = "id,kind,name,location"
+
+
+def source_list(uid, query="", cursor="", limit=PAGE_DEFAULT):
+    """출처 목록(최근 순, 계약 모양 {id,kind,name,location}). query = 이름·위치 부분 일치. 반환 {sources, next_cursor}."""
+    after, limit = _page_args(cursor, limit)
+    sql, args = f"SELECT {_SRC_COLS},created FROM sources WHERE user_id=%s", [uid]
+    if query:
+        sql += " AND (name ILIKE %s OR location ILIKE %s)"; args += [_like(query)] * 2
+    if after:
+        sql += " AND (created, id) < (%s, %s)"; args += list(after)
+    with tx() as c:
+        rows, nxt = _page(_all(c, sql + " ORDER BY created DESC, id DESC LIMIT %s", args + [limit + 1]), limit)
+    return {"sources": [{k: r[k] for k in ("id", "kind", "name", "location")} for r in rows], "next_cursor": nxt}
+
+
+def source_get(uid, sid):
+    """출처 하나 + 개수(지워지지 않은 기록 · 요약 · 반응)."""
+    with tx() as c:
+        r = _one(c, f"SELECT {_SRC_COLS} FROM sources WHERE user_id=%s AND id=%s", (uid, str(sid or "")))
+        if not r:
+            raise _nf("그 출처")
+        rec = _one(c, "SELECT count(*) AS n FROM records WHERE user_id=%s AND source_id=%s AND deleted_at IS NULL", (uid, r["id"]))["n"]
+        by = {x["kind"]: x["n"] for x in _all(c, "SELECT kind, count(*) AS n FROM source_reflections WHERE user_id=%s AND source_id=%s "
+                                                 "GROUP BY kind", (uid, r["id"]))}
+    return {**dict(r), "counts": {"records": rec, "summaries": by.get("summary", 0), "reactions": by.get("reaction", 0)}}
+
+
+def source_create(uid, kind, name, location=""):
+    """출처 찾거나 만들기 — record_add 와 같은 규칙((kind, name, location) 유일). 기록 없이 만들 수 있다. 반환 {id,kind,name,location}."""
+    k, n, loc = _source_norm({"kind": kind, "name": name, "location": location})
+    with tx() as c:
+        _user_lock(c, uid)
+        sid = _source_find_or_create(c, uid, k, n, loc)
+        return dict(_one(c, f"SELECT {_SRC_COLS} FROM sources WHERE user_id=%s AND id=%s", (uid, sid)))
+
+
+# ── 출처 요약/반응 (자기 성찰 · 검토 대기/완료 · 인용 근거 아님) ──
+
+def _refl_args(kind, body):
+    if kind not in REFLECTION_KINDS:
+        raise CrmError("ARG-INVALID", "kind 는 summary(내 요약)·reaction(내 반응) 중 하나예요.")
+    if not isinstance(body, str) or not body.strip():
+        raise CrmError("ARG-INVALID", "본문이 비었어요.")
+    if len(body) > REFLECTION_MAX:
+        raise CrmError("ARG-INVALID", f"본문은 {REFLECTION_MAX}자까지예요.")
+    return body
+
+
+def _refl_lock(c, uid, rid):
+    r = _one(c, f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%s AND id=%s FOR UPDATE", (uid, str(rid or "")))
+    if not r:
+        raise _nf("그 요약/반응")
+    return r
+
+
+def _refl_get(c, uid, rid):
+    return _iso(_one(c, f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%s AND id=%s", (uid, rid)))
+
+
+def source_reflection_list(uid, source_id="", kind="", review="", cursor="", limit=PAGE_DEFAULT):
+    """요약/반응 목록(최근 순). 거르기: 출처·유형·검토 상태. 반환 {reflections, next_cursor}."""
+    if kind and kind not in REFLECTION_KINDS:
+        raise CrmError("ARG-INVALID", "kind 는 summary·reaction 중 하나예요.")
+    if review and review not in REFLECTION_REVIEWS:
+        raise CrmError("ARG-INVALID", "review 는 pending·reviewed 중 하나예요.")
+    after, limit = _page_args(cursor, limit)
+    sql, args = f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%s", [uid]
+    for col, v in (("source_id", source_id), ("kind", kind), ("review", review)):
+        if v:
+            sql += f" AND {col}=%s"; args.append(v)
+    if after:
+        sql += " AND (created, id) < (%s, %s)"; args += list(after)
+    with tx() as c:
+        rows, nxt = _page(_all(c, sql + " ORDER BY created DESC, id DESC LIMIT %s", args + [limit + 1]), limit)
+    return {"reflections": [_iso(r) for r in rows], "next_cursor": nxt}
+
+
+def reflections_all(uid):
+    """/api/state 용 — 본인 요약/반응 전부(최근 순)."""
+    with tx() as c:
+        return [_iso(r) for r in _all(c, f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%s ORDER BY created DESC, id DESC",
+                                      (uid,))]
+
+
+def source_reflection_get(uid, rid):
+    with tx() as c:
+        r = _one(c, f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%s AND id=%s", (uid, str(rid or "")))
+    if not r:
+        raise _nf("그 요약/반응")
+    return _iso(r)
+
+
+def source_reflection_save(uid, source_id, kind, body, reflection_id="", expected_revision=None):
+    """reflection_id 없으면 생성(검토 대기, 일일 한도 reflections), 있으면 수정(expected_revision 필수). 출처는 본인 것만(남의 것 = 없는 것).
+    검토 완료 뒤 본문·유형·출처가 바뀌면 검토 대기로 돌리고 검토 값을 비운다. 같은 값이면 무동작. 범위 확인 인자는 없다(결정 7)."""
+    body = _refl_args(kind, body)
+    sid = str(source_id or "")
+    with tx() as c:
+        if not reflection_id:
+            if expected_revision is not None:
+                raise CrmError("ARG-INVALID", "새로 만들 땐 expected_revision 을 보내지 않아요.")
+            _daily_gate(c, uid, "reflections")
+        else:
+            rev = _rev_arg(expected_revision)
+            _user_lock(c, uid)
+        if not _one(c, "SELECT 1 AS x FROM sources WHERE user_id=%s AND id=%s", (uid, sid)):
+            raise _nf("그 출처")
+        if not reflection_id:
+            rid = new_id("sr")
+            c.execute("INSERT INTO source_reflections (user_id,id,source_id,kind,body) VALUES (%s,%s,%s,%s,%s)", (uid, rid, sid, kind, body))
+            return _refl_get(c, uid, rid)
+        r = _refl_lock(c, uid, reflection_id)
+        if r["revision"] != rev:
+            raise _conflict(f"지금 revision {r['revision']}")
+        if (r["source_id"], r["kind"], r["body"]) != (sid, kind, body):
+            c.execute("UPDATE source_reflections SET source_id=%s, kind=%s, body=%s, review='pending', reviewed_revision=NULL, "
+                      "reviewed_at=NULL, revision=revision+1, updated=now() WHERE user_id=%s AND id=%s", (sid, kind, body, uid, r["id"]))
+        return _refl_get(c, uid, r["id"])
+
+
+def source_reflection_review(uid, reflection_id, expected_revision, reviewed):
+    """검토 완료(reviewed=true) / 검토 대기로(false). expected_revision 이 지금 revision 일 때만. 바뀌면 revision +1 —
+    완료면 reviewed_revision = 바뀐 revision(본 내용의 판)·reviewed_at = now(). 이미 그 상태면 무동작. 검토 완료 ≠ 판단 확정."""
+    if not isinstance(reviewed, bool):
+        raise CrmError("ARG-INVALID", "reviewed 는 true·false 예요.")
+    rev = _rev_arg(expected_revision)
+    with tx() as c:
+        _user_lock(c, uid)
+        r = _refl_lock(c, uid, reflection_id)
+        if r["revision"] != rev:
+            raise _conflict(f"지금 revision {r['revision']}")
+        if reviewed and r["review"] != "reviewed":
+            c.execute("UPDATE source_reflections SET review='reviewed', revision=revision+1, reviewed_revision=revision+1, reviewed_at=now(), "
+                      "updated=now() WHERE user_id=%s AND id=%s", (uid, r["id"]))
+        elif not reviewed and r["review"] != "pending":
+            c.execute("UPDATE source_reflections SET review='pending', revision=revision+1, reviewed_revision=NULL, reviewed_at=NULL, "
+                      "updated=now() WHERE user_id=%s AND id=%s", (uid, r["id"]))
+        return _refl_get(c, uid, r["id"])
+
+
+def source_reflection_delete(uid, reflection_id, expected_revision):
+    rev = _rev_arg(expected_revision)
+    with tx() as c:
+        _user_lock(c, uid)
+        r = _refl_lock(c, uid, reflection_id)
+        if r["revision"] != rev:
+            raise _conflict(f"지금 revision {r['revision']}")
+        c.execute("DELETE FROM source_reflections WHERE user_id=%s AND id=%s", (uid, r["id"]))
+    return {"id": r["id"], "deleted": True}
 
 
 # ── 상태 한 벌 (화면과 도구가 같은 것을 본다) ─────────────

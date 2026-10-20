@@ -16,13 +16,17 @@ import structure_svg
 
 UNKNOWN = "모름(정의 미확인)"
 
-# 코어 5 — (공개 ID, schema.sql 테이블 = API 이름, 표시명, 서비스 설명). 공개 ID 는 structure_svg.CORE_TEXT 키(record·candidate)와 겹치지 않게 접두를 단다.
+# 코어 8 — (공개 ID, schema.sql 테이블 = API 이름, 표시명, 서비스 설명). 공개 ID 는 structure_svg.CORE_TEXT 키(record·candidate)와 겹치지 않게 접두를 단다.
 # 표시명 = 기존 정본(web.CORE_LABEL · app.html LABELS)과 같은 말(시험이 대조). 출처는 두 정본에 없어 app.html 출처 화면 용어(「출처」)를 쓴다
 CORE = (("core-question", "questions", "질문", "사용자가 세운 질문이에요. 기록과 후보가 이 질문에 붙어요."),
         ("core-record", "records", "기록", "사용자가 남긴 기록이에요. 받은 원문을 그대로 저장해요."),
         ("core-candidate", "candidates", "후보", "기록 원문의 한 구간을 근거로 뽑은 판단 후보예요."),
         ("core-ticket", "tickets", "문의", "사용자가 운영자에게 보낸 문의예요."),
-        ("core-source", "sources", "출처", "기록을 가져온 곳이에요."))
+        ("core-source", "sources", "출처", "기록을 가져온 곳이에요."),
+        # PR B 코어 — 「나」 는 users 행 중 표시 이름·상태·새 탐색 수락·만든 때 열만(web.CORE_ONLY)
+        ("core-me", "users", "나", "계정 하나에 하나뿐인 「나」예요. 표시 이름은 운영자 화면에 값이 보이지 않아요."),
+        ("core-person", "people", "사람", "사용자가 관계를 구분하려고 적은 별칭 이름표예요."),
+        ("core-reflection", "source_reflections", "출처 요약/반응", "출처를 접한 뒤 사용자가 쓴 자기 생각이에요. 판단 근거로 인용하지 않아요."))
 # 코어 열 → 서비스 표시명. 소유자 열(user_id)·운영자 전용 열(문의 admin_note·hint)은 core_schema 가 이미 뺐다
 CORE_FIELDS = {
     "questions": {"id": "ID", "text": "질문 글", "status": "상태", "created": "만든 때", "updated": "고친 때"},
@@ -37,6 +41,10 @@ CORE_FIELDS = {
                 "status": "상태", "created": "접수", "updated": "갱신", "closed_at": "종결", "reply": "공개 답변", "reply_at": "답변 시각",
                 "public_updated": "공개 갱신"},
     "sources": {"id": "ID", "kind": "종류", "name": "이름", "location": "위치", "created": "만든 때"},
+    "users": {"display_name": "표시 이름", "status": "상태", "nav_accepted_at": "새 탐색 수락", "created": "만든 때"},
+    "people": {"id": "ID", "alias": "별칭", "revision": "변경 번호", "created": "만든 때", "updated": "고친 때"},
+    "source_reflections": {"id": "ID", "source_id": "출처", "kind": "유형", "body": "본문", "review": "검토 상태", "revision": "변경 번호",
+                           "reviewed_revision": "검토한 변경 번호", "reviewed_at": "검토 시각", "created": "만든 때", "updated": "고친 때"},
 }
 SQL_TYPES = {"text": "글", "timestamptz": "시각", "integer": "정수", "boolean": "예/아니오", "jsonb": "구조 자료"}
 VALUE_TYPES = {"text": "글", "number": "숫자", "boolean": "예/아니오", "date": "날짜", "select": "선택", "text_list": "글 목록",

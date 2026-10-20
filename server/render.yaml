@@ -19,7 +19,3 @@ services:
         value: client_01M593TEKZ4P1CAJMEKXFE6JA8
       - key: CRM_SESSION_SECRET
         generateValue: true   # 새 서비스(personal-mycrm)를 만들 때 한 번 생성. 새 주소라 옛 쿠키는 어차피 안 따라온다
-      - key: CRM_FEATURE_STANDARD
-        sync: false   # on 만 켬, 미설정·그 밖 값 = off. 값은 Render 대시보드가 정본 — 배포가 덮지 않는다
-      - key: CRM_FEATURE_SOURCES
-        sync: false

@@ -450,7 +450,8 @@ def _not_found() -> Response:
 
 
 ADMIN_LABELS = {"bootstrap": "첫 지정", "recover": "복구(CLI)", "role_grant": "관리자 부여", "role_revoke": "관리자 회수",
-                "web_signout": "웹 로그인 끊기", "block": "차단", "unblock": "차단 해제"}
+                "web_signout": "웹 로그인 끊기", "block": "차단", "unblock": "차단 해제",
+                "delete_notify": "삭제 통지(CLI)", "delete_run": "계정 삭제(CLI)", "delete_cancel": "삭제 취소(CLI)"}
 _ADMIN_CSS = """body{font-family:system-ui,sans-serif;margin:0;color:#2B2824;background:#FBF8F4;line-height:1.5;font-size:14px}
 .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
 h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px}
@@ -564,7 +565,10 @@ SCHEMA_SQL = Path(__file__).parent / "schema.sql"
 # 코어 표준 오브젝트 — 사용자가 쓰는 코어 테이블(정의 층이 아닌 것). 근거: db.TARGET_KINDS(record·candidate)·records.question_id·
 # app.html LABELS(질문·기록·후보)·문의 섹션(문의, 원작자 2026-10-19)·records.source_id(출처, PR #20). 필드·관계는 schema.sql 에서 읽는다.
 # 설정(profile·tabs)·이력·DB 내부(감사·사용량·동의)는 뺀다. 이력 테이블은 오브젝트로 보이지 않고 부모 쪽 관계(CORE_CHILD_LINKS)로만 보인다.
-CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"), ("tickets", "문의"), ("sources", "출처"))
+CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"), ("tickets", "문의"), ("sources", "출처"),
+                ("users", "나"), ("people", "사람"), ("source_reflections", "출처 요약/반응"))   # 뒤 셋 = PR B 코어
+# PR B: 「나」 = users 행이지만 운영 Object Manager 엔 이 열만 보인다(이메일·인증·역할·차단 열은 코어 오브젝트 정의가 아니다)
+CORE_ONLY = {"users": frozenset({"display_name", "status", "nav_accepted_at", "created"})}
 CORE_LABEL = {"questions": "질문", "records": "기록", "candidates": "후보", "tickets": "문의", "items": "항목"}   # 코어 이름 정본(service_schema 표시명이 이것과 같다 — 시험)
 # 표준 구조에 보이지 않는 열 — 운영자 전용(문의 내부 메모 admin_note · 개인정보 의심 표식 hint). 소유자 열 user_id 는 모든 오브젝트에서 뺀다.
 CORE_HIDDEN = {"tickets": frozenset({"admin_note", "hint"})}
@@ -604,7 +608,7 @@ def core_schema(sql_text: str) -> list[dict]:
                                   "required": all(req.get(c, False) for c in cols)})
                 continue
             name, typ = col.group(1), col.group(2)
-            if name == "user_id" or name in CORE_HIDDEN.get(table, ()):
+            if name == "user_id" or name in CORE_HIDDEN.get(table, ()) or (table in CORE_ONLY and name not in CORE_ONLY[table]):
                 continue
             fields.append({"name": name, "type": typ, "required": "NOT NULL" in line.upper() or "PRIMARY KEY" in line.upper(),
                            "choices": len(re.findall(r"'[^']*'", en.group(2))) if en and en.group(1) == name else None})
@@ -914,7 +918,8 @@ def render_userview(u: dict, opaque: str, named: bool, resp: dict, st: dict, tic
     unc_n = [sum(e["n"] for e in st["unchecked"] if e["rel"] == i) for i in range(len(rels))]
     m = sum(1 for n in st["linked"] if n)
     summary = (f'<dl class="meta"><dt>이메일</dt><dd>{_esc(u["email"])}</dd><dt>가입일</dt><dd>{_esc(_kst(u["created"])[:10])}</dd>'
-               f'<dt>역할</dt><dd>{"관리자" if u["role"] == "admin" else "사용자"}{" · 차단" if u["blocked_at"] else ""}</dd>'
+               f'<dt>역할</dt><dd>{"관리자" if u["role"] == "admin" else "사용자"}{" · 차단" if u["blocked_at"] else ""}'
+               f'{" · 삭제됨" if u.get("status") == "deleted" else ""}</dd>'
                f'<dt>구조 이름 공유</dt><dd>{"동의 — 현재 이름을 함께 보여요" if named else "동의 없음 — 자리표와 편입된 표준명만 보여요"}</dd>'
                f'<dt>불투명 id</dt><dd>{_esc(opaque)}</dd>'
                f'<dt>구조</dt><dd>오브젝트 {_esc(cnt["objects"])} · 필드 {_esc(cnt["fields"])} · 관계 {_esc(cnt["relations"])} · '
@@ -1062,7 +1067,7 @@ class Web:
         except Exception as e:
             print(f"[web] 세션 확인 실패 — 세션 없음으로: {type(e).__name__}", flush=True)
             return None
-        if not row or row["blocked_at"] is not None:
+        if not row or row["blocked_at"] is not None or row["status"] == "deleted":   # PR B: 삭제된 계정 세션 무효
             return None
         wrb = row["web_revoked_before"]
         if wrb is not None and iat < wrb.timestamp():
@@ -1244,6 +1249,12 @@ class Web:
         return resp
 
     # ── API ────────────────────────────────────────────
+    @staticmethod
+    def _crm_err(e) -> JSONResponse:
+        """쓰기 API 의 CrmError 응답 — NAME-REQUIRED 403 · NOT-FOUND 404 · 그 밖 400. 본문 {code, msg, action}."""
+        status = 403 if e.code == contract.NAME_REQUIRED else 404 if e.code == "NOT-FOUND" else 400
+        return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=status)
+
     async def _need(self, request):
         uid = await self.uid_of(request)
         if uid is None:
@@ -1254,15 +1265,19 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me, flags, std, srcs, cnt = await run_in_threadpool(lambda: (db.state(uid), db.user_get(uid), db.app_user_flags(uid),
-                                                                         db.std_status(uid), db.sources(uid), db.source_counts(uid)))
+        st, me, flags, std, srcs, cnt, home, people, refl = await run_in_threadpool(lambda: (
+            db.state(uid), db.user_get(uid), db.app_user_flags(uid), db.std_status(uid), db.sources(uid), db.source_counts(uid),
+            db.me_home(uid), db.people_all(uid), db.reflections_all(uid)))
         st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
         st["sources"], st["source_counts"] = srcs, cnt   # PR #20 출처(계약 모양 {id,kind,name,location}) · 출처별 기록 수 — 본인만, /app 전용
         st["structure"] = contract.respond({   # PR #20 Q5 구조 정의 보기 — 본인 계약 응답(origin·locked·cardinality 는 서버 판정). /app 전용
             "definitions": st["definitions"], "sources": srcs, "std_choices": std["objects"],
             "std_marks": {"version": std["version"], "state": std["state"]} if std["version"] else None}, "self")
         st["structure_svg"] = structure_svg.render(st["structure"])   # 같은 응답의 DMO 그래프(서버 결정적 배치) — 목록과 같은 순번 앵커. /app 전용
-        st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"]}   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
+        st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"],   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
+                      "display_name": home["display_name"], "nav": home["nav"]}   # PR B: 표시 이름(null = 이름 입력 화면) · 새 탐색 new|old
+        st["me"] = {"counts": home["counts"]}   # PR B 「나」 홈 개수(판단·기준·결정·사람·출처·요약/반응) — 본인만, /app 전용
+        st["people"], st["reflections"] = people, refl   # PR B 코어 사람·출처 요약/반응(본인 것 전부, 최근 순) — /app 전용
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
         return JSONResponse(st, headers={"cache-control": "no-store"})
@@ -1305,7 +1320,8 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+            return self._crm_err(e) if e.code == contract.NAME_REQUIRED else JSONResponse(
+                {"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
     async def api_item(self, request):
@@ -1346,7 +1362,8 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+            return self._crm_err(e) if e.code == contract.NAME_REQUIRED else JSONResponse(
+                {"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out)
 
     async def api_std_preview(self, request):
@@ -1362,7 +1379,7 @@ class Web:
 
     async def api_std_choose(self, request):
         """표준 오브젝트 선택 — 보류·거절 기록 · 편입 적용. 세션(401) → Origin(403) → JSON {std_key, state 문자열,
-        confirmed_meaning bool?, expected_revision 정수|null?}(400) → write_gate → db.std_choose(ARG-INVALID·FEATURE-OFF·STANDARD-LOCKED·
+        confirmed_meaning bool?, expected_revision 정수|null?}(400) → write_gate → db.std_choose(ARG-INVALID·NAME-REQUIRED 403·STANDARD-LOCKED·
         CONFLICT·DEF-INVALID 400). 편입은 confirmed_meaning=true 와 미리보기에서 본 revision 을 들고 온다. 대상 사용자 = 세션 uid 뿐."""
         uid, err = await self._need(request)
         if err:
@@ -1386,8 +1403,100 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
+            return self._crm_err(e) if e.code == contract.NAME_REQUIRED else JSONResponse(
+                {"code": e.code, "msg": e.message, "action": e.action}, status_code=400)
         return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    # ── PR B 코어 쓰기: 나 · 사람 · 출처 · 출처 요약/반응 ──
+    # 공통 = 세션(401) → Origin(403) → JSON 본문 모양(400 ARG-INVALID) → db.write_gate(길이 · NAME-REQUIRED 403 · 전역 크기) → db.
+    # 대상 사용자 = 세션 uid 뿐(본문에 사용자 id 인자가 없다). 남의 id·없는 id = NOT-FOUND 404(같은 모양).
+    async def _core_write(self, request, op: str, shape: dict, call):
+        """shape = {키: (타입들, 필수)}. call(uid, body) → db 결과. op = db.write_gate 의 쓰기 이름(NAME_EXEMPT 면 관문 면제)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict)
+            for k, (types, need) in shape.items():
+                v = body.get(k)
+                if v is None:
+                    assert not need
+                else:
+                    assert isinstance(v, types) and not (isinstance(v, bool) and bool not in types)
+        except Exception:
+            want = ", ".join(f"{k}({'/'.join(t.__name__ for t in ts)}{'' if need else ' 선택'})" for k, (ts, need) in shape.items())
+            return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문이 필요해요: {want or '{}'}."}, status_code=400)
+
+        def write():
+            db.write_gate(op, {k: body.get(k) for k in shape if isinstance(body.get(k), str)}, uid)
+            return call(uid, body)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CrmError as e:
+            return self._crm_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_me_name(self, request):
+        """POST {display_name} — 표시 이름 저장. 관문 면제(이름을 정하는 경로)."""
+        return await self._core_write(request, "display_name_set", {"display_name": ((str,), True)},
+                                      lambda uid, b: db.display_name_set(uid, b["display_name"]))
+
+    async def api_nav_accept(self, request):
+        """POST {} — 새 탐색 수락(멱등). 표준 편입과 별개."""
+        return await self._core_write(request, "nav_accept", {}, lambda uid, b: db.nav_accept(uid))
+
+    async def api_people(self, request):
+        """POST {alias} — 사람 만들기."""
+        return await self._core_write(request, "person_save", {"alias": ((str,), True)}, lambda uid, b: db.person_save(uid, b["alias"]))
+
+    async def api_person(self, request):
+        """POST /api/people/{id} {alias, expected_revision} — 별칭 고치기."""
+        pid = request.path_params["pid"]
+        return await self._core_write(request, "person_save", {"alias": ((str,), True), "expected_revision": ((int,), True)},
+                                      lambda uid, b: db.person_save(uid, b["alias"], pid, b["expected_revision"]))
+
+    async def api_person_delete(self, request):
+        """POST /api/people/{id}/delete {expected_revision}."""
+        pid = request.path_params["pid"]
+        return await self._core_write(request, "person_delete", {"expected_revision": ((int,), True)},
+                                      lambda uid, b: db.person_delete(uid, pid, b["expected_revision"]))
+
+    async def api_sources(self, request):
+        """POST {kind, name, location?} — 출처 찾거나 만들기."""
+        return await self._core_write(request, "source_create",
+                                      {"kind": ((str,), True), "name": ((str,), True), "location": ((str,), False)},
+                                      lambda uid, b: db.source_create(uid, b["kind"], b["name"], b.get("location") or ""))
+
+    async def api_reflections(self, request):
+        """POST {source_id, kind, body} — 출처 요약/반응 만들기(검토 대기)."""
+        return await self._core_write(request, "source_reflection_save",
+                                      {"source_id": ((str,), True), "kind": ((str,), True), "body": ((str,), True)},
+                                      lambda uid, b: db.source_reflection_save(uid, b["source_id"], b["kind"], b["body"]))
+
+    async def api_reflection(self, request):
+        """POST /api/reflections/{id} {source_id, kind, body, expected_revision} — 고치기(검토 완료였으면 검토 대기로)."""
+        rid = request.path_params["rid"]
+        return await self._core_write(request, "source_reflection_save",
+                                      {"source_id": ((str,), True), "kind": ((str,), True), "body": ((str,), True),
+                                       "expected_revision": ((int,), True)},
+                                      lambda uid, b: db.source_reflection_save(uid, b["source_id"], b["kind"], b["body"], rid,
+                                                                               b["expected_revision"]))
+
+    async def api_reflection_review(self, request):
+        """POST /api/reflections/{id}/review {reviewed, expected_revision} — 검토 완료 / 검토 대기로."""
+        rid = request.path_params["rid"]
+        return await self._core_write(request, "source_reflection_review",
+                                      {"reviewed": ((bool,), True), "expected_revision": ((int,), True)},
+                                      lambda uid, b: db.source_reflection_review(uid, rid, b["expected_revision"], b["reviewed"]))
+
+    async def api_reflection_delete(self, request):
+        """POST /api/reflections/{id}/delete {expected_revision}."""
+        rid = request.path_params["rid"]
+        return await self._core_write(request, "source_reflection_delete", {"expected_revision": ((int,), True)},
+                                      lambda uid, b: db.source_reflection_delete(uid, rid, b["expected_revision"]))
 
     async def api_feedback(self, request):
         """문의(desk-0). GET = 「내 문의」(본인 글·상태·답변 유무·공개 갱신, 운영자 메모 없음) — 관리자도 같다(운영은 /admin/tickets)
@@ -1793,7 +1902,7 @@ class Web:
     _TK_SORT = {"deadline": "기한·접수순", "new": "최근 접수", "updated": "최근 갱신"}
     _TK_COLS = {"via": "경로", "closed": "종결일"}   # 선택 컬럼(cols=via,closed)
     _TK_REASON = {"not_privacy": "개인정보 요청이 아님", "duplicate": "중복", "other": "그 밖"}
-    _TK_HIST = {"status": "상태", "reply": "답변", "note": "메모", "reclassify": "재분류"}
+    _TK_HIST = {"status": "상태", "reply": "답변", "note": "메모", "reclassify": "재분류", "deleted": "삭제 완료"}
 
     @staticmethod
     def _tk_time(v) -> str:
@@ -1863,7 +1972,8 @@ class Web:
         empty = f'<tr><td colspan="{len(head)}" class="muted">조건에 맞는 문의가 없어요.</td></tr>'
         note = f'<p class="muted">상위 {admin_db.TICKET_LIST_MAX}건만 보여요. 필터를 좁혀 보세요.</p>' if more else ""
         body = (f'<h1>Support</h1><p class="muted">문의와 개인정보 요청을 여기서 처리해요. 원문과 메모는 레코드 페이지에서만 보여요. 행의 접수일을 누르면 열려요.</p>'
-                f'<p class="note">개인정보 요청은 운영자 확인 후 처리하며, {admin_db.PRIVACY_DUE_DAYS}일 안에 처리 결과를 안내합니다.</p>{filt}'
+                f'<p class="note">개인정보 요청은 운영자 확인 후 처리하며, {admin_db.PRIVACY_DUE_DAYS}일 안에 처리 결과를 안내합니다.</p>'
+                f'<p class="note">계정 삭제 요청은 「요청 문구만 적어 주세요. 다른 정보는 넣지 마세요」로 받아요. 처리 = admin_cli.py delete-notify → 7일 뒤 delete-preview·delete-run.</p>{filt}'
                 f'<h2>{_esc(self._TK_LIST_STATUS[status])} {len(rows)}건</h2>{note}<div class="tbl"><table><thead><tr>'
                 + "".join(f"<th>{_esc(h)}</th>" for h in head) + f'</tr></thead><tbody>{"".join(trs) or empty}</tbody></table></div>')
         return _admin_page("관리 — Support", body, cur="tickets")
@@ -1944,7 +2054,8 @@ class Web:
                 continue
             resp, st = uv_build({**v, "names": False})
             href = f"/admin/users/{_esc(self._opaque(u['id']))}"
-            blk = ' <span class="tag blocked">차단</span>' if u["blocked_at"] else ""
+            blk = (' <span class="tag blocked">차단</span>' if u["blocked_at"] else "") \
+                + (' <span class="tag deleted">삭제됨</span>' if u["status"] == "deleted" else "")   # PR B — 코드만(표시 이름·사람·요약/반응 0)
             trs.append(f'<tr><td class="email"><a href="{href}">{_esc(u["email"])}</a></td><td>{_esc(_kst(u["created"])[:10])}</td>'
                        f'<td>{"관리자" if u["role"] == "admin" else "사용자"}{blk}</td><td>{"동의" if v["names"] else "—"}</td>'
                        f'<td class="num">{_esc(resp["counts"]["objects"])}</td><td class="num">{_esc(resp["counts"]["relations"])}</td>'
@@ -2004,6 +2115,16 @@ class Web:
             Route("/api/feedback/{tid}", u("web:feedback_get", self.api_feedback_one)),
             Route("/api/optional-consent", u("web:optional_consent", self.api_optional_consent), methods=["POST"]),
             Route("/api/desk-visibility", u("web:desk_visibility", self.api_desk_visibility), methods=["POST"]),
+            Route("/api/me/name", u("web:me_name", self.api_me_name), methods=["POST"]),   # PR B 코어 쓰기
+            Route("/api/nav/accept", u("web:nav_accept", self.api_nav_accept), methods=["POST"]),
+            Route("/api/people", u("web:people", self.api_people), methods=["POST"]),
+            Route("/api/people/{pid}", u("web:person", self.api_person), methods=["POST"]),
+            Route("/api/people/{pid}/delete", u("web:person_delete", self.api_person_delete), methods=["POST"]),
+            Route("/api/sources", u("web:sources", self.api_sources), methods=["POST"]),
+            Route("/api/reflections", u("web:reflections", self.api_reflections), methods=["POST"]),
+            Route("/api/reflections/{rid}", u("web:reflection", self.api_reflection), methods=["POST"]),
+            Route("/api/reflections/{rid}/review", u("web:reflection_review", self.api_reflection_review), methods=["POST"]),
+            Route("/api/reflections/{rid}/delete", u("web:reflection_delete", self.api_reflection_delete), methods=["POST"]),
             Route("/admin", self.admin_index),
             Route("/admin/reauth", self.admin_reauth),
             Route("/admin/setup", self.admin_setup),

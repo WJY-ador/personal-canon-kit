@@ -50,6 +50,8 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. �
 - 질문에 답하지 않는 후보는 candidates_propose 의 question_id 를 빈 문자열("")로 보낸다. 화면은 기록별로 묶는다.
 - 사용자가 '안 돼요/고쳐 주세요/이건 왜 이래요' 류를 말하면 feedback_send 로 운영자에게 문의하자고 제안한다. 보낼 글을 사용자에게 그대로 보여 주고, 사용자가 확인하면 그때 호출한다.
 - 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
+- 사람(person_save)은 사용자가 말한 별칭 하나만 저장한다. 연락처·소속·SNS·그 사람의 말·평가는 넣지 않는다.
+- 출처 요약/반응(source_reflection_save)은 사용자가 출처를 접한 뒤 한 자기 생각만 저장한다. 타인의 말·경험·생각을 옮기거나 다시 정리하지 않는다. 검토 완료는 판단 확정이 아니고 근거로 인용할 수 없다 — 사용자가 말할 때만 source_reflection_review 를 부른다.
 """
 
 DEV = env("DEV") == "1"
@@ -74,6 +76,19 @@ if ISSUER:
 
 mcp = MCPServer("my-crm", instructions=INSTRUCTIONS, **_auth_kwargs)
 
+
+# ── 도구 분류 (PR B 결정 3 — 표시 이름 관문) ──
+# 쓰기 = 표시 이름이 없으면 NAME-REQUIRED(db.write_gate 가 판정). 허용 = 이름 없이도 된다(읽기·help·문의·표시 이름 설정).
+# 등록된 도구는 둘 중 하나에 꼭 들어간다 — 빠지면 시험(test_tools 24)이 실패한다. WRITE_TOOLS = db.WRITE_LIMITS 키 − db.NAME_EXEMPT.
+WRITE_TOOLS = frozenset({
+    "question_add", "record_add", "candidates_propose", "candidate_decide", "profile_set", "definition_propose", "definition_apply",
+    "item_propose", "item_decide", "record_attach",
+    "person_save", "person_delete", "source_create", "source_reflection_save", "source_reflection_review", "source_reflection_delete",
+    "record_provenance_set", "definition_archive", "definition_restore"})   # 마지막 셋 = R5 결함(PR B 범위 추가)
+ALLOWED_TOOLS = frozenset({
+    "state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get", "feedback_send", "ticket_list_mine",
+    "ticket_get_mine", "display_name_set", "me_get", "person_list", "person_get", "source_list", "source_get", "source_reflection_list",
+    "source_reflection_get"})
 
 # 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
@@ -164,16 +179,15 @@ def record_add(
     source_location: Annotated[str, Field(description="출처 연결: 위치 — 파일 경로·URL 등 (선택)")] = "",
 ) -> dict:
     """기록 1편을 원문 그대로 남긴다. 직접 쓴 내 기록만 넣는다 — 남의 말·AI 요약은 넣지 않는다.
+    남이 쓴 글은 넣지 않는다. 이미 넣었다면 record_provenance_set 으로 author_kind=external 표시한다.
     서버는 메타데이터만 검사하고 실제 작성자·가공 방식은 검증하지 않는다(내용 준수는 사용자 몫).
-    source_name 을 주면 같은 이름·종류·위치의 출처를 찾거나 만들어 잇는다 — 출처 기능이 꺼져 있으면 기록만 저장하고 source_linked=false.
+    source_name 을 주면 같은 이름·종류·위치의 출처를 찾거나 만들어 잇는다(source_linked=true).
     저장 뒤 사용자에게 '지금 후보를 뽑을까요?' 하나만 묻는다."""
     ref = {"kind": source_kind, "name": source_name, "location": source_location} if source_name.strip() else None
     r = db.record_add(uid_of(ctx), title, text, question_id or None, source, source_ref=ref)
     out = {"id": r["id"], "title": r["title"], "created": r["created"]}
     if ref is not None:
         out["source_id"], out["source_linked"] = r["source_id"], r["source_linked"]
-        if not r["source_linked"]:
-            out["note"] = "출처 기능이 꺼져 있어 기록만 저장했어요(출처 연결 안 함)."
     return out
 
 
@@ -213,7 +227,8 @@ def candidate_decide(
 ) -> dict:
     """사용자가 원문과 대조한 뒤 말한 결정을 저장한다. 사용자가 말하기 전에 부르지 않는다. 이전 상태·문장은 이력에 남아 되돌릴 수 있다.
     confirm 은 근거 기록이 지금도 인용 적격(본인이 쓴 원문 그대로·삭제 안 됨)일 때만 된다 — 아니면 CANDIDATE-REVIEW 로 거절되고
-    exclude·pending·edit 은 그대로 된다. 후보의 review 에 사유 코드가 있으면 사용자에게 그대로 알린다. 이미 확정한 판단은 바뀌지 않는다."""
+    exclude·pending·edit 은 그대로 된다. 후보의 review 에 사유 코드가 있으면 사용자에게 그대로 알린다. 이미 확정한 판단은 바뀌지 않는다.
+    review 가 author_unknown·processed 이고 사용자가 메타데이터가 실제로 틀렸다고 하면, 연결한 AI 대화에서 record_provenance_set 으로 정정한다."""
     return db.candidate_decide(uid_of(ctx), candidate_id, action, text or None)
 
 
@@ -275,7 +290,8 @@ def definitions_get(
     include_archived: Annotated[bool, Field(description="보관된 오브젝트·필드도 볼지")],
     ctx: Context,
 ) -> list[dict]:
-    """내가 정의한 오브젝트(기준·결정 같은 자료 구조)와 필드. item_propose 전에 object_id·revision·필드 key 를 여기서 확인한다."""
+    """내가 정의한 오브젝트(기준·결정 같은 자료 구조)와 필드. item_propose 전에 object_id·revision·필드 key 를 여기서 확인한다.
+    object_ids 로 콕 집어 물으면 아직 적용 안 된 새 오브젝트 제안(revision 0)도 draft=true 로 함께 돌려준다."""
     return db.definitions(uid_of(ctx), object_ids or None, include_archived)
 
 
@@ -357,6 +373,38 @@ def record_attach(
                             axes, use_at, unattached)
 
 
+@mcp.tool()
+@guard
+def record_provenance_set(
+    record_id: Annotated[str, Field(description="기록 ID")],
+    author_kind: Annotated[Literal["self", "external", "unknown"], Field(description="self=사용자가 직접 씀, external=남이 쓴 글, unknown=모름")],
+    text_process: Annotated[Literal["verbatim", "structured", "rewritten", "generated", "unknown"],
+                            Field(description="verbatim=원문 그대로, structured=구조만 정리, rewritten=다시 씀, generated=AI 가 만듦, unknown=모름")],
+    reason: Annotated[str, Field(description="사용자가 말한 정정 사유 그대로")],
+    ctx: Context,
+) -> dict:
+    """기록의 출처 판정(작성자·가공 방식)을 정정한다. 본문은 바뀌지 않는다. 사용자가 「실제로 틀렸다」고 말했을 때만 부른다 — 확정을 풀려고 바꾸지 않는다.
+    남이 쓴 글을 기록으로 넣었으면 author_kind=external 로 표시한다. 이 기록을 근거로 한 후보가 있는데 본인 원문이 아니라고 바꾸면 PROVENANCE-LOCKED.
+    정정은 provenance_history 에 사유와 함께 남는다."""
+    return db.record_provenance_set(uid_of(ctx), record_id, author_kind, text_process, reason, by="tool")
+
+
+@mcp.tool()
+@guard
+def definition_archive(object_id: Annotated[str, Field(description="보관할 사용자 오브젝트 ID")], ctx: Context) -> dict:
+    """사용자가 만든 오브젝트를 보관한다(목록에서 빠짐, 항목은 지우지 않음). 사용자가 보관하라고 말했을 때만 부른다.
+    먼저 그 오브젝트의 항목 수·이 오브젝트를 가리키는 다른 필드를 사용자에게 알린다 — 결과의 impact 에도 있다.
+    표준 오브젝트는 STANDARD-LOCKED. 되돌리기는 definition_restore. 정의 JSON 에 archived 같은 키를 넣어 보관하지 않는다(ARG-INVALID)."""
+    return db.definition_archive(uid_of(ctx), object_id)
+
+
+@mcp.tool()
+@guard
+def definition_restore(object_id: Annotated[str, Field(description="복구할 사용자 오브젝트 ID")], ctx: Context) -> dict:
+    """보관한 사용자 오브젝트를 되살린다. 사용자가 말했을 때만 부른다. 보관된 오브젝트 ID 는 definitions_get(include_archived=true) 로 본다."""
+    return db.definition_restore(uid_of(ctx), object_id)
+
+
 # ── 도움말 ─────────────────────────────────────────────
 # 웹 /help 와 같은 원문(guides/09·10, web.Web.load_help 가 시작 때 읽음)을 돌려준다.
 
@@ -411,6 +459,159 @@ def ticket_get_mine(
 ) -> dict:
     """내 문의 하나 — 보낸 글·운영자 답변·공개 이력(상태 변경·답변 시각). 내 문의가 아니면 NOT-FOUND."""
     return db.ticket_get_mine(uid_of(ctx), ticket_id)
+
+
+# ── 나 · 사람 · 출처 · 출처 요약/반응 (PR B 코어) ─────────────
+# 사용자 id 는 인증에서만 얻는다. 목록 limit 기본 50·최대 100, cursor = 불투명 문자열(next_cursor 를 그대로 다시 보낸다).
+
+@mcp.tool()
+@guard
+def display_name_set(display_name: Annotated[str, Field(description="사용자가 정한 표시 이름 그대로(1~80자, 한 줄). 실명이 아니어도 된다")],
+                     ctx: Context) -> dict:
+    """「나」의 표시 이름을 저장한다. 사용자가 이름을 말했을 때만 부른다 — 이메일 등에서 추측해 채우지 않는다.
+    표시 이름이 없으면 다른 쓰기 도구가 NAME-REQUIRED 로 거절된다. 표시 이름은 다른 사용자·운영자 화면에 보이지 않는다."""
+    return db.display_name_set(uid_of(ctx), display_name)
+
+
+@mcp.tool()
+@guard
+def me_get(ctx: Context) -> dict:
+    """「나」 — 표시 이름 · 새 탐색 수락 여부(nav: new|old) · 개수(확정 판단·기준·결정·사람·출처·요약/반응)."""
+    return db.me_home(uid_of(ctx))
+
+
+@mcp.tool()
+@guard
+def person_list(
+    ctx: Context,
+    query: Annotated[str, Field(description="별칭 부분 일치 (선택)")] = "",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """사람(사용자가 관계를 구분하려고 적은 별칭 이름표) 목록. 최근 순."""
+    return db.person_list(uid_of(ctx), query, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def person_get(person_id: Annotated[str, Field(description="사람 ID (p_…)")], ctx: Context) -> dict:
+    """사람 하나 — id·별칭·revision."""
+    return db.person_get(uid_of(ctx), person_id)
+
+
+@mcp.tool()
+@guard
+def person_save(
+    alias: Annotated[str, Field(description="사용자가 정한 별칭 그대로(1~80자, 한 줄)")],
+    ctx: Context,
+    person_id: Annotated[str, Field(description="고칠 사람 ID. 새로 만들면 빈 값")] = "",
+    expected_revision: Annotated[int | None, Field(description="고칠 때 지금 revision(person_get). 새로 만들면 null")] = None,
+) -> dict:
+    """사람(별칭 이름표)을 만들거나 별칭을 고친다. 별칭만. 연락처·소속·SNS·그 사람의 말·평가는 넣지 않는다.
+    별칭도 그 사람을 알아볼 수 있으면 개인정보다. 사용자가 말한 별칭만 저장한다."""
+    return db.person_save(uid_of(ctx), alias, person_id, expected_revision)
+
+
+@mcp.tool()
+@guard
+def person_delete(
+    person_id: Annotated[str, Field(description="사람 ID")],
+    expected_revision: Annotated[int, Field(description="지금 revision")],
+    ctx: Context,
+) -> dict:
+    """사람 하나를 지운다. 사용자가 지우라고 말했을 때만 부른다."""
+    return db.person_delete(uid_of(ctx), person_id, expected_revision)
+
+
+@mcp.tool()
+@guard
+def source_list(
+    ctx: Context,
+    query: Annotated[str, Field(description="출처 이름·위치 부분 일치 (선택)")] = "",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """출처(기록·요약/반응이 나온 파일·페이지·대화) 목록 — id·kind·name·location. 최근 순."""
+    return db.source_list(uid_of(ctx), query, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def source_get(source_id: Annotated[str, Field(description="출처 ID (s_…)")], ctx: Context) -> dict:
+    """출처 하나 + 개수(기록·내 요약·내 반응)."""
+    return db.source_get(uid_of(ctx), source_id)
+
+
+@mcp.tool()
+@guard
+def source_create(
+    kind: Annotated[Literal["file", "url", "chat", "other"], Field(description="출처 종류")],
+    name: Annotated[str, Field(description="출처 이름 (파일·페이지·대화 이름)")],
+    ctx: Context,
+    location: Annotated[str, Field(description="위치 — 파일 경로·URL 등 (선택)")] = "",
+) -> dict:
+    """출처를 찾거나 만든다(같은 종류·이름·위치면 있는 것을 돌려준다). 기록 없이 만들 수 있다."""
+    return db.source_create(uid_of(ctx), kind, name, location)
+
+
+@mcp.tool()
+@guard
+def source_reflection_list(
+    ctx: Context,
+    source_id: Annotated[str, Field(description="출처 ID 로 거르기 (선택)")] = "",
+    kind: Annotated[Literal["", "summary", "reaction"], Field(description="summary=내 요약, reaction=내 반응 (선택)")] = "",
+    review: Annotated[Literal["", "pending", "reviewed"], Field(description="pending=검토 대기, reviewed=검토 완료 (선택)")] = "",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """출처 요약/반응 목록. 최근 순. 검토 완료여도 판단이 아니고 근거로 인용할 수 없다."""
+    return db.source_reflection_list(uid_of(ctx), source_id, kind, review, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def source_reflection_get(reflection_id: Annotated[str, Field(description="요약/반응 ID (sr_…)")], ctx: Context) -> dict:
+    """출처 요약/반응 하나 — 출처·유형·본문·검토 상태·revision."""
+    return db.source_reflection_get(uid_of(ctx), reflection_id)
+
+
+@mcp.tool()
+@guard
+def source_reflection_save(
+    source_id: Annotated[str, Field(description="출처 ID (source_list·source_create)")],
+    kind: Annotated[Literal["summary", "reaction"], Field(description="summary=내 요약, reaction=내 반응")],
+    body: Annotated[str, Field(description="사용자가 쓴 자기 생각 그대로 (8000자까지)")],
+    ctx: Context,
+    reflection_id: Annotated[str, Field(description="고칠 요약/반응 ID. 새로 만들면 빈 값")] = "",
+    expected_revision: Annotated[int | None, Field(description="고칠 때 지금 revision. 새로 만들면 null")] = None,
+) -> dict:
+    """출처 요약/반응을 만들거나 고친다(새로 만들면 검토 대기). 출처를 접한 뒤 사용자 자신의 생각만.
+    타인의 말·경험·생각을 옮기거나 다시 정리하지 않는다. 검토 완료는 판단 확정이 아니고 근거로 인용할 수 없다.
+    사용자가 말할 때만 review 를 부른다. 검토 완료 뒤 고치면 검토 대기로 돌아간다."""
+    return db.source_reflection_save(uid_of(ctx), source_id, kind, body, reflection_id, expected_revision)
+
+
+@mcp.tool()
+@guard
+def source_reflection_review(
+    reflection_id: Annotated[str, Field(description="요약/반응 ID")],
+    expected_revision: Annotated[int, Field(description="지금 revision")],
+    reviewed: Annotated[bool, Field(description="true=검토 완료, false=검토 대기로")],
+    ctx: Context,
+) -> dict:
+    """출처 요약/반응의 검토 상태를 바꾼다. 사용자가 말할 때만 부른다. 검토 완료는 판단 확정이 아니고 근거로 인용할 수 없다."""
+    return db.source_reflection_review(uid_of(ctx), reflection_id, expected_revision, reviewed)
+
+
+@mcp.tool()
+@guard
+def source_reflection_delete(
+    reflection_id: Annotated[str, Field(description="요약/반응 ID")],
+    expected_revision: Annotated[int, Field(description="지금 revision")],
+    ctx: Context,
+) -> dict:
+    """출처 요약/반응 하나를 지운다. 사용자가 지우라고 말했을 때만 부른다."""
+    return db.source_reflection_delete(uid_of(ctx), reflection_id, expected_revision)
 
 
 # ── 웹 ─────────────────────────────────────────────────
@@ -522,7 +723,8 @@ async def lifespan(app: Starlette) -> AsyncIterator[None]:
 
 
 async def purge_once():
-    """파기 2종 — 종결 180일 지난 문의(답변·이력은 cascade) · 1년 지난 감사. 각자 실패해도 예외를 내지 않는다(다음 회차에 다시)."""
+    """파기 3종 — 종결 180일 지난 문의(답변·이력은 cascade, 삭제 통지·contact 문의 제외) · 1년 지난 감사 · purge_after 지난 contact(PR B).
+    각자 실패해도 예외를 내지 않는다(다음 회차에 다시). 로그는 건수만."""
     try:
         n = await run_in_threadpool(db.tickets_purge)
         if n:
@@ -535,6 +737,12 @@ async def purge_once():
             print(f"[admin] {db.AUDIT_KEEP_DAYS}일 지난 감사 {n}건 파기", flush=True)
     except Exception as e:
         print(f"[admin] 감사 파기 실패 — 계속: {type(e).__name__}", flush=True)
+    try:
+        n = await run_in_threadpool(db.contacts_purge)
+        if n:
+            print(f"[delete] 보관 기간 지난 삭제 contact {n}건 파기", flush=True)
+    except Exception as e:
+        print(f"[delete] contact 파기 실패 — 계속: {type(e).__name__}", flush=True)
 
 
 async def _purger():
