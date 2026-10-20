@@ -619,7 +619,7 @@ ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유�
            "EXISTS (SELECT 1 FROM optional_consents oc WHERE oc.user_id=u.id AND oc.kind='struct_names' AND oc.state='granted' "
            "AND oc.version=%(names_ver)s) AS names, m.version AS std_version, m.state AS std_state, "
            "(SELECT coalesce(jsonb_object_agg(ch.std_key, ch.state), '{}'::jsonb) FROM std_choices ch WHERE ch.user_id=u.id) AS std_choices, "
-           "(SELECT count(*) FROM sources s WHERE s.user_id=u.id) AS sources_n, "
+           "(SELECT count(*) FROM sources s WHERE s.user_id=u.id AND s.activity_provider IS NULL) AS sources_n, "   # 활동 출처는 값·개수 0(v5 약속)
            "(SELECT count(*) FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
            "WHERE c.user_id=u.id AND r.deleted_at IS NOT NULL) AS md_broken "
            "FROM users u LEFT JOIN std_marks m ON m.user_id=u.id AND m.version=%(ver)s "
@@ -649,6 +649,8 @@ ALLOW["userview.links"] = {   # 항목 출발 연결 묶음 — 출발(살아 �
            "LEFT JOIN items ti ON ti.user_id=l.user_id AND ti.id=l.target_item_id "
            "LEFT JOIN records tr ON tr.user_id=l.user_id AND tr.id=l.target_record_id "
            "WHERE (%(uid)s::text IS NULL OR l.user_id=%(uid)s) AND l.source_item_id IS NOT NULL "
+           # board 이전 — 사람·출처·활동 대상 연결은 운영자에게 값도 개수도 보이지 않는다(처리방침 v5 약속 유지)
+           "AND l.target_person_id IS NULL AND l.target_source_id IS NULL AND l.target_activity_id IS NULL "
            "GROUP BY 1, 2, 3, 4, 5, 6 ORDER BY 1, 2, 3, 4, 5, 6",
     "cols": ("user_id", "source_ref", "field_ref", "target_kind", "target_ref", "dangling", "n"),
     "viewer": VIEWER_ADMIN, "consent": None,
@@ -711,6 +713,9 @@ def contract_input(v, onames=(), fnames=()):
             "sources": [{"id": None, "kind": None, "name": None, "location": None} for _ in range(v["sources_n"])]}
 
 
+PRIVATE_TARGETS = ("person", "source", "activity")   # board 이전 reference 대상 — 운영자 집계·무결성에서 뺀다
+
+
 def link_stats(v, user_input):
     """관계(contract.relations 순 = 응답 relations 순)별 정상 연결 수 · 무결성 오류 · 검사 불가.
     반환 {linked: [n…], errors: [{code, rel, n, why}], unchecked: [{rel, n, why}]} — rel = 관계 순번(없으면 None), why = 사유 코드."""
@@ -720,6 +725,8 @@ def link_stats(v, user_input):
     idx = {(r["object_id"], r["field_key"]): i for i, r in enumerate(raw)}
     linked, errors, unchecked = [0] * len(raw), [], []
     for i, r in enumerate(raw):
+        if r["target_kind"] in PRIVATE_TARGETS:   # 사람·출처·활동 대상 관계 — 개수를 세지도 보이지도 않는다(None = 화면 「—」)
+            linked[i] = None
         if r["target_kind"] == "item" and r["target_object_id"] is not None and r["target_object_id"] not in live:
             errors.append({"code": "REF-DANGLING", "rel": i, "n": 1, "why": "target_def"})
     for ln in v["links"]:

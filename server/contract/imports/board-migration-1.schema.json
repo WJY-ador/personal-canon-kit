@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "board-migration-1.schema.json",
+  "title": "board-migration/1 — PC 에서 검토를 마친 정제 명세(서버 이전 CLI 입력)",
+  "$comment": "JCS = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False), 실수 금지(canon-inbox-1 과 같다 — 서버 imports.jcs). r3 T5. 명세에 넣지 않는 것: AI 표기(ai_markers·legacy_ai_markers)·migration_acceptance·고객사 원문·타인 발언·원 경로·실명·제거 전 본문. 검토표 원문은 PC 에만. manifest_sha256 = sha256hex(JCS(명세 − manifest_sha256 키)), JCS 는 canon-inbox-1 과 같다. 대상 오브젝트는 런타임에 object_ref 를 std_id → template_slot → key 순으로 해석하고, 못 찾거나 둘 이상이면 validate-only 에서 막는다(이름으로 생성 금지). 기존 기록 참조는 정확한 판(record_id)을 쓴다. 명세에서 빠진 행은 서버에서 지우지 않는다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "target_user_id", "source_instance_id", "transform_version", "manifest_sha256", "reviewed_at", "rows"],
+  "properties": {
+    "contract": {"const": "board-migration/1"},
+    "target_user_id": {"type": "string", "minLength": 1, "maxLength": 80},
+    "source_instance_id": {"type": "string", "pattern": "^is_[0-9a-f]{24}$", "$comment": "board_migration 입력원(imports.migration_stream)"},
+    "transform_version": {"type": "string", "pattern": "^board-manifest/[0-9]+$"},
+    "manifest_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "reviewed_at": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$",
+                    "$comment": "AI 검토표 완료 시각. 미완료 행이 있으면 명세를 만들지 않는다"},
+    "rows": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/row"}}
+  },
+  "$defs": {
+    "row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["original_id", "revision", "target_kind", "unit_kind"],
+      "properties": {
+        "original_id": {"type": "string", "pattern": "^o_[0-9a-f]{32}$", "$comment": "PC 대응표가 board 원본 ID ↔ 불투명 ID 를 든다"},
+        "revision": {"type": "string", "pattern": "^v_[0-9a-f]{32}$"},
+        "previous_revision": {"type": ["string", "null"], "pattern": "^v_[0-9a-f]{32}$",
+                              "$comment": "선택. 명세 생성기는 비우고, 이전 CLI 가 서버 대응표(migration_entries)의 최신 접수 판으로 채운다"},
+        "target_kind": {"enum": ["item", "record"]},
+        "unit_kind": {"enum": ["principle_c", "principle_wd", "application_axis", "decision_index", "craft", "open_question",
+                               "publication", "axis", "application_doc", "journal", "session_story"]},
+        "object_ref": {"type": "object", "additionalProperties": false, "minProperties": 1,
+                       "properties": {"std_id": {"type": "string", "pattern": "^std:[a-z][a-z0-9_]*$"},
+                                      "template_slot": {"type": "string", "pattern": "^[a-z]+@[0-9]+:[a-z][a-z0-9_]*$"},
+                                      "key": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"}},
+                       "$comment": "item 일 때 필수. 해석 순서 std_id → template_slot → key"},
+        "code": {"type": ["string", "null"], "maxLength": 80},
+        "title": {"type": "string", "maxLength": 1024},
+        "body": {"type": "string", "maxLength": 65536},
+        "fields": {"type": "object", "$comment": "item 의 일반 필드(data). 값 모양은 대상 필드 정의가 정한다"},
+        "decision": {"enum": ["pending", "confirmed", "excluded", null]},
+        "source_created_at": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$"},
+        "source_date": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "$comment": "날짜 불명 = 둘 다 null(「날짜 미확인」)"},
+        "references": {"type": "array", "items": {"$ref": "#/$defs/reference"}},
+        "attach": {"type": "object", "additionalProperties": false, "$comment": "record 의 record_attach — 대상은 original_id(같은 명세의 item) 로",
+                   "properties": {"attach_to": {"type": "array", "items": {"$ref": "#/$defs/target"}},
+                                  "axes": {"type": "array", "items": {"$ref": "#/$defs/target"}},
+                                  "use_at": {"type": "array", "items": {"type": "string", "maxLength": 1024}},
+                                  "unattached": {"type": "array", "items": {"type": "string", "maxLength": 1024}}}},
+        "expected_target_revision": {"type": ["integer", "null"], "minimum": 0,
+                                     "$comment": "마지막 적용 뒤 서버 항목 revision. 다르면 충돌(TARGET-REVISION-CONFLICT)"}
+      },
+      "allOf": [
+        {"if": {"properties": {"target_kind": {"const": "item"}}}, "then": {"required": ["object_ref", "title"]}},
+        {"if": {"properties": {"target_kind": {"const": "record"}}}, "then": {"required": ["body"],
+          "not": {"anyOf": [{"required": ["object_ref"]}, {"required": ["fields"]}, {"required": ["decision"]}]}}}
+      ]
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false, "required": ["field_key", "target"],
+      "properties": {"field_key": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,39}$"}, "target": {"$ref": "#/$defs/target"}}
+    },
+    "target": {
+      "type": "object", "additionalProperties": false, "minProperties": 1, "maxProperties": 2,
+      "$comment": "original_id 는 revision 과 함께(정확한 판 — r3). 그 밖 키는 하나만",
+      "oneOf": [{"required": ["original_id", "revision"], "maxProperties": 2},
+                {"required": ["record_id"], "maxProperties": 1}, {"required": ["item_id"], "maxProperties": 1},
+                {"required": ["candidate_id"], "maxProperties": 1}],
+      "properties": {"original_id": {"type": "string", "pattern": "^o_[0-9a-f]{32}$", "$comment": "같은 명세(같은 입력원) 안 행"},
+                     "revision": {"type": "string", "pattern": "^v_[0-9a-f]{32}$", "$comment": "그 원본의 적용된 판"},
+                     "record_id": {"type": "string", "pattern": "^r_[A-Za-z0-9_-]{4,40}$", "$comment": "이미 서버에 있는 기록 판"},
+                     "item_id": {"type": "string", "pattern": "^i_[A-Za-z0-9_-]{4,40}$"},
+                     "candidate_id": {"type": "string", "pattern": "^c_[A-Za-z0-9_-]{4,40}$"}}
+    }
+  }
+}

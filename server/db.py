@@ -121,10 +121,10 @@ _DAILY_NAMES = {"records": "기록은", "candidates": "후보는", "decisions": 
                 "people": "사람은", "reflections": "출처 요약/반응은"}   # 조사까지
 # 종류 → 세는 (테이블, 시각 열[, 추가 조건]) 목록. 합계를 센다.
 _DAILY_SOURCES = {
-    "records": (("records", "created"),),
+    "records": (("records", "COALESCE(received_at, created)"),),   # board 이전: 이전한 기록의 created 가 과거여도 받은 시각으로 센다
     "candidates": (("candidates", "created"),),
     "decisions": (("candidate_history", "at"), ("item_history", "at")),
-    "proposals": (("object_defs", "created_at", "std_id IS NULL"), ("items", "created_at")),   # 표준 정의(시드·편입)는 사용자 제안이 아니다
+    "proposals": (("object_defs", "created_at", "std_id IS NULL"), ("items", "COALESCE(received_at, created_at)")),   # 표준 정의(시드·편입)는 사용자 제안이 아니다
     "questions": (("questions", "created"),),
     "people": (("people", "created"),),
     "reflections": (("source_reflections", "created"),),
@@ -453,6 +453,7 @@ def _init_schema(c):
             c.execute("ALTER TABLE records ADD COLUMN IF NOT EXISTS source_id text")
         if not _has_constraint(c, "records", "fk_records_source"):
             c.execute("ALTER TABLE records ADD CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)")
+        _migrate_board_import(c)   # board 이전(2026-10-20) — 열·이름 붙은 CHECK·부분 UNIQUE·item_links 대상 확장
         _migrate_classify_roles(c)
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
         # 처리방침 v2 전환 — v2 시행 전에 모은 이용 기록(usage_daily)을 1회 전부 지운다. 표식이 있으면 건너뛴다.
@@ -478,8 +479,77 @@ _USERS_PRB_CHECKS = (
 # 열거 CHECK 확장 — (테이블, 제약 이름(인라인 CHECK 의 자동 이름), 열, 최종 허용값). schema.sql 인라인 값과 같다
 _WIDEN_CHECKS = (
     ("admin_audit", "admin_audit_action_check", "action",
-     ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock", "delete_notify", "delete_run", "delete_cancel")),
-    ("ticket_history", "ticket_history_kind_check", "kind", ("status", "reply", "note", "reclassify", "deleted")))
+     ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock", "delete_notify", "delete_run", "delete_cancel",
+      "device_connect", "device_reissue", "device_revoke", "device_policy", "migration_apply", "migration_extend", "migration_close")),
+    ("ticket_history", "ticket_history_kind_check", "kind", ("status", "reply", "note", "reclassify", "deleted")),
+    ("field_defs", "field_defs_target_kind_check", "target_kind", ("item", "record", "candidate", "person", "source", "activity")))
+
+# board 이전(2026-10-20) — 옛 DB 에 더할 열(schema.sql 최종형과 같은 모양). received_at·ingest_kind 는 옛 행 값이 다르다(아래 함수)
+_IMPORT_PROV_COLS = (("source_created_at", "timestamptz"), ("source_date", "date"),
+                     ("generation_kind", "text NOT NULL DEFAULT 'unknown'"), ("generation_meta", "jsonb NOT NULL DEFAULT '{}'"),
+                     ("import_batch_id", "text"))
+_IMPORT_PROV_CHECKS = (
+    ("ck_{t}_ingest_kind", "CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration'))"),
+    ("ck_{t}_generation_kind", "CHECK (generation_kind IN ('unknown','human','ai','mixed'))"),
+    ("ck_{t}_generation_meta", "CHECK (jsonb_typeof(generation_meta) = 'object')"),
+    ("ck_{t}_source_when", "CHECK (source_created_at IS NULL OR source_date IS NULL)"))
+_ITEM_LINK_TARGETS = (("target_person_id", "fk_item_links_person", "people"), ("target_source_id", "fk_item_links_source", "sources"),
+                      ("target_activity_id", "fk_item_links_activity", "activities"))
+ITEM_LINK_TARGET_CHECK = ("CHECK (num_nonnulls(target_item_id, target_record_id, target_candidate_id, "
+                          "target_person_id, target_source_id, target_activity_id) = 1)")
+
+
+def _migrate_board_import(c):
+    """board 이전 스키마 — 옛 DB 를 schema.sql 최종형과 같은 모양으로. 매번 돌아도 된다(있으면 건드리지 않는다). 새 표 5개는 schema.sql 이 만든다.
+    · records·items: received_at(옛 행 NULL → 기본값 now() 는 열을 만든 뒤 건다) · ingest_kind(옛 행 legacy → 기본값 interactive) · 나머지 열 + 이름 붙은 CHECK
+    · people: hmac_namespace·identity_hmac + ck_people_identity · sources: activity_provider + ck_sources_activity_provider
+    · item_links: target_person/source/activity 열 + 이름 붙은 FK → 대상 CHECK 를 ck_item_links_target 하나로(옛 이름 없는 3열 CHECK 는 정의로 찾아 지운다)
+    · 부분 UNIQUE·인덱스(새 열을 쓰므로 schema.sql 이 아니라 여기서)"""
+    for t in ("records", "items"):
+        if not _has_col(c, t, "received_at"):
+            c.execute(f"ALTER TABLE {t} ADD COLUMN received_at timestamptz")
+            c.execute(f"ALTER TABLE {t} ALTER COLUMN received_at SET DEFAULT now()")
+        if not _has_col(c, t, "ingest_kind"):
+            c.execute(f"ALTER TABLE {t} ADD COLUMN ingest_kind text NOT NULL DEFAULT 'legacy'")
+            c.execute(f"ALTER TABLE {t} ALTER COLUMN ingest_kind SET DEFAULT 'interactive'")
+        for n, ddl in _IMPORT_PROV_COLS:
+            if not _has_col(c, t, n):
+                c.execute(f"ALTER TABLE {t} ADD COLUMN {n} {ddl}")
+        for name, ddl in _IMPORT_PROV_CHECKS:
+            if not _has_constraint(c, t, name.format(t=t)):
+                c.execute(f"ALTER TABLE {t} ADD CONSTRAINT {name.format(t=t)} {ddl}")
+    for n, ddl in (("hmac_namespace", "text"), ("identity_hmac", "bytea")):
+        if not _has_col(c, "people", n):
+            c.execute(f"ALTER TABLE people ADD COLUMN {n} {ddl}")
+    if not _has_constraint(c, "people", "ck_people_identity"):
+        c.execute("ALTER TABLE people ADD CONSTRAINT ck_people_identity CHECK ((hmac_namespace IS NULL AND identity_hmac IS NULL) "
+                  "OR (hmac_namespace IS NOT NULL AND identity_hmac IS NOT NULL AND octet_length(identity_hmac) = 32))")
+    if not _has_col(c, "sources", "activity_provider"):
+        c.execute("ALTER TABLE sources ADD COLUMN activity_provider text")
+    if not _has_constraint(c, "sources", "ck_sources_activity_provider"):
+        c.execute("ALTER TABLE sources ADD CONSTRAINT ck_sources_activity_provider CHECK (activity_provider IS NULL OR "
+                  "(activity_provider IN ('sns','web','mail','kakao') AND kind = 'other' AND location = ''))")
+    for col, fk, table in _ITEM_LINK_TARGETS:
+        if not _has_col(c, "item_links", col):
+            c.execute(f"ALTER TABLE item_links ADD COLUMN {col} text")
+        if not _has_constraint(c, "item_links", fk):
+            c.execute(f"ALTER TABLE item_links ADD CONSTRAINT {fk} FOREIGN KEY (user_id, {col}) REFERENCES {table}(user_id, id)")
+    if not _has_constraint(c, "item_links", "ck_item_links_target"):
+        # 옛 이름 없는 대상 CHECK(3열 num_nonnulls) 는 이름을 가정하지 않고 정의로 찾는다(PR① 선례). 같은 트랜잭션 — 의미는 추가만
+        for r in c.execute("SELECT conname FROM pg_constraint WHERE conrelid = 'item_links'::regclass AND contype = 'c' "
+                           "AND pg_get_constraintdef(oid) LIKE '%%num_nonnulls(target_item_id%%'").fetchall():
+            c.execute(f'ALTER TABLE item_links DROP CONSTRAINT "{r["conname"]}"')
+        c.execute(f"ALTER TABLE item_links ADD CONSTRAINT ck_item_links_target {ITEM_LINK_TARGET_CHECK}")
+    idx = [("ux_people_identity", "CREATE UNIQUE INDEX ux_people_identity ON people (user_id, hmac_namespace, identity_hmac) "
+                                  "WHERE identity_hmac IS NOT NULL"),
+           ("ux_sources_activity_provider", "CREATE UNIQUE INDEX ux_sources_activity_provider ON sources (user_id, activity_provider) "
+                                            "WHERE activity_provider IS NOT NULL")]
+    idx += [(f"ix_links_{col[7:-3]}", f"CREATE INDEX ix_links_{col[7:-3]} ON item_links (user_id, {col}) WHERE {col} IS NOT NULL")
+            for col in ("target_person_id", "target_source_id", "target_activity_id")]
+    for name, ddl in idx:   # 있으면 부르지 않는다(IF NOT EXISTS 여도 테이블을 잠근다)
+        if not c.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relnamespace = current_schema()::regnamespace",
+                         (name,)).fetchone():
+            c.execute(ddl)
 
 
 def _widen_check(c, t, name, col, vals):
@@ -642,11 +712,44 @@ def ping():
         return c.execute("SELECT 1 AS ok").fetchone()["ok"] == 1
 
 
+_scope_conn: "contextvars.ContextVar" = None   # 아래 tx_scope 가 쓰는 연결(설정 전엔 None — import 순서 때문에 지연 생성)
+
+
+def _scope():
+    global _scope_conn
+    if _scope_conn is None:
+        import contextvars
+        _scope_conn = contextvars.ContextVar("crm_tx_scope", default=None)
+    return _scope_conn
+
+
 @contextmanager
 def tx():
+    """트랜잭션 하나(풀 연결). tx_scope 안이면 그 연결의 savepoint 로 합쳐진다 — 바깥이 롤백하면 같이 사라진다."""
+    sc = _scope().get()
+    if sc is not None:
+        with sc.transaction():
+            yield sc
+        return
     with pool().connection() as c:
         with c.transaction():
             yield c
+
+
+@contextmanager
+def tx_scope():
+    """여러 db 함수를 한 트랜잭션으로 묶는다(board 이전 행 단위 원자성 — imports.migration_apply_row 만 쓴다).
+    안에서 부르는 tx() 는 모두 이 연결의 savepoint 다. 중첩 tx_scope 는 거절. 바깥 코드의 기존 동작(tx 마다 새 연결)은 그대로."""
+    var = _scope()
+    if var.get() is not None:
+        raise RuntimeError("tx_scope 는 중첩하지 않는다")
+    with pool().connection() as c:
+        with c.transaction():
+            token = var.set(c)
+            try:
+                yield c
+            finally:
+                var.reset(token)
 
 
 def _one(c, sql, args=()):
@@ -766,7 +869,7 @@ def user_delete(uid):
     with _flush_lock:
         with tx() as c:
             # 정의 층은 보호 Lookup(NO ACTION)이 있어 자식부터 지운다. 나머지는 users cascade.
-            for t in ("item_links", "item_history", "items", "field_defs", "object_defs"):
+            for t in ("item_links", "activity_links", "import_entries", "activities", "item_history", "items", "field_defs", "object_defs"):
                 c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
             c.execute("DELETE FROM usage_daily WHERE user_id=%s", (uid,))   # FK 없음(익명 '' 행이 있다) — cascade 밖
             c.execute("DELETE FROM users WHERE id=%s", (uid,))
@@ -909,12 +1012,15 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
         raise CrmError("ARG-INVALID", "출처를 고치는 사유가 비었어요.")
     check_len("reason", reason, LIMIT_TEXT)   # α1 ② — provenance_history 에 그대로 쌓인다
     with tx() as c:
-        r = _one(c, "SELECT id,author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL "
-                    "FOR UPDATE", (uid, rid))
+        r = _one(c, "SELECT id,author_kind,text_process,deleted_at,generation_kind FROM records WHERE user_id=%s AND id=%s "
+                    "AND deleted_at IS NULL FOR UPDATE", (uid, rid))
         if not r:
             raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
         if (r["author_kind"], r["text_process"]) == (author_kind, text_process):
             return _record_in(c, uid, rid)
+        if r["generation_kind"] in ("ai", "mixed"):   # board 이전 r3 T2 — 출처 정정으로 AI 생성 이력을 지우지 않는다
+            raise CrmError("PROVENANCE-AI-LOCKED", "AI 요약으로 보관한 기록은 출처 판정을 바꿀 수 없어요.",
+                           "직접 쓴 글은 새 기록으로 남기세요.")
         if _eligible(r) and not (author_kind == "self" and text_process == "verbatim"):
             n = _one(c, "SELECT count(*) AS n FROM candidates WHERE user_id=%s AND record_id=%s", (uid, rid))["n"]
             if n:
@@ -1222,7 +1328,7 @@ def tabs(uid):
 
 VALUE_TYPES = ("text", "number", "boolean", "date", "select", "text_list", "reference")
 SEMANTIC_KINDS = ("collection", "event", "principle")
-TARGET_KINDS = ("item", "record", "candidate")
+TARGET_KINDS = ("item", "record", "candidate", "person", "source", "activity")   # 뒤 셋 = board 이전(사람·출처·활동 판)
 ITEM_ACTIONS = ("apply", "confirm", "exclude", "pending", "archive", "restore", "discard")
 ITEM_DECISIONS = {"confirm": "confirmed", "exclude": "excluded", "pending": "pending"}
 RECORD_LINK_KEYS = ("attach_to", "axes")
@@ -1340,7 +1446,7 @@ def normalize_definition(d):
         if vt == "reference":
             tk = f.get("target_kind")
             if tk not in TARGET_KINDS:
-                raise _bad_def(f"reference 필드 {fk} 의 target_kind 는 item·record·candidate 중 하나예요.")
+                raise _bad_def(f"reference 필드 {fk} 의 target_kind 는 {'·'.join(TARGET_KINDS)} 중 하나예요.")
             nf["target_kind"] = tk
             nf["multiple"] = bool(f.get("multiple"))
             if tk == "item":
@@ -2011,19 +2117,25 @@ def _std_incorporate(c, uid, std_key, expected_revision):
 
 # ── 관계 ──
 
+# reference 대상 종류 → item_links 대상 열(정확히 하나만 채운다 — ck_item_links_target)
+LINK_TARGET_COLS = {"item": "target_item_id", "record": "target_record_id", "candidate": "target_candidate_id",
+                    "person": "target_person_id", "source": "target_source_id", "activity": "target_activity_id"}
+_LINK_TARGET_SQL = ",".join(LINK_TARGET_COLS.values())
+
+
 def _link_out(r):
-    if r["target_item_id"]:
-        return {"field_key": r["field_key"], "target_kind": "item", "target_id": r["target_item_id"]}
-    if r["target_record_id"]:
-        return {"field_key": r["field_key"], "target_kind": "record", "target_id": r["target_record_id"]}
-    return {"field_key": r["field_key"], "target_kind": "candidate", "target_id": r["target_candidate_id"]}
+    for kind, col in LINK_TARGET_COLS.items():
+        if r.get(col):
+            return {"field_key": r["field_key"], "target_kind": kind, "target_id": r[col]}
+    raise CrmError("DB-STATE", "관계 대상이 비었어요.")
 
 
 def _links_by_item(c, uid, item_ids):
     out = {}
     if not item_ids:
         return out
-    rows = _all(c, "SELECT l.source_item_id,l.field_key,l.target_item_id,l.target_record_id,l.target_candidate_id,t.object_id AS t_obj "
+    rows = _all(c, "SELECT l.source_item_id,l.field_key,l.target_item_id,l.target_record_id,l.target_candidate_id,"
+                   "l.target_person_id,l.target_source_id,l.target_activity_id,t.object_id AS t_obj "
                    "FROM item_links l LEFT JOIN items t ON t.user_id=l.user_id AND t.id=l.target_item_id "
                    "WHERE l.user_id=%s AND l.source_item_id = ANY(%s) ORDER BY l.id", (uid, list(item_ids)))
     for r in rows:
@@ -2046,6 +2158,15 @@ def _resolve_target(c, uid, kind, tid):
     if kind == "candidate":
         r = _one(c, "SELECT c.id FROM candidates c JOIN records r ON r.id=c.record_id AND r.deleted_at IS NULL "
                     "WHERE c.user_id=%s AND c.id=%s", (uid, tid))
+        return r and {"kind": kind, "id": r["id"]}
+    if kind == "person":
+        r = _one(c, "SELECT id FROM people WHERE user_id=%s AND id=%s", (uid, tid))
+        return r and {"kind": kind, "id": r["id"]}
+    if kind == "source":
+        r = _one(c, "SELECT id FROM sources WHERE user_id=%s AND id=%s", (uid, tid))
+        return r and {"kind": kind, "id": r["id"]}
+    if kind == "activity":   # 특정 판을 가리킨다 — 현재 판으로 바꾸지 않는다. 지운 판(deleted_at)은 새로 가리킬 수 없다
+        r = _one(c, "SELECT id FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, tid))
         return r and {"kind": kind, "id": r["id"]}
     return None
 
@@ -2083,7 +2204,7 @@ def _norm_links(c, uid, fields, links):
 
 
 def _insert_link(c, uid, link, source_item=None, source_object=None, source_record=None):
-    col = {"item": "target_item_id", "record": "target_record_id", "candidate": "target_candidate_id"}[link["target_kind"]]
+    col = LINK_TARGET_COLS[link["target_kind"]]
     c.execute(f"INSERT INTO item_links (user_id,source_item_id,source_object_id,source_record_id,field_key,{col}) "
               "VALUES (%s,%s,%s,%s,%s,%s)", (uid, source_item, source_object, source_record, link["field_key"], link["target_id"]))
 
@@ -2672,7 +2793,9 @@ ADMIN_LOCK = 0x63616E6F6E0B32       # 관리자 변경·bootstrap·복구를 직
 AUDIT_KEEP_DAYS = 365
 AUDIT_LIST = 100                    # /admin/setup 감사 로그 최근 건수
 ADMIN_ACTIONS = ("bootstrap", "recover", "role_grant", "role_revoke", "web_signout", "block", "unblock",
-                 "delete_notify", "delete_run", "delete_cancel")   # 삭제 CLI 3종(PR B) — detail 은 ticket_id·result 만
+                 "delete_notify", "delete_run", "delete_cancel",   # 삭제 CLI 3종(PR B) — detail 은 ticket_id·result 만
+                 "device_connect", "device_reissue", "device_revoke", "device_policy",   # board 이전: 장치 토큰(actor = 사용자 본인)
+                 "migration_apply", "migration_extend", "migration_close")              # board 이전 CLI — detail 은 열거 키·건수·해시 앞자리만
 _iat_missing_logged = False
 
 
@@ -2816,7 +2939,9 @@ DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. �
                  "그 전에 취소하려면 이 문의에 「취소」라고 남겨 주세요.")
 # 지울 테이블 = schema.sql 에서 user_id 열을 가진 테이블 − deletion_contacts. 순서 = 보호 Lookup(NO ACTION·RESTRICT) 자식부터.
 # tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
-DELETE_TABLES = ("item_links", "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
+# board 이전(2026-10-20): 관계(activity_links) → 접수 대응표(import_entries) → 업무 자료(activities) → 한도·입력원(import_counters·import_streams).
+DELETE_TABLES = ("item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
+                 "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
                  "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
                  "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
 DELETE_KEEP_TABLES = ("deletion_contacts",)
@@ -3176,8 +3301,24 @@ def person_delete(uid, person_id, expected_revision):
             raise _nf("그 사람")
         if r["revision"] != rev:
             raise _conflict(f"지금 revision {r['revision']}")
+        used = person_usage(c, uid, str(person_id))
+        if any(used.values()):   # board 이전 r3 T7 — 연결을 몰래 끊거나 활동을 연쇄 삭제하지 않는다
+            where = " · ".join(f"{_PERSON_USE_NAMES[k]} {n}" for k, n in used.items() if n)
+            raise CrmError("PERSON-IN-USE", f"이 사람은 연결돼 있어 지울 수 없어요({where} — 활동은 옛 판 포함).",
+                           "연결된 항목·활동(옛 판 포함)을 먼저 확인하세요. 별칭은 바꿀 수 있어요.")
         c.execute("DELETE FROM people WHERE user_id=%s AND id=%s", (uid, str(person_id)))
     return {"id": str(person_id), "deleted": True}
+
+
+_PERSON_USE_NAMES = {"activities": "활동", "records": "기록", "items": "항목"}
+
+
+def person_usage(c, uid, pid) -> dict:
+    """사람을 가리키는 연결 수 — 활동(activity_links.activity_id 출발) · 기록(activity_links.record_id 출발) · 항목(item_links reference)."""
+    a = _one(c, "SELECT count(DISTINCT activity_id) AS a, count(DISTINCT record_id) AS r FROM activity_links "
+                "WHERE user_id=%s AND person_id=%s", (uid, pid))
+    i = _one(c, "SELECT count(DISTINCT source_item_id) AS n FROM item_links WHERE user_id=%s AND target_person_id=%s", (uid, pid))
+    return {"activities": a["a"], "records": a["r"], "items": i["n"]}
 
 
 # ── 출처 ──

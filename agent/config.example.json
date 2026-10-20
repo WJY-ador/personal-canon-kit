@@ -1,0 +1,14 @@
+{
+  "config_version": 1,
+  "adapters": {
+    "likes": {
+      "enabled": true,
+      "input_path": "/absolute/path/to/likes.jsonl",
+      "provider_code": "threads",
+      "include_kinds": ["*"],
+      "include_null_kind": true,
+      "include_seed": true,
+      "axes": []
+    }
+  }
+}

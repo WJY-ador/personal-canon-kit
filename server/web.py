@@ -26,10 +26,12 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+import activity
 import admin_db
 import auth
 import contract
 import db
+import imports
 import service_schema
 import structure_svg
 from envnames import env
@@ -451,7 +453,14 @@ def _not_found() -> Response:
 
 ADMIN_LABELS = {"bootstrap": "첫 지정", "recover": "복구(CLI)", "role_grant": "관리자 부여", "role_revoke": "관리자 회수",
                 "web_signout": "웹 로그인 끊기", "block": "차단", "unblock": "차단 해제",
-                "delete_notify": "삭제 통지(CLI)", "delete_run": "계정 삭제(CLI)", "delete_cancel": "삭제 취소(CLI)"}
+                "delete_notify": "삭제 통지(CLI)", "delete_run": "계정 삭제(CLI)", "delete_cancel": "삭제 취소(CLI)",
+                # board 이전(2026-10-20) — 장치 토큰은 사용자 본인이 웹에서, 이전은 원작자가 CLI 로. 감사 detail 에 토큰·본문 없음
+                "device_connect": "장치 연결", "device_reissue": "장치 토큰 재발급", "device_revoke": "장치 연결 해제",
+                "device_policy": "장치 허용 규칙 변경", "migration_apply": "board 이전 적용(CLI)",
+                "migration_extend": "병행 기간 연장(CLI)", "migration_close": "병행 종료(CLI)"}
+# 연결 장치 허용 규칙의 변환 이름 — 화면 표시용(키 = imports.TRANSFORMS). 모르는 키는 키 그대로 보인다
+POLICY_MAX_BYTES = 4 * 1024   # 장치 허용 규칙(policy) JSON 상한 — WRITE_LIMITS 밖이라 웹이 write_gate 전에 직접 센다
+TRANSFORM_LABELS = {"board-likes/1": "좋아요 활동(바로 저장)", "self-text/1": "내 글(승인 대기)", "self-summary/1": "AI 요약(승인 대기)"}
 _ADMIN_CSS = """body{font-family:system-ui,sans-serif;margin:0;color:#2B2824;background:#FBF8F4;line-height:1.5;font-size:14px}
 .wrap{max-width:1180px;margin:0 auto;padding:24px 16px 48px}
 h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:28px 0 8px}
@@ -566,12 +575,14 @@ SCHEMA_SQL = Path(__file__).parent / "schema.sql"
 # app.html LABELS(질문·기록·후보)·문의 섹션(문의, 원작자 2026-10-19)·records.source_id(출처, PR #20). 필드·관계는 schema.sql 에서 읽는다.
 # 설정(profile·tabs)·이력·DB 내부(감사·사용량·동의)는 뺀다. 이력 테이블은 오브젝트로 보이지 않고 부모 쪽 관계(CORE_CHILD_LINKS)로만 보인다.
 CORE_OBJECTS = (("questions", "질문"), ("records", "기록"), ("candidates", "후보"), ("tickets", "문의"), ("sources", "출처"),
-                ("users", "나"), ("people", "사람"), ("source_reflections", "출처 요약/반응"))   # 뒤 셋 = PR B 코어
+                ("users", "나"), ("people", "사람"), ("source_reflections", "출처 요약/반응"),   # 뒤 셋 = PR B 코어
+                ("activities", "활동"))   # board 이전 코어(2026-10-20) — 입력원 열(stream_id)·그 FK 는 CORE_HIDDEN 으로 뺀다
 # PR B: 「나」 = users 행이지만 운영 Object Manager 엔 이 열만 보인다(이메일·인증·역할·차단 열은 코어 오브젝트 정의가 아니다)
 CORE_ONLY = {"users": frozenset({"display_name", "status", "nav_accepted_at", "created"})}
 CORE_LABEL = {"questions": "질문", "records": "기록", "candidates": "후보", "tickets": "문의", "items": "항목"}   # 코어 이름 정본(service_schema 표시명이 이것과 같다 — 시험)
 # 표준 구조에 보이지 않는 열 — 운영자 전용(문의 내부 메모 admin_note · 개인정보 의심 표식 hint). 소유자 열 user_id 는 모든 오브젝트에서 뺀다.
-CORE_HIDDEN = {"tickets": frozenset({"admin_note", "hint"})}
+CORE_HIDDEN = {"tickets": frozenset({"admin_note", "hint"}),
+               "activities": frozenset({"stream_id"})}   # board 이전: 입력원(장치·이전)은 오브젝트가 아니다 — 열과 그 FK 관계를 함께 뺀다
 # 부모 쪽에 보일 자식(이력) 관계 — 자식 테이블의 열 단위 REFERENCES 를 schema.sql 에서 읽는다.
 CORE_CHILD_LINKS = {"tickets": ("ticket_history",)}
 _REF_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s+\w+.*\bREFERENCES\s+(\w+)\s*\([^)]*\)(.*)$", re.I)
@@ -602,6 +613,8 @@ def core_schema(sql_text: str) -> list[dict]:
                     enums[en.group(1)] = len(re.findall(r"'[^']*'", en.group(2)))
                 if fk and fk.group(2) != "users":
                     cols = [c.strip() for c in fk.group(1).split(",") if c.strip() != "user_id"]
+                    if cols and all(c in CORE_HIDDEN.get(table, ()) for c in cols):   # 숨긴 열의 관계는 정의에 보이지 않는다
+                        continue
                     req = {f["name"]: f["required"] for f in fields}
                     links.append({"field": ", ".join(cols), "target": fk.group(2),
                                   "kind": "M-D" if "ON DELETE CASCADE" in fk.group(4).upper() else "Lookup",
@@ -936,8 +949,9 @@ def render_userview(u: dict, opaque: str, named: bool, resp: dict, st: dict, tic
                      f'<td>{_uv_target(resp, st, i)}</td><td>{_esc(r["cardinality"])}</td>'
                      f'<td>{_esc(structure_svg.ORIGIN_TEXT.get(r["origin"], r["origin"]))}</td>'
                      f'<td>{UV_LOCK if r["locked"] else ""}</td>'
-                     f'<td class="num">{_esc(st["linked"][i])}</td>'
-                     f'<td class="num">{f"<span class=err>{err_n[i]}</span>" if err_n[i] else "0"}</td><td class="num">{_esc(unc_n[i])}</td></tr>')
+                     + ('<td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>' if st["linked"][i] is None else   # 사람·출처·활동 대상 = 개수 비공개
+                        f'<td class="num">{_esc(st["linked"][i])}</td>'
+                        f'<td class="num">{f"<span class=err>{err_n[i]}</span>" if err_n[i] else "0"}</td><td class="num">{_esc(unc_n[i])}</td></tr>'))
     erows = []
     for code, lab in UV_INTEGRITY.items():
         es = [e for e in st["errors"] if e["code"] == code]
@@ -1280,6 +1294,19 @@ class Web:
         st["people"], st["reflections"] = people, refl   # PR B 코어 사람·출처 요약/반응(본인 것 전부, 최근 순) — /app 전용
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
             st["user"]["admin"] = True
+        # board 이전 — 「나」 홈 활동 집계(30d)·[승인 대기 N]·연결 장치 수. /app 전용. 이 부분만 실패하면 그 칸만 「읽지 못함」
+        # (집계 실패가 대시보드 전체를 막지 않는다). 오류 문구엔 예외 이름만 — 값·본문 없음
+        # activity_ui = 화면 표시용 서버 상수(행동·제공자 이름, 대기 보관 일수) — 화면이 따로 하드코딩하지 않는다
+        st["activity_ui"] = {"actions": dict(activity.ACTION_LABELS), "providers": dict(activity.PROVIDER_LABELS),
+                             "pending_days": imports.PENDING_DAYS}
+        try:
+            st.update(await run_in_threadpool(activity.state_part, uid))
+        except Exception as e:
+            code = e.code if isinstance(e, db.CrmError) and _CODE_RE.match(str(e.code)) else "EXC"
+            db.usage_count(uid, "web:state_activity", code)   # 사용 집계 관례 — 열거 코드만(EXC = 예외), 자유 텍스트 없음
+            print(f"[web] /api/state 활동 부분 실패 — {code}", flush=True)
+            st.setdefault("read", {})["activity"] = {"ok": False, "error": {"code": code, "msg": ""}}
+            st["activity"] = st["inbox"] = st["devices"] = None
         return JSONResponse(st, headers={"cache-control": "no-store"})
 
     async def api_journal(self, request):
@@ -1410,8 +1437,9 @@ class Web:
     # ── PR B 코어 쓰기: 나 · 사람 · 출처 · 출처 요약/반응 ──
     # 공통 = 세션(401) → Origin(403) → JSON 본문 모양(400 ARG-INVALID) → db.write_gate(길이 · NAME-REQUIRED 403 · 전역 크기) → db.
     # 대상 사용자 = 세션 uid 뿐(본문에 사용자 id 인자가 없다). 남의 id·없는 id = NOT-FOUND 404(같은 모양).
-    async def _core_write(self, request, op: str, shape: dict, call):
-        """shape = {키: (타입들, 필수)}. call(uid, body) → db 결과. op = db.write_gate 의 쓰기 이름(NAME_EXEMPT 면 관문 면제)."""
+    async def _core_write(self, request, op: str, shape: dict, call, json_limits: dict | None = None):
+        """shape = {키: (타입들, 필수)}. call(uid, body) → db 결과. op = db.write_gate 의 쓰기 이름(NAME_EXEMPT 면 관문 면제).
+        json_limits = {키: 바이트} — 문자열이 아닌 값(객체)의 JSON 길이 상한(WRITE_LIMITS 밖 웹 전용 쓰기). 넘으면 400 PAYLOAD-LIMIT(write_gate 전)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1429,6 +1457,11 @@ class Web:
         except Exception:
             want = ", ".join(f"{k}({'/'.join(t.__name__ for t in ts)}{'' if need else ' 선택'})" for k, (ts, need) in shape.items())
             return JSONResponse({"code": "ARG-INVALID", "msg": f"JSON 본문이 필요해요: {want or '{}'}."}, status_code=400)
+        for k, lim in (json_limits or {}).items():
+            n = len(json.dumps(body.get(k), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            if n > lim:
+                return JSONResponse({"code": "PAYLOAD-LIMIT", "msg": f"{k} 가 너무 길어요 (상한 {lim} 바이트, 지금 {n} 바이트).",
+                                     "action": "줄이거나 나눠서 다시 보내세요."}, status_code=400)
 
         def write():
             db.write_gate(op, {k: body.get(k) for k in shape if isinstance(body.get(k), str)}, uid)
@@ -1497,6 +1530,113 @@ class Web:
         rid = request.path_params["rid"]
         return await self._core_write(request, "source_reflection_delete", {"expected_revision": ((int,), True)},
                                       lambda uid, b: db.source_reflection_delete(uid, rid, b["expected_revision"]))
+
+    # ── board 이전 (2026-10-20, 구현계획 §2-11 D7 · r3 T2·T3) — 연결 장치(#_devices) · 승인 대기(#_inbox) · 「나」 집계·활동/사람/출처/축 상세 ──
+    # 쓰기 = _core_write(세션 401 → Origin 403 → JSON 모양 400 → db.write_gate(표시 이름 관문 · 전역 크기) → imports). 페이로드 상한은 main.BodyLimit(/api/*).
+    # 읽기 = 세션 → 서버 함수(본인 uid 만) → no-store. 승인·제외는 웹에서만(MCP 는 읽기만). 대상 사용자 = 세션 uid 뿐.
+    # 장치 토큰 원문은 device_connect·device_reissue 응답에서 한 번만(no-store) — 화면도 그 자리에서만 그리고 저장하지 않는다.
+    async def _core_read(self, request, call):
+        """call(uid) → JSON(no-store). CrmError = NOT-FOUND 404 · NAME-REQUIRED 403 · 그 밖 400(_crm_err)."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(call, uid)
+        except db.CrmError as e:
+            return self._crm_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    @staticmethod
+    def _qint(request, name: str, default: int, lo: int, hi: int) -> int:
+        """쿼리 정수 — 숫자가 아니면 기본값, 범위 밖이면 끝값."""
+        v = request.query_params.get(name, "")
+        return max(lo, min(hi, int(v))) if v.isdigit() else default
+
+    async def api_devices(self, request):
+        """GET = 연결 장치 목록 + 허용 규칙 선택지(서버 상수 그대로 — 화면이 하드코딩하지 않는다) · POST {label} = 장치 연결(토큰 1회)."""
+        if request.method == "POST":
+            return await self._core_write(request, "device_connect", {"label": ((str,), True)},
+                                          lambda uid, b: imports.device_connect(uid, b["label"]))
+
+        def read(uid):
+            out = imports.device_list(uid)
+            out["choices"] = {"actions": [{"key": a, "label": activity.ACTION_LABELS.get(a, a)} for a in imports.ACTIONS],
+                              "transforms": [{"key": t, "label": TRANSFORM_LABELS.get(t, t), "kinds": list(k)} for t, k in imports.TRANSFORMS.items()],
+                              "axis_object_id": db.classify_target(uid), "max_axes": imports.MAX_AXES_PER_ACTIVITY,
+                              "token_days": imports.TOKEN_DAYS}
+            return out
+        return await self._core_read(request, read)
+
+    async def api_device_reissue(self, request):
+        """POST /api/devices/{id}/reissue {} — 토큰 재발급(옛 토큰 즉시 무효). 응답에 새 토큰 1회."""
+        did = request.path_params["did"]
+        return await self._core_write(request, "device_reissue", {}, lambda uid, b: imports.device_reissue(uid, did))
+
+    async def api_device_revoke(self, request):
+        """POST /api/devices/{id}/revoke {} — 연결 해제(되살리지 않는다). 이미 받은 활동·기록은 남는다."""
+        did = request.path_params["did"]
+        return await self._core_write(request, "device_revoke", {}, lambda uid, b: imports.device_revoke(uid, did))
+
+    async def api_device_policy(self, request):
+        """POST /api/devices/{id}/policy {policy, expected_revision} — 허용 규칙 교체(검증은 imports.device_policy_set)."""
+        did = request.path_params["did"]
+        return await self._core_write(request, "device_policy_set", {"policy": ((dict,), True), "expected_revision": ((int,), True)},
+                                      lambda uid, b: imports.device_policy_set(uid, did, b["policy"], b["expected_revision"]),
+                                      json_limits={"policy": POLICY_MAX_BYTES})
+
+    async def api_inbox(self, request):
+        """GET ?state=pending|applied|excluded|expired|all&cursor=&limit= — 승인 대기 목록(본문 없음)."""
+        state = request.query_params.get("state", "pending")
+        cursor = request.query_params.get("cursor", "")
+        limit = self._qint(request, "limit", 50, 1, 100)
+        return await self._core_read(request, lambda uid: imports.inbox_list(uid, state, cursor, limit))
+
+    async def api_inbox_one(self, request):
+        """GET /api/inbox/{id} — 대기 하나 + 본문(pending 만) + AI 요약 승인 문구."""
+        iid = request.path_params["iid"]
+        return await self._core_read(request, lambda uid: imports.inbox_get(uid, iid))
+
+    async def api_inbox_approve(self, request):
+        """POST /api/inbox/{id}/approve {} — 승인(최신 대기 개정만, 스위치 INBOX_APPROVALS)."""
+        iid = request.path_params["iid"]
+        return await self._core_write(request, "inbox_approve", {}, lambda uid, b: imports.inbox_approve(uid, iid))
+
+    async def api_inbox_exclude(self, request):
+        """POST /api/inbox/{id}/exclude {} — 제외(대기 본문 삭제)."""
+        iid = request.path_params["iid"]
+        return await self._core_write(request, "inbox_exclude", {}, lambda uid, b: imports.inbox_exclude(uid, iid))
+
+    async def api_me_aggregate(self, request):
+        """GET ?period=7d|30d|90d|all — 「나」 집계(웹·MCP 같은 서버 함수). /api/state 엔 30d 만 실린다."""
+        period = request.query_params.get("period", activity.DEFAULT_PERIOD)
+        return await self._core_read(request, lambda uid: activity.me_aggregate(uid, period))
+
+    async def api_activities(self, request):
+        """GET ?action=&person=&source=&axis=&dated=&cursor=&limit= — 현재 판 활동 목록."""
+        q = request.query_params
+        limit = self._qint(request, "limit", 50, 1, 100)
+        return await self._core_read(request, lambda uid: activity.activity_list(
+            uid, q.get("action", ""), q.get("person", ""), q.get("source", ""), q.get("axis", ""), q.get("dated", ""), q.get("cursor", ""), limit))
+
+    async def api_activity(self, request):
+        """GET /api/activities/{id} — 활동 하나(옛 판도 열린다) + 판 이력 · 승인된 메모 · 원문 불투명 ID."""
+        aid = request.path_params["aid"]
+        return await self._core_read(request, lambda uid: activity.activity_get(uid, aid))
+
+    async def api_person_context(self, request):
+        """GET /api/people/{id}/context — 사람 상세 역방향(활동·기록·항목)."""
+        pid = request.path_params["pid"]
+        return await self._core_read(request, lambda uid: activity.person_context(uid, pid))
+
+    async def api_source_context(self, request):
+        """GET /api/sources/{id}/context — 출처 상세의 활동."""
+        sid = request.path_params["sid"]
+        return await self._core_read(request, lambda uid: activity.source_context(uid, sid))
+
+    async def api_axis_context(self, request):
+        """GET /api/axes/{item_id}/context — 축 상세(활동·기록·판단·기준 연결)."""
+        iid = request.path_params["iid"]
+        return await self._core_read(request, lambda uid: activity.axis_context(uid, iid))
 
     async def api_feedback(self, request):
         """문의(desk-0). GET = 「내 문의」(본인 글·상태·답변 유무·공개 갱신, 운영자 메모 없음) — 관리자도 같다(운영은 /admin/tickets)
@@ -2125,6 +2265,21 @@ class Web:
             Route("/api/reflections/{rid}", u("web:reflection", self.api_reflection), methods=["POST"]),
             Route("/api/reflections/{rid}/review", u("web:reflection_review", self.api_reflection_review), methods=["POST"]),
             Route("/api/reflections/{rid}/delete", u("web:reflection_delete", self.api_reflection_delete), methods=["POST"]),
+            # board 이전 — 연결 장치 · 승인 대기 · 「나」 집계 · 활동/사람/출처/축 상세
+            Route("/api/devices", u("web:devices", self.api_devices), methods=["GET", "POST"]),
+            Route("/api/devices/{did}/reissue", u("web:device_reissue", self.api_device_reissue), methods=["POST"]),
+            Route("/api/devices/{did}/revoke", u("web:device_revoke", self.api_device_revoke), methods=["POST"]),
+            Route("/api/devices/{did}/policy", u("web:device_policy", self.api_device_policy), methods=["POST"]),
+            Route("/api/inbox", u("web:inbox", self.api_inbox)),
+            Route("/api/inbox/{iid}", u("web:inbox_get", self.api_inbox_one)),
+            Route("/api/inbox/{iid}/approve", u("web:inbox_approve", self.api_inbox_approve), methods=["POST"]),
+            Route("/api/inbox/{iid}/exclude", u("web:inbox_exclude", self.api_inbox_exclude), methods=["POST"]),
+            Route("/api/me/aggregate", u("web:me_aggregate", self.api_me_aggregate)),
+            Route("/api/activities", u("web:activities", self.api_activities)),
+            Route("/api/activities/{aid}", u("web:activity", self.api_activity)),
+            Route("/api/people/{pid}/context", u("web:person_context", self.api_person_context)),
+            Route("/api/sources/{sid}/context", u("web:source_context", self.api_source_context)),
+            Route("/api/axes/{iid}/context", u("web:axis_context", self.api_axis_context)),
             Route("/admin", self.admin_index),
             Route("/admin/reauth", self.admin_reauth),
             Route("/admin/setup", self.admin_setup),

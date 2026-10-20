@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "canon-inbox-1.schema.json",
+  "title": "canon-inbox/1 schema_revision 2 — POST /api/imports 요청 본문",
+  "$comment": "정본 판정 = server/imports.py validate() + 공용 벡터 vectors/canon-inbox-1.json. 이 스키마로 표현 못 하는 규칙: (1) UTF-8 JSON 객체 하나·중복 키 금지·실수(1.0 포함) 금지 (2) previous_revision ≠ revision (3) transform_version 별 허용 kind·action·provider(board-likes/1 = activity·like·sns, self-text/1 = self_text, self-summary/1 = self_summary) (4) title·body 에 URL·이메일·로컬 경로 꼴 금지, title 한 줄, body 8000 코드 포인트·UTF-8 32 KiB (5) source_created_at 과 source_date 는 함께 쓰지 않음 (6) people 의 (hmac, role) 중복·axes 중복 금지 (7) 요청 64 KiB, activity 요청 8 KiB. Idempotency-Key = ci1_ + sha256hex(JCS([\"canon-inbox/1\", 2, source_instance_id, original_id, revision])). JCS = json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=False).",
+  "type": "object",
+  "required": ["contract", "schema_revision", "source_instance_id", "original_id", "revision", "previous_revision", "kind", "execution",
+               "transform_version", "policy_revision"],
+  "properties": {
+    "contract": {"const": "canon-inbox/1"},
+    "schema_revision": {"const": 2},
+    "source_instance_id": {"type": "string", "pattern": "^is_[0-9a-f]{24}$"},
+    "original_id": {"type": "string", "pattern": "^o_[0-9a-f]{32}$"},
+    "revision": {"type": "string", "pattern": "^v_[0-9a-f]{32}$"},
+    "previous_revision": {"type": ["string", "null"], "pattern": "^v_[0-9a-f]{32}$"},
+    "kind": {"enum": ["self_text", "activity", "self_summary"]},
+    "execution": {"enum": ["attended", "unattended"]},
+    "transform_version": {"enum": ["board-likes/1", "self-text/1", "self-summary/1"]},
+    "policy_revision": {"type": "integer", "minimum": 1}
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {"const": "activity"},
+        "contract": true, "schema_revision": true, "source_instance_id": true, "original_id": true, "revision": true,
+        "previous_revision": true, "execution": true, "transform_version": true, "policy_revision": true,
+        "action": {"enum": ["like", "repost", "comment", "read", "save", "send", "reply"]},
+        "state": {"enum": ["active", "retracted"]},
+        "occurred_on": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "$comment": "확인된 행동 날짜만. 모르면 null — 수집일로 대체 금지"},
+        "observed_on": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "$comment": "수집기가 처음 본 날(집계 미사용)"},
+        "provider": {"enum": ["sns", "web", "mail", "kakao"]},
+        "raw_id": {"type": "string", "pattern": "^[0-9a-f]{48}$", "$comment": "PC 가 만든 192비트 난수 — 경로·URL 에서 유도 금지"},
+        "people": {"type": "array", "maxItems": 10, "items": {
+          "type": "object", "additionalProperties": false, "required": ["hmac", "role"],
+          "properties": {"hmac": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "role": {"enum": ["author", "counterparty", "participant"]}}}},
+        "axes": {"type": "array", "maxItems": 10, "uniqueItems": true, "items": {"type": "string", "pattern": "^i_[A-Za-z0-9_-]{4,40}$"}}
+      },
+      "required": ["action", "state", "occurred_on", "observed_on", "provider", "raw_id"],
+      "additionalProperties": false
+    },
+    {
+      "properties": {
+        "kind": {"const": "self_text"},
+        "contract": true, "schema_revision": true, "source_instance_id": true, "original_id": true, "revision": true,
+        "previous_revision": true, "execution": true, "transform_version": true, "policy_revision": true,
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "body": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "source_created_at": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$"},
+        "source_date": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "activity_ref": {"type": ["string", "null"], "pattern": "^a_[A-Za-z0-9_-]{6,40}$"},
+        "generation": {"type": "object", "additionalProperties": false, "required": ["method"], "properties": {"method": {"const": "none"}}}
+      },
+      "required": ["body"],
+      "additionalProperties": false
+    },
+    {
+      "properties": {
+        "kind": {"const": "self_summary"},
+        "contract": true, "schema_revision": true, "source_instance_id": true, "original_id": true, "revision": true,
+        "previous_revision": true, "execution": true, "transform_version": true, "policy_revision": true,
+        "title": {"type": "string", "minLength": 1, "maxLength": 200},
+        "body": {"type": "string", "minLength": 1, "maxLength": 8000},
+        "source_created_at": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,6})?(Z|[+-]\\d{2}:\\d{2})$"},
+        "source_date": {"type": ["string", "null"], "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "generation": {
+          "type": "object", "additionalProperties": false, "required": ["method", "tool", "model", "input_scope", "inputs"],
+          "properties": {
+            "method": {"const": "ai_summary"},
+            "tool": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,31}$"},
+            "model": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "$comment": "신고 모델 코드 또는 unknown(검증된 사실 아님)"},
+            "input_scope": {"const": "self_only"},
+            "inputs": {"type": "array", "minItems": 1, "maxItems": 20, "items": {
+              "type": "object", "additionalProperties": false, "required": ["original_id", "revision", "sha256"],
+              "properties": {"original_id": {"type": "string", "pattern": "^o_[0-9a-f]{32}$"},
+                             "revision": {"type": "string", "pattern": "^v_[0-9a-f]{32}$"},
+                             "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}}
+          }
+        }
+      },
+      "required": ["body", "generation"],
+      "additionalProperties": false
+    }
+  ]
+}

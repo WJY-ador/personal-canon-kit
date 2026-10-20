@@ -65,7 +65,7 @@ def std_state(marks, choices):
 
 # ── 출처 판정 · 관계 파생 (§0·§8) ──
 ORIGINS = ("core", "standard", "template", "custom")
-CORE_TARGETS = ("record", "candidate")   # 참조 필드가 가리키는 코어(공통 테이블) — origin=core 고정 노드
+CORE_TARGETS = ("record", "candidate", "person", "source", "activity")   # 참조 필드가 가리키는 코어(공통 테이블) — origin=core 고정 노드. 뒤 셋 = board 이전
 
 
 def origin_of(d):

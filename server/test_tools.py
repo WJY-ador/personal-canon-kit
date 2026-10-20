@@ -62,6 +62,7 @@
 최종형을 init_schema 로 깔고 그 안에서만 돈 뒤 끝에 지운다(운영 테이블은 안 건드린다). CI 는 빈 Postgres 라 안 쓴다.
 """
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager, contextmanager
 import os
@@ -112,10 +113,12 @@ import jwt  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import rsa  # noqa: E402
 from mcp.client import Client  # noqa: E402
 
+import activity  # noqa: E402
 import auth  # noqa: E402
 import contract  # noqa: E402
 import db  # noqa: E402
 import envnames  # noqa: E402
+import imports  # noqa: E402
 import main  # noqa: E402
 import web  # noqa: E402
 
@@ -142,14 +145,18 @@ PRB_TOOLS = {"display_name_set", "me_get", "person_list", "person_get", "person_
              "source_create", "source_reflection_list", "source_reflection_get", "source_reflection_save", "source_reflection_review",
              "source_reflection_delete",   # PR B 계획 §5 — 기존 19개는 그대로
              "record_provenance_set", "definition_archive", "definition_restore"}   # R5 결함(PR B 범위 추가) 3
+# board 이전(25절) MCP 읽기 7 — 쓰기 없음(승인·제외는 웹에서만)
+BI_TOOLS = {"activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get"}
+BI = {k: f"bi-{k}@example.com" for k in ("a", "b", "agg", "adm", "del", "mig")}   # 25절: a 장치·수신 · b 남 · agg 집계 · adm 삭제 실행 · del 삭제 대상 · mig 이전
 # 처리방침 머리글(`vN · 날짜`) — PR B 부터 v5. 날짜는 문서가 정본이라 파일에서 읽는다(시험이 날짜를 따로 들지 않는다)
-PRIVACY_VERSION = "v5"
+PRIVACY_VERSION = "v6"   # board 이전(2026-10-20) — v6
 PRIVACY_HEAD = re.search(r"`(v\d+ · [^`]+)`", (HERE.parent / "guides" / "11-privacy.md").read_text(encoding="utf-8")).group(1)
-# 머리글 꼴 = v5 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
-assert re.fullmatch(r"v5 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
+# 머리글 꼴 = v6 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
+assert re.fullmatch(r"v6 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
 # PR B(24절) 시험 사용자 — prb-* 는 표시 이름을 자동으로 채우지 않는다(관문 시험). 그 밖 시험 사용자는 아래 _autoname 이 채운다
 PRB_EMAILS = tuple(f"prb-{k}@example.com" for k in ("a", "b", "noname", "web", "mcp", "del", "dela", "delb", "adm", "race", "old", "nav"))
 TEST_EMAILS += PRB_EMAILS
+TEST_EMAILS += tuple(BI.values())
 RESOURCE = f"{PUBLIC}/mcp"
 KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 WRONG_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -973,7 +980,7 @@ async def test_definition_tools():
         base = {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose", "candidate_decide",
                 "candidate_list", "profile_set"}
         legacy = base | new | {"help_get", "feedback_send", "ticket_list_mine", "ticket_get_mine"}   # 기존 15개 + help_get + feedback_send(desk-0) + 내 문의 읽기 2(P3)
-        assert len(legacy) == 19 and legacy <= tools and tools - legacy == PRB_TOOLS, tools   # PR B 코어 도구 14개는 24절이 본다
+        assert len(legacy) == 19 and legacy <= tools and tools - legacy == PRB_TOOLS | BI_TOOLS, tools   # PR B 코어 도구는 24절, board 이전 읽기 7은 25절이 본다
         assert val(await c.call_tool("definitions_get", {"object_ids": None, "include_archived": False})) == []
         p = val(await c.call_tool("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": json.dumps(
             {"key": "notes", "label": "메모", "semantic_kind": "principle", "fields": []})}))
@@ -1557,8 +1564,8 @@ async def test_limits():
     assert names - set(db.WRITE_LIMITS) == {"state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get",
                                             "ticket_list_mine", "ticket_get_mine",
                                             "me_get", "person_list", "person_get", "source_list", "source_get",   # PR B 읽기
-                                            "source_reflection_list", "source_reflection_get"}, names
-    assert len(names) == 19 + len(PRB_TOOLS) and db.QUOTA_EXEMPT == {"feedback_send"} <= set(db.WRITE_LIMITS), (len(names), db.QUOTA_EXEMPT)
+                                            "source_reflection_list", "source_reflection_get"} | BI_TOOLS, names
+    assert len(names) == 19 + len(PRB_TOOLS) + len(BI_TOOLS) and db.QUOTA_EXEMPT == {"feedback_send"} <= set(db.WRITE_LIMITS), (len(names), db.QUOTA_EXEMPT)
 
     def nrec():
         return len(db.records(uid, limit=1000))
@@ -2265,8 +2272,11 @@ async def test_daily_limits():
             r = await c.call_tool("record_add", {"text": "MCP 51번째"})
             assert r.is_error and "[RATE-LIMIT] 오늘 기록은 50개까지예요." in r.content[0].text, r.content[0].text
         assert len(db.records(u, limit=1000)) == 50
-        # 날짜 경계(_KST_TODAY): 하나를 어제로 옮기면 오늘 카운트에서 빠진다
+        # 날짜 경계(_KST_TODAY): 하나를 어제로 옮기면 오늘 카운트에서 빠진다. board 이전부터 한도는 COALESCE(received_at, created) —
+        # created 만 과거로 옮기면 그대로 센다(이전한 기록의 과거 created 로 한도 우회 금지, r3 T2)
         _bulk("UPDATE records SET created = created - interval '1 day' WHERE user_id=%s AND id=%s", (u, r50["id"]))
+        expect("RATE-LIMIT", db.record_add, u, "created 만 과거", "받은 시각은 오늘")
+        _bulk("UPDATE records SET received_at = received_at - interval '1 day' WHERE user_id=%s AND id=%s", (u, r50["id"]))
         db.record_add(u, "어제로 옮긴 뒤", "다시 50번째")
         expect("RATE-LIMIT", db.record_add, u, "다시 51", "다시 51번째")
         _set_role(u, "user")
@@ -2941,7 +2951,9 @@ ADB_BODY_TABLES = re.compile(r"\b(questions|records|candidates|tabs|items)\b", r
 # PR #20 Q5: 연결·무결성 조회만 본문 테이블을 이름으로 부른다 — 대신 SQL 의 한정 열(별칭.열)은 상태·식별 열뿐(ADB_STATE_COLS)
 ADB_STATE_KEYS = ("userview.counts", "userview.links")
 ADB_STATE_COLS = {"id", "user_id", "created", "kind", "state", "version", "std_key", "record_id", "object_id", "revision", "archived_at",
-                  "deleted_at", "source_item_id", "source_object_id", "source_record_id", "field_key", "target_item_id", "target_record_id"}
+                  "deleted_at", "source_item_id", "source_object_id", "source_record_id", "field_key", "target_item_id", "target_record_id",
+                  "target_candidate_id", "target_person_id", "target_source_id", "target_activity_id",   # 뒤 넷 = board 이전 대상 종류 판정(ID 열)
+                  "activity_provider"}   # board 이전 — 출처 수에서 활동 출처를 빼는 종류 열(값을 내보내지 않는다)
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
 ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
 ADB_TEXT_KEYS = ("tickets.detail",)   # text·admin_note 를 읽는 유일한 조회(P5 에서 /app 문의함 이행 키를 뺐다)
@@ -3242,12 +3254,12 @@ async def test_optional_consent():
         for word in (PRIVACY_HEAD, "구조 이름 공유", "동의하지 않아도 모든 기능을 쓸 수 있습니다",
                      "v2 시행 전에 모은 이용 기록은 v2 시행 때 지웠습니다", "메시지·내용은 모으지 않습니다", 'id="privacy-1"',
                      "처리 근거", "제15조 제1항 제4호", "제15조 제1항 제6호", "제15조 제1항 제1호",
-                     "로그인 전 요청의 이용 기록은 사용자와 연결하지 않습니다",
+                     "로그인 전 요청과 연결 장치 요청의 이용 기록은 사용자와 연결하지 않습니다",
                      "출처(종류·이름·위치)", "표준 편입", "작성자 표시만 검사", "계정 메뉴 「문의 보내기」",
                      "표시 이름", "사람", "출처 요약/반응", "삭제 요청", "1년"):   # v5(PR B)
             assert word in r.text, word
         basis = r.text[r.text.index("처리 근거"):r.text.index('id="privacy-2"')]
-        assert "<table>" in basis and basis.count("<tr>") == 5, basis   # v5: 삭제 뒤 contact 1년(정당한 이익) 행 추가
+        assert "<table>" in basis and basis.count("<tr>") == 6, basis   # v5: 삭제 뒤 contact 1년(정당한 이익) 행 · v6: 연결 장치 행 추가
         assert r.status_code == 200 and "지금은 모으지 않습니다" not in r.text and "v1 · 2026-10-18" not in r.text
         assert "v2 · 2026-10-19" not in r.text and "v3 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
         assert "로그인한 뒤 「문의」에서" not in r.text, "문의 경로는 계정 메뉴 「문의 보내기」"
@@ -3738,9 +3750,10 @@ async def test_admin_screens():
         assert std[0]["links"] == [{"field": "ticket_history.ticket_id", "target": "tickets", "kind": "M-D", "required": True}], std[0]["links"]
         core8 = web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))
         assert [x["table"] for x in core8] == ["questions", "records", "candidates", "tickets", "sources",
-                                               "users", "people", "source_reflections"], "PR B 코어 8"
+                                               "users", "people", "source_reflections", "activities"], "PR B 코어 8 + board 이전 활동"
         assert {f["name"] for f in core8[5]["fields"]} == {"display_name", "status", "nav_accepted_at", "created"}, "「나」 = users 의 네 열만"
-        assert {f["name"] for f in core8[6]["fields"]} == {"id", "alias", "revision", "created", "updated"}, "사람 = 별칭 이름표"
+        assert {f["name"] for f in core8[6]["fields"]} == {"id", "alias", "revision", "created", "updated", "hmac_namespace",
+                                                           "identity_hmac"}, "사람 = 별칭 이름표 + 장치 식별자(HMAC, board 이전)"
         r = await get("/admin/schema/objects/core-ticket")
         d = clean(r, "/admin/schema/objects/core-ticket")
         assert "<h1>문의</h1>" in d and "문의 변경 이력(오브젝트 아님)" in d and "공개 답변" in d, "문의 오브젝트·이력 관계"
@@ -3897,6 +3910,12 @@ async def run():
         await test_prb_r5()
         await test_prb_app()
         await test_prb_privacy()
+        test_bi_schema()
+        test_bi_contract()
+        await test_bi_imports()
+        await test_bi_aggregate()
+        test_bi_migration()
+        await test_bi_delete()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -4257,7 +4276,7 @@ async def test_r1_flags_off():
         if admin:   # PR B 결정 3: 표시 이름 관문은 관리자도 — 이름·새 탐색·내 구조 설정 메뉴(hidden 이어도 마크업엔 있다)
             menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
             assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "표시 이름 바꾸기", "새 탐색으로 바꾸기", "내 구조 설정",
-                                                                      "로그아웃"], menu
+                                                                      "연결 장치", "로그아웃"], menu
             for w in ('id="acct-name"', 'id="acct-nav"', 'id="acct-settings"', '<dialog id="name-dlg"', '<dialog id="nav-dlg"'):
                 assert r.text.count(w) == 1, w
             assert '<dialog id="desk-dlg"' not in r.text
@@ -5226,6 +5245,13 @@ def _q3_sources(on):
             os.environ["CRM_FEATURE_SOURCES"] = prev
 
 
+def _bi_drop_new(c):
+    """옛 DB 흉내 — board 이전(25절)이 더한 표 5개와 item_links 의 새 대상 FK 를 지운다(새 열·CHECK 는 남긴다 — 옛 표를 지우는 시험용)."""
+    for fk in ("fk_item_links_person", "fk_item_links_source", "fk_item_links_activity"):
+        c.execute(f"ALTER TABLE item_links DROP CONSTRAINT IF EXISTS {fk}")
+    c.execute("DROP TABLE IF EXISTS import_entries, activity_links, activities, import_counters, import_streams")
+
+
 def _q3_role(uid):
     with db.tx() as c:
         r = c.execute("SELECT object_id, at FROM user_roles WHERE user_id=%s AND role='classify'", (uid,)).fetchone()
@@ -5413,6 +5439,7 @@ async def test_q3():
                 db.init_schema(c)
                 c.execute("ALTER TABLE records DROP CONSTRAINT fk_records_source")
                 c.execute("ALTER TABLE records DROP COLUMN source_id")
+                _bi_drop_new(c)   # board 이전 표·FK 도 옛 DB 엔 없다(출처·사람을 가리킨다)
                 c.execute("DROP TABLE source_reflections, sources, user_roles")   # PR B 요약/반응도 옛 DB 엔 없다
                 c.execute("INSERT INTO users (id,email) VALUES ('u_q3','q3@x.test')")
                 c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES ('u_q3','od_a','axes','축','collection',1)")
@@ -5833,7 +5860,7 @@ TEST_EMAILS += tuple(PRA.values())
 PRA_SVG_SHA = "c005852b5f2b51a12557ce4f2205204f15d125e4382836cd9b4bada625b0ad2b"   # 사용자 DMO SVG(contract 예제 × 수신자, PR A 전 바이트)
 PRA_STD_SHA = "c08007a2db55f219d7f5b16b5aa518e2b2081f95e1a3adfee52240d1380d00bf"   # templates/std@1.json 동결
 PRA_OBJECTS = ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "core-me", "core-person", "core-reflection",
-               "std-axis", "std-decision", "std-principle")   # PR B: 코어 5 → 8(나·사람·출처 요약/반응)
+               "core-activity", "std-axis", "std-decision", "std-principle")   # PR B: 코어 5 → 8(나·사람·출처 요약/반응) · board 이전 9(활동)
 PRA_TPL = ("tpl-axis", "tpl-decision", "tpl-principle", "tpl-homework", "tpl-publication", "tpl-method")
 
 
@@ -6002,9 +6029,9 @@ async def test_prA_setup():
         # ── Object Manager: 정확히 코어 8(PR B) + std@1 3, 템플릿·사용자 정의 혼입 없음 ──
         t = clean(await req("GET", "/admin/schema"), "/admin/schema")
         svg = t[t.index("<svg"):t.index("</svg>") + 6]
-        assert [o["id"] for o in sd["objects"]] == list(PRA_OBJECTS) and [o["name"] for o in sd["objects"]] == ["질문", "기록", "후보", "문의", "출처", "나", "사람", "출처 요약/반응", "축", "결정", "기준"]
+        assert [o["id"] for o in sd["objects"]] == list(PRA_OBJECTS) and [o["name"] for o in sd["objects"]] == ["질문", "기록", "후보", "문의", "출처", "나", "사람", "출처 요약/반응", "활동", "축", "결정", "기준"]
         assert sorted(set(re.findall(r'href="/admin/schema/objects/([\w-]+)"', t))) == sorted(PRA_OBJECTS)
-        assert svg.count('r="42"') == 11 and svg.count("stroke-dasharray") == 3, "노드 11 · 정의상 잠금 = std@1 3"
+        assert svg.count('r="42"') == 12 and svg.count("stroke-dasharray") == 3, "노드 12 · 정의상 잠금 = std@1 3"
         assert re.findall(r'<a href="(/admin/schema/objects/[\w-]+)" aria-label', svg) == [f"/admin/schema/objects/{o}" for o in PRA_OBJECTS], "노드 링크 = 상세"
         assert "tpl-" not in t and all(w not in _pra_visible(t) for w in ("숙제", "발행", "접근 방식", "std@2")), "템플릿 혼입 없음"
         me_t = clean(await req("GET", "/admin/schema/objects/core-me"), "/admin/schema/objects/core-me")
@@ -6018,7 +6045,7 @@ async def test_prA_setup():
         names = service_schema.names_of(sd["objects"])
         drawn = [(names[r["from"]], r["name"], names[r["to"]]) for o in sd["objects"] for r in o["relations"] if r["graph"]]
         assert drawn == [("기록", "출처", "출처"), ("기록", "질문", "질문"), ("후보", "근거 기록", "기록"), ("후보", "질문", "질문"),
-                         ("출처 요약/반응", "출처", "출처"), ("결정", "판단", "후보"),
+                         ("출처 요약/반응", "출처", "출처"), ("활동", "출처", "출처"), ("결정", "판단", "후보"),
                          ("기준", "근거 판단", "후보"), ("기준", "근거 결정", "결정"), ("기준", "관심 축", "축")], drawn
         assert svg.count("<line ") == 2 * len(drawn), "관계마다 선(+투명 넓은 선) 하나"
         assert [(r["name"], r["to_text"] or r["from_text"]) for o in sd["objects"] for r in o["relations"] if not r["graph"]] == [
@@ -6029,7 +6056,7 @@ async def test_prA_setup():
         assert all(f'{k}: "{v}"' in app for k, v in (("question", "질문"), ("record", "기록"), ("candidate", "후보"))), "app.html LABELS"
         # API 이름 = 코어 열·테이블 · std@1 key(Salesforce API Name 꼴) — 표시명과 함께
         assert [o["api"] for o in sd["objects"]] == ["questions", "records", "candidates", "tickets", "sources", "users", "people", "source_reflections",
-                                                     "axes", "decision_events", "principles"]
+                                                     "activities", "axes", "decision_events", "principles"]
         assert '<td class="api">records</td>' in t and '<td class="api">decision_events</td>' in t and '<th>API 이름</th>' in t
         assert t.count('<div class="tbl fit">') == 2 and '<div class="tbl">' not in t, "Object Manager 표는 칸 줄바꿈(가로 넘침 0)"
         for p_ in new_gets + [h for _, h, _, _, _ in web.ADMIN_MENU]:   # 모든 /admin 표는 가로 스크롤 래퍼(.tbl overflow-x:auto) 안 — 문서 넘침 0
@@ -6039,7 +6066,7 @@ async def test_prA_setup():
         rk = {(names[r["from"]], r["name"]): (r["kind"], r["required"], r["cardinality"]) for o in sd["objects"] for r in o["relations"] if r["graph"]}
         assert rk[("후보", "근거 기록")] == ("M-D", True, "N:1") and rk[("후보", "질문")] == ("Lookup", False, "N:1") and rk[("기록", "출처")] == ("Lookup", False, "N:1")
         assert rk[("기준", "관심 축")] == (None, False, "N:N"), "std@1 관계 종류는 정의에 없다 → 모름"
-        assert all(o["lock"]["state"] is None for o in sd["objects"][:8]) and all(o["lock"]["state"] is True for o in sd["objects"][8:])
+        assert all(o["lock"]["state"] is None for o in sd["objects"][:9]) and all(o["lock"]["state"] is True for o in sd["objects"][9:])
         assert all(o["lock"]["state"] is False for o in sd["templates"]["author-1"]["objects"])
         # 필드 = 정의 전부(조용히 빼지 않음). 코어 = schema.sql 열(소유자·운영자 전용 열 제외) · std@1 = 정본 필드
         core = {t_["table"]: t_ for t_ in web.core_schema(web.SCHEMA_SQL.read_text(encoding="utf-8"))}
@@ -6230,6 +6257,9 @@ PRB_ALLOWED_ARGS = {
     "feedback_send": {"kind": "question", "text": "이름 없이 보내는 문의"}, "ticket_list_mine": {}, "ticket_get_mine": {"ticket_id": "tk_x"},
     "me_get": {}, "person_list": {}, "person_get": {"person_id": "p_x"}, "source_list": {}, "source_get": {"source_id": "s_x"},
     "source_reflection_list": {}, "source_reflection_get": {"reflection_id": "sr_x"},
+    # board 이전 읽기 7(25절) — 이름 없이도 된다
+    "activity_list": {}, "activity_get": {"activity_id": "a_xxxxxx"}, "person_context_get": {"person_id": "p_x"},
+    "source_context_get": {"source_id": "s_x"}, "me_aggregate_get": {}, "inbox_list": {}, "inbox_get": {"import_id": "ie_x"},
     "display_name_set": {"display_name": "  이름 PRBNAME  "},   # 마지막에 부른다(관문 통과 뒤 쓰기 확인)
 }
 
@@ -6285,6 +6315,7 @@ def test_prb_schema():
         with schema_conn(old) as c:
             db.init_schema(c)
             c.execute("ALTER TABLE users DROP COLUMN display_name, DROP COLUMN status, DROP COLUMN deleted_at, DROP COLUMN nav_accepted_at")
+            _bi_drop_new(c)   # board 이전 표·FK 는 사람을 가리킨다 — 옛 DB 엔 없다
             c.execute("DROP TABLE source_reflections, people, deletion_contacts")
             c.execute("ALTER TABLE admin_audit DROP CONSTRAINT admin_audit_action_check")
             c.execute("ALTER TABLE admin_audit ADD CONSTRAINT admin_audit_action_check CHECK (action IN "
@@ -6341,7 +6372,7 @@ async def test_prb_gate():
         assert main.WRITE_TOOLS | main.ALLOWED_TOOLS == names and not main.WRITE_TOOLS & main.ALLOWED_TOOLS, names ^ (main.WRITE_TOOLS | main.ALLOWED_TOOLS)
         assert main.WRITE_TOOLS == set(db.WRITE_LIMITS) - db.NAME_EXEMPT and db.NAME_EXEMPT == {"feedback_send", "display_name_set"}
         assert set(PRB_WRITE_ARGS) == main.WRITE_TOOLS and set(PRB_ALLOWED_ARGS) == main.ALLOWED_TOOLS, "시험 인자 표 = 분류"
-        assert names - PRB_TOOLS == {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose",
+        assert names - PRB_TOOLS - BI_TOOLS == {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose",
                                      "candidate_decide", "candidate_list", "profile_set", "definitions_get", "definition_propose",
                                      "definition_apply", "item_propose", "item_decide", "record_attach", "help_get", "feedback_send",
                                      "ticket_list_mine", "ticket_get_mine"}, "기존 19개 이름 그대로"
@@ -6453,7 +6484,8 @@ async def test_prb_core():
         assert set(p) == {"id", "alias", "revision", "created", "updated"} and p["alias"] == "동료 PRBALIAS" and p["revision"] == 0
         with db.tx() as c:
             assert {r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() "
-                                                        "AND table_name='people'").fetchall()} == {"user_id", "id", "alias", "revision", "created", "updated"}
+                                                        "AND table_name='people'").fetchall()} == {"user_id", "id", "alias", "revision", "created", "updated",
+                                                                                                    "hmac_namespace", "identity_hmac"}   # 뒤 둘 = board 이전(실명·URL·소속 열 없음)
         e1 = expect("NOT-FOUND", db.person_get, B, p["id"])
         e2 = expect("NOT-FOUND", db.person_get, B, "p_none")
         assert (e1.message, e1.action) == (e2.message, e2.action), "남의 id = 없는 id"
@@ -7103,13 +7135,887 @@ async def test_prb_app():
 
 
 async def test_prb_privacy():
-    """처리방침 v5 — /privacy 머리글·표시 이름·사람·요약/반응·contact 1년(문구 정본은 guides/11 — 문서 에이전트)."""
+    """처리방침 v6 — /privacy 머리글·표시 이름·사람·요약/반응·contact 1년 + board 이전(연결 장치·HMAC·검토 대기 30일·AI 요약)
+    (문구 정본은 guides/11 — 문서 에이전트)."""
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
         r = await h.get("/privacy")
     assert r.status_code == 200 and PRIVACY_HEAD.startswith(PRIVACY_VERSION + " ")
-    for w in (PRIVACY_HEAD, "표시 이름", "출처 요약/반응", "1년"):
+    for w in (PRIVACY_HEAD, "표시 이름", "출처 요약/반응", "1년", "연결 장치", "HMAC", "승인 대기", "30일", "AI 요약"):
         assert w in r.text, w
-    print("OK — 24f 처리방침 v5(머리글·표시 이름·출처 요약/반응·1년) 통과")
+    print("OK — 24f 처리방침 v6(머리글·표시 이름·출처 요약/반응·1년·연결 장치·HMAC·승인 대기 30일·AI 요약) 통과")
+
+
+# ── 25) board 이전 — 활동·가져오기(스키마 · 계약 벡터 · 장치 토큰 · /api/imports · 승인 대기 · 집계 · MCP 읽기 · 삭제) ─────────
+# 정본: notes/2026-10-20_board-마이그-구현계획.md · r3 T1~T7. 시험 자료는 전부 합성(실제 원문·이름·URL 없음). 스위치는 시험 안에서만 켠다.
+
+BI_SWITCH_NAMES = ("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED", "UNATTENDED_SUMMARY_IMPORTS_ENABLED", "INBOX_APPROVALS_ENABLED",
+                   "BOARD_MIGRATION_ENABLED")
+BI_TABLES = ("import_streams", "activities", "activity_links", "import_entries", "import_counters")
+
+
+@contextmanager
+def _bi_switch(*on):
+    """주어진 스위치만 켜고(나머지 끔) 끝나면 원래대로."""
+    saved = {n: os.environ.pop("CRM_" + n, None) for n in BI_SWITCH_NAMES}
+    for n in on:
+        os.environ["CRM_" + n] = "1"
+    try:
+        yield
+    finally:
+        for n in BI_SWITCH_NAMES:
+            os.environ.pop("CRM_" + n, None)
+            if saved[n] is not None:
+                os.environ["CRM_" + n] = saved[n]
+
+
+@contextmanager
+def _bi_fast():
+    """요청 속도(분당) 한도를 시험 동안만 넓힌다 — 흐름 시험이 1분에 수십 번 보낸다. 분당 한도 자체는 25c 끝에서 원래 값으로 본다."""
+    saved = dict(imports.LIMITS)
+    imports.LIMITS[("device", "minute", "request")] = (100000, None)
+    imports.LIMITS[("user", "minute", "request")] = (100000, None)
+    try:
+        yield
+    finally:
+        imports.LIMITS.clear()
+        imports.LIMITS.update(saved)
+
+
+def _bi_axes(uid, n=2):
+    """분류 역할이 될 「축」 오브젝트(key axes) + 적용 항목 n 개. 반환 (오브젝트 id, [항목 id])."""
+    p = db.definition_propose(uid, None, 0, {"key": "axes", "label": "축", "semantic_kind": "collection", "fields": []})
+    db.definition_apply(uid, p["object_id"], p["proposal_id"], 0)
+    out = []
+    for i in range(n):
+        ev = db.item_propose(uid, p["object_id"], 1, None, 0, f"AX-{i}", f"합성 축 {i}", "", {}, [])
+        out.append(db.item_decide(uid, ev["item_id"], 0, ev["proposal_id"], "apply")["id"])
+    with db.tx() as c:   # 역할 이관 규칙(key axes)을 이 사용자에게 바로 적용
+        assert db._classify_target(c, uid) == p["object_id"]
+    return p["object_id"], out
+
+
+def _bi_o():
+    return "o_" + secrets.token_hex(16)
+
+
+def _bi_v():
+    return "v_" + secrets.token_hex(16)
+
+
+def _bi_act(dev, original=None, revision=None, prev=None, **kw):
+    r = {"contract": "canon-inbox/1", "schema_revision": 2, "source_instance_id": dev, "original_id": original or _bi_o(),
+         "revision": revision or _bi_v(), "previous_revision": prev, "kind": "activity", "execution": "unattended",
+         "transform_version": "board-likes/1", "policy_revision": 1, "action": "like", "state": "active", "occurred_on": None,
+         "observed_on": None, "provider": "sns", "raw_id": secrets.token_hex(24)}
+    r.update(kw)
+    return r
+
+
+def _bi_text(dev, kind="self_text", original=None, revision=None, prev=None, **kw):
+    r = {"contract": "canon-inbox/1", "schema_revision": 2, "source_instance_id": dev, "original_id": original or _bi_o(),
+         "revision": revision or _bi_v(), "previous_revision": prev, "kind": kind, "execution": "attended",
+         "transform_version": "self-text/1" if kind == "self_text" else "self-summary/1", "policy_revision": 1,
+         "title": "합성 제목", "body": "합성 자기 글 BITEXT 본문"}
+    if kind == "self_summary":
+        r["generation"] = {"method": "ai_summary", "tool": "claude-cli", "model": "unknown", "input_scope": "self_only",
+                           "inputs": [{"original_id": _bi_o(), "revision": _bi_v(), "sha256": "ab" * 32}]}
+    r.update(kw)
+    return r
+
+
+async def _bi_post(token, body, key=None, raw=None):
+    data = raw if raw is not None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    if key is None and isinstance(body, dict) and all(k in body for k in ("source_instance_id", "original_id", "revision")):
+        key = imports.idempotency_key(body["source_instance_id"], body["original_id"], body["revision"])
+    hd = {"content-type": "application/json"}
+    if token is not None:
+        hd["authorization"] = "Bearer " + token if not token.startswith("Bearer ") else token
+    if key:
+        hd["idempotency-key"] = key
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+        return await h.post("/api/imports", content=data, headers=hd)
+
+
+def _bi_count(uid, t, where="", args=()):
+    with db.tx() as c:
+        return c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s {where}", (uid,) + tuple(args)).fetchone()["n"]
+
+
+def _bi_today():
+    with db.tx() as c:
+        return c.execute("SELECT (now() AT TIME ZONE 'Asia/Seoul')::date AS d").fetchone()["d"]
+
+
+def _bi_values(x):
+    """요청 안의 문자열 값(키 제외) 전부."""
+    if isinstance(x, dict):
+        return [v for y in x.values() for v in _bi_values(y)]
+    if isinstance(x, list):
+        return [v for y in x for v in _bi_values(y)]
+    return [x] if isinstance(x, str) else []
+
+
+def test_bi_schema():
+    """25a 스키마 — 옛 DB(board 이전 전 모양: 새 표·열 없음·item_links 이름 없는 3열 CHECK·좁은 CHECK) → init_schema 2회 = 새 DB 모양
+    · 옛 행 received_at NULL·ingest_kind legacy · 새 INSERT 는 now()·interactive · 6열 대상 CHECK · 새 reference 종류 · 삭제 목록."""
+    tables = ("records", "items", "people", "sources", "item_links", "field_defs", "admin_audit") + BI_TABLES
+    fresh, old = f"bif_{secrets.token_hex(3)}", f"bio_{secrets.token_hex(3)}"
+    create_schema(fresh)
+    create_schema(old)
+    try:
+        with schema_conn(fresh) as c:
+            db.init_schema(c)
+            c.commit()
+            want = _prb_shape(c, tables)
+            names = {r["conname"] for r in c.execute("SELECT conname FROM pg_constraint WHERE conrelid='item_links'::regclass AND contype='c'")}
+            assert "ck_item_links_target" in names and "item_links_check2" not in names, names
+        with schema_conn(old) as c:
+            db.init_schema(c)
+            _bi_drop_new(c)
+            c.execute("ALTER TABLE item_links DROP COLUMN target_person_id, DROP COLUMN target_source_id, DROP COLUMN target_activity_id")
+            c.execute("ALTER TABLE item_links ADD CHECK (num_nonnulls(target_item_id, target_record_id, target_candidate_id) = 1)")
+            for t in ("records", "items"):
+                c.execute(f"ALTER TABLE {t} DROP COLUMN received_at, DROP COLUMN source_created_at, DROP COLUMN source_date, "
+                          "DROP COLUMN ingest_kind, DROP COLUMN generation_kind, DROP COLUMN generation_meta, DROP COLUMN import_batch_id")
+            c.execute("DROP INDEX IF EXISTS ux_people_identity")
+            c.execute("DROP INDEX IF EXISTS ux_sources_activity_provider")
+            c.execute("ALTER TABLE people DROP COLUMN hmac_namespace, DROP COLUMN identity_hmac")
+            c.execute("ALTER TABLE sources DROP COLUMN activity_provider")
+            c.execute("ALTER TABLE field_defs DROP CONSTRAINT field_defs_target_kind_check")
+            c.execute("ALTER TABLE field_defs ADD CONSTRAINT field_defs_target_kind_check CHECK (target_kind IN ('item','record','candidate'))")
+            c.execute("ALTER TABLE admin_audit DROP CONSTRAINT admin_audit_action_check")
+            c.execute("ALTER TABLE admin_audit ADD CONSTRAINT admin_audit_action_check CHECK (action IN ('bootstrap','recover','role_grant',"
+                      "'role_revoke','web_signout','block','unblock','delete_notify','delete_run','delete_cancel'))")
+            c.execute("INSERT INTO users (id,email,display_name) VALUES ('u_bi','bi@x.test','옛')")
+            c.execute("INSERT INTO records (id,user_id,title,body) VALUES ('r_bi','u_bi','t','옛 기록')")
+            c.execute("INSERT INTO object_defs (user_id,id,key,label,semantic_kind,revision) VALUES ('u_bi','od_bi','notes','노트','collection',1)")
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,target_kind) VALUES ('u_bi','od_bi','rel','관계','reference','record')")
+            c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,revision) VALUES ('u_bi','i_bi','od_bi',1,'옛 항목',1)")
+            c.execute("INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_record_id) VALUES ('u_bi','i_bi','od_bi','rel','r_bi')")
+            c.execute("INSERT INTO people (user_id,id,alias) VALUES ('u_bi','p_bi','옛 별칭')")
+            c.commit()
+            db.init_schema(c)
+            c.commit()
+            first = _prb_shape(c, tables)
+            db.init_schema(c)
+            c.commit()
+            assert _prb_shape(c, tables) == first == want, "옛 DB 2회 = 새 DB 모양(열·이름 붙은 CHECK·인덱스·새 표)"
+            assert c.execute("SELECT received_at, ingest_kind, generation_kind FROM records WHERE id='r_bi'").fetchone() == {
+                "received_at": None, "ingest_kind": "legacy", "generation_kind": "unknown"}, "옛 행 = NULL·legacy(추측 백필 없음)"
+            assert c.execute("SELECT received_at, ingest_kind FROM items WHERE id='i_bi'").fetchone() == {"received_at": None, "ingest_kind": "legacy"}
+            c.execute("INSERT INTO records (id,user_id,title,body) VALUES ('r_bi2','u_bi','t','새 기록')")
+            r = c.execute("SELECT received_at, ingest_kind FROM records WHERE id='r_bi2'").fetchone()
+            assert r["received_at"] is not None and r["ingest_kind"] == "interactive", r
+            assert c.execute("SELECT hmac_namespace, identity_hmac FROM people WHERE id='p_bi'").fetchone() == {"hmac_namespace": None, "identity_hmac": None}
+            assert c.execute("SELECT count(*) AS n FROM item_links WHERE user_id='u_bi'").fetchone()["n"] == 1, "옛 연결 보존"
+            c.commit()
+            for bad in ("INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key) VALUES ('u_bi','i_bi','od_bi','rel')",
+                        "INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_record_id,target_person_id) "
+                        "VALUES ('u_bi','i_bi','od_bi','rel','r_bi','p_bi')",
+                        "INSERT INTO people (user_id,id,alias,hmac_namespace) VALUES ('u_bi','p_x','x','hn_x')",
+                        "INSERT INTO sources (user_id,id,kind,name,activity_provider) VALUES ('u_bi','s_x','url','x','sns')",
+                        "UPDATE records SET source_created_at=now(), source_date=current_date WHERE id='r_bi'",
+                        "INSERT INTO admin_audit (action) VALUES ('purge')"):
+                try:
+                    c.execute(bad)
+                    raise AssertionError(f"CHECK 가 막지 않았다: {bad}")
+                except psycopg.errors.CheckViolation:
+                    c.rollback()
+            c.execute("INSERT INTO item_links (user_id,source_item_id,source_object_id,field_key,target_person_id) VALUES ('u_bi','i_bi','od_bi','rel','p_bi')")
+            c.execute("INSERT INTO field_defs (user_id,object_id,key,label,value_type,target_kind) VALUES ('u_bi','od_bi','who','누구','reference','person')")
+            c.execute("INSERT INTO admin_audit (action) VALUES ('device_connect'), ('migration_close')")
+            c.rollback()
+    finally:
+        drop_schema(fresh)
+        drop_schema(old)
+    # 삭제 목록 = schema 의 user_id 표(24절 정적 대조와 같은 규칙) · 순서 = 관계 → 접수 대응표 → 업무 자료 → 입력원
+    assert set(BI_TABLES) <= set(db.DELETE_TABLES)
+    order = {t: i for i, t in enumerate(db.DELETE_TABLES)}
+    assert order["item_links"] < order["activity_links"] < order["import_entries"] < order["activities"] < order["import_streams"] \
+        < order["items"] < order["records"] < order["sources"] < order["people"], db.DELETE_TABLES
+    print("OK — 25a board 이전 스키마(옛 DB 2회 = 새 DB · 옛 행 NULL·legacy · 새 행 now()·interactive · 6열 대상 CHECK · 새 reference 종류 · 감사 7종 · 삭제 순서) 통과")
+
+
+def test_bi_contract():
+    """25b 계약 — 공용 벡터(contract/imports/vectors/canon-inbox-1.json) = 서버 검증기 · 멱등 키 · JCS · 스키마 파일 모양 · 오류에 값 없음."""
+    vec = json.loads((HERE / "contract" / "imports" / "vectors" / "canon-inbox-1.json").read_text(encoding="utf-8"))
+    assert vec["contract"] == imports.CONTRACT and vec["schema_revision"] == imports.SCHEMA_REVISION
+    assert len(vec["request_cases"]) >= 50 and len(vec["raw_cases"]) >= 5
+    n_ok = 0
+    for case in vec["request_cases"]:
+        try:
+            imports.validate(case["request"])
+            got = "valid"
+        except db.CrmError as e:
+            assert e.code == "CONTRACT-INVALID", (case["name"], e.code)
+            f, rule = e.message.split(": ", 1)
+            got = {"field": f, "rule": rule}
+            for v in _bi_values(case["request"]):
+                if len(v) >= 8 and v not in ("canon-inbox/1",):
+                    assert v not in e.message, (case["name"], "오류 문구에 요청 값이 들어갔다")
+        assert got == case["expect"], (case["name"], got, case["expect"])
+        n_ok += got == "valid"
+    assert n_ok >= 6, n_ok
+    for case in vec["raw_cases"]:
+        e = expect("CONTRACT-INVALID", lambda r: imports.validate(imports.parse_request(r.encode("utf-8"))), case["raw"])
+        assert dict(zip(("field", "rule"), e.message.split(": ", 1))) == case["expect"], case["name"]
+    for k in vec["idempotency_keys"]:
+        assert imports.idempotency_key(k["source_instance_id"], k["original_id"], k["revision"]) == k["key"]
+    for j in vec["jcs_cases"]:
+        assert imports.jcs(j["value"]).decode("utf-8") == j["jcs_utf8"] and imports.sha256_hex(imports.jcs(j["value"])) == j["sha256"]
+    for name in ("canon-inbox-1.schema.json", "board-migration-1.schema.json"):
+        sc = json.loads((HERE / "contract" / "imports" / name).read_text(encoding="utf-8"))
+        assert sc["$schema"].startswith("https://json-schema.org/") and sc["type"] == "object"
+    sc = json.loads((HERE / "contract" / "imports" / "canon-inbox-1.schema.json").read_text(encoding="utf-8"))
+    act = next(b for b in sc["oneOf"] if b["properties"]["kind"] == {"const": "activity"})
+    assert not {"title", "body", "url", "name", "memo", "email"} & set(act["properties"]), "활동에 자유 본문 필드 없음"
+    assert set(sc["properties"]["transform_version"]["enum"]) == set(imports.TRANSFORMS)
+    # 기존 동결 예제(server/contract/*.json 9개)는 그대로 — imports/ 하위 폴더는 18절 글롭에 안 걸린다
+    assert len(list(contract.EXAMPLES_DIR.glob("*.json"))) == 9
+    print("OK — 25b 계약(공용 벡터 = 서버 검증기 · 오류 문구에 값 0 · 멱등 키·JCS 벡터 · 스키마 파일 · 활동 자유 본문 필드 0) 통과")
+
+
+async def test_bi_imports():
+    """25c 장치 토큰 · /api/imports · 개정·멱등 · 한도 · 승인 대기 · 개인정보 경계 · 권한 경합."""
+    A, B = db.user_by_email(BI["a"])["id"], db.user_by_email(BI["b"])["id"]
+    ax_obj, (X1, X2) = _bi_axes(A)
+    # ── 장치: 연결·목록·5개·재발급·폐기·policy ──
+    c1 = imports.device_connect(A, "  합성 맥북  ")
+    tok, dev = c1["token"], c1["device"]
+    assert re.fullmatch(r"imp_is_[0-9a-f]{24}\.it_[0-9a-f]{16}\.[A-Za-z0-9_-]{43}", tok) and tok.startswith("imp_" + dev["id"] + ".")
+    assert dev["label"] == "합성 맥북" and dev["active"] and dev["policy"] == imports.DEFAULT_POLICY and dev["hmac_namespace"].startswith("hn_")
+    lst = imports.device_list(A)
+    blob = json.dumps(lst, ensure_ascii=False)
+    assert lst["active"] == 1 and lst["max"] == 5 and tok.split(".")[-1] not in blob and "secret" not in blob and "token_id" not in blob
+    assert set(lst["switches"]) == {"imports", "activity", "unattended_summary", "inbox_approvals", "board_migration"}
+    with db.tx() as c:
+        h = c.execute("SELECT secret_hash FROM import_streams WHERE id=%s", (dev["id"],)).fetchone()["secret_hash"]
+        assert bytes(h) == hashlib.sha256(tok.split(".")[-1].encode()).digest(), "서버엔 SHA-256 만"
+        aud = c.execute("SELECT action, detail::text AS d FROM admin_audit WHERE actor_id=%s ORDER BY id", (A,)).fetchall()
+    assert [a["action"] for a in aud] == ["device_connect"] and tok.split(".")[-1] not in aud[0]["d"]
+    expect("ARG-INVALID", imports.device_connect, A, "")
+    expect("ARG-INVALID", imports.device_connect, A, "가" * 81)
+    extra = [imports.device_connect(A, f"합성 {i}") for i in range(4)]
+    expect("DEVICE-LIMIT", imports.device_connect, A, "여섯째")
+    for x in extra:
+        imports.device_revoke(A, x["device"]["id"])
+    assert imports.device_revoke(A, extra[0]["device"]["id"])["device"]["active"] is False, "해제 멱등"
+    expect("DEVICE-REVOKED", imports.device_reissue, A, extra[0]["device"]["id"])
+    expect("NOT-FOUND", imports.device_revoke, B, dev["id"])
+    expect("NOT-FOUND", imports.device_reissue, B, dev["id"])
+    pol = {"actions": ["like"], "transform_versions": ["board-likes/1", "self-text/1", "self-summary/1"], "axes": [X1, X2]}
+    expect("CONFLICT", imports.device_policy_set, A, dev["id"], pol, 5)
+    expect("ARG-INVALID", imports.device_policy_set, A, dev["id"], {**pol, "axes": ["i_notmine"]}, 1)
+    expect("ARG-INVALID", imports.device_policy_set, A, dev["id"], {**pol, "transform_versions": ["feed/1"]}, 1)
+    expect("ARG-INVALID", imports.device_policy_set, A, dev["id"], {**pol, "path": "/x"}, 1)
+    assert imports.device_policy_set(A, dev["id"], pol, 1)["device"]["policy_revision"] == 2
+    DEV = dev["id"]
+
+    def act(**kw):
+        return _bi_act(DEV, policy_revision=2, **kw)
+
+    # ── 스위치 · 인증 ──
+    with _bi_switch():
+        r = await _bi_post(tok, act())
+        assert r.status_code == 503 and r.json()["code"] == "IMPORTS-OFF", r.text
+    with _bi_switch("IMPORTS_ENABLED"):
+        r = await _bi_post(tok, act())
+        assert r.status_code == 503 and r.json()["code"] == "ACTIVITY-IMPORTS-OFF", r.text
+        for bad in (None, "", "Bearer x", "Bearer " + tok[:-1] + ("A" if tok[-1] != "A" else "B"), tok.replace("imp_is_", "imp_is_0")):
+            r = await _bi_post(bad, act())
+            assert r.status_code == 401 and r.json()["code"] == "AUTH-INVALID", (bad and bad[:12], r.text)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:   # 웹 쿠키로는 못 보낸다
+            h.cookies.set("crm_session", main.site.session_value(A))
+            r = await h.post("/api/imports", content=json.dumps(act()).encode(), headers={"origin": PUBLIC})
+            assert r.status_code == 401, r.text
+    on = ("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED", "INBOX_APPROVALS_ENABLED", "UNATTENDED_SUMMARY_IMPORTS_ENABLED")
+    fast = _bi_fast()
+    fast.__enter__()
+    with _bi_switch(*on):
+        # ── 활동: 신규 201 · 같은 요청 200 · 다른 본문 409 · 키 불일치 400 · 개정 충돌 409 · noop · 새 판 ──
+        H1, H2 = secrets.token_hex(32), secrets.token_hex(32)
+        o1, v1 = _bi_o(), _bi_v()
+        b1 = act(original=o1, revision=v1, observed_on="2026-10-20", people=[{"hmac": H1, "role": "author"}], axes=[X1])
+        r = await _bi_post(tok, b1)
+        assert r.status_code == 201, r.text
+        j = r.json()
+        assert j["state"] == "applied" and j["target_kind"] == "activity" and j["duplicate"] is False and j["expires_at"] is None
+        a1 = j["target_id"]
+        assert set(j) == {"import_id", "state", "target_kind", "target_id", "duplicate", "received_at", "expires_at"}
+        r2 = await _bi_post(tok, b1)
+        assert r2.status_code == 200 and r2.json()["duplicate"] is True and r2.json()["import_id"] == j["import_id"]
+        r = await _bi_post(tok, {**b1, "raw_id": secrets.token_hex(24)}, key=imports.idempotency_key(DEV, o1, v1))
+        assert r.status_code == 409 and r.json()["code"] == "IDEMPOTENCY-CONFLICT"
+        r = await _bi_post(tok, act(), key="ci1_" + "0" * 64)
+        assert r.status_code == 400 and r.json()["code"] == "IDEMPOTENCY-KEY-MISMATCH"
+        r = await _bi_post(tok, act(original=o1, prev=_bi_v()))
+        assert r.status_code == 409 and r.json()["code"] == "SOURCE-REVISION-CONFLICT"
+        r = await _bi_post(tok, act(prev=_bi_v()))
+        assert r.status_code == 409 and r.json()["code"] == "SOURCE-REVISION-CONFLICT", "처음 보내는 원본은 previous null"
+        v2 = _bi_v()
+        r = await _bi_post(tok, {**b1, "revision": v2, "previous_revision": v1})   # 반영 내용 같음 → noop
+        assert r.status_code == 201 and r.json()["state"] == "noop" and r.json()["target_id"] == a1, r.text
+        v3 = _bi_v()
+        r = await _bi_post(tok, {**b1, "revision": v3, "previous_revision": v2, "occurred_on": "2026-10-19", "axes": [X2]})
+        assert r.status_code == 201 and r.json()["state"] == "applied" and r.json()["target_id"] != a1
+        a1b = r.json()["target_id"]
+        g_old, g_new = activity.activity_get(A, a1), activity.activity_get(A, a1b)
+        assert g_old["current"] is False and g_new["current"] is True and g_old["current_id"] == a1b and len(g_new["versions"]) == 2
+        assert [x["id"] for x in g_new["axes"]] == [X2] and [x["id"] for x in g_old["axes"]] == [X1], "옛 판 관계 그대로"
+        r = await _bi_post(tok, {**b1, "revision": _bi_v(), "previous_revision": v3, "kind": "self_text",
+                                 "transform_version": "self-text/1"})
+        assert r.status_code == 400 and r.json()["code"] == "CONTRACT-INVALID", "종류가 바뀌면 계약부터 틀린다"
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM import_entries WHERE user_id=%s AND original_id=%s", (A, o1)).fetchone()["n"] == 3
+            assert c.execute("SELECT count(*) AS n FROM import_entries WHERE user_id=%s AND original_id=%s AND is_current_applied",
+                             (A, o1)).fetchone()["n"] == 1
+            assert c.execute("SELECT payload FROM import_entries WHERE id=%s", (j["import_id"],)).fetchone()["payload"] is None
+        # 응답 유실 뒤 확인(GET) — 같은 장치만
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            g = await h.get(f"/api/imports/{j['import_id']}", headers={"authorization": "Bearer " + tok})
+            assert g.status_code == 200 and g.json()["import_id"] == j["import_id"] and g.json()["duplicate"] is True
+        # ── 사람: HMAC → 별칭 사람-NNNN · 같은 HMAC 재사용 · 다른 장치(키 공간) = 다른 사람 ──
+        with db.tx() as c:
+            ppl = c.execute("SELECT id, alias, hmac_namespace FROM people WHERE user_id=%s AND identity_hmac IS NOT NULL", (A,)).fetchall()
+        assert len(ppl) == 1 and re.fullmatch(r"사람-\d{4}", ppl[0]["alias"]) and ppl[0]["hmac_namespace"] == dev["hmac_namespace"]
+        P1 = ppl[0]["id"]
+        r = await _bi_post(tok, act(people=[{"hmac": H1, "role": "author"}, {"hmac": H2, "role": "participant"}]))
+        assert r.status_code == 201
+        assert _bi_count(A, "people", "AND identity_hmac IS NOT NULL") == 2, "같은 HMAC = 같은 사람"
+        d2 = imports.device_connect(A, "합성 둘째")
+        r = await _bi_post(d2["token"], _bi_act(d2["device"]["id"], people=[{"hmac": H1, "role": "author"}]))
+        assert r.status_code == 201 and _bi_count(A, "people", "AND identity_hmac IS NOT NULL") == 3, "다른 키 공간 = 다른 사람(병합 없음)"
+        pc = activity.person_context(A, P1)
+        assert pc["person"]["linked"] and pc["activity_count"] == 2 and "identity_hmac" not in json.dumps(pc) and H1 not in json.dumps(pc)
+        # ── policy · 크기 · 출처 ──
+        r = await _bi_post(tok, act(axes=["i_notallowed"]))
+        assert r.status_code == 403 and r.json()["code"] == "POLICY-DENIED"
+        r = await _bi_post(tok, _bi_act(DEV, policy_revision=1))
+        assert r.status_code == 409 and r.json()["code"] == "POLICY-STALE"
+        r = await _bi_post(tok, act(source_instance_id=d2["device"]["id"]))
+        assert r.status_code == 403 and r.json()["code"] == "STREAM-MISMATCH"
+        big = act()
+        r = await _bi_post(tok, big, raw=json.dumps(big).encode() + b" " * 9000)
+        assert r.status_code == 413 and r.json()["code"] == "PAYLOAD-LIMIT", "활동 8 KiB"
+        with db.tx() as c:
+            srcs = c.execute("SELECT kind, name, location, activity_provider FROM sources WHERE user_id=%s AND activity_provider IS NOT NULL",
+                             (A,)).fetchall()
+        assert [dict(s) for s in srcs] == [{"kind": "other", "name": "SNS 활동", "location": "", "activity_provider": "sns"}], "일반 출처 하나"
+        # ── 개인정보 경계: 금지 필드·URL 은 거절되고 DB·응답·감사에 남지 않는다 ──
+        mark = "BILEAK" + secrets.token_hex(6)
+        for bad in (act(title=mark), act(url="https://example.com/" + mark), act(people=[{"hmac": H1, "role": "author", "name": mark}])):
+            r = await _bi_post(tok, bad)
+            assert r.status_code == 400 and mark not in r.text, r.text
+        r = await _bi_post(tok, _bi_text(DEV, policy_revision=2, body=f"합성 https://example.com/{mark}"))
+        assert r.status_code == 400 and r.json()["msg"] == "body: url_not_allowed" and mark not in r.text
+        with db.tx() as c:
+            for t, col in (("import_entries", "payload::text"), ("records", "body"), ("admin_audit", "detail::text"), ("people", "alias"),
+                           ("sources", "name")):
+                assert c.execute(f"SELECT count(*) AS n FROM {t} WHERE {col} LIKE %s", (f"%{mark}%",)).fetchone()["n"] == 0, t
+        # ── 자기 글: 대기 → 승인 / 제외 / 새 개정 superseded / 만료 ──
+        ot, vt = _bi_o(), _bi_v()
+        bt = _bi_text(DEV, original=ot, revision=vt, policy_revision=2, activity_ref=a1b, source_date="2026-10-18")
+        r = await _bi_post(tok, bt)
+        assert r.status_code == 201 and r.json()["state"] == "pending" and r.json()["target_id"] is None and r.json()["expires_at"]
+        e1 = r.json()["import_id"]
+        assert imports.inbox_count(A) == 1
+        il = imports.inbox_list(A)
+        assert [x["id"] for x in il["entries"]] == [e1] and "body" not in il["entries"][0] and il["entries"][0]["approvable"]
+        ig = imports.inbox_get(A, e1)
+        assert ig["body"] == bt["body"] and ig["approve_notice"] is None and ig["device"]["label"] == "합성 맥북"
+        assert expect("NOT-FOUND", imports.inbox_get, B, e1).message == "그 승인 대기 글을 찾지 못했어요."
+        expect("NOT-FOUND", imports.inbox_approve, B, e1)
+        with _bi_switch("IMPORTS_ENABLED"):
+            expect("APPROVALS-OFF", imports.inbox_approve, A, e1)
+        ap = imports.inbox_approve(A, e1)
+        rec = db.record_get(A, ap["record_id"])
+        assert (rec["author_kind"], rec["text_process"], rec["body"]) == ("self", "verbatim", bt["body"])
+        with db.tx() as c:
+            rr = c.execute("SELECT ingest_kind, generation_kind, source_date, received_at FROM records WHERE id=%s", (ap["record_id"],)).fetchone()
+            ent = c.execute("SELECT state, payload, payload_bytes, is_current_applied FROM import_entries WHERE id=%s", (e1,)).fetchone()
+        assert rr["ingest_kind"] == "inbox" and rr["generation_kind"] == "unknown" and str(rr["source_date"]) == "2026-10-18"
+        assert dict(ent) == {"state": "applied", "payload": None, "payload_bytes": 0, "is_current_applied": True}, "승인 = 본문 파기"
+        assert activity.activity_get(A, a1b)["memos"][0]["record_id"] == ap["record_id"], "activity_ref → 메모 연결"
+        expect("INBOX-RESOLVED", imports.inbox_approve, A, e1)
+        r = await _bi_post(tok, bt)
+        assert r.status_code == 200 and r.json()["state"] == "applied" and r.json()["target_id"] == ap["record_id"], "본문 파기 뒤 재전송 = 기존 결과"
+        n_rec = _bi_count(A, "records")
+        r = await _bi_post(tok, {**bt, "revision": _bi_v(), "previous_revision": vt})   # 승인한 판과 같은 내용 → noop
+        assert r.status_code == 201 and r.json()["state"] == "noop" and _bi_count(A, "records") == n_rec
+        o2 = _bi_o()
+        rA = (await _bi_post(tok, _bi_text(DEV, original=o2, revision=(va := _bi_v()), policy_revision=2))).json()
+        rB = (await _bi_post(tok, _bi_text(DEV, original=o2, revision=_bi_v(), prev=va, policy_revision=2, body="고친 합성 본문"))).json()
+        assert rA["state"] == rB["state"] == "pending"
+        old = imports.inbox_get(A, rA["import_id"])
+        assert old["state"] == "excluded" and old["body"] is None, "새 개정이 오면 옛 대기는 superseded 로 닫힌다"
+        expect("INBOX-RESOLVED", imports.inbox_approve, A, rA["import_id"])
+        assert imports.inbox_exclude(A, rB["import_id"])["state"] == "excluded"
+        rC = (await _bi_post(tok, _bi_text(DEV, policy_revision=2))).json()
+        _sql("UPDATE import_entries SET expires_at = now() - interval '1 second' WHERE id=%s", (rC["import_id"],))
+        expect("INBOX-EXPIRED", imports.inbox_approve, A, rC["import_id"])
+        assert imports.expire_pending() >= 1 and imports.inbox_get(A, rC["import_id"])["state"] == "expired"
+        # ── AI 요약: 무인 스위치 · 승인 = unknown/generated·ai · 출처 정정 차단 ──
+        sm = _bi_text(DEV, kind="self_summary", policy_revision=2, execution="unattended")
+        with _bi_switch("IMPORTS_ENABLED", "INBOX_APPROVALS_ENABLED"):
+            r = await _bi_post(tok, sm)
+            assert r.status_code == 503 and r.json()["code"] == "SUMMARY-IMPORTS-OFF"
+            r = await _bi_post(tok, {**sm, "execution": "attended", "original_id": _bi_o()})   # 사람이 시작한 요약은 무인 스위치와 무관
+            assert r.status_code == 201 and r.json()["state"] == "pending"
+            imports.inbox_exclude(A, r.json()["import_id"])
+        r = await _bi_post(tok, sm)
+        assert r.status_code == 201, r.text
+        es = r.json()["import_id"]
+        assert imports.inbox_get(A, es)["approve_notice"] == imports.AI_APPROVE_NOTICE
+        assert imports.inbox_get(A, es)["generation"] == {"method": "ai_summary", "tool": "claude-cli", "model": "unknown",
+                                                          "input_scope": "self_only", "inputs": 1}
+        sr = imports.inbox_approve(A, es)["record_id"]
+        rs = db.record_get(A, sr)
+        assert (rs["author_kind"], rs["text_process"]) == ("unknown", "generated")
+        with db.tx() as c:
+            g = c.execute("SELECT generation_kind, generation_meta FROM records WHERE id=%s", (sr,)).fetchone()
+        assert g["generation_kind"] == "ai" and g["generation_meta"]["reported_by"] == "device" and g["generation_meta"]["tool"] == "claude-cli"
+        expect("PROVENANCE-AI-LOCKED", db.record_provenance_set, A, sr, "self", "verbatim", "내가 쓴 것으로")
+        # ── 경합(실제 동시 — ASGI 스레드 2개): 같은 요청 동시 2건 = 접수 1행(201 하나·200 하나) · 승인/제외 동시 = 하나만 ──
+        rb = _bi_act(d2["device"]["id"])
+        rs = await asyncio.gather(_bi_post(d2["token"], rb), _bi_post(d2["token"], rb))
+        assert sorted(x.status_code for x in rs) == [200, 201] and rs[0].json()["import_id"] == rs[1].json()["import_id"], [x.text for x in rs]
+        assert _bi_count(A, "import_entries", "AND original_id=%s", (rb["original_id"],)) == 1
+
+        def _try(fn, *a):
+            try:
+                fn(*a)
+                return "ok"
+            except db.CrmError as e:
+                return e.code
+        pend = (await _bi_post(d2["token"], _bi_text(d2["device"]["id"]))).json()["import_id"]
+        outs = await asyncio.gather(asyncio.to_thread(_try, imports.inbox_approve, A, pend), asyncio.to_thread(_try, imports.inbox_exclude, A, pend))
+        assert sorted(outs) == ["INBOX-RESOLVED", "ok"], outs
+        # 폐기 vs 접수 동시(스레드 2개·커넥션 2개) — 폐기가 먼저 커밋되면 접수 0, 접수가 먼저면 접수 1 · 둘 다 끝난 뒤엔 401
+        for _ in range(6):
+            dr = imports.device_connect(A, "합성 경합")
+            br = _bi_act(dr["device"]["id"])
+            r, _rv = await asyncio.gather(_bi_post(dr["token"], br), asyncio.to_thread(imports.device_revoke, A, dr["device"]["id"]))
+            n = _bi_count(A, "import_entries", "AND stream_id=%s", (dr["device"]["id"],))
+            if r.status_code == 201:
+                assert n == 1 and _bi_count(A, "activities", "AND stream_id=%s", (dr["device"]["id"],)) == 1
+            else:
+                assert r.status_code == 401 and r.json()["code"] == "TOKEN-REVOKED" and n == 0, (r.status_code, r.text, n)
+            r2 = await _bi_post(dr["token"], _bi_act(dr["device"]["id"]))
+            assert r2.status_code == 401 and r2.json()["code"] == "TOKEN-REVOKED"
+        # 만료됐지만 아직 파기 전인 대기는 가득 참 계산에서 빠진다 · 지난 카운터 파기
+        _sql("INSERT INTO import_counters (user_id,scope_key,period,period_start,bucket,n) VALUES (%s,'user','minute',now() - interval '2 hours','request',1)", (A,))
+        assert imports.counters_purge() >= 1
+        assert _bi_count(A, "import_counters", "AND period='minute' AND period_start < now() - interval '1 hour'") == 0
+        # ── 한도: 승인 대기 가득 · 하루 접수 · 요청 속도 · 사람 하루 50(트랜잭션 전체 취소) ──
+        saved = (imports.PENDING_MAX, dict(imports.LIMITS))
+        try:
+            imports.PENDING_MAX = imports.inbox_count(A) + 1
+            one = (await _bi_post(tok, _bi_text(DEV, policy_revision=2))).json()["import_id"]
+            r = await _bi_post(tok, _bi_text(DEV, policy_revision=2))
+            assert r.status_code == 429 and r.json()["code"] == "INBOX-FULL"
+            _sql("UPDATE import_entries SET expires_at = now() - interval '1 second' WHERE id=%s", (one,))
+            r = await _bi_post(tok, _bi_text(DEV, policy_revision=2))
+            assert r.status_code == 201 and r.json()["state"] == "pending", r.text
+            imports.PENDING_MAX = saved[0]
+            with db.tx() as c:
+                used = c.execute("SELECT COALESCE(sum(n),0) AS n FROM import_counters WHERE user_id=%s AND scope_key=%s AND period='day' "
+                                 "AND bucket='activity'", (A, DEV)).fetchone()["n"]
+            imports.LIMITS[("device", "day", "activity")] = (used, None)
+            n_act = _bi_count(A, "activities")
+            r = await _bi_post(tok, act())
+            assert r.status_code == 429 and r.json()["code"] == "IMPORT-QUOTA" and _bi_count(A, "activities") == n_act
+        finally:
+            imports.PENDING_MAX, imports.LIMITS = saved[0], saved[1]
+        _sql("INSERT INTO people (user_id,id,alias) SELECT %s, 'p_bilim' || g, '채움' FROM generate_series(1, 50) AS g", (A,))
+        n_act, n_ppl = _bi_count(A, "activities"), _bi_count(A, "people")
+        r = await _bi_post(tok, act(people=[{"hmac": secrets.token_hex(32), "role": "author"}]))
+        assert r.status_code == 429 and r.json()["code"] == "PEOPLE-QUOTA" and r.json()["resume_at"].endswith("T00:00:00+09:00"), r.text
+        assert (_bi_count(A, "activities"), _bi_count(A, "people")) == (n_act, n_ppl), "새 사람이 한도를 넘으면 활동도 안 생긴다"
+        r = await _bi_post(tok, act(people=[{"hmac": H1, "role": "author"}]))
+        assert r.status_code == 201, "이미 있는 사람만이면 통과"
+        _sql("DELETE FROM people WHERE user_id=%s AND id LIKE 'p_bilim%%'", (A,))
+        fast.__exit__(None, None, None)   # 여기부터 실제 분당 한도(장치 10)
+        _sql("DELETE FROM import_counters WHERE user_id=%s AND period='minute'", (A,))
+        codes = [(await _bi_post(d2["token"], {"x": 1})).status_code for _ in range(11)]
+        assert codes[:10] == [400] * 10 and codes[10] == 429, codes   # 실패도 요청 속도에 센다
+        _sql("DELETE FROM import_counters WHERE user_id=%s AND period='minute'", (A,))
+        fast = _bi_fast()
+        fast.__enter__()
+        # ── 권한 경합: 만료 · 재발급 · 폐기 · 차단 · 삭제된 사용자 ──
+        _sql("UPDATE import_streams SET token_expires_at = now() - interval '1 second' WHERE id=%s", (DEV,))
+        r = await _bi_post(tok, act())
+        assert r.status_code == 401 and r.json()["code"] == "TOKEN-EXPIRED"
+        tok2 = imports.device_reissue(A, DEV)["token"]
+        r = await _bi_post(tok, act())
+        assert r.status_code == 401 and r.json()["code"] == "AUTH-INVALID", "재발급 = 옛 토큰 즉시 무효"
+        assert (await _bi_post(tok2, act())).status_code == 201
+        _sql("UPDATE users SET blocked_at = now() WHERE id=%s", (A,))
+        r = await _bi_post(tok2, act())
+        assert r.status_code == 403 and r.json()["code"] == "AUTH-BLOCKED"
+        _sql("UPDATE users SET blocked_at = NULL WHERE id=%s", (A,))
+        imports.device_revoke(A, DEV)
+        r = await _bi_post(tok2, act())
+        assert r.status_code == 401 and r.json()["code"] == "TOKEN-REVOKED"
+        # 다른 사용자의 활동을 가리킬 수 없다
+        cb = imports.device_connect(B, "합성 남")
+        r = await _bi_post(cb["token"], _bi_text(cb["device"]["id"], activity_ref=a1b))
+        assert r.status_code == 400 and r.json()["code"] == "REF-NOT-FOUND"
+        # 장치 자기 확인·자기 폐기(장치 토큰만 — 웹 쿠키로는 401)
+        hb = {"authorization": "Bearer " + cb["token"]}
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            g = await h.get("/api/imports/device", headers=hb)
+            assert g.status_code == 200 and set(g.json()) == {"stream_id", "label", "policy", "policy_revision", "hmac_namespace",
+                                                              "token_expires_at"} and g.json()["stream_id"] == cb["device"]["id"], g.text
+            assert cb["token"].split(".")[-1] not in g.text
+            h.cookies.set("crm_session", main.site.session_value(B))
+            assert (await h.get("/api/imports/device")).status_code == 401, "웹 세션은 장치 경로에 안 걸린다"
+            assert (await h.post("/api/imports/device/revoke", headers={"origin": PUBLIC})).status_code == 401
+            rv = await h.post("/api/imports/device/revoke", headers=hb)
+            assert rv.status_code == 200 and rv.json() == {"stream_id": cb["device"]["id"], "revoked": True}, rv.text
+            g = await h.get("/api/imports/device", headers=hb)
+            assert g.status_code == 401 and g.json()["code"] == "TOKEN-REVOKED"
+        with db.tx() as c:
+            aud = [x["action"] for x in c.execute("SELECT action FROM admin_audit WHERE actor_id=%s ORDER BY id", (A,)).fetchall()]
+        assert aud.count("device_connect") == 12 and "device_reissue" in aud and "device_policy" in aud and aud.count("device_revoke") == 11
+    fast.__exit__(None, None, None)
+    print("OK — 25c 장치 토큰(SHA-256·5개·재발급·폐기·policy) · /api/imports(스위치·인증·멱등 200/409·키 400·개정 409·noop·새 판·GET)"
+          " · 사람 HMAC(별칭·재사용·키 공간) · 경계(금지 필드·URL·값 0) · 승인 대기(승인·제외·superseded·만료·본문 파기·메모 연결)"
+          " · AI 요약(무인 스위치·generated·정정 차단) · 한도(대기·하루·분당·사람 50 전체 취소) · 만료·재발급·차단·폐기 통과")
+
+
+async def test_bi_aggregate():
+    """25d 「나」 집계 — 손계산 대조(기간·다중 축·다중 사람·participant 제외·날짜 미확인·취소·noop·옛 판) · 근거 연결 · reference 새 대상
+    · 사람 삭제 보호 · MCP 읽기 7(웹과 같은 함수·HMAC 없음)."""
+    U = db.user_by_email(BI["agg"])["id"]
+    _, (X1, X2) = _bi_axes(U)
+    c1 = imports.device_connect(U, "합성 집계")
+    tok, D = c1["token"], c1["device"]["id"]
+    imports.device_policy_set(U, D, {"actions": ["like"], "transform_versions": ["board-likes/1"], "axes": [X1, X2]}, 1)
+    T = _bi_today()
+    day = lambda n: (T - __import__("datetime").timedelta(days=n)).isoformat()   # noqa: E731
+    HP = {k: secrets.token_hex(32) for k in ("P1", "P2", "P3")}
+    ids = {}
+    with _bi_switch("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED"), _bi_fast():
+        async def send(name, **kw):
+            b = _bi_act(D, policy_revision=2, **kw)
+            r = await _bi_post(tok, b)
+            assert r.status_code == 201, r.text
+            ids[name] = (b, r.json()["target_id"])
+            return b
+        await send("a1", occurred_on=day(0), people=[{"hmac": HP["P1"], "role": "author"}], axes=[X1])
+        await send("a2", occurred_on=day(8), people=[{"hmac": HP["P1"], "role": "author"}, {"hmac": HP["P2"], "role": "participant"}],
+                   axes=[X1, X2])
+        await send("a3", occurred_on=day(40), people=[{"hmac": HP["P2"], "role": "author"}])
+        await send("a4", occurred_on=None, observed_on=day(1))
+        await send("a5", occurred_on=None)
+        b6 = await send("a6", occurred_on=day(2))
+        r = await _bi_post(tok, {**b6, "revision": _bi_v(), "previous_revision": b6["revision"], "state": "retracted"})
+        assert r.json()["state"] == "applied"
+        b7 = await send("a7", occurred_on=day(3))
+        assert (await _bi_post(tok, {**b7, "revision": _bi_v(), "previous_revision": b7["revision"]})).json()["state"] == "noop"
+        b8 = await send("a8", occurred_on=day(4), people=[{"hmac": HP["P3"], "role": "author"}])
+        r = await _bi_post(tok, {**b8, "revision": _bi_v(), "previous_revision": b8["revision"], "axes": [X2]})
+        ids["a8b"] = (None, r.json()["target_id"])
+    with db.tx() as c:
+        P = {k: c.execute("SELECT id FROM people WHERE user_id=%s AND identity_hmac=%s", (U, bytes.fromhex(h))).fetchone()["id"]
+             for k, h in HP.items()}
+
+    def top(agg):
+        return sorted((x["person_id"], x["n"]) for x in agg["top_people"])
+
+    m30 = activity.me_aggregate(U)
+    assert m30["period"] == "30d" and m30["to"] == T.isoformat() and m30["from"] == day(29)
+    assert m30["total"] == 4, m30   # a1 a2 a7 a8b (a3 기간 밖 · a4 a5 날짜 미확인 · a6 취소)
+    assert m30["by_action"] == [{"action": "like", "label": "좋아요", "n": 4}]
+    assert {x["item_id"]: x["n"] for x in m30["by_axis"]} == {X1: 2, X2: 2} and m30["axis_unclassified"] == 1 and m30["axis_sum_differs"]
+    assert top(m30) == sorted([(P["P1"], 2), (P["P3"], 1)]), "participant 만인 P2 는 빠진다"
+    assert m30["undated"] == {"n": 2, "observed": [{"observed_on": day(1), "n": 1}, {"observed_on": None, "n": 1}]}
+    assert [x["n"] for x in m30["by_source"]] == [4] and m30["by_source"][0]["provider"] == "sns"
+    assert m30["notice"] == activity.NOTICE and m30["grounds"] == {"principles": []}
+    m7 = activity.me_aggregate(U, "7d")
+    assert (m7["total"], {x["item_id"]: x["n"] for x in m7["by_axis"]}, m7["axis_unclassified"]) == (3, {X1: 1, X2: 1}, 1)
+    assert top(m7) == sorted([(P["P1"], 1), (P["P3"], 1)])
+    m90, mall = activity.me_aggregate(U, "90d"), activity.me_aggregate(U, "all")
+    assert m90["total"] == mall["total"] == 5 and top(m90) == top(mall) == sorted([(P["P1"], 2), (P["P2"], 1), (P["P3"], 1)])
+    assert mall["from"] is None
+    expect("ARG-INVALID", activity.me_aggregate, U, "365d")
+    # 목록·문맥
+    al = activity.activity_list(U)
+    assert len(al["activities"]) == 8 and ids["a8"][1] not in {a["id"] for a in al["activities"]}, "현재 판만(옛 판 a8 제외, 취소 판 보임)"
+    occ = [a["occurred_on"] for a in al["activities"]]
+    assert occ == sorted([d for d in occ if d], reverse=True) + [None] * occ.count(None), ("정렬 = 행동 날짜 최근 → 날짜 미확인", occ)
+    for ctx in (activity.person_context(U, P["P1"])["activities"], activity.axis_context(U, X1)["activities"]):
+        o2 = [a["occurred_on"] for a in ctx]
+        assert o2 == sorted([d for d in o2 if d], reverse=True) + [None] * o2.count(None), o2
+    assert {a["id"] for a in activity.activity_list(U, dated="no")["activities"]} == {ids["a4"][1], ids["a5"][1]}
+    assert {a["id"] for a in activity.activity_list(U, axis_item_id=X2)["activities"]} == {ids["a2"][1], ids["a8b"][1]}
+    assert {a["id"] for a in activity.activity_list(U, person_id=P["P2"])["activities"]} == {ids["a2"][1], ids["a3"][1]}
+    pg = activity.activity_list(U, limit=3)
+    pg2 = activity.activity_list(U, limit=3, cursor=pg["next_cursor"])
+    assert len(pg["activities"]) == 3 and pg["next_cursor"] and not {a["id"] for a in pg["activities"]} & {a["id"] for a in pg2["activities"]}
+    a1 = activity.activity_get(U, ids["a1"][1])
+    assert a1["people"] == [{"id": P["P1"], "alias": a1["people"][0]["alias"], "role": "author"}] and a1["raw"]["local_only"]
+    assert a1["raw_id"] == ids["a1"][0]["raw_id"] and "hmac" not in json.dumps(a1)
+    sc = activity.source_context(U, a1["source"]["id"])
+    assert sc["activity_count"] == 8 and sc["source"]["provider"] == "sns"
+    ax = activity.axis_context(U, X1)
+    assert ax["activity_count"] == 2
+    expect("NOT-FOUND", activity.axis_context, U, ids["a1"][1])
+    expect("NOT-FOUND", activity.activity_get, db.user_by_email(BI["b"])["id"], ids["a1"][1])
+    # ── reference 새 대상(person·activity) + 근거 연결 2단계 + 사람 삭제 보호 ──
+    rec = db.record_add(U, "합성 근거", "합성 근거 기록 본문")
+    p = db.definition_propose(U, None, 0, {"key": "rules", "label": "기준", "semantic_kind": "principle", "fields": [
+        {"key": "evid", "label": "근거 활동", "value_type": "reference", "target_kind": "activity", "multiple": True},
+        {"key": "who", "label": "사람", "value_type": "reference", "target_kind": "person", "multiple": True},
+        {"key": "recs", "label": "근거 기록", "value_type": "reference", "target_kind": "record", "multiple": True}]})
+    od = db.definition_apply(U, p["object_id"], p["proposal_id"], 0)
+    ip = db.item_propose(U, p["object_id"], od["revision"], None, 0, "R-1", "합성 기준", "", {}, [
+        {"field_key": "evid", "target_kind": "activity", "target_id": ids["a8"][1]},   # 옛 판을 그대로 가리킨다
+        {"field_key": "evid", "target_kind": "activity", "target_id": ids["a1"][1]},
+        {"field_key": "who", "target_kind": "person", "target_id": P["P1"]},
+        {"field_key": "recs", "target_kind": "record", "target_id": rec["id"]}])
+    it = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")
+    assert {(x["target_kind"], x["target_id"]) for x in it["links"]} >= {("activity", ids["a8"][1]), ("person", P["P1"])}
+    bad = expect("LINK-INVALID", db.item_propose, U, p["object_id"], od["revision"], None, 0, "R-3", "x", "", {},
+                 [{"field_key": "who", "target_kind": "person", "target_id": "p_notmine"}])
+    assert "찾을 수 없어요" in bad.message
+    db.item_decide(U, it["id"], it["revision"], None, "confirm")
+    g = activity.me_aggregate(U)["grounds"]["principles"]
+    assert g == [{"item_id": it["id"], "title": "합성 기준", "records": 1, "activities": 2}], g
+    e = expect("PERSON-IN-USE", db.person_delete, U, P["P1"], 0)
+    assert "활동" in e.message and "항목" in e.message
+    pc = activity.person_context(U, P["P1"])
+    assert pc["items"] and pc["items"][0]["id"] == it["id"] and pc["activity_count"] == 2
+    lone = db.person_save(U, "연결 없음")
+    assert db.person_delete(U, lone["id"], 0)["deleted"], "연결 없는 사람은 지운다"
+    # ── 운영자 화면: 항목 → 사람·출처·활동 관계는 값도 개수도 없다(처리방침 v5 약속 유지) ──
+    import admin_db
+    v = admin_db.userview("admin", U)[U]
+    assert _bi_count(U, "sources", "AND activity_provider IS NOT NULL") == 1 and v["sources_n"] == 0, "운영자 출처 수에 활동 출처 0"
+    assert activity.person_context(U, P["P3"])["old_revision_links"] == 1 and activity.person_context(U, P["P1"])["old_revision_links"] == 0
+    assert "옛 판 포함" in e.message, e.message
+    assert v["links"] and all(ln["target_kind"] in ("item", "record", "candidate") for ln in v["links"]), "운영자 원행에 사람·출처·활동 연결 0"
+    resp, st = web.uv_build(v)
+    rels = contract.relations(admin_db.contract_input(v)["definitions"])
+    priv = [i for i, r in enumerate(rels) if r["target_kind"] in admin_db.PRIVATE_TARGETS]
+    assert len(priv) == 2 and all(st["linked"][i] is None for i in priv), (priv, st["linked"])
+    assert not [e for e in st["errors"] + st["unchecked"] if e["rel"] in priv], "무결성 집계에서도 뺀다"
+    page = web.render_userview({"email": "x@example.com", "created": db.now(), "role": "user", "blocked_at": None}, "op", False, resp, st, [])
+    for i in priv:
+        row_ = page[page.index(f'id="{web.structure_svg.rel_anchor(i)}"'):]
+        row_ = row_[:row_.index("</tr>")]
+        assert row_.endswith('<td class="num">—</td><td class="num">—</td><td class="num">—</td>'), row_[-200:]
+    # ── MCP 읽기 7 — 웹과 같은 함수 · 쓰기 없음 · HMAC 없음 ──
+    _as_user(main.site, BI["agg"])
+    try:
+        async with Client(main.mcp) as c:
+            assert val(await c.call_tool("me_aggregate_get", {"period": "30d"})) == activity.me_aggregate(U)
+            got = val(await c.call_tool("activity_list", {"dated": "no"}))
+            assert {a["id"] for a in got["activities"]} == {ids["a4"][1], ids["a5"][1]}
+            assert val(await c.call_tool("activity_get", {"activity_id": ids["a1"][1]})) == activity.activity_get(U, ids["a1"][1])
+            assert val(await c.call_tool("person_context_get", {"person_id": P["P1"]}))["activity_count"] == 2
+            assert val(await c.call_tool("source_context_get", {"source_id": a1["source"]["id"]}))["activity_count"] == 8
+            assert val(await c.call_tool("inbox_list", {}))["entries"] == []
+            res = await c.call_tool("inbox_get", {"import_id": "ie_none"})
+            assert _prb_err(res) == "NOT-FOUND"
+            for t in BI_TOOLS:
+                assert t not in db.WRITE_LIMITS and t in main.ALLOWED_TOOLS
+            blob = json.dumps(val(await c.call_tool("activity_list", {})), ensure_ascii=False)
+            assert not any(h in blob for h in HP.values()) and "hmac" not in blob
+    finally:
+        os.environ["CRM_DEV_USER"] = "tester@example.com"
+        main.site.dev, main.site.dev_user = True, "tester@example.com"
+    print("OK — 25d 「나」 집계 손계산(30d 4·7d 3·90d/all 5·축 2/2+미분류 1·자주 반응 P1 2/P3 1·날짜 미확인 2+처음 수집 분포·취소·noop·옛 판)"
+          " · 목록 거르기·쪽 · 문맥(사람·출처·축) · reference person·activity(특정 판) · 근거 2단계 · PERSON-IN-USE · MCP 읽기 7 통과")
+
+
+def test_bi_migration():
+    """25f board 이전 기본 연산(imports.migration_*) — 스위치 · 입력원 하나 · 항목 제안→적용·결정 · 기록 새 판(created 과거 보존·
+    record_attach) · 같은 명세 재실행 업무 변경 0 · noop · 새 판 · 충돌(개정·멱등·대상 revision·보관) · 행 단위 원자성(한도·링크 오류)
+    · 병행 기간 14일·7일 연장·종료 뒤 거절 · 감사."""
+    M = db.user_by_email(BI["mig"])["id"]
+    _, (X1,) = _bi_axes(M, 1)
+    ax_obj = db.classify_target(M)
+    p = db.definition_propose(M, None, 0, {"key": "rules", "label": "기준", "semantic_kind": "principle", "fields": [
+        {"key": "axes", "label": "축", "value_type": "reference", "target_kind": "item", "target_object_id": ax_obj, "multiple": True}]})
+    rules = db.definition_apply(M, p["object_id"], p["proposal_id"], 0)["id"]
+    sha = "ab" * 32
+
+    def row(o, v, prev=None, **kw):
+        r = {"original_id": o, "revision": v, "previous_revision": prev}
+        r.update(kw)
+        return r
+
+    def apply(r, batch="mb_bi1"):
+        return imports.migration_apply_row(M, S, r, batch_id=batch, manifest_sha256=sha, transform_version="board-manifest/1")
+
+    def counts():
+        return {t: _bi_count(M, t) for t in ("records", "items", "item_history", "item_links", "import_entries")}
+
+    with _bi_switch():
+        expect("MIGRATION-OFF", imports.migration_apply_row, M, "is_x", {}, batch_id="b", manifest_sha256=sha, transform_version="t")
+    assert imports.migration_stream_get(M) is None
+    st = imports.migration_stream(M, "board 이전")
+    S = st["id"]
+    assert re.fullmatch(r"is_[0-9a-f]{24}", S) and st["migration_started_at"] is None and st["counts"] == {}
+    assert imports.migration_stream(M, "다른 이름")["id"] == S and imports.migration_stream_get(M)["id"] == S, "사용자당 하나"
+    expect("ARG-INVALID", imports.migration_extend, M, S, 7)   # 시작 전
+    O = {k: _bi_o() for k in ("ax", "rule", "rec", "late")}
+    V = {k: _bi_v() for k in ("ax", "rule", "rec", "rec2", "rule2", "rule3", "x")}
+    with _bi_switch("BOARD_MIGRATION_ENABLED"):
+        ra = row(O["ax"], V["ax"], target_kind="item", unit_kind="axis", object_id=ax_obj, code="AX-M", title="합성 이전 축")
+        r1 = apply(ra)
+        assert r1["state"] == "applied" and r1["target_kind"] == "item" and r1["duplicate"] is False
+        st = imports.migration_stream_get(M)
+        assert st["migration_started_at"] and st["migration_ends_at"]
+        with db.tx() as c:
+            w = c.execute("SELECT migration_ends_at - migration_started_at AS d FROM import_streams WHERE id=%s", (S,)).fetchone()["d"]
+        assert w.days == 14, w
+        rr = row(O["rule"], V["rule"], target_kind="item", unit_kind="principle_wd", object_id=rules, code="WD-1", title="합성 기준",
+                 body="합성 본문", decision="confirmed", references=[{"field_key": "axes", "target": {"original_id": O["ax"], "revision": V["ax"]}}])
+        r2 = apply(rr)
+        it = db.item_get(M, r2["target_id"])
+        assert it["decision"] == "confirmed" and [(x["target_kind"], x["target_id"]) for x in it["links"]] == [("item", r1["target_id"])]
+        with db.tx() as c:
+            ik = c.execute("SELECT ingest_kind, import_batch_id FROM items WHERE id=%s", (r2["target_id"],)).fetchone()
+        assert dict(ik) == {"ingest_kind": "board_migration", "import_batch_id": "mb_bi1"}
+        rc = row(O["rec"], V["rec"], target_kind="record", unit_kind="journal", title="합성 일지", body="합성 일지 본문이다.",
+                 source_created_at="2026-09-01T09:30:00+09:00",
+                 attach={"attach_to": [{"original_id": O["rule"], "revision": V["rule"]}], "axes": [{"original_id": O["ax"], "revision": V["ax"]}],
+                         "use_at": ["합성 자리"]})
+        r3 = apply(rc)
+        rec = db.record_get(M, r3["target_id"])
+        dt = __import__("datetime")
+        assert (rec["author_kind"], rec["text_process"]) == ("self", "verbatim")
+        assert dt.datetime.fromisoformat(rec["created"]) == dt.datetime(2026, 9, 1, 0, 30, tzinfo=dt.timezone.utc), "확인된 원본 시각 보존"
+        with db.tx() as c:
+            rk = c.execute("SELECT ingest_kind, received_at > now() - interval '1 hour' AS today, import_batch_id "
+                           "FROM records WHERE id=%s", (r3["target_id"],)).fetchone()
+        assert rk["ingest_kind"] == "board_migration" and rk["today"] and rk["import_batch_id"] == "mb_bi1"
+        assert {(x["field_key"], x["target_id"]) for x in db.record_links(M, [r3["target_id"]])} == {("attach_to", r2["target_id"]),
+                                                                                                      ("axes", r1["target_id"])}
+        # ── 같은 명세 재실행 = duplicate · 업무 변경 0 ──
+        before = counts()
+        for r in (ra, rr, rc):
+            assert apply(r)["duplicate"] is True
+        assert counts() == before
+        expect("IDEMPOTENCY-CONFLICT", apply, {**rc, "body": "다른 본문"})
+        expect("SOURCE-REVISION-CONFLICT", apply, row(O["rec"], _bi_v(), prev=_bi_v(), target_kind="record", unit_kind="journal", body="x"))
+        expect("SOURCE-REVISION-CONFLICT", apply, row(_bi_o(), _bi_v(), prev=_bi_v(), target_kind="record", unit_kind="journal", body="x"))
+        expect("KIND-CHANGED", apply, row(O["rec"], _bi_v(), prev=V["rec"], target_kind="item", unit_kind="axis", object_id=ax_obj, title="x"))
+        expect("REF-NOT-FOUND", apply, row(O["late"], _bi_v(), target_kind="item", unit_kind="principle_wd", object_id=rules, title="x",
+                                           references=[{"field_key": "axes", "target": {"original_id": _bi_o(), "revision": _bi_v()}}]))
+        expect("ARG-INVALID", apply, row(O["late"], _bi_v(), target_kind="item", unit_kind="principle_wd", object_id=rules, title="x",
+                                         references=[{"field_key": "axes", "target": {"original_id": O["ax"]}}]))   # 정확한 판(revision) 필수
+        expect("REF-NOT-FOUND", apply, row(O["late"], _bi_v(), target_kind="item", unit_kind="principle_wd", object_id=rules, title="x",
+                                           references=[{"field_key": "axes", "target": {"original_id": O["ax"], "revision": _bi_v()}}]))
+        assert counts() == before, "거절 = 쓰기 0"
+        # ── noop · 기록 새 판 ──
+        assert apply({**rc, "revision": V["rec2"], "previous_revision": V["rec"]})["state"] == "noop"
+        r5 = apply({**rc, "revision": _bi_v(), "previous_revision": V["rec2"], "body": "고친 합성 일지 본문이다."})
+        assert r5["state"] == "applied" and r5["target_id"] != r3["target_id"] and db.record_get(M, r3["target_id"])["body"] == rc["body"]
+        # ── 항목 새 판 · 대상 충돌(서버에서 바뀜·보관) ──
+        r6 = apply({**rr, "revision": V["rule2"], "previous_revision": V["rule"], "title": "고친 합성 기준"})
+        assert r6["state"] == "applied" and r6["target_id"] == r2["target_id"] and db.item_get(M, r2["target_id"])["title"] == "고친 합성 기준"
+        cur = db.item_get(M, r2["target_id"])
+        db.item_decide(M, r2["target_id"], cur["revision"], None, "pending")   # 사용자가 서버에서 바꿈
+        before = counts()
+        expect("TARGET-REVISION-CONFLICT", apply, {**rr, "revision": V["rule3"], "previous_revision": V["rule2"], "title": "또 고침"})
+        assert counts() == before, "충돌 = 전체 롤백"
+        # ── 행 단위 원자성: 기록을 넣은 뒤 「어디에 붙나」 에서 실패해도 기록·대응표가 안 남는다 ──
+        before = counts()
+        expect("LINK-INVALID", apply, row(O["late"], _bi_v(), target_kind="record", unit_kind="journal", body="붙일 곳이 없는 합성 기록",
+                                          attach={"attach_to": [{"item_id": "i_nothere"}]}))
+        assert counts() == before, "기록 INSERT 뒤 실패 = 전체 롤백"
+        expect("LINK-INVALID", apply, row(O["late"], _bi_v(), target_kind="item", unit_kind="principle_wd", object_id=rules, title="합성",
+                                          references=[{"field_key": "axes", "target": {"item_id": "i_nothere"}}]))
+        assert counts() == before
+        _bulk("INSERT INTO records (id,user_id,title,body) SELECT 'r_bimig' || g, %s, 't', 'b' FROM generate_series(1, 50) AS g", (M,))
+        e = expect("RATE-LIMIT", apply, row(O["late"], _bi_v(), target_kind="record", unit_kind="journal", body="한도 넘는 합성 기록"))
+        assert e.resume_at == imports.next_kst_midnight() and "합성" not in e.message + e.action, "재개 시각만, 값 없음"
+        assert _bi_count(M, "import_entries", "AND original_id=%s", (O["late"],)) == 0, "한도 = 미처리 행으로 남는다"
+        _bulk("DELETE FROM records WHERE user_id=%s AND id LIKE 'r_bimig%%'", (M,))
+        # ── 대응표 · 병행 기간 ──
+        ents = imports.migration_entries(M, S)
+        assert {e["original_id"] for e in ents} == {O["ax"], O["rule"], O["rec"]} and all("payload" not in e for e in ents)
+        cur = {e["original_id"]: e for e in ents if e["is_current_applied"]}
+        assert cur[O["rec"]]["target_id"] == r5["target_id"] and cur[O["rule"]]["target_item_revision"] == db.item_get(M, r2["target_id"])["revision"] - 1
+        expect("ARG-INVALID", imports.migration_extend, M, S, 5)
+        e1 = imports.migration_stream_get(M)["migration_ends_at"]
+        e2 = imports.migration_extend(M, S, 7)["migration_ends_at"]
+        assert (__import__("datetime").datetime.fromisoformat(e2) - __import__("datetime").datetime.fromisoformat(e1)).days == 7
+        _sql("UPDATE import_streams SET migration_started_at = now() - interval '22 days', "
+             "migration_ends_at = now() - interval '1 second' WHERE id=%s", (S,))
+        expect("MIGRATION-WINDOW-CLOSED", apply, row(O["late"], _bi_v(), target_kind="record", unit_kind="journal", body="기간 뒤"))
+        assert apply(ra)["duplicate"] is True, "같은 요청 재전송은 기간 뒤에도 결과만 돌려준다(쓰기 0)"
+        imports.migration_extend(M, S, 7)
+        cl = imports.migration_close(M, S, "cd" * 32)
+        assert cl["migration_closed_at"] and cl["final_manifest_sha256"] == "cd" * 32
+        expect("MIGRATION-WINDOW-CLOSED", apply, row(O["late"], _bi_v(), target_kind="record", unit_kind="journal", body="종료 뒤"))
+        expect("MIGRATION-WINDOW-CLOSED", imports.migration_extend, M, S, 7)
+        expect("MIGRATION-WINDOW-CLOSED", imports.migration_close, M, S, "cd" * 32)
+    with db.tx() as c:
+        aud = [(r["action"], r["detail"]) for r in c.execute("SELECT action, detail FROM admin_audit WHERE actor_id=%s AND action LIKE 'migration_%%' "
+                                                              "ORDER BY id", (M,)).fetchall()]
+    assert [a for a, _ in aud] == ["migration_apply", "migration_extend", "migration_extend", "migration_close"], aud
+    assert all("본문" not in json.dumps(d, ensure_ascii=False) for _, d in aud)
+    print("OK — 25f board 이전 기본 연산(스위치 · 입력원 하나 · 항목 제안→적용·결정·참조 해석 · 기록 새 판·created 과거 보존·record_attach"
+          " · 재실행 업무 변경 0 · noop · 충돌 4종 · 행 원자성(대상 충돌·링크 오류·기록 한도) · 14일·7일 연장·종료 · 감사) 통과")
+
+
+async def test_bi_delete():
+    """25e 계정 삭제 — 장치·활동·관계·접수 대응표·한도·대기가 있는 계정을 삭제 CLI 로 지운다(FK 실패 0, 남는 행 0)
+    · 삭제된 계정의 토큰은 거절 · user_delete(시험 정리 경로)도 같은 순서."""
+    ADM = db.user_by_email(BI["adm"])["id"]
+    _set_role(ADM, "admin")
+    D = db.user_by_email(BI["del"])["id"]
+    _, (X1,) = _bi_axes(D, 1)
+    cd = imports.device_connect(D, "합성 삭제")
+    tok, DEV = cd["token"], cd["device"]["id"]
+    imports.device_policy_set(D, DEV, {"actions": ["like"], "transform_versions": ["board-likes/1", "self-text/1"], "axes": [X1]}, 1)
+
+    async def fill():
+        with _bi_switch("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED", "INBOX_APPROVALS_ENABLED"), _bi_fast():
+            r = await _bi_post(tok, _bi_act(DEV, policy_revision=2, people=[{"hmac": secrets.token_hex(32), "role": "author"}], axes=[X1]))
+            aid = r.json()["target_id"]
+            e = (await _bi_post(tok, _bi_text(DEV, policy_revision=2, activity_ref=aid))).json()["import_id"]
+            imports.inbox_approve(D, e)
+            await _bi_post(tok, _bi_text(DEV, policy_revision=2))
+            return aid
+    aid = await fill()
+    p = db.definition_propose(D, None, 0, {"key": "notes", "label": "노트", "semantic_kind": "collection", "fields": [
+        {"key": "act", "label": "활동", "value_type": "reference", "target_kind": "activity"}]})
+    od = db.definition_apply(D, p["object_id"], p["proposal_id"], 0)
+    ip = db.item_propose(D, p["object_id"], od["revision"], None, 0, None, "합성", "", {}, [{"field_key": "act", "target_kind": "activity",
+                                                                                         "target_id": aid}])
+    db.item_decide(D, ip["item_id"], 0, ip["proposal_id"], "apply")
+    before = {t: _bi_count(D, t) for t in BI_TABLES}
+    assert all(before.values()), before
+    tk = _tk_insert(D, "privacy", "합성 삭제 요청")
+    db.delete_notify(ADM, tk)
+    _sql("UPDATE deletion_contacts SET notified_at = now() - interval '8 days', delete_after = now() - interval '1 day' WHERE user_id=%s", (D,))
+    pv = db.delete_preview(ADM, tk)
+    assert pv["ready"] and all(pv["counts"][t] == before[t] for t in BI_TABLES), pv["counts"]
+    out = db.delete_run(ADM, tk, pv["value"])
+    assert out["deleted"] == pv["total"]
+    assert {t: _bi_count(D, t) for t in db.DELETE_TABLES if t != "tickets"} == {t: 0 for t in db.DELETE_TABLES if t != "tickets"}
+    with db.tx() as c:
+        assert c.execute("SELECT count(*) AS n FROM import_streams WHERE user_id=%s", (D,)).fetchone()["n"] == 0
+    e = expect("AUTH-INVALID", imports.authenticate, "Bearer " + tok)
+    assert e.message == "장치 토큰이 맞지 않아요."
+    db.user_delete(D)   # 시험 정리(이메일이 자리값이라 cleanup 이 못 찾는다) — 남은 users 행·보존 문의
+    _sql("DELETE FROM deletion_contacts WHERE user_id=%s", (D,))
+    _sql("DELETE FROM tickets WHERE user_id=%s", (D,))
+    # user_delete 경로(시험 정리·α2)도 새 표가 있는 계정을 끝까지 지운다
+    E = db.user_by_email(BI["b"])["id"]
+    ce = imports.device_connect(E, "합성 정리")
+    with _bi_switch("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED"):
+        r = await _bi_post(ce["token"], _bi_act(ce["device"]["id"], people=[{"hmac": secrets.token_hex(32), "role": "author"}]))
+        assert r.status_code == 201
+    db.user_delete(E)
+    assert all(_bi_count(E, t) == 0 for t in BI_TABLES)
+    print("OK — 25e 계정 삭제(장치·활동·관계·대응표·한도·대기·활동 reference 가 있는 계정 → 삭제 CLI 남는 행 0·FK 실패 0 · 토큰 거절"
+          " · user_delete 경로) 통과")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

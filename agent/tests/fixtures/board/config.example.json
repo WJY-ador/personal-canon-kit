@@ -1,0 +1,30 @@
+{
+  "sources": {
+    "decisions": "career/decisions.md",
+    "work_decisions": "career/work-decisions.md",
+    "application_craft": "career/application-craft.md",
+    "craft": "career/craft.md",
+    "open_questions": "career/open-questions.md",
+    "published_log": "drafts/published-log.md",
+    "axes": "trend.md",
+    "applications": ["career/applications"],
+    "journal_dir": "journal",
+    "session_story_dir": "sessions"
+  },
+  "custom_objects": {
+    "ac": {
+      "key": "application_axes",
+      "label": "지원 축",
+      "fields": [
+        {"key": "wanted", "label": "찾는 것", "source_label": "찾는 것"},
+        {"key": "as_is", "label": "지금 장면", "source_label": "지금 장면"},
+        {"key": "io", "label": "들어오고 나가는 것", "source_label": "들어오고 나가는 것"},
+        {"key": "lesson", "label": "배운 것", "source_label": "배운 것"}
+      ]
+    },
+    "application": {"key": "application_docs", "label": "지원 문서"}
+  },
+  "exclude_sections": {"journal": [], "session_story": ["팀과의 과정"]},
+  "_comment_forbidden_roots": "고객사 폴더 예: 고객사 원문(D 본문·E·W)을 두는 폴더를 forbidden_roots 에 적는다 — 이 파일 기준 상대 경로, ~/ 로 시작하는 경로, 절대 경로 모두 된다. 그 아래(심볼릭 링크 포함)는 읽지 않는다",
+  "forbidden_roots": []
+}

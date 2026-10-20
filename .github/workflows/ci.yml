@@ -93,6 +93,22 @@ jobs:
       - name: "④ 서버 시험 (test_tools.py)"
         run: python server/test_tools.py
 
+      # board 이전(2026-10-20) — 웹 화면 경로(/api/devices·/api/inbox 등) 시험. 같은 CI Postgres(DATABASE_URL 은 job env)
+      - name: "④-a 웹 가져오기 화면 시험 (test_web_import.py)"
+        run: python server/test_web_import.py
+
+      # board 이전(2026-10-20) — 로컬 에이전트(agent/, 표준 라이브러리만). 서버 DB 를 쓰지 않는다
+      - name: "④-b 로컬 에이전트 시험 (agent/tests)"
+        run: python -m unittest discover -s agent/tests -t . -v
+
       - name: "⑤ crm.py check (참고용)"
         continue-on-error: true
         run: python crm.py check
+
+      # 로컬 에이전트는 키트와 같은 Python ≥3.9 약속(manifest requires) — 서버 시험(3.13)과 별개로 3.9 에서도 돈다
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: "⑥ 로컬 에이전트 시험 (Python 3.9)"
+        run: python --version && python -m unittest discover -s agent/tests -t . -v
