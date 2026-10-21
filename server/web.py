@@ -412,6 +412,13 @@ def privacy_contact_line() -> str:
 
 
 _CODE_RE = re.compile(r"^[A-Z][A-Z-]*$")
+JOURNAL_PAGE = 50   # S.journal = db.records(uid) 기본 limit 과 같은 값
+
+
+def record_cursor(row):
+    """기록 목록 커서 — 불투명 "<created iso>|<id>". /api/state journal_next_before 와 /api/records next_before 가 이 함수 하나로 만든다.
+    화면은 이 값을 그대로 /api/records?before= 로 되돌려 보낸다(db.records 의 keyset (created,id))."""
+    return f"{row['created']}|{row['id']}"
 
 
 def _usage(name: str, handler):
@@ -1282,6 +1289,8 @@ class Web:
         st, me, flags, std, srcs, cnt, home, people, refl = await run_in_threadpool(lambda: (
             db.state(uid), db.user_get(uid), db.app_user_flags(uid), db.std_status(uid), db.sources(uid), db.source_counts(uid),
             db.me_home(uid), db.people_all(uid), db.reflections_all(uid)))
+        # PR① 홈 「더 보기」 — journal(기본 50편) 마지막 행 커서. 50편 미만이면 null(정확히 50 이면 커서 — 다음 호출이 0편+null 일 수 있음). /app 전용
+        st["journal_next_before"] = record_cursor(st["journal"][-1]) if len(st["journal"]) >= JOURNAL_PAGE else None
         st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
         st["sources"], st["source_counts"] = srcs, cnt   # PR #20 출처(계약 모양 {id,kind,name,location}) · 출처별 기록 수 — 본인만, /app 전용
         st["structure"] = contract.respond({   # PR #20 Q5 구조 정의 보기 — 본인 계약 응답(origin·locked·cardinality 는 서버 판정). /app 전용
@@ -1321,6 +1330,30 @@ class Web:
         return JSONResponse({"id": r["id"], "title": r["title"], "body": r["body"],
                              "meta": {"created": r["created"], "source": r["source"], "question_id": r["question_id"]}},
                             headers={"cache-control": "no-store"})
+
+    async def api_records(self, request):
+        """GET ?before=<커서>&limit=<1..100> — 기록 목록 이어 받기(PR① 홈 「더 보기」). 행 모양 = /api/state journal. 읽기만.
+        응답 {records, next_before}. next_before = 불투명 커서 "<마지막 created iso>|<마지막 id>"(더 없으면 null) — 화면은 받은 값을
+        그대로 before 로 되돌려 보낸다. keyset (created,id) 라 created 동률 블록이 경계에 걸쳐도 겹침·누락 없음. limit 범위 밖 = 끝값(_qint)."""
+        raw = request.query_params.get("before", "")
+        limit = self._qint(request, "limit", 50, 1, 100)
+
+        def read(uid):
+            before = before_id = None
+            if raw:
+                at, sep, rid = raw.rpartition("|")
+                try:
+                    before = _dt.datetime.fromisoformat(at) if sep and rid else None
+                except ValueError:
+                    before = None
+                if before is None or before.tzinfo is None:
+                    raise db.CrmError("ARG-INVALID", "before 는 받은 next_before 값 그대로 보내 주세요.")
+                before_id = rid
+            rows = db.records(uid, limit + 1, before, before_id)
+            page = rows[:limit]
+            nxt = record_cursor(page[-1]) if len(rows) > limit else None
+            return {"records": page, "next_before": nxt}
+        return await self._core_read(request, read)
 
     async def api_decide(self, request):
         uid, err = await self._need(request)
@@ -2246,6 +2279,7 @@ class Web:
             Route("/logout", self.logout, methods=["POST"]),
             Route("/api/state", u("web:state", self.api_state)),
             Route("/api/journal", u("web:journal", self.api_journal)),
+            Route("/api/records", u("web:records", self.api_records)),   # PR① 홈 기록 「더 보기」 — 읽기만
             Route("/api/candidate/decide", u("web:candidate_decide", self.api_decide), methods=["POST"]),
             Route("/api/item", u("web:item", self.api_item)),
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),

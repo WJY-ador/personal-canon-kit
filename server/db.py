@@ -1033,11 +1033,19 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
         return _record_in(c, uid, rid)
 
 
-def records(uid, limit=50):
+def records(uid, limit=50, before=None, before_id=None):
+    """최신순(created DESC, id DESC — 동률은 id 로 순서 고정). before(datetime)+before_id = 그 (created,id) 보다 뒤 순서인 기록만
+    (PR① 홈 「더 보기」 keyset 커서 — created 동률 블록이 페이지 경계에 걸쳐도 겹침·누락 없음). before_id 없이 before 만 = created < before."""
     out = []
+    if before is None:
+        cond, args = "", ()
+    elif before_id is None:
+        cond, args = " AND created < %s", (before,)
+    else:
+        cond, args = " AND (created, id) < (%s, %s)", (before, before_id)
     with tx() as c:
         rows = _all(c, "SELECT id,title,body,source,source_id,question_id,author_kind,text_process,notes,created FROM records "
-                       "WHERE user_id=%s AND deleted_at IS NULL ORDER BY created DESC LIMIT %s", (uid, limit))
+                       "WHERE user_id=%s AND deleted_at IS NULL" + cond + " ORDER BY created DESC, id DESC LIMIT %s", (uid, *args, limit))
     for r in rows:
         d = _iso(r)
         d["excerpt"] = _excerpt(d.pop("body"))
