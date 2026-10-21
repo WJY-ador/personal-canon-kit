@@ -4276,7 +4276,7 @@ async def test_r1_flags_off():
         if admin:   # PR B 결정 3: 표시 이름 관문은 관리자도 — 이름·새 탐색·내 구조 설정 메뉴(hidden 이어도 마크업엔 있다)
             menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
             assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "표시 이름 바꾸기", "새 탐색으로 바꾸기", "내 구조 설정",
-                                                                      "연결 장치", "로그아웃"], menu
+                                                                      "저장 승인 대기", "연결 장치", "로그아웃"], menu   # PR① 저장 승인 대기 = 관리자도(연결 장치와 같은 구간 밖)
             for w in ('id="acct-name"', 'id="acct-nav"', 'id="acct-settings"', '<dialog id="name-dlg"', '<dialog id="nav-dlg"'):
                 assert r.text.count(w) == 1, w
             assert '<dialog id="desk-dlg"' not in r.text
@@ -5599,7 +5599,7 @@ async def test_q5_admin():
             assert svg == svg_of((await get(path)).text), "같은 사용자 두 번 → 같은 SVG"
             assert svg.count('r="42"') == 6, "오브젝트 5(고립 2 포함) + 코어 후보 1 — 같은 크기"
             assert svg.count("stroke-dasharray") == 2 and svg.count(structure_svg.LOCK_TEXT) >= 2, "편입된 표준 2 = 표준 정의 보호"
-            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 직접 추가" in svg, svg[:1500]
+            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 커스텀" in svg, svg[:1500]
             assert "marker" not in svg and "arrow" not in svg, "화살표 없음"
             assert all(f'id="{structure_svg.node_anchor(i)}"' in t for i in range(5)) and f'id="{structure_svg.core_anchor("candidate")}"' in t
             assert t.count('<td>N:1</td>') == 1 and t.count('<td>N:N</td>') == 3, "카디널리티 표시"
@@ -5625,7 +5625,7 @@ async def test_q5_admin():
         t = leak_free(r, path)
         assert r.status_code == 200 and "동의 — 현재 이름" in t, t[-600:]
         assert f"{M['c']}-L-사용자" in t and f"{M['c']}-F-여럿" in t and f"{M['c']}-OPT" in t, "동의자 현재 label·선택지 label"
-        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 직접 추가"' in svg_of(t), "SVG 에도 동의자 label"
+        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 커스텀"' in svg_of(t), "SVG 에도 동의자 label"
         # 철회 → 다음 조회부터 이름 0
         db.optional_consent_set(U["c"], "struct_names", False)
         t = (await get(path)).text
@@ -5733,8 +5733,8 @@ async def test_q45_user():
         fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
         assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
         assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
-        # 목록/그래프 전환(기본 목록) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
-        for w in ('let defsMode = "list";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
+        # 목록/그래프 전환(PR①: 새 탐색 기본 그래프) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
+        for w in ('let defsMode = "graph", defsAt = "";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
                   'id="dmo-o${i + 1}"', 'id="dmo-r${i + 1}"', 'id="dmo-core-${esc(x.kind)}"', 'closest(".dmo a")', 'getAttribute("href")',
                   "e.preventDefault(); defsJump(", "scrollIntoView"):
             assert w in html, w
@@ -5857,7 +5857,7 @@ async def test_q45_user():
 # ── 23) PR A 운영 Setup — 왼쪽 메뉴 · Quick Find · Setup Home · Object Manager(서비스 표준 조회) ─────────
 PRA = {k: f"pra{k}@example.com" for k in ("a", "u", "m")}   # a 관리자 · u 일반 사용자 · m 금지 값 표식 사용자
 TEST_EMAILS += tuple(PRA.values())
-PRA_SVG_SHA = "c005852b5f2b51a12557ce4f2205204f15d125e4382836cd9b4bada625b0ad2b"   # 사용자 DMO SVG(contract 예제 × 수신자, PR A 전 바이트)
+PRA_SVG_SHA = "d33ed3831561dfbb72d21aba7a8fa7313c44542b4efbc72d4f5a11c6d732edf0"   # 사용자 DMO SVG(contract 예제 × 수신자) — PR①(2026-10-21) 표시 글자 교체 후 바이트(전: c005852b…, PR A 전 바이트)
 PRA_STD_SHA = "c08007a2db55f219d7f5b16b5aa518e2b2081f95e1a3adfee52240d1380d00bf"   # templates/std@1.json 동결
 PRA_OBJECTS = ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "core-me", "core-person", "core-reflection",
                "core-activity", "std-axis", "std-decision", "std-principle")   # PR B: 코어 5 → 8(나·사람·출처 요약/반응) · board 이전 9(활동)
@@ -7087,7 +7087,7 @@ async def test_prb_app():
               "실명이 아니어도 돼요. 다른 사람에게 보이지 않고 운영자 화면에도 나오지 않아요.",
               '"/api/nav/accept"', '"/api/me/name"', '"/api/people', '"/api/reflections',
               'id: "_me"', 'id: "_obj"', 'id: "_settings"',
-              "[NAVTAB._me].concat(mine.length ? mine : [BASE.q, BASE.journal], [NAVTAB._obj, BASE.map])",   # 새 탐색엔 「오늘」 탭 없음
+              "if (navNew()) return [NAVTAB._me, NAVTAB._obj, BASE.map];",   # PR① 탭 3: 나 · 자료 종류 · 지도(「오늘」 없음)
               'location.replace("#_settings/structure")', "function axisChips",
               "출처를 접한 뒤 내가 한 생각만 적어요. 다른 사람의 말·경험·생각을 옮기는 곳이 아니에요.",
               "별칭도 그 사람을 알아볼 수 있으면 개인정보예요.", "삭제 완료"):
@@ -7103,7 +7103,7 @@ async def test_prb_app():
                 assert not (a < i < b), (dlg_id, "구간 안", mark)
     i = html.index('<dialog id="nav-dlg"')
     nav = html[i:html.index("</dialog>", i)]
-    for w in ("「나」 홈", "「오브젝트」", "「내 구조 설정」", "데이터는 바뀌지 않아요", "되돌릴 수 없어요"):
+    for w in ("「나」 홈", "「자료 종류」", "「내 구조 설정」", "데이터는 바뀌지 않아요", "되돌릴 수 없어요"):   # PR① 새 탐색 안내 = 탭 3(나·자료 종류·지도)
         assert w in nav, ("nav 대화창", w)
     menu = html[html.index('id="acct-menu"'):html.index("</details>")]
     for a in ("name", "nav", "settings"):

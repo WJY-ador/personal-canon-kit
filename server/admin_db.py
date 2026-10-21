@@ -346,8 +346,8 @@ VALUE_LABELS = {
     "blocked": {"yes": "차단", "no": "아님"}, "active14": {"yes": "활동", "no": "없음"},
     "role": {"user": "사용자", "admin": "관리자"},
     "result": {"ok": "정상", "error": "오류"}, "linked": {"yes": "연결", "no": "미연결"},
-    "origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},   # 앱 구분 용어(structure_svg.ORIGIN_TEXT, user = custom)
-    "field_origin": {"standard": "표준", "template": "선택 템플릿", "user": "직접 추가"},
+    "origin": {"standard": "표준", "template": "커스텀", "user": "커스텀"},   # 앱 구분 용어(structure_svg.ORIGIN_TEXT, user = custom)
+    "field_origin": {"standard": "표준", "template": "커스텀", "user": "커스텀"},
     "required": {"yes": "필수", "no": "선택"}, "multiple": {"yes": "다중", "no": "단일"}, "archived": {"yes": "보관", "no": "사용 중"},
     "target": {"item": "항목", "record": "기록", "candidate": "후보", "none": "관계 아님"},
     "kind": {"bug": "버그", "request": "요청", "question": "질문", "privacy": "개인정보 요청"},

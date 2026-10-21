@@ -14,8 +14,8 @@
 import html
 import math
 
-ORIGIN_TEXT = {"core": "코어", "standard": "표준", "template": "선택 템플릿", "custom": "직접 추가"}   # 명세 §9 구분 표시 용어 = app.html ORIGIN_CHIP(시험이 대조)
-CORE_TEXT = {"record": "기록", "candidate": "후보", "person": "사람", "source": "출처", "activity": "활동"}   # 뒤 셋 = board 이전 reference 대상
+ORIGIN_TEXT = {"core": "코어", "standard": "표준", "template": "커스텀", "custom": "커스텀"}   # 명세 §9 구분 표시 용어 = app.html ORIGIN_CHIP(시험이 대조)
+CORE_TEXT = {"record": "내가 쓴 글", "candidate": "검토할 판단", "person": "사람", "source": "출처", "activity": "활동"}   # 뒤 셋 = board 이전 reference 대상
 LOCK_TEXT = "표준 정의 보호"
 
 # 토큰 이름: (밝은 화면, 어두운 화면)
@@ -148,8 +148,8 @@ def render(resp: dict, node_href: dict | None = None) -> str:
     drawn = [r for r in rels if r["a"] is not None and r["b"] is not None]
     line, ink, muted = _var("--dmo-line"), _var("--dmo-ink"), _var("--dmo-muted")
     out = [f'<svg class="dmo-svg" viewBox="0 0 {_n(size)} {_n(size)}" xmlns="http://www.w3.org/2000/svg" role="img" '
-           f'aria-label="구조 그래프 — 오브젝트 {k}개 · 관계 {len(rels)}개" font-family="system-ui,sans-serif">'
-           f'<title>구조 그래프 — 오브젝트 {k}개 · 관계 {len(rels)}개</title>']
+           f'aria-label="구조 그래프 — 자료 종류 {k}개 · 관계 {len(rels)}개" font-family="system-ui,sans-serif">'
+           f'<title>구조 그래프 — 자료 종류 {k}개 · 관계 {len(rels)}개</title>']
     pairs = {}
     for r in drawn:
         pairs.setdefault(tuple(sorted((r["a"], r["b"]))), []).append(r)
