@@ -14,6 +14,7 @@ import threading
 import time
 import unicodedata
 import datetime as _dt
+import uuid as _uuid
 from contextlib import contextmanager
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -454,6 +455,7 @@ def _init_schema(c):
         if not _has_constraint(c, "records", "fk_records_source"):
             c.execute("ALTER TABLE records ADD CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)")
         _migrate_board_import(c)   # board 이전(2026-10-20) — 열·이름 붙은 CHECK·부분 UNIQUE·item_links 대상 확장
+        _init_tmp(c)   # PR ②-a 임시 보관 — schema.sql 의 jobs 뒤(FK 대상). 위치는 current_schema() 로 정한다
         _migrate_classify_roles(c)
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
         # 처리방침 v2 전환 — v2 시행 전에 모은 이용 기록(usage_daily)을 1회 전부 지운다. 표식이 있으면 건너뛴다.
@@ -872,6 +874,7 @@ def user_delete(uid):
             for t in ("item_links", "activity_links", "import_entries", "activities", "item_history", "items", "field_defs", "object_defs"):
                 c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
             c.execute("DELETE FROM usage_daily WHERE user_id=%s", (uid,))   # FK 없음(익명 '' 행이 있다) — cascade 밖
+            _tmp_delete_user(c, uid)   # PR ②-a — 임시 보관은 schema.sql 밖(cascade 와 별개로 명시)
             c.execute("DELETE FROM users WHERE id=%s", (uid,))
         with _usage_lock:
             for k in [k for k in _usage if k[1] == uid]:
@@ -2963,7 +2966,7 @@ DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. �
 # 지울 테이블 = schema.sql 에서 user_id 열을 가진 테이블 − deletion_contacts. 순서 = 보호 Lookup(NO ACTION·RESTRICT) 자식부터.
 # tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
 # board 이전(2026-10-20): 관계(activity_links) → 접수 대응표(import_entries) → 업무 자료(activities) → 한도·입력원(import_counters·import_streams).
-DELETE_TABLES = ("page_layouts", "item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
+DELETE_TABLES = ("page_layouts", "jobs", "item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
                  "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
                  "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
                  "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
@@ -3091,6 +3094,7 @@ def delete_run(actor_id, tid, value):
             if str(value or "") != _del_value(uid, t, contact, counts):
                 raise _del_err("DELETE-STALE", "미리보기 뒤에 자료가 바뀌었어요.", "delete-preview 를 다시 보고 새 값으로 실행하세요.")
             _delete_fault(3)
+            _tmp_delete_user(c, uid)   # ③ 앞 — 임시 보관(DELETE_TABLES 밖, schema.sql 밖)
             for tb in DELETE_TABLES:   # ③
                 if tb == "tickets":
                     c.execute("DELETE FROM tickets WHERE user_id=%s AND id <> %s", (uid, t["id"]))
@@ -3682,3 +3686,297 @@ def state(uid):
         "item_proposals": item_proposals(uid),
         "record_links": record_links(uid),
     }
+
+
+
+# ── PR ②-a 작업 전달 (2026-10-22, 구현계획 §5·G3) ─────────────────────────
+# 서버 = 작업 요청·할당·상태·값 수신. 실행은 PC(agent/jobs.py). 모델 호출 0.
+# jobs(schema.sql) 엔 본문이 없다. 입력·결과 = 임시 보관(_tmp_names) — 24h(서버 시각, 연장 없음), 만료·종료 때 지운다,
+# 운영 백업(pg_dump -n public) 밖. 상태 전이: queued →(장치 폴) leased →(입력 조회) running →(결과) result_ready →(②-b 확정) confirmed
+#   · running →(실패) failed · 임대 만료 → needs_check(재실행 없음) · 24h → expired · 웹 취소 → cancelled.
+# 스위치(kind 별) = 접수·할당·수신·확정 4곳. 꺼져도 만료·정리·취소는 돈다.
+JOB_KINDS = ("converse", "summarize_reading", "routine_ingest")
+JOB_SWITCH = {"converse": "CONVERSE_ENABLED", "summarize_reading": None, "routine_ingest": "ROUTINE_ENABLED"}   # None = 스위치 없음(②-d 전 늘 꺼짐)
+JOB_LIVE = ("queued", "leased", "running", "result_ready")
+JOB_TERMINAL = ("confirmed", "failed", "cancelled", "expired", "needs_check")
+JOB_REASON_CODES = ("output-not-json", "output-shape", "result-shape", "timeout", "cli-exit", "login", "input-too-large")
+JOB_TTL_HOURS = 24
+JOB_LEASE_SECONDS = 300
+JOB_TEXT_MAX_CP, JOB_TEXT_MAX_BYTES = 8000, 32 * 1024   # 코드포인트·UTF-8 바이트 각각
+JOB_RESULT_MAX_BYTES = 64 * 1024                        # /result 본문(JSON) 상한 — 내용 계약 7묶음은 ②-b
+JOB_MARKER_DAYS = 30                                    # 종료 표식(본문 없음) 보유 — 그 뒤 행 삭제
+_JOB_RESULT_KEYS = frozenset({"lease_generation", "input_version", "result_version", "summary_text", "changes", "blocked", "text_map",
+                              "model_meta"})
+
+
+def _qident(s):
+    return '"' + s.replace('"', '""') + '"'
+
+
+def _tmp_names(c):
+    """임시 보관 테이블 이름 (입력, 결과). public 이면 별도 스키마 tmp(운영 백업 -n public 밖),
+    시험 임시 스키마(CRM_TEST_SCHEMA·schema_conn)면 그 스키마 안 tmp_job_* — DROP SCHEMA 가 함께 지우고 공용 tmp 를 건드리지 않는다."""
+    s = _one(c, "SELECT current_schema() AS s")["s"]
+    if s == "public":
+        return "tmp.job_inputs", "tmp.job_results"
+    return f"{_qident(s)}.tmp_job_inputs", f"{_qident(s)}.tmp_job_results"
+
+
+def _init_tmp(c):
+    """임시 보관 테이블 — 멱등. FK = (user_id, job_id) → jobs ON DELETE CASCADE(작업 행이 지워지면 본문도). 일반 테이블에 본문을 두지 않는다."""
+    s = _one(c, "SELECT current_schema() AS s")["s"]
+    if s == "public":
+        c.execute("CREATE SCHEMA IF NOT EXISTS tmp")
+    inp, res = _tmp_names(c)
+    jobs = f"{_qident(s)}.jobs"
+    c.execute(f"CREATE TABLE IF NOT EXISTS {inp} (job_id uuid PRIMARY KEY, user_id text NOT NULL, text text NOT NULL, "
+              f"bytes integer NOT NULL CHECK (bytes >= 0), created_at timestamptz NOT NULL DEFAULT now(), "
+              f"FOREIGN KEY (user_id, job_id) REFERENCES {jobs}(user_id, id) ON DELETE CASCADE)")
+    c.execute(f"CREATE TABLE IF NOT EXISTS {res} (job_id uuid PRIMARY KEY, user_id text NOT NULL, result_version uuid NOT NULL, "
+              f"summary_text text NOT NULL, changes jsonb NOT NULL, blocked jsonb NOT NULL, text_map jsonb NOT NULL, "
+              f"model_meta jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), "
+              f"FOREIGN KEY (user_id, job_id) REFERENCES {jobs}(user_id, id) ON DELETE CASCADE)")
+
+
+def _tmp_delete_user(c, uid):
+    inp, res = _tmp_names(c)
+    c.execute(f"DELETE FROM {res} WHERE user_id=%s", (uid,))
+    c.execute(f"DELETE FROM {inp} WHERE user_id=%s", (uid,))
+
+
+def job_switch_on(kind):
+    import envnames
+    name = JOB_SWITCH[kind]
+    return name is not None and envnames.switch_on(name)
+
+
+def _job_off():
+    return CrmError("SWITCH-OFF", "이 기능은 지금 꺼져 있어요.", "운영자가 켤 때까지 기다리세요.")
+
+
+def _job_gone():
+    return CrmError("JOB-GONE", "작업이 없거나 만료·취소됐어요.", "그 작업은 버리세요.")
+
+
+def _job_lease():
+    return CrmError("JOB-LEASE", "임대가 맞지 않아요(세대·장치·만료).", "그 작업은 버리세요.")
+
+
+def _job_uuid(v, gone=True):
+    try:
+        return _uuid.UUID(str(v or ""))
+    except ValueError:
+        raise (_job_gone() if gone else CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")) from None
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+_SET_EXPIRED = "UPDATE jobs SET status='expired', terminal_at=now() WHERE status = ANY(%s) AND expires_at <= now()"
+_SET_NEEDS_CHECK = ("UPDATE jobs SET status='needs_check', terminal_at=now() "
+                    "WHERE status IN ('leased','running') AND lease_expires_at <= now()")
+
+
+def _job_sweep(c):
+    """전역 정리(가볍다) — 24h 지난 살아 있는 작업 expired · 임대 만료 needs_check(중복 실행 금지) · 종료·만료 작업의 임시 본문 삭제.
+    장치 폴·웹 접수·상태·주기 파기(purge_once)가 부른다. 반환 {expired, needs_check, tmp}."""
+    ex = c.execute(_SET_EXPIRED, (list(JOB_LIVE),)).rowcount
+    nc = c.execute(_SET_NEEDS_CHECK).rowcount
+    inp, res = _tmp_names(c)
+    n = 0
+    for t in (res, inp):
+        n += c.execute(f"DELETE FROM {t} x USING jobs j WHERE j.user_id=x.user_id AND j.id=x.job_id "
+                       "AND (j.terminal_at IS NOT NULL OR j.expires_at <= now())").rowcount
+    return {"expired": ex, "needs_check": nc, "tmp": n}
+
+
+def jobs_purge():
+    """주기 파기(main.purge_once) — 정리 + 종료 표식 JOB_MARKER_DAYS 지난 작업 행 삭제. 반환 건수 합."""
+    with tx() as c:
+        n = _job_sweep(c)
+        m = c.execute("DELETE FROM jobs WHERE terminal_at < now() - make_interval(days => %s)", (JOB_MARKER_DAYS,)).rowcount
+    return sum(n.values()) + m
+
+
+def _job_out(j):
+    return {"id": str(j["id"]), "session_id": str(j["session_id"]), "kind": j["kind"], "status": j["status"],
+            "input_version": j["input_version"], "attempts": j["attempts"], "reason_code": j["reason_code"],
+            "created_at": j["created_at"].isoformat(), "expires_at": j["expires_at"].isoformat(),
+            "terminal_at": j["terminal_at"].isoformat() if j["terminal_at"] else None}
+
+
+def job_create(uid, kind, text, session_id=None):
+    """웹 접수 — 스위치 → 모양 → 길이(8,000 코드포인트·32KiB 각각) → 한도(종류별 하루·열린 작업 수) → jobs 행 + 임시 입력 한 트랜잭션.
+    session_id 를 주면 그 사용자의 기존 세션이어야 한다(NOT-FOUND). 반환 {id, session_id}."""
+    import imports
+    if kind not in JOB_KINDS:
+        raise CrmError("ARG-INVALID", f"kind 는 {', '.join(JOB_KINDS)} 중 하나예요.")
+    if not job_switch_on(kind):
+        raise _job_off()
+    if not isinstance(text, str) or not text.strip():
+        raise CrmError("ARG-INVALID", "text 가 비어 있어요.")
+    nb = len(text.encode("utf-8"))
+    if len(text) > JOB_TEXT_MAX_CP or nb > JOB_TEXT_MAX_BYTES:
+        raise CrmError("PAYLOAD-LIMIT", f"text 가 너무 길어요(상한 {JOB_TEXT_MAX_CP}자·{JOB_TEXT_MAX_BYTES} 바이트).",
+                       "줄이거나 나눠서 다시 보내세요.")
+    limit = imports.JOB_REQUEST_LIMITS.get(kind)
+    if limit is None:   # K3 한도 미정 — 스위치가 켜져도 무제한으로 받지 않는다(fail-closed)
+        raise CrmError("LIMIT-UNSET", "이 작업 종류의 한도가 아직 정해지지 않았어요.", "운영자가 한도를 정할 때까지 기다리세요.")
+    sid = _job_uuid(session_id, gone=False) if session_id else _uuid.uuid4()
+    jid = _uuid.uuid4()
+    with tx() as c:
+        _user_lock(c, uid)
+        _job_sweep(c)
+        if session_id and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND session_id=%s LIMIT 1", (uid, sid)):
+            raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+        n_open = _one(c, "SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s)", (uid, list(JOB_LIVE)))["n"]
+        if n_open >= imports.JOBS_OPEN_MAX:
+            raise CrmError("JOB-LIMIT", f"진행 중인 작업이 너무 많아요(최대 {imports.JOBS_OPEN_MAX}).", "끝나거나 취소된 뒤 다시 보내세요.")
+        if imports._bump(c, uid, "user", "day", "job_" + kind)["n"] > limit:
+            raise imports._with_resume(CrmError("JOB-QUOTA", f"오늘 보낼 수 있는 작업 수를 넘었어요(하루 {limit}).",
+                                                 "내일(KST 0시 이후) 다시 보내세요."))
+        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,expires_at) VALUES (%s,%s,%s,%s,now() + make_interval(hours => %s))",
+                  (jid, uid, sid, kind, JOB_TTL_HOURS))
+        inp, _res = _tmp_names(c)
+        c.execute(f"INSERT INTO {inp} (job_id,user_id,text,bytes) VALUES (%s,%s,%s,%s)", (jid, uid, text, nb))
+    return {"id": str(jid), "session_id": str(sid)}
+
+
+def job_get(uid, job_id):
+    """웹 상태 — 본인 작업만(남·없음 NOT-FOUND). result_ready 면 result(본문)를 싣는다."""
+    jid = _job_uuid(job_id, gone=False)
+    with tx() as c:
+        _job_sweep(c)
+        j = _one(c, "SELECT * FROM jobs WHERE user_id=%s AND id=%s", (uid, jid))
+        if not j:
+            raise CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")
+        out = _job_out(j)
+        if j["status"] == "result_ready":
+            _inp, res = _tmp_names(c)
+            r = _one(c, f"SELECT result_version,summary_text,changes,blocked,text_map FROM {res} WHERE job_id=%s", (jid,))
+            out["result"] = {**r, "result_version": str(r["result_version"])} if r else None
+    return out
+
+
+def job_cancel(uid, job_id):
+    """웹 취소 — 살아 있는 작업만 cancelled(+ 임시 본문 삭제). 이미 끝났으면 그대로(멱등). 스위치 무관."""
+    jid = _job_uuid(job_id, gone=False)
+    with tx() as c:
+        j = _one(c, "UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%s AND id=%s AND status = ANY(%s) RETURNING id",
+                 (uid, jid, list(JOB_LIVE)))
+        if not j and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND id=%s", (uid, jid)):
+            raise CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")
+        _job_sweep(c)
+    return job_get(uid, job_id)
+
+
+_ASSIGN = ("UPDATE jobs SET status='leased', device_id=%s, lease_generation=lease_generation+1, "
+           "lease_expires_at = now() + make_interval(secs => %s) "
+           "WHERE user_id=%s AND id = (SELECT q.id FROM jobs q WHERE q.user_id=%s AND q.status='queued' AND q.expires_at > now() "
+           "AND q.kind = ANY(%s) AND NOT EXISTS (SELECT 1 FROM jobs b WHERE b.user_id=q.user_id AND b.session_id=q.session_id "
+           "AND b.status IN ('leased','running')) ORDER BY q.created_at, q.id LIMIT 1) RETURNING *")
+
+
+def job_assign(dev):
+    """장치 폴 1회 — 켜진 종류의 queued 하나를 원자 할당(사용자 행 잠금으로 직렬화). 같은 세션에 leased·running 이 있으면 그 세션은 건너뛴다
+    (같은 스레드 동시 resume 금지). 없으면 None. 반환 = 장치 응답 모양."""
+    kinds = [k for k in JOB_KINDS if job_switch_on(k)]
+    if not kinds:
+        return None
+    uid = dev["user_id"]
+    with tx() as c:
+        _user_lock(c, uid)
+        _job_sweep(c)
+        j = _one(c, _ASSIGN, (dev["id"], JOB_LEASE_SECONDS, uid, uid, kinds))
+    if not j:
+        return None
+    return {"id": str(j["id"]), "kind": j["kind"], "session_ref": str(j["session_id"]), "input_ref": str(j["id"]),
+            "input_version": j["input_version"], "definitions_version": j["definitions_version"],
+            "lease": {"generation": j["lease_generation"], "expires_at": j["lease_expires_at"].isoformat()}}
+
+
+def _job_dev_row(c, dev, jid):
+    """장치 경로 공통 — 본인 사용자 작업만(남·없음·만료·취소 = JOB-GONE). 행 잠금."""
+    j = _one(c, "SELECT *, (expires_at <= now()) AS gone_ttl, COALESCE(lease_expires_at > now(), false) AS lease_ok FROM jobs "
+                "WHERE user_id=%s AND id=%s FOR UPDATE", (dev["user_id"], jid))
+    if not j or j["gone_ttl"] or j["status"] in ("expired", "cancelled"):
+        raise _job_gone()
+    return j
+
+
+def _lease_ok(j, dev, gen):
+    return j["device_id"] == dev["id"] and _is_int(gen) and gen == j["lease_generation"] and bool(j["lease_ok"])
+
+
+def job_input(dev, job_id, gen):
+    """GET input — 임대 유효(장치·세대·만료 전)일 때만. 성공마다 leased→running · attempts +1(PC 시도 기록). 반환 {text, input_version}."""
+    jid = _job_uuid(job_id)
+    with tx() as c:
+        j = _job_dev_row(c, dev, jid)
+        if j["status"] not in ("leased", "running") or not _lease_ok(j, dev, gen):
+            raise _job_lease()
+        inp, _res = _tmp_names(c)
+        t = _one(c, f"SELECT text FROM {inp} WHERE job_id=%s", (jid,))
+        if not t:
+            raise _job_gone()
+        c.execute("UPDATE jobs SET status='running', attempts=attempts+1 WHERE id=%s", (jid,))
+    return {"text": t["text"], "input_version": j["input_version"]}
+
+
+def _job_result_shape(body):
+    if not isinstance(body, dict) or set(body) != _JOB_RESULT_KEYS:
+        raise CrmError("ARG-INVALID", "결과 키는 " + ", ".join(sorted(_JOB_RESULT_KEYS)) + " 이에요.")
+    if not (_is_int(body["lease_generation"]) and _is_int(body["input_version"])):
+        raise CrmError("ARG-INVALID", "lease_generation·input_version 은 정수예요.")
+    try:
+        rv = _uuid.UUID(body["result_version"]) if isinstance(body["result_version"], str) else None
+    except ValueError:
+        rv = None
+    if rv is None:
+        raise CrmError("ARG-INVALID", "result_version 은 UUID 예요.")
+    if not isinstance(body["summary_text"], str) or not all(isinstance(body[k], list) for k in ("changes", "blocked", "text_map")) \
+            or not isinstance(body["model_meta"], dict):
+        raise CrmError("ARG-INVALID", "summary_text(문자열)·changes·blocked·text_map(배열)·model_meta(객체) 꼴이 아니에요.")
+    return rv
+
+
+def job_result(dev, job_id, body):
+    """POST result — 같은 result_version 재전송(이미 result_ready) = {duplicate: true}. 그 밖엔 임대(running·장치·세대·만료 전) → JOB-LEASE,
+    input_version → JOB-VERSION, 스위치(수신) → SWITCH-OFF. 저장 = 임시 결과 + result_ready."""
+    jid = _job_uuid(job_id)
+    rv = _job_result_shape(body)
+    with tx() as c:
+        j = _job_dev_row(c, dev, jid)
+        _inp, res = _tmp_names(c)
+        if j["status"] == "result_ready":
+            r = _one(c, f"SELECT result_version FROM {res} WHERE job_id=%s", (jid,))
+            if r and r["result_version"] == rv:
+                return {"duplicate": True}
+        if j["status"] != "running" or not _lease_ok(j, dev, body["lease_generation"]):
+            raise _job_lease()
+        if body["input_version"] != j["input_version"]:
+            raise CrmError("JOB-VERSION", "입력 버전이 맞지 않아요.", "그 결과는 버리세요.")
+        if not job_switch_on(j["kind"]):
+            raise _job_off()
+        c.execute(f"INSERT INTO {res} (job_id,user_id,result_version,summary_text,changes,blocked,text_map,model_meta) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (jid, dev["user_id"], rv, body["summary_text"], Jsonb(body["changes"]), Jsonb(body["blocked"]), Jsonb(body["text_map"]),
+                   Jsonb(body["model_meta"])))
+        c.execute("UPDATE jobs SET status='result_ready' WHERE id=%s", (jid,))
+    return {"status": "result_ready"}
+
+
+def job_fail(dev, job_id, body):
+    """POST fail — 본문 정확히 {lease_generation, reason_code}(코드 7종, 원문 없음). 임대 유효한 running 만 failed(+ 임시 본문 삭제)."""
+    jid = _job_uuid(job_id)
+    if not isinstance(body, dict) or set(body) != {"lease_generation", "reason_code"} or body["reason_code"] not in JOB_REASON_CODES \
+            or not _is_int(body["lease_generation"]):
+        raise CrmError("ARG-INVALID", "본문은 {lease_generation, reason_code} 이고 reason_code 는 " + ", ".join(JOB_REASON_CODES) + " 중 하나예요.")
+    with tx() as c:
+        j = _job_dev_row(c, dev, jid)
+        if j["status"] != "running" or not _lease_ok(j, dev, body["lease_generation"]):
+            raise _job_lease()
+        c.execute("UPDATE jobs SET status='failed', reason_code=%s, terminal_at=now() WHERE id=%s", (body["reason_code"], jid))
+        _job_sweep(c)
+    return {"status": "failed"}

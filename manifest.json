@@ -116,6 +116,10 @@
       "required": false
     },
     {
+      "path": "agent/jobs.py",
+      "required": false
+    },
+    {
       "path": "agent/keystore.py",
       "required": false
     },
@@ -217,6 +221,10 @@
     },
     {
       "path": "agent/tests/test_hmac_store.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_jobs.py",
       "required": false
     },
     {

@@ -3917,6 +3917,7 @@ async def run():
         test_bi_migration()
         await test_bi_delete()
         await test_pr1b_layout_stats()   # PR ①-b — 맨 끝(시작 때 tester·other 를 새로 만든다)
+        await test_pr2a_jobs()   # PR ②-a — 맨 끝(시작 때 tester·other 를 새로 만든다)
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -8267,6 +8268,301 @@ async def test_pr1b_layout_stats():
     finally:
         site.dev, site.dev_user = real
     print("OK — PR ①-b 레이아웃(GET·PUT·DELETE·STALE·INVALID·격리·복원) · 통계(축 고유 합·히트맵 91칸·kinds·waiting·쓰기 0) · 정렬 키(KST·커서 유지) 통과")
+
+# ── 27) PR ②-a: 작업 전달(세션/작업·임대·롱폴·임시 보관 tmp) (2026-10-22, 구현계획 §5·G3) ──────────
+# 사용자 = tester@·other@example.com 재사용(TEST_EMAILS 불변). run() 맨 끝(26절 뒤)에서 돌고 시작 때 두 계정을 새로 만든다.
+JOB_SWITCH_NAMES = ("CONVERSE_ENABLED", "ROUTINE_ENABLED")
+
+
+@contextmanager
+def _job_switch(*on):
+    """작업 스위치 중 주어진 것만 켜고(나머지 끔) 끝나면 원래대로. 시험 프로세스 env 만 — 운영 env 는 건드리지 않는다."""
+    saved = {n: os.environ.pop("CRM_" + n, None) for n in JOB_SWITCH_NAMES}
+    for n in on:
+        os.environ["CRM_" + n] = "1"
+    try:
+        yield
+    finally:
+        for n in JOB_SWITCH_NAMES:
+            os.environ.pop("CRM_" + n, None)
+            if saved[n] is not None:
+                os.environ["CRM_" + n] = saved[n]
+
+
+@contextmanager
+def _job_fast():
+    """폴링 버킷을 시험 동안만 넓힌다(흐름 시험이 1분에 수십 번 확인한다). 한도 자체는 끝 절에서 원래 값으로 본다."""
+    saved = dict(imports.POLL_LIMITS)
+    for k in imports.POLL_LIMITS:
+        imports.POLL_LIMITS[k] = 100000
+    try:
+        with _bi_fast():
+            yield
+    finally:
+        imports.POLL_LIMITS.clear()
+        imports.POLL_LIMITS.update(saved)
+
+
+def _job_rows(uid):
+    with db.tx() as c:
+        inp, res = db._tmp_names(c)
+        jobs = [r["j"] for r in c.execute("SELECT row_to_json(j)::text AS j FROM jobs j WHERE user_id=%s", (uid,)).fetchall()]
+        ti = c.execute(f"SELECT count(*) AS n FROM {inp} WHERE user_id=%s", (uid,)).fetchone()["n"]
+        tr = c.execute(f"SELECT count(*) AS n FROM {res} WHERE user_id=%s", (uid,)).fetchone()["n"]
+    return jobs, ti, tr
+
+
+def _job_status(jid):
+    with db.tx() as c:
+        return c.execute("SELECT status, attempts, reason_code FROM jobs WHERE id=%s", (jid,)).fetchone()
+
+
+async def test_pr2a_jobs():
+    """스위치 꺼짐(접수 503·할당 0·수신 503·확정 503·취소는 됨) · 접수(201·401·Origin 403·8000자·LIMIT-UNSET fail-closed·세션 404·일일 한도)
+    · 일반 테이블 본문 0 · 격리(남 404·남 장치 410·남 장치 폴 204) · 원자 할당(둘째 장치 204) · 세대·장치 409 · input attempts +1·running
+    · result JOB-VERSION·JOB-LEASE·모양 400·같은 버전 200 duplicate · fail 키·코드 400·failed·본문 삭제 · 같은 세션 직렬화
+    · 임대 만료 409 → needs_check·본문 삭제 · 취소 멱등·410 · 24h 만료(할당 0·expired·본문 0·410) · 폴링 버킷 장치 4·사용자 12 → 429 Retry-After
+    · 동시 롱폴 장치 1·웹 2 · 종료 표식 30일 파기 · 계정 삭제 jobs·tmp 0 · tmp 위치(public = tmp 스키마·FK · 임시 스키마 = 그 안, DROP 뒤 잔여 0)."""
+    import uuid
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    d1, d2, do = imports.device_connect(U, "합성 작업 1"), imports.device_connect(U, "합성 작업 2"), imports.device_connect(O, "남 작업")
+    T1, T2, TO = ({"authorization": "Bearer " + d["token"]} for d in (d1, d2, do))
+    D1 = d1["device"]["id"]
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    TXT = "합성 입력 JOBTEXT 본문 — 일반 테이블에 남으면 안 된다"
+    res_body = lambda gen, iv=1, rv=None: {"lease_generation": gen, "input_version": iv, "result_version": rv or str(uuid.uuid4()),   # noqa: E731
+                                           "summary_text": "합성 정리", "changes": [], "blocked": [], "text_map": [], "model_meta": {"tool": "fake"}}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+            poll = lambda tk, w=0: h.get("/api/device/jobs", params={"wait": w}, headers=tk)   # noqa: E731
+            dj = lambda jid, op, tk, **kw: (h.get(f"/api/device/jobs/{jid}/{op}", headers=tk, **kw) if op == "input"   # noqa: E731
+                                            else h.post(f"/api/device/jobs/{jid}/{op}", headers=tk, **kw))
+            new = lambda kind="converse", **kw: h.post("/api/jobs", json={"kind": kind, "text": TXT, **kw}, headers=origin)   # noqa: E731
+            with _job_fast():
+                # ── 스위치 꺼짐 ──
+                with _job_switch():
+                    r = await new()
+                    assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF", r.text
+                    assert (await h.post(f"/api/jobs/{uuid.uuid4()}/confirm", headers=origin)).json()["code"] == "SWITCH-OFF"
+                with _job_switch("CONVERSE_ENABLED"):
+                    j0 = (await new()).json()
+                with _job_switch():
+                    assert (await poll(T1)).status_code == 204, "꺼진 종류는 할당하지 않는다"
+                    r = await h.post(f"/api/jobs/{j0['id']}/confirm", headers=origin)
+                    assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF", "②-a 확정 = SWITCH-OFF(404 아님)"
+                    assert (await h.post(f"/api/jobs/{j0['id']}/cancel", headers=origin)).json()["status"] == "cancelled", "꺼져도 취소"
+                with _job_switch("CONVERSE_ENABLED", "ROUTINE_ENABLED"):
+                    # ── 접수 ──
+                    site.dev, site.dev_user = False, ""
+                    assert (await new()).status_code == 401
+                    assert (await h.get(f"/api/jobs/{j0['id']}")).status_code == 401
+                    site.dev, site.dev_user = True, "tester@example.com"
+                    assert (await h.post("/api/jobs", json={"kind": "converse", "text": TXT}, headers={"origin": "https://evil.example"})).status_code == 403
+                    r = await new("routine_ingest")
+                    assert r.status_code == 201, ("스위치 켜짐 = 접수(K3 가안 한도)", r.text)
+                    await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
+                    saved_lim = imports.JOB_REQUEST_LIMITS["routine_ingest"]
+                    imports.JOB_REQUEST_LIMITS["routine_ingest"] = None
+                    try:
+                        r = await new("routine_ingest")
+                        assert r.status_code == 503 and r.json()["code"] == "LIMIT-UNSET", ("한도 값 없음 = fail-closed", r.text)
+                    finally:
+                        imports.JOB_REQUEST_LIMITS["routine_ingest"] = saved_lim
+                    r = await new("summarize_reading")
+                    assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF", "읽기 자료 = ②-d 전 스위치 없음(늘 꺼짐)"
+                    r = await h.post("/api/jobs", json={"kind": "converse", "text": "가" * 8001}, headers=origin)
+                    assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT", r.text
+                    for body in ({"kind": "nope", "text": TXT}, {"kind": "converse", "text": "  "}, {"kind": "converse"}):
+                        assert (await h.post("/api/jobs", json=body, headers=origin)).json()["code"] == "ARG-INVALID", body
+                    for sid in (str(uuid.uuid4()), "not-a-uuid"):
+                        r = await new(session_id=sid)
+                        assert r.status_code == 404 and r.json()["code"] == "NOT-FOUND", "모르는 세션"
+                    r = await h.post("/api/jobs", json={"kind": "converse", "text": "가" * 8000}, headers=origin)
+                    assert r.status_code == 201, "8,000 코드포인트 = 통과"
+                    await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
+                    r = await new()
+                    assert r.status_code == 201 and set(r.json()) == {"id", "session_id"}, r.text
+                    J1, S1 = r.json()["id"], r.json()["session_id"]
+                    rows, ti, _tr = _job_rows(U)
+                    assert ti >= 1 and not any("JOBTEXT" in x for x in rows), "jobs 행에 입력 본문 0"
+                    # ── 격리 ──
+                    site.dev_user = "other@example.com"
+                    assert (await h.get(f"/api/jobs/{J1}")).status_code == 404
+                    assert (await h.post(f"/api/jobs/{J1}/cancel", headers=origin)).status_code == 404
+                    site.dev_user = "tester@example.com"
+                    assert (await poll(TO)).status_code == 204, "남 장치는 내 작업을 못 받는다"
+                    # ── 할당·임대 ──
+                    r = await poll(T1)
+                    assert r.status_code == 200, r.text
+                    a = r.json()
+                    assert set(a) == {"id", "kind", "session_ref", "input_ref", "input_version", "definitions_version", "lease"}
+                    assert a["id"] == J1 and a["session_ref"] == S1 and a["input_version"] == 1 and a["lease"]["generation"] == 1
+                    assert a["definitions_version"] is None and "T" in a["lease"]["expires_at"]
+                    assert (await poll(T2)).status_code == 204, "원자 할당 — 둘째 장치는 없음"
+                    assert (await dj(J1, "input", TO, params={"lease_generation": 1})).status_code == 410, "남 장치 = 없는 작업"
+                    for tk, g in ((T1, 2), (T2, 1), (T1, "x")):
+                        r = await dj(J1, "input", tk, params={"lease_generation": g})
+                        assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE", (g, r.text)
+                    assert _job_status(J1)["status"] == "leased" and _job_status(J1)["attempts"] == 0
+                    r = await dj(J1, "input", T1, params={"lease_generation": 1})
+                    assert r.status_code == 200 and r.json() == {"text": TXT, "input_version": 1}, r.text
+                    assert "JOBTEXT" in r.content.decode("utf-8") and "\\u" not in r.content.decode("utf-8"), "ensure_ascii=False"
+                    assert (await dj(J1, "input", T1, params={"lease_generation": 1})).status_code == 200
+                    assert dict(_job_status(J1)) == {"status": "running", "attempts": 2, "reason_code": None}, "입력 조회마다 attempts +1"
+                    # ── 결과 ──
+                    r = await dj(J1, "result", T1, json=res_body(1, iv=2))
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-VERSION"
+                    r = await dj(J1, "result", T1, json=res_body(2))
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE"
+                    assert (await dj(J1, "result", T2, json=res_body(1))).json()["code"] == "JOB-LEASE", "다른 장치"
+                    bad = res_body(1)
+                    bad.pop("model_meta")
+                    assert (await dj(J1, "result", T1, json=bad)).status_code == 400
+                    assert (await dj(J1, "result", T1, json={**res_body(1), "result_version": "x"})).status_code == 400
+                    assert (await dj(J1, "result", T1, content=b"{")).status_code == 400
+                    rv = str(uuid.uuid4())
+                    r = await dj(J1, "result", T1, json=res_body(1, rv=rv))
+                    assert r.status_code == 200 and r.json() == {"status": "result_ready"}, r.text
+                    r = await dj(J1, "result", T1, json=res_body(1, rv=rv))
+                    assert r.status_code == 200 and r.json() == {"duplicate": True}, "같은 result_version 재전송 = 200 duplicate"
+                    r = await dj(J1, "result", T1, json=res_body(1))
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE", "다른 버전 = 409"
+                    assert (await dj(J1, "fail", T1, json={"lease_generation": 1, "reason_code": "timeout"})).status_code == 409
+                    g = (await h.get(f"/api/jobs/{J1}")).json()
+                    assert g["status"] == "result_ready" and g["result"]["result_version"] == rv and g["result"]["summary_text"] == "합성 정리"
+                    assert set(g) == {"id", "session_id", "kind", "status", "input_version", "attempts", "reason_code", "created_at",
+                                      "expires_at", "terminal_at", "result"}
+                    # ── 같은 세션 직렬화 · 실패 ──
+                    J2 = (await new()).json()
+                    S2 = J2["session_id"]
+                    J3 = (await new(session_id=S2)).json()
+                    assert J3["session_id"] == S2
+                    a2 = (await poll(T1)).json()
+                    assert a2["id"] == J2["id"]
+                    assert (await poll(T2)).status_code == 204, "같은 세션이 실행 중이면 다음 작업을 주지 않는다"
+                    await dj(J2["id"], "input", T1, params={"lease_generation": 1})
+                    for body in ({"lease_generation": 1, "reason_code": "timeout", "detail": "원문"}, {"lease_generation": 1, "reason_code": "boom"},
+                                 {"lease_generation": True, "reason_code": "timeout"}, {"reason_code": "timeout"}):
+                        r = await dj(J2["id"], "fail", T1, json=body)
+                        assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", body
+                    r = await dj(J2["id"], "fail", T1, json={"lease_generation": 1, "reason_code": "timeout"})
+                    assert r.status_code == 200 and r.json() == {"status": "failed"}
+                    assert dict(_job_status(J2["id"])) == {"status": "failed", "attempts": 1, "reason_code": "timeout"}
+                    a3 = (await poll(T2)).json()
+                    assert a3["id"] == J3["id"] and a3["session_ref"] == S2, "앞 작업이 끝나면 같은 세션 다음 작업"
+                    # ── 임대 만료 → needs_check ──
+                    with db.tx() as c:
+                        c.execute("UPDATE jobs SET lease_expires_at = now() - interval '1 second' WHERE id=%s", (J3["id"],))
+                    r = await dj(J3["id"], "input", T2, params={"lease_generation": 1})
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE", "만료된 임대 = 정리 전이어도 409"
+                    assert (await h.get(f"/api/jobs/{J3['id']}")).json()["status"] == "needs_check"
+                    assert (await dj(J3["id"], "result", T2, json=res_body(1))).status_code == 409, "늦은 결과 거부"
+                    # ── 취소 ──
+                    J4 = (await new()).json()["id"]
+                    assert (await h.post(f"/api/jobs/{J4}/cancel", headers=origin)).json()["status"] == "cancelled"
+                    assert (await h.post(f"/api/jobs/{J4}/cancel", headers=origin)).json()["status"] == "cancelled", "멱등"
+                    assert (await h.post(f"/api/jobs/{J4}/cancel")).status_code == 403
+                    assert (await h.post(f"/api/jobs/{J4}/nope", headers=origin)).status_code == 404
+                    assert (await poll(T1)).status_code == 204
+                    assert (await dj(J4, "input", T1, params={"lease_generation": 1})).status_code == 410
+                    # ── 24h 만료 ──
+                    J5 = (await new()).json()["id"]
+                    with db.tx() as c:
+                        c.execute("UPDATE jobs SET expires_at = now() - interval '1 second' WHERE id=%s", (J5,))
+                    assert (await poll(T1)).status_code == 204, "만료된 작업은 할당하지 않는다"
+                    assert (await h.get(f"/api/jobs/{J5}")).json()["status"] == "expired"
+                    assert (await dj(J5, "input", T1, params={"lease_generation": 1})).status_code == 410
+                    # 종료·만료 작업의 임시 본문 0(살아 있는 건 J1 result_ready 하나)
+                    rows, ti, tr = _job_rows(U)
+                    assert (ti, tr) == (1, 1), (ti, tr)
+                    assert not any("JOBTEXT" in x or "합성 정리" in x for x in rows), "jobs 행에 입력·결과 본문 0"
+                    # ── 수신 직전 스위치 ──
+                    J6 = (await new()).json()["id"]
+                    g6 = (await poll(T1)).json()["lease"]["generation"]
+                    await dj(J6, "input", T1, params={"lease_generation": g6})
+                with _job_switch():
+                    r = await dj(J6, "result", T1, json=res_body(g6))
+                    assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF", "꺼지면 결과 수신 안 함"
+                    assert (await h.post(f"/api/jobs/{J6}/cancel", headers=origin)).json()["status"] == "cancelled"
+            # ── 폴링 버킷(원래 한도) ──
+            with db.tx() as c:
+                c.execute("DELETE FROM import_counters WHERE user_id=%s AND bucket='poll'", (U,))
+            for i in range(imports.POLL_LIMITS[("device", "minute")]):
+                assert (await poll(T1)).status_code == 204, i
+            r = await poll(T1)
+            assert r.status_code == 429 and r.json()["code"] == "RATE-LIMIT" and int(r.headers["retry-after"]) >= 1, "장치 분당 4"
+            with db.tx() as c:
+                c.execute("DELETE FROM import_counters WHERE user_id=%s AND bucket='poll'", (U,))
+            for i in range(imports.POLL_LIMITS[("user", "minute")]):
+                assert (await h.get(f"/api/jobs/{J1}", params={"wait": 0})).status_code == 200, i
+            r = await h.get(f"/api/jobs/{J1}", params={"wait": 0})
+            assert r.status_code == 429 and r.json()["code"] == "RATE-LIMIT", "사용자 분당 12(웹 상태 확인 포함)"
+            assert (await poll(T2)).status_code == 429, "장치 폴도 사용자 버킷을 함께 쓴다"
+            # ── 동시 롱폴 ──
+            with db.tx() as c:
+                c.execute("DELETE FROM import_counters WHERE user_id=%s AND bucket='poll'", (U,))
+            with _job_fast():
+                rs = await asyncio.gather(poll(T1, 2), poll(T1, 2))
+                assert sorted(x.status_code for x in rs) == [204, 429], [x.status_code for x in rs]
+                with _job_switch("CONVERSE_ENABLED"):
+                    JQ = (await new()).json()["id"]
+                    lim = imports.JOB_REQUEST_LIMITS["converse"]
+                    with db.tx() as c:   # 하루 한도 경계 — 카운터를 상한까지 채운다(작업 60개를 만들면 열린 작업 상한이 먼저 걸린다)
+                        c.execute("UPDATE import_counters SET n=%s WHERE user_id=%s AND scope_key='user' AND period='day' AND bucket='job_converse'",
+                                  (lim - 1, U))
+                    assert (await new()).status_code == 201, f"하루 {lim}번째"
+                    r = await new()
+                    assert r.status_code == 429 and r.json()["code"] == "JOB-QUOTA" and r.json().get("resume_at"), ("converse 하루 상한", r.text)
+                with _job_switch():   # 꺼 두면 queued 로 남는다 → 웹 롱폴이 기다린다
+                    rs = await asyncio.gather(*(h.get(f"/api/jobs/{JQ}", params={"wait": 2}) for _ in range(3)))
+                    assert sorted(x.status_code for x in rs) == [200, 200, 429], [x.status_code for x in rs]
+                    assert all(x.json()["status"] == "queued" for x in rs if x.status_code == 200)
+            assert Web_polls_empty(), "롱폴이 끝나면 동시 수 0"
+        # ── 종료 표식 보유 · 계정 삭제 ──
+        with db.tx() as c:
+            c.execute("UPDATE jobs SET terminal_at = now() - interval '31 days' WHERE id=%s", (J4,))
+        assert db.jobs_purge() >= 1
+        with db.tx() as c:
+            assert not c.execute("SELECT 1 FROM jobs WHERE id=%s", (J4,)).fetchone(), "30일 지난 종료 표식 삭제"
+        db.user_delete(U)
+        rows, ti, tr = _job_rows(U)
+        assert (rows, ti, tr) == ([], 0, 0), "계정 삭제 = jobs·임시 보관 0"
+        assert "jobs" in db.DELETE_TABLES and db.DELETE_TABLES.index("jobs") < db.DELETE_TABLES.index("import_streams")
+    finally:
+        site.dev, site.dev_user = real
+    # ── 임시 보관 위치 ──
+    with db.tx() as c:
+        if c.execute("SELECT current_schema() AS s").fetchone()["s"] == "public":
+            assert db._tmp_names(c) == ("tmp.job_inputs", "tmp.job_results")
+            fk = c.execute("SELECT count(*) AS n FROM pg_constraint WHERE contype='f' AND conrelid IN ('tmp.job_inputs'::regclass, "
+                           "'tmp.job_results'::regclass) AND confrelid='public.jobs'::regclass").fetchone()["n"]
+            assert fk == 2, "tmp → public.jobs FK(ON DELETE CASCADE)"
+    name = f"jb_{secrets.token_hex(3)}"
+    create_schema(name)
+    try:
+        with schema_conn(name) as c:
+            db.init_schema(c)
+            db.init_schema(c)
+            assert db._tmp_names(c) == (f'"{name}".tmp_job_inputs', f'"{name}".tmp_job_results')
+            n = c.execute("SELECT count(*) AS n FROM information_schema.tables WHERE table_schema=%s AND table_name LIKE 'tmp_job_%%'",
+                          (name,)).fetchone()["n"]
+            assert n == 2
+            c.commit()
+    finally:
+        drop_schema(name)
+    with db.tx() as c:
+        assert not c.execute("SELECT 1 FROM pg_namespace WHERE nspname LIKE %s", (name + "%",)).fetchone(), "임시 스키마 잔여 0"
+    print("OK — PR ②-a 작업 전달(스위치 4곳·접수·격리·원자 할당·임대 세대·attempts·result duplicate·fail 코드·세션 직렬화·needs_check·취소·24h 만료"
+          "·본문 0·폴링 버킷 4/12·동시 1/2·표식 30일·계정 삭제·tmp 위치) 통과")
+
+
+def Web_polls_empty():
+    return not {k: v for k, v in main.site._polls.items() if v}
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
 

@@ -19,7 +19,8 @@ SWITCHES = ("IMPORTS_ENABLED",                       # /api/imports 수신 전�
             "ACTIVITY_IMPORTS_ENABLED",              # 활동 즉시 적재
             "UNATTENDED_SUMMARY_IMPORTS_ENABLED",    # 무인(execution=unattended) AI 요약 접수 — 약관 확인 전 꺼 둔다
             "INBOX_APPROVALS_ENABLED",               # 승인 대기 승인(제외·만료는 스위치와 무관)
-            "BOARD_MIGRATION_ENABLED")               # board 이전 CLI 적용
+            "BOARD_MIGRATION_ENABLED",               # board 이전 CLI 적용
+            "CONVERSE_ENABLED", "ROUTINE_ENABLED")   # PR ②-a 작업 전달 — 대화(+원문 던지기)·루틴 작업. 읽기 자료(READING)는 ②-d 에서
 
 
 def switch_on(name: str) -> bool:
