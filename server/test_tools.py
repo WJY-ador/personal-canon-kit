@@ -120,6 +120,7 @@ import db  # noqa: E402
 import envnames  # noqa: E402
 import imports  # noqa: E402
 import main  # noqa: E402
+import stack_service  # noqa: E402
 import web  # noqa: E402
 
 LIM_KINDS = ("records", "candidates", "decisions", "proposals", "questions")   # α2 일일 한도 — 종류마다 전용 사용자
@@ -8568,7 +8569,7 @@ async def test_pr2a_jobs():
 
 def _pr2b_old_shape(c):
     """②-a 모양으로 되돌린다(②-b 열·표·CHECK 제거) — init_schema 가 옛 DB 를 최종형으로 올리는지 보는 재현."""
-    for t in ("item_stage", "item_versions", "confirm_events", "stack_sessions", "tmp_stack_previews"):
+    for t in ("item_stage", "item_versions", "confirm_events", "tmp_stack_verbatim", "stack_sessions", "tmp_stack_previews"):
         c.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
     c.execute("ALTER TABLE jobs DROP COLUMN edit_generation, DROP COLUMN parent_result_version")
     c.execute("ALTER TABLE jobs ALTER COLUMN definitions_version TYPE integer USING definitions_version::integer")
@@ -9016,10 +9017,290 @@ async def test_pr2b_stack_b2():
           " · 재정리(모양·text 일치·세대·원 결과 단위·대체 취소) · 도착 역전 채택 안 함 · 만료 410 · switches · 본문 0 통과")
 
 
+_PR2B_TABLES = ("records", "items", "item_versions", "item_stage", "item_links", "confirm_events", "item_history")
+
+
+def _pr2b_counts(uid):
+    with db.tx() as c:
+        out = {t: c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (uid,)).fetchone()["n"] for t in _PR2B_TABLES}
+        inp, res = db._tmp_names(c)
+        for t in (inp, res, db._tmp_previews_name(c), db._tmp_verbatim_name(c)):
+            out[t] = c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (uid,)).fetchone()["n"]
+        out["sessions_open"] = c.execute("SELECT count(*) AS n FROM stack_sessions WHERE user_id=%s AND terminal_at IS NULL",
+                                         (uid,)).fetchone()["n"]
+        out["jobs"] = sorted((r["status"] for r in c.execute("SELECT status FROM jobs WHERE user_id=%s", (uid,)).fetchall()))
+    return out
+
+
+async def test_pr2b_stack_b3():
+    """B3 — 확정 트랜잭션(r3 10단계): 스위치 503 · 본문 400 · 남 404 · 해시·버전 409 CONFLICT · 막힘 409 · 정의 변경 409 JOB-DEFS · 대상 버전·보관 409(부활 0)
+    · 옛 미리보기·대체 작업 409 STALE · 원문 던지기 2건 예약(잔여 1 = 429 IMPORT-QUOTA·resume_at·쓰기 0) · 쓰기 경계 오류 주입(7·8·9·10) 전부 롤백
+    · 동시 확정 1(다른 요청 ID = STALE) · 같은 요청 ID 재전송 = 같은 응답·쓰기 1회 · 같은 ID 다른 내용 = MISMATCH · 적용 결과(생성·고침·판단 확정·새 판·
+    근거 attach_to·axes·stage)·원문 바이트 그대로·정리 글 = 미리보기 글 · 확정 뒤 세션 끝·임시 0·다른 작업 취소 · 판 이력 v2(prev v1, v1 불변)
+    · 인용 규칙(확인 정리 적격·가짜 확인 이벤트·routine 비적격·출처 정정 잠금) · 기존 단건 경로 stage 갱신·lazy 재계산."""
+    import uuid
+    cleanup()
+    with SEED_ON():
+        U = db.user_by_email("tester@example.com")["id"]
+        O = db.user_by_email("other@example.com")["id"]
+    d1 = imports.device_connect(U, "합성 확정 1")
+    T1 = {"authorization": "Bearer " + d1["token"]}
+    ax = _pr2b_axis(U, "AX1", "합성 축 하나")
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    ORIG = "  원문 그대로 STACKB3\n\n  공백·줄바꿈도   그대로 \n"
+    real_fault = stack_service._confirm_fault
+    real_lim = db.DAILY_LIMITS["records"]
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+
+            async def stack(units, changes, blocked=None, session_id=None, input_kind=None, text="합성 대화 STACKB3"):
+                body = {"kind": "converse", "text": text}
+                if session_id:
+                    body["session_id"] = session_id
+                if input_kind:
+                    body["input_kind"] = input_kind
+                r = await h.post("/api/jobs", json=body, headers=origin)
+                assert r.status_code == 201, r.text
+                J = r.json()
+                a = (await h.get("/api/device/jobs", params={"wait": 0}, headers=T1)).json()
+                assert a["id"] == J["id"], a
+                g = a["lease"]["generation"]
+                q = {"lease_generation": g}
+                await h.get(f"/api/device/jobs/{J['id']}/input", params=q, headers=T1)
+                dv = (await h.get(f"/api/device/jobs/{J['id']}/definitions", params=q, headers=T1)).json()["definitions_version"]
+                b = _pr2b_body({"id": J["id"]}, g, dv, units=units, changes=changes, blocked=blocked or [])
+                r = await h.post(f"/api/device/jobs/{J['id']}/result", json=b, headers=T1)
+                assert r.status_code == 200, r.text
+                P = (await h.get(f"/api/jobs/{J['id']}")).json()["preview"]
+                return J["id"], J["session_id"], P
+
+            def cbody(P, rq=None, **kw):
+                return {"request_id": rq or ("rq-" + secrets.token_hex(8)), "preview_id": P["id"], "preview_version": P["preview_version"],
+                        "preview_sha": P["preview_sha"], **kw}
+            conf = lambda jid, b: h.post(f"/api/jobs/{jid}/confirm", json=b, headers=origin)   # noqa: E731
+            with _job_fast(), _job_switch("CONVERSE_ENABLED"):
+                UN = [{"uid": "u1", "text": "새 기준 하나를 남겨요.", "change_ids": ["c1"]},
+                      {"uid": "u2", "text": "결정 하나를 적어요.", "change_ids": ["c2"]},
+                      {"uid": "u3", "text": "축 설명을 보태요.", "change_ids": ["c3"]}]
+                CH = [{"cid": "c1", "op": "create", "object_id": "od_principles", "target": {"ref_kind": "none"},
+                       "fields": {"title": "합성 기준 A", "body": "기준 설명"},
+                       "links": [{"relation": "axes", "target": {"ref_kind": "explicit_id", "target_kind": "item", "value": ax}}], "depends_on": []},
+                      {"cid": "c2", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정 B", "happened_on": "2026-10-21"},
+                       "links": [], "depends_on": ["c1"]},
+                      {"cid": "c3", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "source_id", "scheme": "code", "value": "AX1"},
+                       "fields": {"keywords": ["합성", "쌓기"]}, "links": [], "depends_on": []}]
+                J, S, P = await stack(UN, CH, input_kind="verbatim", text=ORIG)
+                assert not P["blocked_open"] and P["latest"]
+                # ── 거부(쓰기 0) ──
+                base = _pr2b_counts(U)
+                with _job_switch():
+                    r = await conf(J, cbody(P))
+                    assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF"
+                for bad in ({"request_id": "rq-short"}, {**cbody(P), "extra": 1}, cbody(P, rq="짧"), {**cbody(P), "preview_version": "1"}):
+                    r = await conf(J, bad)
+                    assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (bad, r.text)
+                r = await conf(J, cbody(P, preview_sha="0" * 64))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT", r.text
+                r = await conf(J, cbody(P, preview_version=2))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT"
+                site.dev_user = "other@example.com"
+                r = await conf(J, cbody(P))
+                assert r.status_code == 404, "남 작업"
+                site.dev_user = "tester@example.com"
+                r = await conf(str(uuid.uuid4()), cbody(P))
+                assert r.status_code == 404
+                with db.tx() as c:
+                    n_today = c.execute(f"SELECT count(*) AS n FROM records WHERE user_id=%s AND COALESCE(received_at, created) >= {db._KST_TODAY}",
+                                        (U,)).fetchone()["n"]
+                db.DAILY_LIMITS["records"] = n_today + 1   # 잔여 1 — 원문 던지기는 2건
+                r = await conf(J, cbody(P))
+                assert r.status_code == 429 and r.json()["code"] == "IMPORT-QUOTA" and r.json().get("resume_at"), r.text
+                db.DAILY_LIMITS["records"] = real_lim
+                assert _pr2b_counts(U) == base, "거부 = 쓰기 0(한도 차감 0)"
+                # ── 쓰기 경계 오류 주입 → 전부 롤백 ──
+                for step in (7, 8, 9, 10):
+                    def boom(s, step=step):
+                        if s == step:
+                            raise RuntimeError(f"주입 {step}")
+                    stack_service._confirm_fault = boom
+                    try:
+                        stack_service.confirm(U, J, cbody(P))
+                        raise AssertionError("주입이 안 걸렸다")
+                    except RuntimeError:
+                        pass
+                    finally:
+                        stack_service._confirm_fault = real_fault
+                    assert _pr2b_counts(U) == base, ("오류 주입 롤백", step)
+                # ── 동시 확정: 다른 요청 ID 둘 → 하나만 ──
+                b1, b2 = cbody(P), cbody(P)
+                rs = await asyncio.gather(conf(J, b1), conf(J, b2))
+                codes = sorted((x.status_code, x.json().get("code")) for x in rs)
+                assert codes == [(200, None), (409, "CONFIRM-STALE")], codes
+                win = b1 if rs[0].status_code == 200 else b2
+                R = (rs[0] if rs[0].status_code == 200 else rs[1]).json()
+                after = _pr2b_counts(U)
+                again = await conf(J, win)
+                assert again.status_code == 200 and again.json() == R, "같은 요청 ID 재전송 = 같은 응답"
+                assert _pr2b_counts(U) == after, "재전송 쓰기 0"
+                r = await conf(J, {**win, "preview_sha": "1" * 64})
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-REQUEST-MISMATCH"
+                # ── 적용 결과 ──
+                assert set(R) == {"confirm_event_id", "created", "updated", "versions"} and len(R["created"]["records"]) == 2
+                assert len(R["created"]["items"]) == 2 and R["updated"]["items"] == [ax] and len(R["versions"]) == 1
+                vrid, srid = R["created"]["records"]
+                i_pr, i_ev = R["created"]["items"]
+                with db.tx() as c:
+                    vr = c.execute("SELECT * FROM records WHERE id=%s", (vrid,)).fetchone()
+                    sr = c.execute("SELECT * FROM records WHERE id=%s", (srid,)).fetchone()
+                    pr = c.execute("SELECT * FROM items WHERE id=%s", (i_pr,)).fetchone()
+                    ev = c.execute("SELECT * FROM items WHERE id=%s", (i_ev,)).fetchone()
+                    axr = c.execute("SELECT * FROM items WHERE id=%s", (ax,)).fetchone()
+                    vers = c.execute("SELECT * FROM item_versions WHERE item_id=%s", (i_pr,)).fetchall()
+                    links = {(x["field_key"], x["target_item_id"]) for x in c.execute(
+                        "SELECT field_key,target_item_id FROM item_links WHERE source_record_id=%s", (srid,)).fetchall()}
+                    pr_links = {(x["field_key"], x["target_item_id"]) for x in c.execute(
+                        "SELECT field_key,target_item_id FROM item_links WHERE source_item_id=%s", (i_pr,)).fetchall()}
+                    hist = [(x["action"], x["prev_revision"]) for x in c.execute(
+                        "SELECT action,prev_revision FROM item_history WHERE item_id=%s ORDER BY id", (i_pr,)).fetchall()]
+                    st = {x["item_id"]: x["stage"] for x in c.execute("SELECT item_id,stage FROM item_stage WHERE user_id=%s", (U,)).fetchall()}
+                    ce = c.execute("SELECT * FROM confirm_events WHERE id=%s", (R["confirm_event_id"],)).fetchone()
+                assert vr["body"] == ORIG and (vr["author_kind"], vr["text_process"], vr["generation_kind"]) == ("self", "verbatim", "human"), "원문 바이트 그대로"
+                assert sr["body"] == P["text"] and (sr["author_kind"], sr["text_process"], sr["generation_kind"]) == ("self", "structured", "conversation")
+                assert sr["generation_meta"]["confirm_event_id"] == R["confirm_event_id"] and sr["generation_meta"]["companion_record_id"] == vrid
+                assert vr["generation_meta"]["companion_record_id"] == srid and sr["generation_meta"]["job_id"] == J
+                assert ce["final_text_sha"] == hashlib.sha256(P["text"].encode()).hexdigest() and ce["request_id"] == win["request_id"]
+                assert (pr["title"], pr["decision"], pr["generation_kind"], pr["revision"]) == ("합성 기준 A", "confirmed", "conversation", 2)
+                assert hist == [("apply", 0), ("confirm", 1)], hist
+                assert len(vers) == 1 and vers[0]["version_no"] == 1 and vers[0]["prev_version_id"] is None and pr["current_version_id"] == vers[0]["id"]
+                assert vers[0]["fields"]["title"] == "합성 기준 A" and vers[0]["links"] == [{"field_key": "axes", "target_kind": "item", "target_id": ax}]
+                assert R["versions"] == [{"item_id": i_pr, "version_no": 1}]
+                assert pr_links == {("axes", ax)} and ev["data"] == {"happened_on": "2026-10-21"} and ev["decision"] is None
+                assert axr["data"]["keywords"] == ["합성", "쌓기"] and axr["revision"] == 2
+                assert links == {("attach_to", i_pr), ("attach_to", i_ev), ("axes", ax)}, links
+                assert st == {i_pr: "confirmed", i_ev: "organized", ax: "organized"}, st
+                # ── 확정 뒤: 세션 끝 · 임시 0 · 접수·제외 410 ──
+                s = (await h.get(f"/api/stack/sessions/{S}")).json()
+                assert s["confirmed"] and s["preview"] is None and s["latest_job"]["status"] == "confirmed"
+                assert (await h.get("/api/state")).json()["stack_session"] is None
+                cnt = _pr2b_counts(U)
+                with db.tx() as c:
+                    inp, res = db._tmp_names(c)
+                    tmp_keys = (inp, res, db._tmp_previews_name(c), db._tmp_verbatim_name(c))
+                assert all(cnt[t] == 0 for t in tmp_keys) and cnt["sessions_open"] == 0, cnt
+                r = await h.post(f"/api/stack/previews/{P['id']}/exclude", json={"cids": ["c1"]}, headers=origin)
+                assert r.status_code in (404, 410), r.text
+                r = await h.post("/api/jobs", json={"kind": "converse", "text": "더", "session_id": S}, headers=origin)
+                assert r.status_code == 410
+                # ── 인용 규칙 ──
+                added, dropped = db.candidates_propose(U, srid, "", [{"text": "합성 판단", "quote": "새 기준 하나를"}], "ai")
+                assert len(added) == 1 and not dropped, ("확인 거친 대화 정리 = 인용 적격", dropped)
+                added, _d = db.candidates_propose(U, vrid, "", [{"text": "원문 판단", "quote": "공백·줄바꿈도"}], "ai")
+                assert len(added) == 1, "원문 던지기 원문 = 적격"
+                with db.tx() as c:
+                    fake, rout = db.new_id("r"), db.new_id("r")
+                    c.execute("INSERT INTO records (id,user_id,title,body,author_kind,text_process,generation_kind,generation_meta) "
+                              "VALUES (%s,%s,'가짜','가짜 정리 본문','self','structured','conversation',%s)",
+                              (fake, U, db.Jsonb({"confirm_event_id": str(uuid.uuid4())})))
+                    c.execute("INSERT INTO records (id,user_id,title,body,author_kind,text_process,generation_kind) "
+                              "VALUES (%s,%s,'루틴','루틴 결과 본문','self','verbatim','routine')", (rout, U))
+                for rid, q in ((fake, "가짜 정리"), (rout, "루틴 결과")):
+                    added, dropped = db.candidates_propose(U, rid, "", [{"text": "x", "quote": q}], "ai")
+                    assert not added and dropped[0]["why"] == db.INELIGIBLE_WHY, (rid, dropped)
+                _pr2b_err(lambda: db.record_provenance_set(U, srid, "self", "verbatim", "합성 정정"), "PROVENANCE-AI-LOCKED")
+                # ── 판 이력 v2: 다른 세션에서 같은 판단 고침 ──
+                U2 = [{"uid": "u1", "text": "기준 A 를 고쳐요.", "change_ids": ["c1"]}]
+                C2 = [{"cid": "c1", "op": "update", "object_id": "od_principles", "target": {"ref_kind": "explicit_id", "value": i_pr},
+                       "fields": {"title": "합성 기준 A 고침"}, "links": [], "depends_on": []}]
+                J2, S2, P2 = await stack(U2, C2)
+                n_rec = _pr2b_counts(U)["records"]
+                R2 = (await conf(J2, cbody(P2))).json()
+                assert R2["versions"] == [{"item_id": i_pr, "version_no": 2}] and R2["updated"]["items"] == [i_pr], R2
+                assert _pr2b_counts(U)["records"] == n_rec + 1, "대화(원문 던지기 아님) = 정리 글 1건"
+                with db.tx() as c:
+                    v = {x["version_no"]: x for x in c.execute("SELECT * FROM item_versions WHERE item_id=%s", (i_pr,)).fetchall()}
+                    cur = c.execute("SELECT current_version_id, decision, revision FROM items WHERE id=%s", (i_pr,)).fetchone()
+                    h2 = [x["action"] for x in c.execute("SELECT action FROM item_history WHERE item_id=%s ORDER BY id", (i_pr,)).fetchall()]
+                assert v[2]["prev_version_id"] == v[1]["id"] and v[1]["fields"]["title"] == "합성 기준 A" and v[2]["fields"]["title"] == "합성 기준 A 고침"
+                assert cur["current_version_id"] == v[2]["id"] and cur["decision"] == "confirmed" and h2 == ["apply", "confirm", "apply"], (cur, h2)
+                # ── 충돌: 대상 버전 · 보관 · 정의 · 막힘 · 옛 미리보기 · 대체 작업 ──
+                C3 = [{"cid": "c1", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "explicit_id", "value": ax},
+                       "fields": {"keywords": ["충돌"]}, "links": [], "depends_on": []}]
+                U3 = [{"uid": "u1", "text": "축을 고쳐요.", "change_ids": ["c1"]}]
+                J3, S3, P3 = await stack(U3, C3)
+                rev = db.definitions(U, ["od_axes"])[0]["revision"]
+                p = db.item_propose(U, "od_axes", rev, ax, 2, None, "합성 축 하나", "", {"keywords": ["밖에서"]}, [])
+                db.item_decide(U, ax, 2, p["proposal_id"], "apply")   # 결과 생성 뒤 대상이 바뀜
+                base = _pr2b_counts(U)
+                r = await conf(J3, cbody(P3))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT", r.text
+                assert _pr2b_counts(U) == base, "충돌 = 쓰기 0"
+                db.job_cancel(U, J3)
+                J4, S4, P4 = await stack(U3, C3)
+                db.item_decide(U, ax, 3, None, "archive")
+                r = await conf(J4, cbody(P4))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT"
+                with db.tx() as c:
+                    assert c.execute("SELECT archived_at FROM items WHERE id=%s", (ax,)).fetchone()["archived_at"], "보관 대상 부활 0"
+                h_ax = db.item_get(U, ax)["history"]
+                db.item_decide(U, ax, 4, None, "restore", history_id=h_ax[-1]["id"])
+                db.job_cancel(U, J4)
+                J5, S5, P5 = await stack(U3, C3)
+                with db.tx() as c:
+                    _pr2b_sql(c, "UPDATE object_defs SET label='합성 축 바뀜' WHERE user_id=%s AND id='od_axes'", (U,))
+                r = await conf(J5, cbody(P5))
+                assert r.status_code == 409 and r.json()["code"] == "JOB-DEFS", r.text
+                with db.tx() as c:
+                    _pr2b_sql(c, "UPDATE object_defs SET label='축' WHERE user_id=%s AND id='od_axes'", (U,))
+                db.job_cancel(U, J5)
+                UB = [{"uid": "u1", "text": "못 찾은 항목.", "change_ids": ["c1"]}]
+                CB = [{"cid": "c1", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "unresolved"}, "fields": {}, "links": [],
+                       "depends_on": []}]
+                J6, S6, P6 = await stack(UB, CB)
+                r = await conf(J6, cbody(P6))
+                assert P6["blocked_open"] and r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT", "막힘 = 확정 잠금"
+                db.job_cancel(U, J6)
+                UX = [{"uid": "u1", "text": "결정 하나.", "change_ids": ["c1"]}, {"uid": "u2", "text": "결정 둘.", "change_ids": ["c2"]}]
+                CX = [{"cid": "c1", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정 X1"}, "links": [], "depends_on": []},
+                      {"cid": "c2", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정 X2"}, "links": [], "depends_on": []}]
+                J7, S7, P7 = await stack(UX, CX)
+                PX = (await h.post(f"/api/stack/previews/{P7['id']}/exclude", json={"cids": ["c2"]}, headers=origin)).json()["preview"]
+                r = await conf(J7, cbody(P7))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-STALE", "옛 미리보기(제외 전)"
+                rv7 = (await h.get(f"/api/jobs/{J7}")).json()["result"]["result_version"]
+                r = await h.post("/api/jobs", json={"kind": "converse", "session_id": S7, "text": "편집",
+                                                    "restack": {"parent_result_version": rv7, "edit_generation": 1, "edited_text": "편집"}},
+                                 headers=origin)
+                assert r.status_code == 201, r.text
+                R8 = r.json()
+                r = await conf(J7, cbody(PX))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-STALE", "편집 뒤(재정리 대기) 옛 결과"
+                db.job_cancel(U, R8["id"])
+                # ── 기존 단건 경로 stage · lazy ──
+                rev_pr = db.item_get(U, i_pr)["revision"]
+                db.item_decide(U, i_pr, rev_pr, None, "exclude")
+                with db.tx() as c:
+                    assert c.execute("SELECT stage FROM item_stage WHERE item_id=%s", (i_pr,)).fetchone()["stage"] == "organized", "item_decide 뒤 재계산"
+                    _pr2b_sql(c, "DELETE FROM item_stage WHERE item_id=%s", (i_ev,))
+                assert db.item_get(U, i_ev)["stage"] == "organized"
+                with db.tx() as c:
+                    assert c.execute("SELECT stage FROM item_stage WHERE item_id=%s", (i_ev,)).fetchone(), "lazy 계산 저장"
+    finally:
+        site.dev, site.dev_user = real
+        stack_service._confirm_fault = real_fault
+        db.DAILY_LIMITS["records"] = real_lim
+    print("OK — 28 B3 확정 10단계(스위치·본문·남·해시·버전·막힘·정의·대상 버전·보관 부활 0·옛 미리보기·재정리 대기 STALE) · 원문 던지기 2건 예약 429·쓰기 0"
+          " · 오류 주입 7·8·9·10 전부 롤백 · 동시 확정 1 · 같은 요청 ID 재전송 같은 응답·쓰기 1회 · MISMATCH · 생성·고침·판단 확정·새 판·근거 연결·stage"
+          " · 원문 바이트 그대로 · 확정 뒤 세션 끝·임시 0·410 · 판 이력 v2 · 인용 규칙 · 기존 경로 stage·lazy 통과")
+
+
 async def test_pr2b_stack():
-    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리)."""
+    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리 · B3 확정 트랜잭션·판 이력·stage·인용)."""
     test_pr2b_stack_b1()
     await test_pr2b_stack_b2()
+    await test_pr2b_stack_b3()
 
 
 def Web_polls_empty():

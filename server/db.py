@@ -934,13 +934,20 @@ def question_get(uid, qid):
 
 AUTHOR_KINDS = ("self", "external", "unknown")
 TEXT_PROCESSES = ("verbatim", "structured", "rewritten", "generated", "unknown")
-_ELIGIBLE_SQL = "r.author_kind='self' AND r.text_process='verbatim' AND r.deleted_at IS NULL"
+# PR ②-b(K4·Q2): 확인 1번을 거친 대화 정리(conversation + 실재 확인 이벤트)도 적격. ai·routine 은 원문이어도 비적격. unknown·mixed 는 그대로
+_ELIGIBLE_SQL = ("(r.author_kind='self' AND r.deleted_at IS NULL AND ((r.text_process='verbatim' AND r.generation_kind NOT IN ('ai','routine')) "
+                 "OR (r.generation_kind='conversation' AND EXISTS (SELECT 1 FROM confirm_events ce WHERE ce.user_id=r.user_id "
+                 "AND ce.id::text = r.generation_meta->>'confirm_event_id'))))")
 INELIGIBLE_WHY = "이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요"
 _REC_COLS = "id,title,body,source,source_id,question_id,author_kind,text_process,created"   # source = 옛 문자열(보존), source_id = 출처 연결
 
 
 def _eligible(r):
-    return r["author_kind"] == "self" and r["text_process"] == "verbatim" and r.get("deleted_at") is None
+    """r 에 SQL 판정(eligible, _ELIGIBLE_SQL)이 실려 있으면 그것 — 대화 정리는 확인 이벤트 실재까지 SQL 로만 본다."""
+    if "eligible" in r:
+        return bool(r["eligible"])
+    return r["author_kind"] == "self" and r["text_process"] == "verbatim" and r.get("deleted_at") is None \
+        and r.get("generation_kind") not in ("ai", "routine", "conversation")
 
 
 def _check_provenance(author_kind, text_process):
@@ -1036,13 +1043,13 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
         raise CrmError("ARG-INVALID", "출처를 고치는 사유가 비었어요.")
     check_len("reason", reason, LIMIT_TEXT)   # α1 ② — provenance_history 에 그대로 쌓인다
     with tx() as c:
-        r = _one(c, "SELECT id,author_kind,text_process,deleted_at,generation_kind FROM records WHERE user_id=%s AND id=%s "
-                    "AND deleted_at IS NULL FOR UPDATE", (uid, rid))
+        r = _one(c, f"SELECT r.id,r.author_kind,r.text_process,r.deleted_at,r.generation_kind,({_ELIGIBLE_SQL}) AS eligible FROM records r "
+                    "WHERE r.user_id=%s AND r.id=%s AND r.deleted_at IS NULL FOR UPDATE OF r", (uid, rid))
         if not r:
             raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
         if (r["author_kind"], r["text_process"]) == (author_kind, text_process):
             return _record_in(c, uid, rid)
-        if r["generation_kind"] in ("ai", "mixed"):   # board 이전 r3 T2 — 출처 정정으로 AI 생성 이력을 지우지 않는다
+        if r["generation_kind"] in ("ai", "mixed", "conversation", "routine"):   # board 이전 r3 T2 · ②-b — 출처 정정으로 생성 이력을 지우지 않는다
             raise CrmError("PROVENANCE-AI-LOCKED", "AI 요약으로 보관한 기록은 출처 판정을 바꿀 수 없어요.",
                            "직접 쓴 글은 새 기록으로 남기세요.")
         if _eligible(r) and not (author_kind == "self" and text_process == "verbatim"):
@@ -1138,8 +1145,8 @@ def candidates_propose(uid, record_id, question_id, items, origin):
     added, dropped = [], []
     with tx() as c:
         _daily_gate(c, uid, "candidates", len(items or []))   # 제출한 수로 센다(검사 전) — 한 호출 최대 3
-        rec = _one(c, "SELECT id,body,author_kind,text_process,deleted_at FROM records "
-                      "WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, record_id))
+        rec = _one(c, f"SELECT r.id,r.body,r.author_kind,r.text_process,r.deleted_at,({_ELIGIBLE_SQL}) AS eligible FROM records r "
+                      "WHERE r.user_id=%s AND r.id=%s AND r.deleted_at IS NULL FOR UPDATE OF r", (uid, record_id))
         if not rec:
             raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
         if question_id:
@@ -2532,6 +2539,8 @@ def item_get(uid, item_id):
         out["incoming"] = [_iso(r) for r in inc]
         out["history"] = [_iso(r) for r in _all(c, "SELECT id,action,prev_revision,prev_state,event_meta,at FROM item_history "
                                                    "WHERE user_id=%s AND item_id=%s ORDER BY id", (uid, item_id))]
+        import stack_service
+        out["stage"] = stack_service.stage_get(c, uid, item_id)   # PR ②-b — 서버 계산 관리값(없거나 낡으면 지금 계산). 적용 전 제안 = None
     return out
 
 
@@ -2634,6 +2643,8 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
                  (st.get("title") or "", st.get("body") or "", Jsonb(st.get("data") or {}), dec, od["revision"]),
                  {"history_id": h["id"], "restored_revision": h["prev_revision"]})
             _replace_item_links(c, uid, item_id, row["object_id"], nl)
+        import stack_service
+        stack_service.stage_refresh(c, uid, item_id)   # PR ②-b — 기존 쓰기 경로도 stage 를 다시 계산한다(관리값, 직접 수정 없음)
         row = _one(c, f"SELECT {_ITEM_COLS} FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
         out = _item_out(c, uid, row, _links_by_item(c, uid, [item_id]).get(item_id, []), od)
     if promotion is not None:
@@ -3751,6 +3762,12 @@ def _tmp_previews_name(c):
     return "tmp.stack_previews" if s == "public" else f"{_qident(s)}.tmp_stack_previews"
 
 
+def _tmp_verbatim_name(c):
+    """PR ②-b 원문 던지기 세션의 원문(첫 입력) 임시 표 — 세션 PK. 작업이 대체·취소돼도 확정 때까지 남는다(세션 끝·만료 때 지운다)."""
+    s = _one(c, "SELECT current_schema() AS s")["s"]
+    return "tmp.stack_verbatim" if s == "public" else f"{_qident(s)}.tmp_stack_verbatim"
+
+
 def _tmp_add_col(c, table, col, ddl):
     """임시 테이블 열 추가(멱등) — 있으면 ALTER 를 부르지 않는다. table = _tmp_names 가 준 (스키마.)이름."""
     sch, _, name = table.rpartition(".")
@@ -3785,11 +3802,14 @@ def _init_tmp(c):
               f"target_versions jsonb NOT NULL, excluded jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), "
               f"UNIQUE (job_id, preview_version), "
               f"FOREIGN KEY (user_id, job_id) REFERENCES {jobs}(user_id, id) ON DELETE CASCADE)")
+    c.execute(f"CREATE TABLE IF NOT EXISTS {_tmp_verbatim_name(c)} (session_id uuid PRIMARY KEY, user_id text NOT NULL, text text NOT NULL, "
+              f"bytes integer NOT NULL CHECK (bytes >= 0), created_at timestamptz NOT NULL DEFAULT now(), "
+              f"FOREIGN KEY (user_id, session_id) REFERENCES {_qident(s)}.stack_sessions(user_id, id) ON DELETE CASCADE)")
 
 
 def _tmp_delete_user(c, uid):
     inp, res = _tmp_names(c)
-    for t in (_tmp_previews_name(c), res, inp):
+    for t in (_tmp_previews_name(c), res, inp, _tmp_verbatim_name(c)):
         c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
 
 
@@ -3838,6 +3858,8 @@ def _job_sweep(c):
     for t in (_tmp_previews_name(c), res, inp):
         n += c.execute(f"DELETE FROM {t} x USING jobs j WHERE j.user_id=x.user_id AND j.id=x.job_id "
                        "AND (j.terminal_at IS NOT NULL OR j.expires_at <= now())").rowcount
+    n += c.execute(f"DELETE FROM {_tmp_verbatim_name(c)} x USING stack_sessions s WHERE s.user_id=x.user_id AND s.id=x.session_id "
+                   "AND (s.terminal_at IS NOT NULL OR s.expires_at <= now())").rowcount
     return {"expired": ex, "needs_check": nc, "tmp": n}
 
 
@@ -3973,6 +3995,8 @@ def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
             sess = _one(c, "INSERT INTO stack_sessions (id,user_id,input_kind,expires_at) "
                            "VALUES (%s,%s,%s,now() + make_interval(hours => %s)) RETURNING *",
                         (sid, uid, input_kind or "converse", JOB_TTL_HOURS))
+            if sess["input_kind"] == "verbatim":   # 원문 던지기 — 첫 입력이 원문. 확정 때 그대로 기록(human)이 된다
+                c.execute(f"INSERT INTO {_tmp_verbatim_name(c)} (session_id,user_id,text,bytes) VALUES (%s,%s,%s,%s)", (sid, uid, text, nb))
         gen = rs["edit_generation"] if rs else (sess["edit_generation"] if sess else 0)
         c.execute("INSERT INTO jobs (id,user_id,session_id,kind,edit_generation,parent_result_version,expires_at) "
                   "VALUES (%s,%s,%s,%s,%s,%s,LEAST(now() + make_interval(hours => %s), %s::timestamptz))",

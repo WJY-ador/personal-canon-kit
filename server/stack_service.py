@@ -514,3 +514,311 @@ def compute_stage(kind, required_ok, decision):
     if kind == "judgment" and decision == "confirmed":
         return "confirmed"
     return "organized" if required_ok else "draft"
+
+
+def _obj_entry(c, uid, oid):
+    """오브젝트 하나 → {row, fields, kind}(보관된 것도). stage 계산용 — 스냅샷 index 와 같은 kind 규칙."""
+    r = db._one(c, f"SELECT {db._DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, oid))
+    if not r:
+        return None
+    cls = db._one(c, "SELECT object_id FROM user_roles WHERE user_id=%s AND role='classify'", (uid,))
+    sk = r["semantic_kind"]
+    kind = "judgment" if sk == "principle" else "event" if sk == "event" else \
+        "classify" if cls and cls["object_id"] == oid else "custom"
+    return {"row": r, "fields": db._fields(c, uid, oid), "kind": kind}
+
+
+def stage_refresh(c, uid, item_id):
+    """item_stage 다시 계산·저장(호출자 트랜잭션). 적용 전 제안(revision 0)·없는 항목 = None. 반환 stage."""
+    it = db._one(c, "SELECT id,object_id,title,data,decision,revision,current_version_id FROM items WHERE user_id=%s AND id=%s",
+                 (uid, item_id))
+    if not it or it["revision"] == 0:
+        return None
+    o = _obj_entry(c, uid, it["object_id"])
+    links = [{"relation": x["field_key"], "target_id": x["target_id"]}
+             for x in db._links_by_item(c, uid, [item_id]).get(item_id, [])]
+    st = compute_stage(o["kind"], not _required_missing(o, it["data"], it["title"], links), it["decision"])
+    c.execute("INSERT INTO item_stage (user_id,item_id,stage,rule_version,item_revision,item_version_id,updated_at) "
+              "VALUES (%s,%s,%s,%s,%s,%s,now()) ON CONFLICT (user_id,item_id) DO UPDATE SET stage=EXCLUDED.stage, "
+              "rule_version=EXCLUDED.rule_version, item_revision=EXCLUDED.item_revision, item_version_id=EXCLUDED.item_version_id, "
+              "updated_at=now()", (uid, item_id, st, RULE_VERSION, it["revision"], it["current_version_id"]))
+    return st
+
+
+def stage_get(c, uid, item_id):
+    """lazy — 행이 없거나 규칙 버전·계산에 쓴 items.revision 이 다르면 지금 계산(백필 없음)."""
+    r = db._one(c, "SELECT s.stage, s.rule_version, s.item_revision, i.revision FROM items i LEFT JOIN item_stage s "
+                   "ON s.user_id=i.user_id AND s.item_id=i.id WHERE i.user_id=%s AND i.id=%s", (uid, item_id))
+    if not r or r["revision"] == 0:
+        return None
+    if r["stage"] is not None and r["rule_version"] == RULE_VERSION and r["item_revision"] == r["revision"]:
+        return r["stage"]
+    return stage_refresh(c, uid, item_id)
+
+
+# ── 확정 트랜잭션 (r3 10단계) ───────────────────────────
+
+CONFIRM_KEYS = frozenset({"request_id", "preview_id", "preview_version", "preview_sha"})
+_REQ_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_SHA_RE = re.compile(r"^[0-9a-f]{64}$")
+SUMMARY_SOURCE = "대화 정리"
+VERBATIM_SOURCE = "대화에서 입력"
+
+
+def _confirm_fault(step):
+    """시험 전용 실패 주입 자리 — 쓰기 경계(7·8·9·10)마다 부른다. 운영에선 아무것도 안 한다."""
+
+
+def _conflict(msg):
+    return CrmError("CONFIRM-CONFLICT", msg, "새로 고침한 뒤 다시 정리하세요.")
+
+
+def _topo(changes):
+    """depends_on 순서(앞이 먼저). 순환은 수신 때 막았다."""
+    by = {ch["cid"]: ch for ch in changes}
+    out, seen = [], set()
+
+    def visit(cid):
+        if cid in seen:
+            return
+        seen.add(cid)
+        for d in by[cid]["depends_on"]:
+            if d in by:
+                visit(d)
+        out.append(by[cid])
+    for ch in changes:
+        visit(ch["cid"])
+    return out
+
+
+def _snap_state(title, body, data, decision, code, schema_revision, links, archived=False):
+    return {"title": title, "body": body, "data": data, "decision": decision, "code": code, "schema_revision": schema_revision,
+            "links": [{k: ln[k] for k in ("field_key", "target_kind", "target_id")} for ln in links], "archived": archived}
+
+
+def _bump(c, uid, item_id, prev_rev, snap, act, sets, args, meta):
+    """item_decide 의 이력 한 줄 + revision+1 과 같은 꼴. 낙관 잠금(prev_rev) — 어긋나면 충돌."""
+    c.execute("INSERT INTO item_history (user_id,item_id,action,prev_revision,prev_state,event_meta) VALUES (%s,%s,%s,%s,%s,%s)",
+              (uid, item_id, act, prev_rev, db.Jsonb(snap), db.Jsonb(meta)))
+    n = c.execute("UPDATE items SET " + sets + ", revision=revision+1, updated_at=now() WHERE user_id=%s AND id=%s AND revision=%s",
+                  (*args, uid, item_id, prev_rev)).rowcount
+    if n != 1:
+        raise _conflict("항목이 그사이 바뀌었어요.")
+    return prev_rev + 1
+
+
+def _new_version(c, uid, item_id, ceid):
+    """판단 항목의 새 판(불변) + 현재 판 교체. 반환 version_no."""
+    it = db._one(c, "SELECT title,body,data,decision,code,revision,current_version_id FROM items WHERE user_id=%s AND id=%s", (uid, item_id))
+    n = db._one(c, "SELECT COALESCE(max(version_no), 0) AS n FROM item_versions WHERE user_id=%s AND item_id=%s", (uid, item_id))["n"] + 1
+    links = [{k: x[k] for k in ("field_key", "target_kind", "target_id")} for x in db._links_by_item(c, uid, [item_id]).get(item_id, [])]
+    vid = db.new_id("iv")
+    c.execute("INSERT INTO item_versions (user_id,id,item_id,version_no,prev_version_id,item_revision,fields,links,confirm_event_id) "
+              "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+              (uid, vid, item_id, n, it["current_version_id"] if n > 1 else None, it["revision"],
+               db.Jsonb({k: it[k] for k in ("title", "body", "data", "decision", "code")}), db.Jsonb(links), ceid))
+    c.execute("UPDATE items SET current_version_id=%s WHERE user_id=%s AND id=%s", (vid, uid, item_id))
+    return n
+
+
+def _norm(c, uid, o, links):
+    try:
+        return db._norm_links(c, uid, o["fields"], links)
+    except CrmError:
+        raise _conflict("연결 대상이 그사이 지워졌거나 바뀌었어요.") from None
+
+
+def confirm(uid, job_id, body):
+    """POST /api/jobs/<id>/confirm — 확인 1번. 한 트랜잭션(r3 10단계), 어느 단계든 실패하면 한도·확인 이벤트까지 전부 롤백.
+    ① 권한·같은 확정 요청 ID 재생(같은 내용 = 저장한 성공 응답, 다른 내용 = CONFIRM-REQUEST-MISMATCH) ② 세션·작업 잠금 — 최신 결과·
+    이미 확정·만료·스위치 ③ 미리보기 버전·해시(행에서 다시 계산)·편집 세대·정의 해시·막힘 ④ 대상·관계 대상 소유·존재·기준 버전(잠금 순서 고정)
+    ⑤ 남은 변경의 필수 칸·관계·값(정의 재검사) ⑥ 기록 한도(정리 1 / 원문 던지기 2) 원자 확인 ⑦ 확인 이벤트 + 변경 적용(판단 = 확정 + 새 판)
+    ⑧ 정리 글(+원문) 기록·근거 연결·stage ⑨ 세션·작업 확정, 다른 작업 취소, 임시 내용 삭제, 성공 응답 저장 ⑩ 커밋."""
+    import uuid as _uuid
+    if not isinstance(body, dict) or set(body) != CONFIRM_KEYS:
+        raise CrmError("ARG-INVALID", "본문은 {request_id, preview_id, preview_version, preview_sha} 예요.")
+    rq, pv, psha = body["request_id"], body["preview_version"], body["preview_sha"]
+    if not isinstance(rq, str) or not _REQ_RE.match(rq) or not db._is_int(pv) or pv < 1 or not isinstance(psha, str) or not _SHA_RE.match(psha):
+        raise CrmError("ARG-INVALID", "request_id(8~64자 영숫자·-·_)·preview_version(정수)·preview_sha(64 hex) 꼴이 아니에요.")
+    pid = db._job_uuid(body["preview_id"], gone=False)
+    jid = db._job_uuid(job_id, gone=False)
+    with db.tx() as c:
+        # ①
+        db._user_lock(c, uid)
+        ev = db._one(c, "SELECT * FROM confirm_events WHERE user_id=%s AND request_id=%s", (uid, rq))
+        if ev:
+            if (ev["job_id"], ev["preview_id"], ev["preview_version"], ev["preview_sha"]) == (jid, pid, pv, psha):
+                return ev["response"]
+            raise CrmError("CONFIRM-REQUEST-MISMATCH", "같은 확정 요청 ID 로 다른 내용을 보냈어요.", "새 확정 요청 ID 로 다시 하세요.")
+        # ②
+        if not db.job_switch_on("converse"):
+            raise db._job_off()
+        pre = db._one(c, "SELECT session_id, kind FROM jobs WHERE user_id=%s AND id=%s", (uid, jid))
+        if not pre or pre["kind"] != "converse":
+            raise CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")
+        sess = db._stack_session_lock(c, uid, pre["session_id"])
+        j = db._one(c, "SELECT *, (expires_at <= now()) AS gone_ttl FROM jobs WHERE user_id=%s AND id=%s FOR UPDATE", (uid, jid))
+        if sess is None:
+            raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+        if sess["confirm_event_id"] is not None:
+            raise db._confirm_stale("이 대화는 이미 확정했어요.")
+        if sess["gone_ttl"] or sess["terminal_at"] is not None or j["gone_ttl"] or j["status"] == "expired":
+            raise db._job_gone()
+        if j["status"] != "result_ready" or sess["latest_job_id"] != jid or sess["latest_preview_id"] != pid:
+            raise db._confirm_stale("이 정리는 최신이 아니에요.")
+        # ③
+        row = db._one(c, f"SELECT * FROM {db._tmp_previews_name(c)} WHERE user_id=%s AND id=%s", (uid, pid))
+        if not row or row["job_id"] != jid:
+            raise db._confirm_stale("이 정리는 최신이 아니에요.")
+        stored = {**row, "result_version": str(row["result_version"])}
+        if preview_sha(stored) != row["preview_sha"] or (row["preview_version"], row["preview_sha"]) != (pv, psha):
+            raise _conflict("확인한 정리와 서버의 정리가 달라요.")
+        if row["edit_generation"] != sess["edit_generation"] or row["edit_generation"] != j["edit_generation"]:
+            raise db._confirm_stale("고친 내용이 아직 정리되지 않았어요.")
+        if blocked_open(row["blocked"]):
+            raise _conflict("먼저 답하거나 빼야 할 항목이 남아 있어요.")
+        index = _index(c, uid)
+        if snapshot(c, uid, index)["definitions_version"] != j["definitions_version"]:
+            raise defs_changed()
+        changes = row["changes"]
+        tv = row["target_versions"]
+        # ④ 대상 잠금·기준 버전(항목 id 정렬 순)
+        rows = {}
+        for key in sorted(k for k in tv if k.startswith("item:")):
+            iid = key[5:]
+            r = db._one(c, f"SELECT {db._ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, iid))
+            if not r or r["revision"] != tv[key] or r["archived_at"] is not None or r["revision"] == 0:
+                raise _conflict("고칠 항목이 그사이 바뀌었거나 보관·삭제됐어요.")
+            rows[iid] = r
+        for key in (k for k in tv if k.startswith("person:")):
+            r = db._one(c, "SELECT revision FROM people WHERE user_id=%s AND id=%s", (uid, key[7:]))
+            if not r or r["revision"] != tv[key]:
+                raise _conflict("연결할 사람이 그사이 바뀌었거나 지워졌어요.")
+        # ⑤ 남은 변경 재검사 → 적용 계획
+        plans = []
+        for ch in _topo(changes):
+            o = index.get(ch["object_id"])
+            if o is None or any(ln["target_id"] is None for ln in ch["links"]):
+                raise _conflict("적용할 수 없는 변경이 남아 있어요.")
+            add = [{"field_key": ln["relation"], "target_kind": ln["target_kind"], "target_id": ln["target_id"]} for ln in ch["links"]]
+            vals = {k: v for k, v in ch["fields"].items() if k not in ("title", "body")}
+            if ch["op"] == "create":
+                title, bdy, data = ch["fields"].get("title") or "", ch["fields"].get("body") or "", vals
+                nl = _norm(c, uid, o, add)
+                cur, r = [], None
+            else:
+                r = rows.get(ch["item_id"])
+                if r is None:
+                    raise _conflict("고칠 항목의 기준 버전이 없어요.")
+                cur = db._links_by_item(c, uid, [r["id"]]).get(r["id"], [])
+                byk = {f["key"]: f for f in o["fields"]}
+                replace = {x["field_key"] for x in add if not byk[x["field_key"]]["multiple"]}
+                merged = [{k: x[k] for k in ("field_key", "target_kind", "target_id")} for x in cur if x["field_key"] not in replace]
+                for x in add:
+                    if not any((m["field_key"], m["target_kind"], m["target_id"]) == (x["field_key"], x["target_kind"], x["target_id"])
+                               for m in merged):
+                        merged.append(x)
+                title = ch["fields"].get("title", r["title"])
+                bdy = ch["fields"].get("body", r["body"])
+                data = {**(r["data"] or {}), **vals}
+                nl = _norm(c, uid, o, merged)
+            if not (title or "").strip():
+                raise _conflict("제목이 비어 있어요.")
+            dp, lp = db._item_problems(o["fields"], o["row"]["policy"], data, nl, strict=ch["op"] == "create")
+            if dp or lp:
+                raise _conflict("정의와 맞지 않는 변경이 있어요 — " + " · ".join(dp + lp))
+            plans.append({"ch": ch, "o": o, "row": r, "cur": cur, "title": title, "body": bdy, "data": data, "links": nl})
+        # ⑥ 기록 한도 — 정리 글 1(+ 원문 1)
+        verbatim = None
+        if sess["input_kind"] == "verbatim":
+            v = db._one(c, f"SELECT text FROM {db._tmp_verbatim_name(c)} WHERE user_id=%s AND session_id=%s", (uid, sess["id"]))
+            if not v:
+                raise db._job_gone()
+            verbatim = v["text"]
+        try:
+            db._daily_gate(c, uid, "records", 2 if verbatim is not None else 1)
+        except CrmError as e:
+            if e.code != "RATE-LIMIT":
+                raise
+            raise imports._with_resume(CrmError("IMPORT-QUOTA", "오늘 남길 수 있는 기록 수를 넘었어요.",
+                                                "내일(KST 0시 이후) 다시 확정하세요. 정리는 만료 전까지 남아 있어요.")) from None
+        # ⑦ 확인 이벤트 + 변경 적용
+        ceid = _uuid.uuid4()
+        final_text = UNIT_JOIN.join(u["text"] for u in row["units"])
+        c.execute("INSERT INTO confirm_events (id,user_id,session_id,job_id,preview_id,preview_version,preview_sha,request_id,final_text_sha) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (ceid, uid, sess["id"], jid, pid, pv, psha, rq, hashlib.sha256(final_text.encode("utf-8")).hexdigest()))
+        gm = {"job_id": str(jid), "session_id": str(sess["id"]), "result_version": str(row["result_version"]), "confirm_event_id": str(ceid)}
+        meta = {"via": "stack_confirm", "confirm_event_id": str(ceid)}
+        _confirm_fault(7)
+        created, updated, versions, touched = [], [], [], []
+        for pl in plans:
+            ch, o, od = pl["ch"], pl["o"], pl["o"]["row"]
+            judgment = o["kind"] == "judgment"
+            if ch["op"] == "create":
+                iid = db.new_id("i")
+                dec = "pending" if judgment else None
+                c.execute("INSERT INTO items (user_id,id,object_id,schema_revision,title,body,data,decision,revision,generation_kind,generation_meta) "
+                          "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,0,'conversation',%s)",
+                          (uid, iid, ch["object_id"], od["revision"], "", "", db.Jsonb({}), dec, db.Jsonb(gm)))
+                rev = _bump(c, uid, iid, 0, _snap_state("", "", {}, dec, None, od["revision"], []), "apply",
+                            "title=%s, body=%s, data=%s, schema_revision=%s", (pl["title"], pl["body"], db.Jsonb(pl["data"]), od["revision"]),
+                            {**meta, "created": True})
+                cur_dec = dec
+                created.append(iid)
+            else:
+                r = pl["row"]
+                iid = r["id"]
+                rev = _bump(c, uid, iid, r["revision"], db._item_state(r, pl["cur"]), "apply",
+                            "title=%s, body=%s, data=%s, schema_revision=%s", (pl["title"], pl["body"], db.Jsonb(pl["data"]), od["revision"]),
+                            {**meta, "created": False})
+                cur_dec = r["decision"]
+                updated.append(iid)
+            db._replace_item_links(c, uid, iid, ch["object_id"], pl["links"])
+            if judgment:   # 확인 1번 = 판단 확정(판단 종류만). 확정 판단을 고쳐도 새 판
+                if cur_dec != "confirmed":
+                    snap = _snap_state(pl["title"], pl["body"], pl["data"], cur_dec, pl["row"]["code"] if pl["row"] else None,
+                                       od["revision"], pl["links"])
+                    rev = _bump(c, uid, iid, rev, snap, "confirm", "decision=%s", ("confirmed",), meta)
+                versions.append({"item_id": iid, "version_no": _new_version(c, uid, iid, ceid)})
+            touched.append((iid, o))
+        _confirm_fault(8)
+        # ⑧ 기록 — 원문(던졌을 때) → 정리 글. 근거 = 정리 글 → 변경 항목(허용 관계만)
+        recs = []
+        vrid = None
+        hist = lambda ak, tp: db.Jsonb([{"at": db.now().isoformat(), "by": "stack_confirm", "author_kind": ak, "text_process": tp}])   # noqa: E731
+        ins = ("INSERT INTO records (id,user_id,title,body,source,author_kind,text_process,provenance_history,generation_kind,generation_meta) "
+               "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)")
+        if verbatim is not None:
+            vrid = db.new_id("r")
+            c.execute(ins, (vrid, uid, verbatim.strip().splitlines()[0][:40], verbatim, VERBATIM_SOURCE, "self", "verbatim",
+                            hist("self", "verbatim"), "human", db.Jsonb({**gm, "companion_record_id": None})))
+            recs.append(vrid)
+        srid = db.new_id("r")
+        c.execute(ins, (srid, uid, final_text.strip().splitlines()[0][:40], final_text, SUMMARY_SOURCE, "self", "structured",
+                        hist("self", "structured"), "conversation", db.Jsonb({**gm, "companion_record_id": vrid})))
+        if vrid:
+            c.execute("UPDATE records SET generation_meta = generation_meta || %s WHERE user_id=%s AND id=%s",
+                      (db.Jsonb({"companion_record_id": srid}), uid, vrid))
+        recs.append(srid)
+        seen = set()
+        for iid, o in touched:
+            fk = "attach_to" if o["kind"] in ("judgment", "event") else "axes" if o["kind"] == "classify" else None
+            if fk and (fk, iid) not in seen:
+                seen.add((fk, iid))
+                db._insert_link(c, uid, {"field_key": fk, "target_kind": "item", "target_id": iid}, source_record=srid)
+        for iid, _o in touched:
+            stage_refresh(c, uid, iid)
+        _confirm_fault(9)
+        # ⑨ 세션·작업 확정 · 다른 작업 취소 · 임시 삭제 · 응답 저장
+        c.execute("UPDATE jobs SET status='confirmed', terminal_at=now() WHERE user_id=%s AND id=%s", (uid, jid))
+        c.execute("UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%s AND session_id=%s AND id<>%s AND status = ANY(%s)",
+                  (uid, sess["id"], jid, list(db.JOB_LIVE)))
+        c.execute("UPDATE stack_sessions SET confirm_event_id=%s, terminal_at=now(), latest_preview_id=NULL WHERE user_id=%s AND id=%s",
+                  (ceid, uid, sess["id"]))
+        resp = {"confirm_event_id": str(ceid), "created": {"records": recs, "items": created}, "updated": {"items": updated},
+                "versions": versions}
+        c.execute("UPDATE confirm_events SET response=%s WHERE user_id=%s AND id=%s", (db.Jsonb(resp), uid, ceid))
+        db._job_sweep(c)
+        _confirm_fault(10)
+    return resp

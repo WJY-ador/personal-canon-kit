@@ -34,6 +34,7 @@ import contract
 import db
 import imports
 import service_schema
+import stack_service
 import structure_svg
 from envnames import env
 
@@ -1682,7 +1683,7 @@ class Web:
                  "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413,
                  # PR ②-b 쌓기 단계·확인 1번
                  "JOB-DEFS": 409, "CONTRACT-INVALID": 400, "PREVIEW-NEEDS-RESTACK": 409, "CONFIRM-STALE": 409, "CONFIRM-CONFLICT": 409,
-                 "CONFIRM-REQUEST-MISMATCH": 409, "IMPORT-QUOTA": 429}
+                 "CONFIRM-REQUEST-MISMATCH": 409, "IMPORT-QUOTA": 429, "QUOTA-GLOBAL": 507}
     _polls: dict = {}   # (scope, key) → 진행 중 롱폴 수
 
     @classmethod
@@ -1857,7 +1858,9 @@ class Web:
             self._poll_leave("web", uid)
 
     async def api_job_op(self, request):
-        """POST /api/jobs/<id>/cancel — 취소(스위치 무관, 멱등, 본문 없음) · POST /api/jobs/<id>/confirm — ②-b 전 = 503 SWITCH-OFF."""
+        """POST /api/jobs/<id>/cancel — 취소(스위치 무관, 멱등, 본문 없음) · POST /api/jobs/<id>/confirm — 확인 1번(②-b, 스위치 꺼짐 = 503 SWITCH-OFF).
+        confirm 200 {confirm_event_id, created:{records, items}, updated:{items}, versions} · 409 CONFIRM-CONFLICT·CONFIRM-STALE·
+        CONFIRM-REQUEST-MISMATCH·JOB-DEFS · 410 JOB-GONE · 429 IMPORT-QUOTA(+resume_at)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1865,8 +1868,18 @@ class Web:
             return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
         op = request.path_params["op"]
         try:
-            if op == "confirm":
-                raise db.CrmError("SWITCH-OFF", "확인(확정)은 아직 열리지 않았어요.", "다음 판을 기다리세요.")
+            if op == "confirm":   # PR ②-b 확인 1번 — 스위치 → 본문 → 쓰기 관문 → 확정 트랜잭션(stack_service.confirm)
+                if not db.job_switch_on("converse"):
+                    raise db._job_off()
+                try:
+                    body = await request.json()
+                except Exception:
+                    raise db.CrmError("ARG-INVALID", "JSON 본문이 필요해요: {request_id, preview_id, preview_version, preview_sha}.") from None
+
+                def confirm():
+                    db.write_gate("job_confirm", {}, uid)
+                    return stack_service.confirm(uid, request.path_params["jid"], body)
+                return JSONResponse(await run_in_threadpool(confirm), headers={"cache-control": "no-store"})
             if op != "cancel":
                 raise db.CrmError("NOT-FOUND", "그런 경로는 없어요.")
 
