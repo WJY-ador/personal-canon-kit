@@ -1799,6 +1799,9 @@ def definition_apply(uid, object_id, proposal_id, expected_revision):
         c.execute("UPDATE object_defs SET key=%s,label=%s,semantic_kind=%s,policy=%s,revision=%s,history=history || %s,"
                   "draft_doc=NULL,draft_id=NULL,draft_base_revision=NULL,updated_at=now() WHERE user_id=%s AND id=%s",
                   (nd["key"], nd["label"], nd["semantic_kind"], Jsonb(nd["policy"]), rev, Jsonb([snap]), uid, object_id))
+        # PR ②-b — 필수 칸·종류가 바뀌면 항목은 그대로여도 stage 가 바뀐다. 이 오브젝트 항목의 stage 를 지워 다음 읽기에서 다시 계산(lazy)
+        c.execute("DELETE FROM item_stage s USING items i WHERE s.user_id=i.user_id AND s.item_id=i.id AND i.user_id=%s AND i.object_id=%s",
+                  (uid, object_id))
         out = _def_out(c, uid, _one(c, f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s AND id=%s", (uid, object_id)))
     return out
 

@@ -8641,7 +8641,7 @@ def test_pr2b_stack_b1():
             db.init_schema(c)
             c.commit()
             fresh = {t: _pr2b_cols(c, t) for t in ("jobs", "items", "records", "stack_sessions", "confirm_events", "item_versions",
-                                                  "item_stage", "tmp_job_inputs", "tmp_job_results", "tmp_stack_previews")}
+                                                  "item_stage", "tmp_job_inputs", "tmp_job_results", "tmp_stack_previews", "tmp_stack_verbatim")}
             ck_sql = ("SELECT conname, pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE connamespace = current_schema()::regnamespace "
                       "AND conname LIKE 'ck_%%generation_kind'")
             fresh_ck = {r["conname"]: r["d"] for r in c.execute(ck_sql).fetchall()}
@@ -9287,6 +9287,15 @@ async def test_pr2b_stack_b3():
                 assert db.item_get(U, i_ev)["stage"] == "organized"
                 with db.tx() as c:
                     assert c.execute("SELECT stage FROM item_stage WHERE item_id=%s", (i_ev,)).fetchone(), "lazy 계산 저장"
+                od = db.definitions(U, ["od_events"])[0]
+                nd = {"key": od["key"], "label": od["label"], "semantic_kind": od["semantic_kind"], "policy": od["policy"],
+                      "fields": [{k: f[k] for k in ("key", "label", "value_type", "required", "options", "target_kind", "target_object_id",
+                                                    "multiple")} for f in od["fields"]]}
+                pp = db.definition_propose(U, "od_events", od["revision"], nd)
+                db.definition_apply(U, "od_events", pp["proposal_id"], od["revision"])
+                with db.tx() as c:
+                    assert not c.execute("SELECT 1 FROM item_stage WHERE item_id=%s", (i_ev,)).fetchone(), "정의 적용 = 그 오브젝트 stage 무효화"
+                assert db.item_get(U, i_ev)["stage"] == "organized"
     finally:
         site.dev, site.dev_user = real
         stack_service._confirm_fault = real_fault
