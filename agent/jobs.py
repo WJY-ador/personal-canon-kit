@@ -754,7 +754,8 @@ class Worker:
             self.halted = "auth"
             return {"outcome": "auth", "status": status, "code": code}
         if status == 409:
-            return {"outcome": "version-mismatch" if code == "JOB-VERSION" else "lease-lost", "code": code}
+            label = {"JOB-VERSION": "version-mismatch", "JOB-DEFS": "defs-changed"}.get(code, "lease-lost")
+            return {"outcome": label, "code": code}
         return {"outcome": "result-rejected", "status": status, "code": code}
 
     def _send_fail(self, jid: str, gen: int, reason_code: str, deadline: float) -> dict:

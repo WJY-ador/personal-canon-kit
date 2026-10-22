@@ -407,6 +407,15 @@ class DefsSnapshotTest(Base):
         self.assertEqual(self.result(j1)["envelope"]["definitions_version"], DEFS_V)
         self.assertEqual(self.result(j2)["envelope"]["definitions_version"], "defs-v2")
 
+    def test_server_defs_changed_on_result(self):
+        """결과 수신 때 서버 정의가 바뀌었으면 409 JOB-DEFS — 버리고 재전송·재실행 없음(재정리는 화면 몫)."""
+        jid = self.create()
+        self.srv.route_script[("result", jid)] = [(409, {"code": "JOB-DEFS"}, None)]
+        w = self.worker()
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out["code"]), ("defs-changed", "JOB-DEFS"))
+        self.assertEqual((len(self.srv.requests("result")), len(w.runner.calls)), (1, 1))
+
     def test_poll_version_must_match_snapshot(self):
         jid = self.create(definitions_version=DEFS_V)
         other = copy.deepcopy(DEFAULT_DEFS)
