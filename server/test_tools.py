@@ -3918,6 +3918,7 @@ async def run():
         await test_bi_delete()
         await test_pr1b_layout_stats()   # PR ①-b — 맨 끝(시작 때 tester·other 를 새로 만든다)
         await test_pr2a_jobs()   # PR ②-a — 맨 끝(시작 때 tester·other 를 새로 만든다)
+        await test_pr2b_stack()   # PR ②-b 28절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -8366,11 +8367,10 @@ async def test_pr2a_jobs():
                     r = await new("routine_ingest")
                     assert r.status_code == 201, ("스위치 켜짐 = 접수(K3 가안 한도)", r.text)
                     await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
-                    saved_lim = imports.JOB_REQUEST_LIMITS["routine_ingest"]
-                    imports.JOB_REQUEST_LIMITS["routine_ingest"] = None
+                    saved_lim = imports.JOB_REQUEST_LIMITS.pop("routine_ingest")   # ②-b K3: None = 무제한, 키 없음 = 설정 누락
                     try:
                         r = await new("routine_ingest")
-                        assert r.status_code == 503 and r.json()["code"] == "LIMIT-UNSET", ("한도 값 없음 = fail-closed", r.text)
+                        assert r.status_code == 503 and r.json()["code"] == "LIMIT-UNSET", ("한도 설정 누락 = fail-closed", r.text)
                     finally:
                         imports.JOB_REQUEST_LIMITS["routine_ingest"] = saved_lim
                     r = await new("summarize_reading")
@@ -8511,13 +8511,13 @@ async def test_pr2a_jobs():
                 assert sorted(x.status_code for x in rs) == [204, 429], [x.status_code for x in rs]
                 with _job_switch("CONVERSE_ENABLED"):
                     JQ = (await new()).json()["id"]
-                    lim = imports.JOB_REQUEST_LIMITS["converse"]
-                    with db.tx() as c:   # 하루 한도 경계 — 카운터를 상한까지 채운다(작업 60개를 만들면 열린 작업 상한이 먼저 걸린다)
+                    assert imports.JOB_REQUEST_LIMITS["converse"] is None, "②-b K3: converse 하루 한도 없음"
+                    with db.tx() as c:   # 하루 한도 없음 — 카운터가 옛 가안(60)을 한참 넘어도 접수(카운터는 관측용으로 계속 센다)
                         c.execute("UPDATE import_counters SET n=%s WHERE user_id=%s AND scope_key='user' AND period='day' AND bucket='job_converse'",
-                                  (lim - 1, U))
-                    assert (await new()).status_code == 201, f"하루 {lim}번째"
+                                  (10_000, U))
                     r = await new()
-                    assert r.status_code == 429 and r.json()["code"] == "JOB-QUOTA" and r.json().get("resume_at"), ("converse 하루 상한", r.text)
+                    assert r.status_code == 201, ("K3 하루 무제한", r.text)
+                    await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
                 with _job_switch():   # 꺼 두면 queued 로 남는다 → 웹 롱폴이 기다린다
                     rs = await asyncio.gather(*(h.get(f"/api/jobs/{JQ}", params={"wait": 2}) for _ in range(3)))
                     assert sorted(x.status_code for x in rs) == [200, 200, 429], [x.status_code for x in rs]
@@ -8559,6 +8559,183 @@ async def test_pr2a_jobs():
         assert not c.execute("SELECT 1 FROM pg_namespace WHERE nspname LIKE %s", (name + "%",)).fetchone(), "임시 스키마 잔여 0"
     print("OK — PR ②-a 작업 전달(스위치 4곳·접수·격리·원자 할당·임대 세대·attempts·result duplicate·fail 코드·세션 직렬화·needs_check·취소·24h 만료"
           "·본문 0·폴링 버킷 4/12·동시 1/2·표식 30일·계정 삭제·tmp 위치) 통과")
+
+
+# ── 28) PR ②-b 쌓기 단계·확인 1번 (2026-10-22, 구현계획 §3·§4 B1~B3) ─────────────────────
+# 사용자 = tester@·other@example.com 재사용(TEST_EMAILS 불변). run() 맨 끝(27절 뒤)에서 돌고 시작 때 두 계정을 새로 만든다.
+
+def _pr2b_old_shape(c):
+    """②-a 모양으로 되돌린다(②-b 열·표·CHECK 제거) — init_schema 가 옛 DB 를 최종형으로 올리는지 보는 재현."""
+    for t in ("item_stage", "item_versions", "confirm_events", "stack_sessions", "tmp_stack_previews"):
+        c.execute(f"DROP TABLE IF EXISTS {t} CASCADE")
+    c.execute("ALTER TABLE jobs DROP COLUMN edit_generation, DROP COLUMN parent_result_version")
+    c.execute("ALTER TABLE jobs ALTER COLUMN definitions_version TYPE integer USING definitions_version::integer")
+    c.execute("ALTER TABLE items DROP COLUMN current_version_id")
+    c.execute("ALTER TABLE tmp_job_inputs DROP COLUMN meta")
+    c.execute("ALTER TABLE tmp_job_results DROP COLUMN units")
+    for t in ("records", "items"):
+        c.execute(f"ALTER TABLE {t} DROP CONSTRAINT ck_{t}_generation_kind")
+        c.execute(f"ALTER TABLE {t} ADD CONSTRAINT ck_{t}_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed'))")
+
+
+def _pr2b_cols(c, t):
+    return {r["column_name"]: r["data_type"] for r in c.execute(
+        "SELECT column_name, data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s", (t,)).fetchall()}
+
+
+def _pr2b_sql(c, sql, args=()):
+    """시험 전용 직접 쓰기(경계 조작). 반환 rowcount."""
+    return c.execute(sql, args).rowcount
+
+
+def _pr2b_err(fn, code):
+    try:
+        fn()
+    except db.CrmError as e:
+        assert e.code == code, (code, e.code, e.message)
+        return e
+    raise AssertionError(f"{code} 기대인데 성공")
+
+
+def test_pr2b_stack_b1():
+    """B1 — 스키마 4표·jobs 새 열·definitions_version text·items 판 포인터·generation_kind 2값 · 옛 DB(②-a 모양) → init_schema 최종형·멱등·기존 행 보존
+    · 한도 K3(None = 무제한·키 없음 = LIMIT-UNSET·숫자 아님 = LIMIT-UNSET·모르는 kind 400) · 세션 행(첫 converse 가 만든다·input_kind 고정·
+    만료 24h 고정·작업 만료 ≤ 세션 만료·끝난 세션 JOB-GONE·본문 열 0) · 세션 만료 sweep · 표식 파기(확정 세션은 남는다) · 계정 삭제 0."""
+    import uuid
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    # ── 스키마(새 설치 = 이 DB) ──
+    with db.tx() as c:
+        for t in ("stack_sessions", "confirm_events", "item_versions", "item_stage"):
+            assert db._has_table(c, t), t
+        jc = _pr2b_cols(c, "jobs")
+        assert jc["definitions_version"] == "text" and jc["edit_generation"] == "integer" and jc["parent_result_version"] == "uuid", jc
+        assert "current_version_id" in _pr2b_cols(c, "items")
+        body_cols = {"text", "body", "summary_text", "units", "changes", "title"}
+        for t in ("stack_sessions", "confirm_events", "item_stage", "jobs"):
+            assert not body_cols & set(_pr2b_cols(c, t)), ("본문 열 0", t)
+        prv = db._tmp_previews_name(c)
+        if c.execute("SELECT current_schema() AS s").fetchone()["s"] == "public":
+            assert prv == "tmp.stack_previews"
+            fk = c.execute("SELECT count(*) AS n FROM pg_constraint WHERE contype='f' AND conrelid='tmp.stack_previews'::regclass "
+                           "AND confrelid='public.jobs'::regclass").fetchone()["n"]
+            assert fk == 1, "미리보기 → public.jobs FK(ON DELETE CASCADE)"
+        rid = db.new_id("r")
+        c.execute("INSERT INTO records (id,user_id,title,body,generation_kind) VALUES (%s,%s,'합성','합성 본문','conversation')", (rid, U))
+        try:
+            with c.transaction():
+                _pr2b_sql(c, "UPDATE records SET generation_kind='bogus' WHERE id=%s", (rid,))
+            raise AssertionError("generation_kind 열거 밖 허용")
+        except psycopg.errors.CheckViolation:
+            pass
+        c.execute("DELETE FROM records WHERE id=%s", (rid,))
+    # ── 옛 DB(②-a 모양) → init_schema ──
+    name = f"s2b_{secrets.token_hex(3)}"
+    create_schema(name)
+    try:
+        with schema_conn(name) as c:
+            db.init_schema(c)
+            c.commit()
+            fresh = {t: _pr2b_cols(c, t) for t in ("jobs", "items", "records", "stack_sessions", "confirm_events", "item_versions",
+                                                  "item_stage", "tmp_job_inputs", "tmp_job_results", "tmp_stack_previews")}
+            ck_sql = ("SELECT conname, pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE connamespace = current_schema()::regnamespace "
+                      "AND conname LIKE 'ck_%%generation_kind'")
+            fresh_ck = {r["conname"]: r["d"] for r in c.execute(ck_sql).fetchall()}
+            _pr2b_old_shape(c)
+            c.execute("INSERT INTO users (id,email,display_name) VALUES ('u_old2b','old2b@example.com','합성')")
+            c.execute("INSERT INTO records (id,user_id,title,body,generation_kind) VALUES ('r_old2b','u_old2b','옛','옛 본문','ai')")
+            jid, sid = uuid.uuid4(), uuid.uuid4()
+            c.execute("INSERT INTO jobs (id,user_id,session_id,kind,expires_at) VALUES (%s,'u_old2b',%s,'converse',now() + interval '1 hour')",
+                      (jid, sid))
+            c.execute("INSERT INTO tmp_job_inputs (job_id,user_id,text,bytes) VALUES (%s,'u_old2b','옛 입력',9)", (jid,))
+            c.commit()
+            assert _pr2b_cols(c, "jobs")["definitions_version"] == "integer" and not db._has_table(c, "stack_sessions"), "옛 모양 재현"
+            db.init_schema(c)
+            db.init_schema(c)   # 멱등
+            c.commit()
+            got = {t: _pr2b_cols(c, t) for t in fresh}
+            assert got == fresh, {t: (set(got[t].items()) ^ set(fresh[t].items())) for t in fresh if got[t] != fresh[t]}
+            got_ck = {r["conname"]: r["d"] for r in c.execute(ck_sql).fetchall()}
+            assert got_ck == fresh_ck and all("'conversation'" in d and "'routine'" in d for d in got_ck.values()), got_ck
+            r = c.execute("SELECT generation_kind FROM records WHERE id='r_old2b'").fetchone()
+            j = c.execute("SELECT definitions_version, edit_generation, parent_result_version FROM jobs WHERE id=%s", (jid,)).fetchone()
+            t = c.execute("SELECT text, meta FROM tmp_job_inputs WHERE job_id=%s", (jid,)).fetchone()
+            assert r["generation_kind"] == "ai" and j == {"definitions_version": None, "edit_generation": 0, "parent_result_version": None}, (r, j)
+            assert t == {"text": "옛 입력", "meta": {}}, "임시 입력 보존 + meta 기본값"
+            c.commit()
+    finally:
+        drop_schema(name)
+    # ── 한도 K3 ──
+    TXT = "합성 입력 STACKTEXT — 일반 테이블에 남으면 안 된다"
+    with _job_switch("CONVERSE_ENABLED"):
+        assert all(v is None for v in imports.JOB_REQUEST_LIMITS.values()) and set(imports.JOB_REQUEST_LIMITS) == set(db.JOB_KINDS)
+        for kind, ik in (("nope", None), ("converse", "nope"), ("routine_ingest", "converse")):
+            _pr2b_err(lambda: db.job_create(U, kind, TXT, input_kind=ik), "ARG-INVALID")
+        saved = imports.JOB_REQUEST_LIMITS.pop("converse")
+        try:
+            _pr2b_err(lambda: db.job_create(U, "converse", TXT), "LIMIT-UNSET")   # 키 없음 = 설정 누락
+            imports.JOB_REQUEST_LIMITS["converse"] = "60"
+            _pr2b_err(lambda: db.job_create(U, "converse", TXT), "LIMIT-UNSET")   # 숫자 아님 = 설정 이상
+        finally:
+            imports.JOB_REQUEST_LIMITS["converse"] = saved
+        with db.tx() as c:
+            assert not c.execute("SELECT 1 FROM jobs WHERE user_id=%s", (U,)).fetchone(), "거절은 행 0"
+        # ── 세션 행 ──
+        a = db.job_create(U, "converse", TXT, input_kind="verbatim")
+        b = db.job_create(U, "converse", TXT + " 둘째", session_id=a["session_id"], input_kind="converse")   # 후속 input_kind 무시
+        with db.tx() as c:
+            s = c.execute("SELECT * FROM stack_sessions WHERE id=%s", (a["session_id"],)).fetchone()
+            ja = c.execute("SELECT * FROM jobs WHERE id=%s", (a["id"],)).fetchone()
+            jb = c.execute("SELECT * FROM jobs WHERE id=%s", (b["id"],)).fetchone()
+        assert s["user_id"] == U and s["input_kind"] == "verbatim" and str(s["latest_job_id"]) == b["id"] and s["edit_generation"] == 0, s
+        assert abs((s["expires_at"] - s["created_at"]).total_seconds() - 24 * 3600) < 5, "세션 만료 = 최초 입력 + 24h"
+        assert jb["expires_at"] <= s["expires_at"] and ja["expires_at"] <= s["expires_at"], "작업 만료 ≤ 세션 만료"
+        with db.tx() as c:   # 세션 만료를 당긴다 → 후속 작업 만료도 세션 만료에 묶인다
+            _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() + interval '2 hours' WHERE id=%s", (a["session_id"],))
+        cc = db.job_create(U, "converse", TXT + " 셋째", session_id=a["session_id"])
+        with db.tx() as c:
+            s2 = c.execute("SELECT expires_at FROM stack_sessions WHERE id=%s", (a["session_id"],)).fetchone()
+            j3 = c.execute("SELECT expires_at FROM jobs WHERE id=%s", (cc["id"],)).fetchone()
+        assert j3["expires_at"] == s2["expires_at"], "후속 턴이 세션을 연장하지 않는다(작업 만료 = 세션 만료)"
+        for jid in (a["id"], b["id"], cc["id"]):
+            db.job_cancel(U, jid)
+        _pr2b_err(lambda: db.job_create(O, "converse", TXT, session_id=a["session_id"]), "NOT-FOUND")   # 남의 세션
+        with db.tx() as c:   # 만료 → sweep 이 terminal_at → 접수 JOB-GONE
+            _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() - interval '1 second' WHERE id=%s", (a["session_id"],))
+            db._job_sweep(c)
+            assert c.execute("SELECT terminal_at FROM stack_sessions WHERE id=%s", (a["session_id"],)).fetchone()["terminal_at"]
+        _pr2b_err(lambda: db.job_create(U, "converse", TXT, session_id=a["session_id"]), "JOB-GONE")
+        # ── 표식 파기: 끝난 지 30일 지난 미확정 세션만 지운다. 확정 세션(confirm_event_id)은 남는다 ──
+        d = db.job_create(U, "converse", TXT)
+        db.job_cancel(U, d["id"])
+        ce = uuid.uuid4()
+        with db.tx() as c:
+            _pr2b_sql(c, "UPDATE stack_sessions SET terminal_at = now() - interval '31 days', expires_at = now() - interval '31 days' "
+                         "WHERE user_id=%s", (U,))
+            _pr2b_sql(c, "UPDATE stack_sessions SET confirm_event_id=%s WHERE id=%s", (ce, d["session_id"]))
+        db.jobs_purge()
+        with db.tx() as c:
+            left = {str(r["id"]) for r in c.execute("SELECT id FROM stack_sessions WHERE user_id=%s", (U,)).fetchall()}
+            jobs_text = c.execute("SELECT count(*) AS n FROM jobs j WHERE user_id=%s AND row_to_json(j)::text LIKE '%%STACKTEXT%%'",
+                                  (U,)).fetchone()["n"]
+            inp, res = db._tmp_names(c)
+            tmp_left = c.execute(f"SELECT count(*) AS n FROM {inp} WHERE user_id=%s", (U,)).fetchone()["n"]
+        assert left == {d["session_id"]}, ("미확정 표식 30일 파기 · 확정 세션 보존", left)
+        assert jobs_text == 0 and tmp_left == 0, "일반 테이블 본문 0 · 종료 작업 임시 본문 0"
+    # ── 계정 삭제 = 세션·확인 이벤트 0(DELETE_TABLES 정적 검사는 25절) ──
+    db.user_delete(U)
+    with db.tx() as c:
+        for t in ("stack_sessions", "confirm_events", "item_versions", "item_stage"):
+            assert c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (U,)).fetchone()["n"] == 0, t
+    print("OK — 28 B1 ②-b 스키마(4표·jobs 새 열·definitions_version text·판 포인터·generation_kind 2값·본문 열 0·미리보기 FK) · 옛 DB 최종형·멱등·행 보존"
+          " · 한도 K3(None 무제한·누락·이상 LIMIT-UNSET·모르는 kind 400) · 세션 행(input_kind 고정·24h 고정·작업 만료 ≤ 세션·남 404·만료 410)"
+          " · 표식 파기(확정 세션 보존) · 계정 삭제 0 통과")
+
+
+async def test_pr2b_stack():
+    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션)."""
+    test_pr2b_stack_b1()
 
 
 def Web_polls_empty():

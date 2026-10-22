@@ -65,9 +65,12 @@ BUCKETS = ("request", "self", "activity")
 POLL_LIMITS = {("device", "minute"): 4, ("user", "minute"): 12}   # GET /api/device/jobs(장치·사용자) · GET /api/jobs/<id>(사용자)
 POLL_CONCURRENT = {"device": 1, "web": 2}                         # 동시 롱폴(장치당 · 사용자당 웹) — 서버 프로세스 메모리
 POLL_WAIT_MAX = 30                                                # 롱폴 최대 초
-JOB_REQUEST_LIMITS = {"summarize_reading": 10, "converse": 60, "routine_ingest": 10}   # 사용자 하루 접수 — K3 가안(r2 R1, 원작자 결정 전). None = 접수 거절
-# PC 시도(입력 조회 성공 = CLI 시작 직전) 기록은 jobs.attempts. 시도 한도(K3 가안 converse 60·routine 10)는 PC 쪽(agent/jobs.py)이 센다
-JOBS_OPEN_MAX = 20                                                # 사용자당 살아 있는 작업(queued·leased·running·result_ready) — 임시 용량 가안
+# 사용자 하루 접수 한도(작업 종류별). K3 원작자 결정(2026-10-22): 일일 한도 없음 → None = 무제한(카운터 job_<kind> 는 관측용으로 센다).
+# None 의 뜻은 여기 등록된 작업 종류의 일일 요청·시도 한도에만 — 키가 빠진 종류 = 설정 누락 LIMIT-UNSET(fail-closed), 모르는 kind = ARG-INVALID.
+# 분당 버킷·폴링·진행 중 상한·임시 용량·기록 보관 한도(db.DAILY_LIMITS)에는 이 뜻을 옮기지 않는다.
+JOB_REQUEST_LIMITS = {"summarize_reading": None, "converse": None, "routine_ingest": None}
+# PC 시도(입력 조회 성공 = CLI 시작 직전) 기록은 jobs.attempts. 실제 CLI 재시도는 PC 가 결과 model_meta 에 따로 싣는다
+JOBS_OPEN_MAX = 20                                                # 사용자당 살아 있는 작업(queued·leased·running·result_ready) — 가안(원작자 결정 남음)
 JOB_BUCKETS = ("poll",) + tuple("job_" + k for k in JOB_REQUEST_LIMITS)   # import_counters.bucket 추가 열거
 ALIAS_PREFIX = "사람-"        # 장치가 만든 사람의 기본 별칭(사람-0001). 실명에서 만들지 않는다
 SOURCE_NAMES = {"sns": "SNS 활동", "web": "웹 활동", "mail": "메일 활동", "kakao": "카카오톡 활동"}   # 활동 일반 출처 이름(서버가 정한다)

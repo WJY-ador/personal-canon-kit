@@ -455,6 +455,7 @@ def _init_schema(c):
         if not _has_constraint(c, "records", "fk_records_source"):
             c.execute("ALTER TABLE records ADD CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)")
         _migrate_board_import(c)   # board 이전(2026-10-20) — 열·이름 붙은 CHECK·부분 UNIQUE·item_links 대상 확장
+        _migrate_stack(c)   # PR ②-b — jobs 새 열·definitions_version text·items 판 포인터·generation_kind 넓히기
         _init_tmp(c)   # PR ②-a 임시 보관 — schema.sql 의 jobs 뒤(FK 대상). 위치는 current_schema() 로 정한다
         _migrate_classify_roles(c)
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
@@ -492,7 +493,7 @@ _IMPORT_PROV_COLS = (("source_created_at", "timestamptz"), ("source_date", "date
                      ("import_batch_id", "text"))
 _IMPORT_PROV_CHECKS = (
     ("ck_{t}_ingest_kind", "CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration'))"),
-    ("ck_{t}_generation_kind", "CHECK (generation_kind IN ('unknown','human','ai','mixed'))"),
+    ("ck_{t}_generation_kind", "CHECK (generation_kind IN ('unknown','human','ai','mixed','conversation','routine'))"),   # ②-b 2값 추가
     ("ck_{t}_generation_meta", "CHECK (jsonb_typeof(generation_meta) = 'object')"),
     ("ck_{t}_source_when", "CHECK (source_created_at IS NULL OR source_date IS NULL)"))
 _ITEM_LINK_TARGETS = (("target_person_id", "fk_item_links_person", "people"), ("target_source_id", "fk_item_links_source", "sources"),
@@ -552,6 +553,26 @@ def _migrate_board_import(c):
         if not c.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relnamespace = current_schema()::regnamespace",
                          (name,)).fetchone():
             c.execute(ddl)
+
+
+GENERATION_KINDS = ("unknown", "human", "ai", "mixed", "conversation", "routine")   # records·items.generation_kind(②-b 뒤 2값 추가)
+
+
+def _migrate_stack(c):
+    """PR ②-b 쌓기 단계 — 옛 DB 를 schema.sql 최종형과 같은 모양으로. 매번 돌아도 된다(있으면 건드리지 않는다). 새 표 4개는 schema.sql 이 만든다.
+    · jobs: definitions_version integer → text(②-a 값은 늘 NULL) · edit_generation · parent_result_version
+    · items: current_version_id(판 포인터) · records·items: generation_kind CHECK 에 conversation·routine(기존 값 그대로)"""
+    r = _one(c, "SELECT data_type FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='jobs' "
+                "AND column_name='definitions_version'")
+    if r and r["data_type"] != "text":
+        c.execute("ALTER TABLE jobs ALTER COLUMN definitions_version TYPE text USING definitions_version::text")
+    for n, ddl in (("edit_generation", "integer NOT NULL DEFAULT 0 CHECK (edit_generation >= 0)"), ("parent_result_version", "uuid")):
+        if not _has_col(c, "jobs", n):
+            c.execute(f"ALTER TABLE jobs ADD COLUMN {n} {ddl}")
+    if not _has_col(c, "items", "current_version_id"):
+        c.execute("ALTER TABLE items ADD COLUMN current_version_id text")
+    for t in ("records", "items"):
+        _widen_check(c, t, f"ck_{t}_generation_kind", "generation_kind", GENERATION_KINDS)
 
 
 def _widen_check(c, t, name, col, vals):
@@ -2966,8 +2987,10 @@ DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. �
 # 지울 테이블 = schema.sql 에서 user_id 열을 가진 테이블 − deletion_contacts. 순서 = 보호 Lookup(NO ACTION·RESTRICT) 자식부터.
 # tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
 # board 이전(2026-10-20): 관계(activity_links) → 접수 대응표(import_entries) → 업무 자료(activities) → 한도·입력원(import_counters·import_streams).
-DELETE_TABLES = ("page_layouts", "jobs", "item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
-                 "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
+# PR ②-b: 판·stage(items 자식, 확인 이벤트를 가리킨다) → 확인 이벤트 → items.
+DELETE_TABLES = ("page_layouts", "stack_sessions", "jobs", "item_links", "activity_links", "import_entries", "activities", "import_counters",
+                 "import_streams", "item_stage", "item_versions", "confirm_events", "item_history", "items", "user_roles", "field_defs",
+                 "object_defs", "std_choices", "std_marks",
                  "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
                  "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
 DELETE_KEEP_TABLES = ("deletion_contacts",)
@@ -3722,12 +3745,30 @@ def _tmp_names(c):
     return f"{_qident(s)}.tmp_job_inputs", f"{_qident(s)}.tmp_job_results"
 
 
+def _tmp_previews_name(c):
+    """PR ②-b 미리보기 임시 테이블 이름 — _tmp_names 와 같은 규칙(public = tmp.stack_previews, 시험 임시 스키마 = 그 안 tmp_stack_previews — 계획서의 job_previews. 이름이 tmp_job_% 가 아닌 것은 ②-a 27절 「tmp_job_* 2개」 단언 보존)."""
+    s = _one(c, "SELECT current_schema() AS s")["s"]
+    return "tmp.stack_previews" if s == "public" else f"{_qident(s)}.tmp_stack_previews"
+
+
+def _tmp_add_col(c, table, col, ddl):
+    """임시 테이블 열 추가(멱등) — 있으면 ALTER 를 부르지 않는다. table = _tmp_names 가 준 (스키마.)이름."""
+    sch, _, name = table.rpartition(".")
+    sch = sch.strip('"').replace('""', '"') if sch else _one(c, "SELECT current_schema() AS s")["s"]
+    name = name.strip('"').replace('""', '"')
+    if not _one(c, "SELECT 1 AS x FROM information_schema.columns WHERE table_schema=%s AND table_name=%s AND column_name=%s",
+                (sch, name, col)):
+        c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+
 def _init_tmp(c):
-    """임시 보관 테이블 — 멱등. FK = (user_id, job_id) → jobs ON DELETE CASCADE(작업 행이 지워지면 본문도). 일반 테이블에 본문을 두지 않는다."""
+    """임시 보관 테이블 — 멱등. FK = (user_id, job_id) → jobs ON DELETE CASCADE(작업 행이 지워지면 본문도). 일반 테이블에 본문을 두지 않는다.
+    PR ②-b: 입력 meta(재정리 구조화 입력: 원 결과 참조·제외·답) · 결과 units · 미리보기 표(제외 반영마다 새 행)."""
     s = _one(c, "SELECT current_schema() AS s")["s"]
     if s == "public":
         c.execute("CREATE SCHEMA IF NOT EXISTS tmp")
     inp, res = _tmp_names(c)
+    prv = _tmp_previews_name(c)
     jobs = f"{_qident(s)}.jobs"
     c.execute(f"CREATE TABLE IF NOT EXISTS {inp} (job_id uuid PRIMARY KEY, user_id text NOT NULL, text text NOT NULL, "
               f"bytes integer NOT NULL CHECK (bytes >= 0), created_at timestamptz NOT NULL DEFAULT now(), "
@@ -3736,12 +3777,20 @@ def _init_tmp(c):
               f"summary_text text NOT NULL, changes jsonb NOT NULL, blocked jsonb NOT NULL, text_map jsonb NOT NULL, "
               f"model_meta jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), "
               f"FOREIGN KEY (user_id, job_id) REFERENCES {jobs}(user_id, id) ON DELETE CASCADE)")
+    _tmp_add_col(c, inp, "meta", "jsonb NOT NULL DEFAULT '{}'")
+    _tmp_add_col(c, res, "units", "jsonb")   # NULL = ②-a 옛 꼴 결과(미리보기 없음)
+    c.execute(f"CREATE TABLE IF NOT EXISTS {prv} (id uuid PRIMARY KEY, job_id uuid NOT NULL, user_id text NOT NULL, session_id uuid NOT NULL, "
+              f"result_version uuid NOT NULL, preview_version integer NOT NULL CHECK (preview_version > 0), preview_sha text NOT NULL, "
+              f"edit_generation integer NOT NULL, units jsonb NOT NULL, changes jsonb NOT NULL, blocked jsonb NOT NULL, "
+              f"target_versions jsonb NOT NULL, excluded jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), "
+              f"UNIQUE (job_id, preview_version), "
+              f"FOREIGN KEY (user_id, job_id) REFERENCES {jobs}(user_id, id) ON DELETE CASCADE)")
 
 
 def _tmp_delete_user(c, uid):
     inp, res = _tmp_names(c)
-    c.execute(f"DELETE FROM {res} WHERE user_id=%s", (uid,))
-    c.execute(f"DELETE FROM {inp} WHERE user_id=%s", (uid,))
+    for t in (_tmp_previews_name(c), res, inp):
+        c.execute(f"DELETE FROM {t} WHERE user_id=%s", (uid,))
 
 
 def job_switch_on(kind):
@@ -3783,9 +3832,10 @@ def _job_sweep(c):
     장치 폴·웹 접수·상태·주기 파기(purge_once)가 부른다. 반환 {expired, needs_check, tmp}."""
     ex = c.execute(_SET_EXPIRED, (list(JOB_LIVE),)).rowcount
     nc = c.execute(_SET_NEEDS_CHECK).rowcount
+    c.execute("UPDATE stack_sessions SET terminal_at=now() WHERE terminal_at IS NULL AND expires_at <= now()")   # ②-b 세션 만료(연장 없음)
     inp, res = _tmp_names(c)
     n = 0
-    for t in (res, inp):
+    for t in (_tmp_previews_name(c), res, inp):
         n += c.execute(f"DELETE FROM {t} x USING jobs j WHERE j.user_id=x.user_id AND j.id=x.job_id "
                        "AND (j.terminal_at IS NOT NULL OR j.expires_at <= now())").rowcount
     return {"expired": ex, "needs_check": nc, "tmp": n}
@@ -3796,6 +3846,9 @@ def jobs_purge():
     with tx() as c:
         n = _job_sweep(c)
         m = c.execute("DELETE FROM jobs WHERE terminal_at < now() - make_interval(days => %s)", (JOB_MARKER_DAYS,)).rowcount
+        # ②-b 세션 표식 — 확정 안 된 채 끝난 세션만 같은 기간 뒤 삭제. 확정 세션은 확인 이벤트와 함께 남는다(본문 없음)
+        m += c.execute("DELETE FROM stack_sessions WHERE confirm_event_id IS NULL AND terminal_at < now() - make_interval(days => %s)",
+                       (JOB_MARKER_DAYS,)).rowcount
     return sum(n.values()) + m
 
 
@@ -3806,12 +3859,20 @@ def _job_out(j):
             "terminal_at": j["terminal_at"].isoformat() if j["terminal_at"] else None}
 
 
-def job_create(uid, kind, text, session_id=None):
+STACK_INPUT_KINDS = ("converse", "verbatim")   # ②-b 세션 입력 종류 — 첫 입력 때 정한다(verbatim = 원문 던지기, 확정 때 원문 기록 동반)
+
+
+def job_create(uid, kind, text, session_id=None, input_kind=None):
     """웹 접수 — 스위치 → 모양 → 길이(8,000 코드포인트·32KiB 각각) → 한도(종류별 하루·열린 작업 수) → jobs 행 + 임시 입력 한 트랜잭션.
-    session_id 를 주면 그 사용자의 기존 세션이어야 한다(NOT-FOUND). 반환 {id, session_id}."""
+    session_id 를 주면 그 사용자의 기존 세션이어야 한다(NOT-FOUND). 반환 {id, session_id}.
+    한도(K3, ②-b): imports.JOB_REQUEST_LIMITS[kind] 가 None = 하루 무제한(카운터는 센다), 숫자 = 하루 상한, 키 없음 = 설정 누락 LIMIT-UNSET.
+    converse(②-b) = 세션 행(stack_sessions) — 새 세션이면 만든다(input_kind 기본 converse, 만료 = 지금 + 24h 고정), 기존 세션이면
+    살아 있어야 하고(만료·확정 = JOB-GONE) input_kind 는 무시한다. 작업 만료 = min(지금 + 24h, 세션 만료)."""
     import imports
     if kind not in JOB_KINDS:
         raise CrmError("ARG-INVALID", f"kind 는 {', '.join(JOB_KINDS)} 중 하나예요.")
+    if input_kind is not None and (kind != "converse" or input_kind not in STACK_INPUT_KINDS):
+        raise CrmError("ARG-INVALID", f"input_kind 는 converse 작업에서만 {', '.join(STACK_INPUT_KINDS)} 중 하나예요.")
     if not job_switch_on(kind):
         raise _job_off()
     if not isinstance(text, str) or not text.strip():
@@ -3820,24 +3881,43 @@ def job_create(uid, kind, text, session_id=None):
     if len(text) > JOB_TEXT_MAX_CP or nb > JOB_TEXT_MAX_BYTES:
         raise CrmError("PAYLOAD-LIMIT", f"text 가 너무 길어요(상한 {JOB_TEXT_MAX_CP}자·{JOB_TEXT_MAX_BYTES} 바이트).",
                        "줄이거나 나눠서 다시 보내세요.")
-    limit = imports.JOB_REQUEST_LIMITS.get(kind)
-    if limit is None:   # K3 한도 미정 — 스위치가 켜져도 무제한으로 받지 않는다(fail-closed)
-        raise CrmError("LIMIT-UNSET", "이 작업 종류의 한도가 아직 정해지지 않았어요.", "운영자가 한도를 정할 때까지 기다리세요.")
+    if kind not in imports.JOB_REQUEST_LIMITS:   # 등록된 종류인데 한도 설정 항목이 없다 = 설정 누락(fail-closed). None(무제한)과 다르다
+        raise CrmError("LIMIT-UNSET", "이 작업 종류의 한도 설정이 없어요.", "운영자가 한도를 정할 때까지 기다리세요.")
+    limit = imports.JOB_REQUEST_LIMITS[kind]
+    if limit is not None and not _is_int(limit):
+        raise CrmError("LIMIT-UNSET", "이 작업 종류의 한도 설정이 올바르지 않아요.", "운영자가 한도를 정할 때까지 기다리세요.")
     sid = _job_uuid(session_id, gone=False) if session_id else _uuid.uuid4()
     jid = _uuid.uuid4()
     with tx() as c:
         _user_lock(c, uid)
         _job_sweep(c)
-        if session_id and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND session_id=%s LIMIT 1", (uid, sid)):
+        sess = None
+        if kind == "converse":   # 잠금 순서 = users 행 → stack_sessions → jobs
+            if session_id:
+                sess = _one(c, "SELECT *, (expires_at <= now()) AS gone_ttl FROM stack_sessions WHERE user_id=%s AND id=%s FOR UPDATE",
+                            (uid, sid))
+                if not sess:
+                    raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+                if sess["gone_ttl"] or sess["terminal_at"] is not None:
+                    raise CrmError("JOB-GONE", "이 대화 세션은 끝났어요(만료·확정).", "새 대화로 시작하세요.")
+        elif session_id and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND session_id=%s LIMIT 1", (uid, sid)):
             raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
         n_open = _one(c, "SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s)", (uid, list(JOB_LIVE)))["n"]
         if n_open >= imports.JOBS_OPEN_MAX:
             raise CrmError("JOB-LIMIT", f"진행 중인 작업이 너무 많아요(최대 {imports.JOBS_OPEN_MAX}).", "끝나거나 취소된 뒤 다시 보내세요.")
-        if imports._bump(c, uid, "user", "day", "job_" + kind)["n"] > limit:
+        n_day = imports._bump(c, uid, "user", "day", "job_" + kind)["n"]   # 무제한이어도 센다(관측)
+        if limit is not None and n_day > limit:
             raise imports._with_resume(CrmError("JOB-QUOTA", f"오늘 보낼 수 있는 작업 수를 넘었어요(하루 {limit}).",
                                                  "내일(KST 0시 이후) 다시 보내세요."))
-        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,expires_at) VALUES (%s,%s,%s,%s,now() + make_interval(hours => %s))",
-                  (jid, uid, sid, kind, JOB_TTL_HOURS))
+        if kind == "converse" and sess is None:
+            sess = _one(c, "INSERT INTO stack_sessions (id,user_id,input_kind,expires_at) "
+                           "VALUES (%s,%s,%s,now() + make_interval(hours => %s)) RETURNING *",
+                        (sid, uid, input_kind or "converse", JOB_TTL_HOURS))
+        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,edit_generation,expires_at) "
+                  "VALUES (%s,%s,%s,%s,%s,LEAST(now() + make_interval(hours => %s), %s::timestamptz))",
+                  (jid, uid, sid, kind, sess["edit_generation"] if sess else 0, JOB_TTL_HOURS, sess["expires_at"] if sess else None))
+        if sess:
+            c.execute("UPDATE stack_sessions SET latest_job_id=%s WHERE user_id=%s AND id=%s", (jid, uid, sid))
         inp, _res = _tmp_names(c)
         c.execute(f"INSERT INTO {inp} (job_id,user_id,text,bytes) VALUES (%s,%s,%s,%s)", (jid, uid, text, nb))
     return {"id": str(jid), "session_id": str(sid)}

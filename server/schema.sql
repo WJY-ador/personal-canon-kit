@@ -91,7 +91,8 @@ CREATE TABLE IF NOT EXISTS records (
   CONSTRAINT ck_records_text_process CHECK (text_process IN ('verbatim','structured','rewritten','generated','unknown')),
   CONSTRAINT ck_records_provenance_history CHECK (jsonb_typeof(provenance_history) = 'array'),
   CONSTRAINT ck_records_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
-  CONSTRAINT ck_records_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed')),
+  -- PR ②-b: conversation = 확인 1번을 거친 대화 정리(인용 적격은 confirm_events 실재까지 — db._eligible) · routine = 루틴 결과(비적격)
+  CONSTRAINT ck_records_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed','conversation','routine')),
   CONSTRAINT ck_records_generation_meta CHECK (jsonb_typeof(generation_meta) = 'object'),
   CONSTRAINT ck_records_source_when CHECK (source_created_at IS NULL OR source_date IS NULL)
 );
@@ -277,10 +278,13 @@ CREATE TABLE IF NOT EXISTS items (
   generation_kind     text NOT NULL DEFAULT 'unknown',
   generation_meta     jsonb NOT NULL DEFAULT '{}',
   import_batch_id     text,
+  -- PR ②-b 판 이력: 지금 판(item_versions.id). NULL = 판 이력 없음(확인 1번으로 확정한 적 없음). FK 없음(서버 검사) — 삭제 순서가 items 보다 판이 먼저.
+  -- 옛 DB 는 db._init_schema 가 더한다
+  current_version_id  text,
   PRIMARY KEY (user_id, id),
   UNIQUE (user_id, id, object_id),                  -- item_links 복합 FK 대상
   CONSTRAINT ck_items_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
-  CONSTRAINT ck_items_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed')),
+  CONSTRAINT ck_items_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed','conversation','routine')),
   CONSTRAINT ck_items_generation_meta CHECK (jsonb_typeof(generation_meta) = 'object'),
   CONSTRAINT ck_items_source_when CHECK (source_created_at IS NULL OR source_date IS NULL),
   UNIQUE (user_id, object_id, code),
@@ -679,7 +683,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   lease_generation    integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
   lease_expires_at    timestamptz,
   input_version       integer NOT NULL DEFAULT 1 CHECK (input_version > 0),
-  definitions_version integer,                    -- ②-b 구조 정의 스냅샷. ②-a 는 NULL
+  definitions_version text,                       -- ②-b 구조 정의 스냅샷 sha256 hex(최초 발급 때 고정). ②-a 는 NULL. 옛 DB integer → init_schema 가 text 로
+  edit_generation     integer NOT NULL DEFAULT 0 CHECK (edit_generation >= 0),   -- ②-b 이 작업을 접수할 때의 세션 편집 세대. 옛 DB 는 init_schema
+  parent_result_version uuid,                     -- ②-b 재정리 작업이면 원 결과 버전. 옛 DB 는 init_schema
   attempts            integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),   -- 입력 조회 성공 수(PC 시도 기록)
   reason_code         text CHECK (reason_code IN ('output-not-json','output-shape','result-shape','timeout','cli-exit','login',
                                                   'input-too-large')),
@@ -692,3 +698,74 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_queue ON jobs (user_id, created_at) WHERE status = 'queued';
 CREATE INDEX IF NOT EXISTS ix_jobs_session ON jobs (user_id, session_id);
+
+-- PR ②-b 쌓기 단계·확인 1번(2026-10-22, 구현계획 §3-1). 이 표들엔 본문이 없다 — 입력·결과·미리보기(정리 글·변경 목록)는 임시 보관
+-- (tmp 스키마, db._init_tmp). 계정 삭제는 db.DELETE_TABLES + user_delete(items cascade).
+-- 세션 = 대화 하나(여러 작업). 만료 = 최초 입력 + 24h 고정(후속 턴·재정리로 연장 없음). 확정은 세션당 1번(confirm_events UNIQUE).
+CREATE TABLE IF NOT EXISTS stack_sessions (
+  id                uuid PRIMARY KEY,                 -- = jobs.session_id(FK 없음, 서버 검사)
+  user_id           text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  input_kind        text NOT NULL CHECK (input_kind IN ('converse','verbatim')),   -- 첫 입력 때 정한다. 재정리로 바뀌지 않는다
+  latest_job_id     uuid,                             -- 이 세션에서 가장 늦게 접수한 작업
+  latest_preview_id uuid,                             -- 그 작업의 최신 미리보기(tmp). 없으면 NULL
+  edit_generation   integer NOT NULL DEFAULT 0 CHECK (edit_generation >= 0),
+  expires_at        timestamptz NOT NULL,
+  confirm_event_id  uuid,                             -- 확정되면 그 확인 이벤트
+  created_at        timestamptz NOT NULL DEFAULT now(),
+  terminal_at       timestamptz,                      -- 확정·만료 시각
+  UNIQUE (user_id, id),
+  CHECK (confirm_event_id IS NULL OR terminal_at IS NOT NULL)
+);
+
+-- 확인 이벤트 = 사용자가 미리보기 하나(버전·해시)를 보고 [확정] 1번. 대화 정리 기록의 인용 적격 근거(db._eligible). 계정 존속 기간 보관.
+-- request_id = 화면이 만든 확정 요청 ID(멱등 키). response = 성공 응답의 식별자만(본문 없음) — 같은 요청 재전송에 그대로 돌려준다.
+CREATE TABLE IF NOT EXISTS confirm_events (
+  id               uuid PRIMARY KEY,
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id       uuid NOT NULL,
+  job_id           uuid NOT NULL,
+  preview_id       uuid NOT NULL,
+  preview_version  integer NOT NULL CHECK (preview_version > 0),
+  preview_sha      text NOT NULL CHECK (preview_sha ~ '^[0-9a-f]{64}$'),
+  request_id       text NOT NULL CHECK (request_id ~ '^[A-Za-z0-9_-]{8,64}$'),
+  final_text_sha   text NOT NULL CHECK (final_text_sha ~ '^[0-9a-f]{64}$'),
+  response         jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(response) = 'object'),
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (user_id, id),
+  UNIQUE (user_id, request_id),
+  UNIQUE (user_id, session_id)                      -- 세션당 확정 1번
+);
+
+-- 판 이력 = 확인 1번으로 확정한 판단(principle) 항목의 불변 판. 확정 판은 고치지 않는다 — 새 판 + 이전 판 ID. 인용은 당시 판을 가리킨다.
+CREATE TABLE IF NOT EXISTS item_versions (
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id               text NOT NULL,                    -- iv_...
+  item_id          text NOT NULL,
+  version_no       integer NOT NULL CHECK (version_no > 0),
+  prev_version_id  text,
+  item_revision    integer NOT NULL CHECK (item_revision > 0),   -- 이 판을 만든 뒤의 items.revision
+  fields           jsonb NOT NULL CHECK (jsonb_typeof(fields) = 'object'),   -- {title, body, data, decision, code}
+  links            jsonb NOT NULL CHECK (jsonb_typeof(links) = 'array'),
+  confirm_event_id uuid,
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, id),
+  UNIQUE (user_id, item_id, version_no),
+  FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, prev_version_id) REFERENCES item_versions(user_id, id),
+  FOREIGN KEY (user_id, confirm_event_id) REFERENCES confirm_events(user_id, id),
+  CHECK ((version_no = 1) = (prev_version_id IS NULL))
+);
+
+-- stage = 서버가 계산하는 관리값(직접 수정 API 없음). 판단의 확정 기준은 items.decision. 규칙 = stack_service.compute_stage(rule_version).
+-- item_revision = 계산에 쓴 items.revision — 다르면(또는 규칙 버전이 다르면) 읽을 때 다시 계산한다(lazy, 백필 없음).
+CREATE TABLE IF NOT EXISTS item_stage (
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  item_id          text NOT NULL,
+  stage            text NOT NULL CHECK (stage IN ('draft','organized','confirmed')),
+  rule_version     integer NOT NULL CHECK (rule_version > 0),
+  item_revision    integer NOT NULL CHECK (item_revision >= 0),
+  item_version_id  text,
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, item_id),
+  FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE
+);
