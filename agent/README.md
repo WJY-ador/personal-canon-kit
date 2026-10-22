@@ -142,6 +142,33 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 ```
 서버 공용 시험 벡터(`server/contract/imports/vectors/`)와 이전 명세 스키마가 없으면 그 시험은 건너뜁니다.
 
+## 11. 작업 전달 (`jobs.py`, 준비 중 · 기본 꺼짐)
+
+웹에서 들어온 작업(대화 정리 등)을 서버가 이 PC 에 맡기고, PC 가 구독 CLI(`claude -p`)로 한 번 실행해 결과를 돌려주는 부분입니다. 지금은 **모듈과 시험만** 있습니다 — 상주 실행 명령(`python3 -m agent …`)은 아직 없고, 서버의 작업 스위치(`CRM_CONVERSE_ENABLED`·`CRM_ROUTINE_ENABLED`)도 꺼져 있습니다. 실 CLI 는 이용 조건 확인 전에는 돌지 않게 막아 두었습니다(아래).
+
+동작:
+- **받기**: `GET /api/device/jobs?wait=30` 롱폴. 폴링 시작 간격 15초 이상(장치 분당 4). 서버가 429 를 주면 `Retry-After`(없으면 60초, 최대 1시간)를 지키고, 서버 오류·스위치 꺼짐·네트워크 오류면 30초부터 최대 15분까지 늘려 기다립니다. 토큰이 거절되면(401·폐기) 멈춥니다.
+- **임대**: 작업마다 서버가 준 임대 세대를 입력 조회(`…/input?lease_generation=N`)·결과·실패에 그대로 싣습니다. 임대는 5분입니다. 서버가 409(`JOB-LEASE`·`JOB-VERSION`)나 410(`JOB-GONE` — 만료·삭제·취소)을 주면 그 작업을 버리고 다시 실행하지 않습니다.
+- **결과 전송**: 연결이 끊기면 **같은 내용(같은 결과 버전)** 으로 다시 보냅니다. 모델은 다시 돌리지 않습니다. 429 면 임대가 남아 있는 동안만 `Retry-After` 를 지켜 다시 보냅니다. 끝내 못 보내면 버리고, 서버가 임대 만료 뒤 「확인 필요」로 남깁니다(중복 실행 없음).
+- **실패 전송**: 사유 코드 하나만 보냅니다 — `output-not-json`·`output-shape`·`result-shape`·`timeout`·`cli-exit`·`login`·`input-too-large`. 입력·모델 출력·오류 문구는 보내지 않습니다.
+- **입력 제한**: 8,000 코드포인트 **그리고** UTF-8 32KiB. 넘으면 실행하지 않고 `input-too-large` 로 끝냅니다.
+- **동시 1**: 한 프로세스는 한 번에 작업 하나, 한 홈에는 작업 프로세스 하나(상주 명령이 생기면 잠금 `locks/jobs.lock` 을 씁니다 — 예약 실행의 `run` 잠금과 다른 이름이라 서로 막지 않습니다).
+- **CLI 격리**: `--tools ""` · `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` · `--setting-sources project` · `--permission-mode dontAsk` · `--max-turns 1` · `--output-format json`, 같은 대화는 `--resume`. 최소 환경변수, 빈 작업 폴더(`jobs-work/`), 입력은 표준 입력으로만. 토큰·HMAC 키·대응표는 넘기지 않습니다.
+- **실 CLI 차단**: 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 이 없으면 실 CLI 어댑터를 만들 수 없습니다. 시험은 `tests/fake_claude.py` 만 씁니다.
+
+PC 에 남는 것: `jobs-state.json`(현재 사용자만 읽기·쓰기) = 진행 중 작업의 임대 세대 · 날짜별 시도 수 · 대화 참조 → CLI 세션 ID 대응. **입력·결과·프롬프트 본문은 저장하지 않습니다**(메모리에서만 다룸). CLI 세션 ID 는 서버로 보내지 않습니다. 서버에 가는 결과의 모델 정보는 도구 이름·모델 이름·걸린 시간뿐입니다.
+
+시험:
+```bash
+python3 -m unittest agent.tests.test_jobs        # 표준 라이브러리 스텁 서버(포트 0, JOBS_STUB_PORT 로 고정 가능) · 가짜 CLI
+```
+실 서버로 다시 확인할 때만(로컬 주소·`crm_test_*` DB 가 아니면 건너뜀, 토큰은 환경변수로만):
+```bash
+JOBS_LIVE_URL=http://127.0.0.1:<포트> JOBS_LIVE_TOKEN=<시험 장치 토큰> [JOBS_LIVE_TOKEN_B=<같은 사용자 두 번째 장치>] \
+JOBS_LIVE_DB=postgresql://localhost/crm_test_<이름> python3 -m unittest agent.tests.test_jobs.LiveApiTest
+```
+실시험은 상태 읽기와 「서버 시각 경과」 흉내(만료 시각을 앞당김)에만 `psql` 을 쓰고, 판정은 전부 API 를 거칩니다. 장치 폴링 한도(분당 4)를 쓰므로 1분 안에 다시 돌리면 첫 폴이 429 를 받을 수 있습니다.
+
 ## board 이전 명세 생성기 (`board_manifest.py`, 원작자 PC 전용)
 
 board 정본 마크다운에서 AI 검토표와 이전 명세(`board-migration/1`)를 만듭니다. 입력 경로는 전부 로컬 설정 파일(JSON)로 받고, 서버엔 검토표를 올리지 않습니다. 명세는 서버 `migrate_cli.py` 가 받습니다(쓰는 법은 [server/README.md](../server/README.md) 「board 이전 CLI」).
