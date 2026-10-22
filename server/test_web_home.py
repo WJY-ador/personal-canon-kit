@@ -295,7 +295,8 @@ def test_static_chat():
     assert chat.count("stackApi.confirm(") == 1 and chat.count("chatConfirm()") == 2 and 'if (e.target.closest("#chat-confirm")) chatConfirm();' in chat
     assert "if (CHAT.reqFor !== key) { CHAT.reqId = chatUuid(); CHAT.reqFor = key; }" in chat
     assert "{request_id: CHAT.reqId, preview_id: p.id, preview_version: p.preview_version, preview_sha: p.preview_sha}" in chat
-    assert "!chatBlocking(CHAT.preview).length" in chat, "막힌 질문이 남으면 확정 잠금"
+    assert "!chatOpenBlock(CHAT.preview)" in chat and "p.blocked_open === true ||" in chat, "막힌 질문이 남으면 확정 잠금(서버 blocked_open 우선)"
+    assert "c.inferred === true" in chat and "CHAT.gen = rs.edit_generation;" in chat, "「추정」 = 서버 inferred · 재정리 세대는 접수됐을 때만 올림"
     # 편집 — 입력 = 즉시 잠금(요청 0) · 칸 이탈(focusout, 정리 글 밖으로) = 재정리 1(원 결과·편집 세대·고친 글) · 늦은 결과 폐기
     inp = chat[chat.index('document.addEventListener("input"'):chat.index('document.addEventListener("focusout"')]
     assert "if (!CHAT.dirty) { CHAT.dirty = true;" in inp and "stackApi" not in inp and "chatRestack" not in inp, "입력 = 잠금만"

@@ -4027,7 +4027,8 @@ const chatOff = p => new Set(p.excluded || []);
 const chatChanges = p => p.changes || [];
 const chatIncluded = p => { const off = chatOff(p); return chatChanges(p).filter(c => !off.has(c.cid)); };
 const chatBlocking = p => { const off = chatOff(p); return (p.blocked || []).filter(b => !b.cid || !off.has(b.cid)); };
-const chatInferred = p => new Set(chatChanges(p).filter(c => c.ref_kind === "inferred").map(c => c.cid));
+const chatIsGuess = c => c.inferred === true || c.ref_kind === "inferred";   // 서버 표시 꼴 inferred(bool) — 「추정」 칩
+const chatInferred = p => new Set(chatChanges(p).filter(chatIsGuess).map(c => c.cid));
 function chatCardHtml(p) {
   const inf = chatInferred(p), off = chatOff(p), blk = chatBlocking(p);
   const units = (p.units || []).map(u => {
@@ -4037,7 +4038,7 @@ function chatCardHtml(p) {
   const chg = chatChanges(p).map(c => {
     const out = off.has(c.cid);
     return `<li class="${out ? "out" : ""}"><label><input type="checkbox" data-cid="${esc(c.cid)}"${out ? " disabled" : " checked"}>
-      <span>${esc(c.summary || c.label || c.cid)}</span></label>${c.ref_kind === "inferred" ? `<span class="chip o-ai">추정</span>` : ""}${out ? `<span class="cnote">뺐어요</span>` : ""}</li>`;
+      <span>${esc(c.summary || c.label || c.cid)}</span></label>${chatIsGuess(c) ? `<span class="chip o-ai">추정</span>` : ""}${out ? `<span class="cnote">뺐어요</span>` : ""}</li>`;
   }).join("");
   const qs = blk.map(b => `<div class="cblk"><p>${esc(b.question || "이 부분을 정하지 못했어요.")}</p>
       <input type="text" data-bq="${esc(b.cid || "")}" data-q="${esc(b.question || "")}" placeholder="답을 적고 Enter" aria-label="답"></div>`).join("");
@@ -4049,7 +4050,8 @@ function chatCardHtml(p) {
     <div class="cacts"><button type="button" class="primary" id="chat-confirm">확정</button></div>
   </section>`;
 }
-const chatCanConfirm = () => !!(CHAT.preview && CHAT.ready && !CHAT.dirty && !CHAT.busy && !chatBlocking(CHAT.preview).length);
+const chatOpenBlock = p => p.blocked_open === true || chatBlocking(p).length > 0;   // 서버 blocked_open 우선(없으면 화면 계산)
+const chatCanConfirm = () => !!(CHAT.preview && CHAT.ready && !CHAT.dirty && !CHAT.busy && !chatOpenBlock(CHAT.preview));
 function chatLock() {
   const b = $("chat-confirm");
   if (b) b.disabled = !chatCanConfirm();
@@ -4069,7 +4071,8 @@ function chatShow(p, jid) {
   if (jid !== CHAT.want || CHAT.dirty) return false;
   CHAT.preview = p; CHAT.jid = jid; CHAT.ready = true;
   if (p.result_version) CHAT.rv = String(p.result_version);
-  chatLine(chatBlocking(p).length ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.");
+  if (p.edit_generation != null) CHAT.gen = Math.max(CHAT.gen, Number(p.edit_generation) || 0);   // 재정리 세대 = 세션 현재 값 + 1
+  chatLine(chatOpenBlock(p) ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.");
   chatDraw();
   return true;
 }
@@ -4117,6 +4120,11 @@ async function chatSubmit(body, say) {
   if (!res) return false;
   if (!res.ok) {
     if (res.code === "NOT-FOUND" && CHAT.sid) { chatReset(); chatLine("대화 세션이 끝났어요. 다시 보내면 새로 시작해요.", true); chatDraw(); return false; }
+    if (res.code === "CONFIRM-STALE" && CHAT.sid) {   // 옛 편집 세대 — 다른 탭이 먼저 다시 정리했다
+      chatLine("다른 탭에서 먼저 다시 정리했어요. 최신 결과를 불러올게요.", true);
+      if (await chatRestore(CHAT.sid) === "shown") chatLine("다른 탭에서 더 새로 정리했어요 — 최신 결과로 바꿨어요. 확인하고 다시 고치거나 [확정]을 눌러 주세요.", true);
+      return false;
+    }
     chatLine(chatErr(res), true); chatLock(); return false;
   }
   if (!CHAT.sid) { CHAT.sid = res.j.session_id; CHAT.kind = body.input_kind || "converse"; }
@@ -4142,8 +4150,8 @@ async function chatRestack(extra) {
   if (chatCp(text) > CHAT_MAX) { chatLine(CHAT_ERR["PAYLOAD-LIMIT"], true); return; }
   const off = CHAT.preview ? [...chatOff(CHAT.preview)] : [];
   const rs = Object.assign({parent_result_version: CHAT.rv, edit_generation: CHAT.gen + 1, edited_text: text}, off.length ? {excluded_cids: off} : {}, extra || {});
-  CHAT.gen += 1; CHAT.dirty = false;
-  await chatSubmit({kind: "converse", session_id: CHAT.sid, text, restack: rs}, "다시 정리하고 있어요…");
+  CHAT.dirty = false;
+  if (await chatSubmit({kind: "converse", session_id: CHAT.sid, text, restack: rs}, "다시 정리하고 있어요…")) CHAT.gen = rs.edit_generation;   // 접수됐을 때만 세대를 올린다
 }
 // 막힌 질문의 답 = 재정리(answers). 적어 둔 답을 모두 함께 보낸다
 function chatAnswer() {
@@ -4162,6 +4170,7 @@ async function chatExclude(box) {
   if (!res) return;
   if (res.ok) { chatShow(res.j.preview || res.j, CHAT.want); return; }
   if (res.code === "PREVIEW-NEEDS-RESTACK") { chatRestackExcluding(cid); return; }
+  if (res.code === "CONFIRM-STALE" && CHAT.sid) { chatLine("이 결과는 최신이 아니에요. 최신 상태를 불러올게요.", true); chatRestore(CHAT.sid); return; }
   box.checked = true;
   chatLine(chatErr(res), true); chatLock();
 }
