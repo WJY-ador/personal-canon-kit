@@ -1639,6 +1639,38 @@ class Web:
         iid = request.path_params["iid"]
         return await self._core_write(request, "inbox_exclude", {}, lambda uid, b: imports.inbox_exclude(uid, iid))
 
+    # ── PR ①-b 페이지 레이아웃 · 「나」 통계 (2026-10-22, 구현계획 §3) ──
+    # 레이아웃 쓰기 = PUT(저장)·DELETE(기본 복원) 두 개뿐. 세션 401 → Origin 403 → 모양 400 → db.write_gate → db. 버전 불일치 409 LAYOUT-STALE.
+    async def api_me_layout(self, request):
+        """GET = {layout, version}(행 없으면 기본 + 0) · PUT {layout, version} = 저장(version +1) · DELETE = 기본으로 되돌리기(version +1)."""
+        if request.method == "GET":
+            return await self._core_read(request, db.layout_get)
+        if request.method == "PUT":
+            resp = await self._core_write(request, "layout_set", {"layout": ((dict,), True), "version": ((int,), True)},
+                                          lambda uid, b: db.layout_set(uid, b["layout"], b["version"]),
+                                          json_limits={"layout": db.LAYOUT_MAX_BYTES})
+        else:   # DELETE — 본문 없음(_core_write 는 JSON 본문을 요구한다)
+            uid, err = await self._need(request)
+            if err:
+                return err
+            if not self.same_origin(request):
+                return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+
+            def reset():
+                db.write_gate("layout_reset", {}, uid)
+                return db.layout_reset(uid)
+            try:
+                return JSONResponse(await run_in_threadpool(reset), headers={"cache-control": "no-store"})
+            except db.CrmError as e:
+                resp = self._crm_err(e)
+        if resp.status_code == 400 and json.loads(resp.body).get("code") == "LAYOUT-STALE":
+            resp.status_code = 409   # _crm_err 공용 매핑은 그대로 두고 여기서만 409
+        return resp
+
+    async def api_me_stats(self, request):
+        """GET — 「나」 통계(축 띠·히트맵·종류별·기다리는 결정). 전체 범위, 읽기만. 모양은 db.me_stats."""
+        return await self._core_read(request, db.me_stats)
+
     async def api_me_aggregate(self, request):
         """GET ?period=7d|30d|90d|all — 「나」 집계(웹·MCP 같은 서버 함수). /api/state 엔 30d 만 실린다."""
         period = request.query_params.get("period", activity.DEFAULT_PERIOD)
@@ -2309,6 +2341,8 @@ class Web:
             Route("/api/inbox/{iid}/approve", u("web:inbox_approve", self.api_inbox_approve), methods=["POST"]),
             Route("/api/inbox/{iid}/exclude", u("web:inbox_exclude", self.api_inbox_exclude), methods=["POST"]),
             Route("/api/me/aggregate", u("web:me_aggregate", self.api_me_aggregate)),
+            Route("/api/me/layout", u("web:me_layout", self.api_me_layout), methods=["GET", "PUT", "DELETE"]),   # PR ①-b 쓰기 예외(이 라우트만)
+            Route("/api/me/stats", u("web:me_stats", self.api_me_stats)),   # PR ①-b — 읽기만
             Route("/api/activities", u("web:activities", self.api_activities)),
             Route("/api/activities/{aid}", u("web:activity", self.api_activity)),
             Route("/api/people/{pid}/context", u("web:person_context", self.api_person_context)),
