@@ -149,10 +149,10 @@ PRB_TOOLS = {"display_name_set", "me_get", "person_list", "person_get", "person_
 BI_TOOLS = {"activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get"}
 BI = {k: f"bi-{k}@example.com" for k in ("a", "b", "agg", "adm", "del", "mig")}   # 25절: a 장치·수신 · b 남 · agg 집계 · adm 삭제 실행 · del 삭제 대상 · mig 이전
 # 처리방침 머리글(`vN · 날짜`) — PR B 부터 v5. 날짜는 문서가 정본이라 파일에서 읽는다(시험이 날짜를 따로 들지 않는다)
-PRIVACY_VERSION = "v6"   # board 이전(2026-10-20) — v6
+PRIVACY_VERSION = "v7"   # board 이전(2026-10-20) v6 → PR ②-b(2026-10-22) v7
 PRIVACY_HEAD = re.search(r"`(v\d+ · [^`]+)`", (HERE.parent / "guides" / "11-privacy.md").read_text(encoding="utf-8")).group(1)
-# 머리글 꼴 = v6 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
-assert re.fullmatch(r"v6 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
+# 머리글 꼴 = v7 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
+assert re.fullmatch(r"v7 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
 # PR B(24절) 시험 사용자 — prb-* 는 표시 이름을 자동으로 채우지 않는다(관문 시험). 그 밖 시험 사용자는 아래 _autoname 이 채운다
 PRB_EMAILS = tuple(f"prb-{k}@example.com" for k in ("a", "b", "noname", "web", "mcp", "del", "dela", "delb", "adm", "race", "old", "nav"))
 TEST_EMAILS += PRB_EMAILS
@@ -3259,7 +3259,7 @@ async def test_optional_consent():
                      "표시 이름", "사람", "출처 요약/반응", "삭제 요청", "1년"):   # v5(PR B)
             assert word in r.text, word
         basis = r.text[r.text.index("처리 근거"):r.text.index('id="privacy-2"')]
-        assert "<table>" in basis and basis.count("<tr>") == 6, basis   # v5: 삭제 뒤 contact 1년(정당한 이익) 행 · v6: 연결 장치 행 추가
+        assert "<table>" in basis and basis.count("<tr>") == 7, basis   # v5: 삭제 뒤 contact 1년(정당한 이익) 행 · v6: 연결 장치 행 · v7: 웹 대화 행 추가
         assert r.status_code == 200 and "지금은 모으지 않습니다" not in r.text and "v1 · 2026-10-18" not in r.text
         assert "v2 · 2026-10-19" not in r.text and "v3 · 2026-10-19" not in r.text and "처리방침에 동의하기 전" not in r.text
         assert "로그인한 뒤 「문의」에서" not in r.text, "문의 경로는 계정 메뉴 「문의 보내기」"
