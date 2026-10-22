@@ -757,7 +757,44 @@ ul.hrows li.mgrph + li { border-top: none; }
 .mfold { margin-top: .35rem; }
 .mfold summary { cursor: pointer; font-size: .8rem; font-weight: 600; color: var(--accent); min-height: 28px; display: flex; align-items: center; }
 .mfold ul { margin-top: .35rem; }
-.mesum:empty { display: none; }
+.mesum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
+.mblk { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; min-width: 0; }
+.mblk.full { grid-column: 1 / -1; }
+.mblk > header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .2rem .6rem; margin: 0 0 .7rem; }
+.mblk > header h3 { margin: 0; font-size: .9rem; }
+.mblk > header .count { margin: 0; font-size: .76rem; }
+svg.mheat { display: block; width: 100%; max-width: 360px; height: auto; }
+.mheat text { font-size: 11px; fill: var(--muted); }
+.mheat .h0, .mlegend .h0 { fill: color-mix(in srgb, var(--line) 70%, var(--card)); background: color-mix(in srgb, var(--line) 70%, var(--card)); }
+.mheat .h1, .mlegend .h1 { fill: color-mix(in srgb, var(--accent) 25%, var(--card)); background: color-mix(in srgb, var(--accent) 25%, var(--card)); }
+.mheat .h2, .mlegend .h2 { fill: color-mix(in srgb, var(--accent) 50%, var(--card)); background: color-mix(in srgb, var(--accent) 50%, var(--card)); }
+.mheat .h3, .mlegend .h3 { fill: color-mix(in srgb, var(--accent) 75%, var(--card)); background: color-mix(in srgb, var(--accent) 75%, var(--card)); }
+.mheat .h4, .mlegend .h4 { fill: var(--accent); background: var(--accent); }
+.mheat rect:hover { stroke: var(--ink); stroke-width: 1.5; }
+.mlegend { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem; margin: .5rem 0 0; font-size: .74rem; color: var(--muted); }
+.mlegend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.mlegend .sep { margin-left: .6rem; font-family: var(--mono); }
+ul.mkinds { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .35rem; font-size: .84rem; }
+ul.mkinds li { display: grid; grid-template-columns: minmax(5.5rem, 7rem) minmax(2rem, 1fr) 2.6rem; align-items: center; gap: .6rem; min-height: 26px; }
+ul.mkinds li > a, ul.mkinds li > span:first-child { color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.mkinds li > a:hover { color: var(--accent); text-decoration: underline; }
+ul.mkinds li.zero > a, ul.mkinds li.zero > span:first-child, ul.mkinds li.zero b { color: var(--muted); }
+.mbar { height: 10px; }
+.mbar i { display: block; height: 100%; min-width: 3px; background: var(--accent); border-radius: 0 4px 4px 0; }
+ul.mkinds b { font-family: var(--mono); font-size: .78rem; text-align: right; }
+.mwband { display: flex; gap: 2px; height: 12px; border-radius: 4px; overflow: hidden; }
+.mwband span { min-width: 3px; }
+.mw1 { background: var(--ai); } .mw2 { background: var(--warn); } .mw3 { background: var(--muted); }
+ul.mwlegend { list-style: none; margin: .55rem 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: .3rem 1.4rem; font-size: .82rem; }
+ul.mwlegend li { display: inline-flex; align-items: center; gap: .4rem; min-height: 26px; }
+ul.mwlegend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+ul.mwlegend a { color: var(--ink); }
+ul.mwlegend b { font-family: var(--mono); font-size: .78rem; }
+ul.mwlegend li.zero a, ul.mwlegend li.zero b { color: var(--muted); }
+.mrecent .chip { margin-right: .25rem; vertical-align: .1em; }
+.mfail { margin: 0; }
+.meaxis .mfail { margin: .4rem 0 0; }
+@media (max-width: 767px) { .mesum { grid-template-columns: minmax(0, 1fr); } ul.mkinds li { grid-template-columns: minmax(0, 5rem) minmax(2rem, 1fr) 2rem; gap: .45rem; } }
 @media (max-width: 1099px) {
   .melens.three { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
   .melens.three > .mgroups { grid-column: 2; }
@@ -2703,7 +2740,7 @@ const ME_EMPTY = "아직 표시할 데이터가 없어요. 데이터가 들어�
 const ME_AX_COLORS = 8;   // 축 색 = 코드 순 1~8, 9번째부터 회색(건수와 무관하게 고정)
 const ME = {layout: null, version: 0, stats: null, layoutApi: false, statsApi: false};
 const meLayoutValid = l => !!(l && Array.isArray(l.tabs) && l.tabs.length === ME_TABS.length && new Set(l.tabs).size === ME_TABS.length && l.tabs.every(t => ME_TABS.includes(t)));
-// 서버 접점 — 레이아웃·통계를 받는다. 실패·없음은 폴백(화면은 그대로 뜬다). load() 가 상태와 같이 부른다
+// 서버 접점 — 레이아웃·통계를 받는다. 레이아웃 실패 = 코드 기본, 통계 실패 = 빈 띠·차트 + 1줄 안내(규칙은 서버 한 곳 — 화면에서 다시 세지 않는다). load() 가 상태와 같이 부른다
 async function meSync() {
   const [l, s] = await Promise.all([getJSON("/api/me/layout"), getJSON("/api/me/stats")]);
   ME.layoutApi = !!(l && l.ok); ME.statsApi = !!(s && s.ok);
@@ -2712,7 +2749,8 @@ async function meSync() {
   ME.stats = ME.statsApi && s.j && Array.isArray(s.j.axes) ? s.j : null;
 }
 const meLayout = () => ME.layout || ME_LAYOUT_DEFAULT;
-const meStats = () => ME.stats || meStatsFromS();
+const meStats = () => ME.stats;   // null = 못 받음
+const ME_STATS_FAIL = "통계를 불러오지 못했어요. 새로 고침해 주세요.";
 const meDefs = () => defsList().filter(d => !d.archived_at);
 const meStdDef = tab => meDefs().find(d => d.std_id === ME_STD[tab]) || null;
 const meCustomDefs = () => meDefs().filter(d => !Object.values(ME_STD).includes(d.std_id));
@@ -2724,27 +2762,21 @@ function meTabOfItem(it) {
   for (const t of ["principle", "decision", "axis"]) if (d && d.std_id === ME_STD[t]) return t;
   return "custom";
 }
-// 폴백 통계(서버 /api/me/stats 가 없을 때) — 축 = 그 축에 직접 연결된 고유 항목·글 수(양방향 저장 관계, 자기 자신·간접 제외). 읽기 자료는 ② 전 0.
-// S.items·S.record_links 는 사용자 전체 범위(기록 50편 로드와 무관). 히트맵·종류·기다리는 결정은 서버 값만 그린다(S 에 날짜 키가 없다)
-function meStatsFromS() {
-  const ax = meStdDef("axis");
-  const axes = ax ? meSorted(meItemsOf(ax.id)).map(a => {
-    const items = new Set(), recs = new Set();
-    for (const it of S.items || []) if (it.id !== a.id) for (const l of it.links || []) if (l.target_kind === "item" && l.target_id === a.id) items.add(it.id);
-    for (const l of a.links || []) { if (l.target_kind === "item" && l.target_id !== a.id) items.add(l.target_id); if (l.target_kind === "record") recs.add(l.target_id); }
-    for (const l of S.record_links || []) if (l.target_kind === "item" && l.target_id === a.id) recs.add(l.record_id);
-    return {id: a.id, code: a.code, title: a.title, items: items.size, records: recs.size, readings: 0, n: items.size + recs.size};
-  }) : [];
-  return {axes, heatmap: null, kinds: null, waiting: null};
+// 축 = S 의 축 항목(코드 순 — 색 배정은 건수·응답과 무관하게 이 순서로 고정) + 서버 통계의 건수(id 로 맞춘다, 못 받으면 null)
+function meAxes() {
+  const ax = meStdDef("axis"), st = meStats(), by = {};
+  for (const a of (st && st.axes) || []) by[a.id] = a;
+  return ax ? meSorted(meItemsOf(ax.id)).map(it => { const a = by[it.id];
+    return {id: it.id, code: it.code, title: it.title, items: a ? a.items : null, records: a ? a.records : null, readings: a ? a.readings : null, n: a ? a.n : null}; }) : [];
 }
-// 축 목록(코드 순) — 서버 값이면 서버 순서를 코드 순으로 한 번 더 고정한다(색 배정이 건수·응답 순서와 무관하게)
-const meAxes = () => meSorted((meStats().axes || []).slice());
 const meAxColor = i => i < ME_AX_COLORS ? `var(--ax${i + 1})` : "var(--soft)";
 const meAxShort = t => String(t || "").replace(/\s*\(.*\)\s*$/, "").replace(/\s+—\s+.*$/, "");
-const meAxTip = a => `${a.code ? a.code + " " : ""}${meAxShort(a.title)} · 항목 ${a.items} · 글 ${a.records} · 읽기 자료 ${a.readings || 0}`;
+const meAxTip = a => `${a.code ? a.code + " " : ""}${meAxShort(a.title)}${a.n === null ? "" : ` · 항목 ${a.items} · 글 ${a.records} · 읽기 자료 ${a.readings || 0}`}`;
 function meAxisBand(selId) {
   const axes = meAxes();
   if (!axes.length) return "";
+  if (!meStats()) return `<section class="meaxis" aria-label="축별 연결 건수"><div class="axrow"><span class="axl">축</span><div class="axstrip none"></div></div>
+    <p class="hint mfail" role="status">${ME_STATS_FAIL}</p></section>`;
   const tot = axes.reduce((s, a) => s + (a.n || 0), 0);
   const strip = tot ? axes.map((a, i) => a.n ? `<span style="flex:${a.n} 1 0;background:${meAxColor(i)}" title="${esc(meAxTip(a))}"></span>` : "").join("") : "";
   const chips = axes.map((a, i) => `<a href="#_me/axis/${esc(a.id)}" class="${a.n ? "" : "zero"}"${a.id === selId ? ' aria-current="true"' : ""} title="${esc(meAxTip(a))}" aria-label="축 ${esc(meAxTip(a))}">
@@ -2770,7 +2802,7 @@ function meSubtabs(cur) {
 }
 // 한 행의 연결 수(목록 오른쪽 숫자 · 연결 최다 진입) — 저장된 관계만. 축 = 통계 n, 사람 = 그 사람을 가리키는 항목, 출처 = 글 + 읽고 든 생각
 function meN(tab, id) {
-  if (tab === "axis") { const a = meAxes().find(x => x.id === id); return a ? a.n || 0 : 0; }
+  if (tab === "axis") { const a = meAxes().find(x => x.id === id); return a ? a.n : null; }   // 통계 못 받으면 null(숫자 숨김)
   if (tab === "source") return (((S.source_counts || {}).by_source || {})[id] || 0) + reflList().filter(x => x.source_id === id).length;
   if (tab === "person") { const c = meExtra["p:" + id]; return c && c.ok ? c.count + c.records.length + c.items.length : null; }   // 사람 연결은 열어 봐야 안다(S 에 없다)
   return new Set(graphEdges("item", id).map(e => e.node.key)).size;
@@ -2835,7 +2867,7 @@ function meListHtml(tab, rows, sel) {
       const n = meN(tab, r.id);
       return head + `<li><a href="#_me/${tab}/${esc(r.id)}" data-home-row${sel && sel.id === r.id ? ' aria-current="true"' : ""}>
         <span class="ht">${ax >= 0 ? `<i class="axdot" style="background:${meAxColor(ax)}"></i>` : ""}${r.code ? `<span class="cd">${esc(r.code)}</span> ` : ""}${esc(r.title)}</span>
-        <span class="hk">${[tab === "custom" ? "" : r.meta, n === null ? "" : `연결 ${n}`].filter(Boolean).map(esc).join(" · ")}</span></a></li>`;
+        <span class="hk">${[tab === "custom" ? "" : r.meta, n === null ? "" : `${tab === "axis" ? "항목·글" : "연결"} ${n}`].filter(Boolean).map(esc).join(" · ")}</span></a></li>`;
     }).join("")}</ul>`;
   }
   return `<section class="hlist mlist" id="home-list" aria-labelledby="me-list-h"><div class="htools"><h3 id="me-list-h">${esc(label)}${ME_LOCKED.has(tab) ? ' <span class="lk" aria-label="기본">🔒</span>' : ""}</h3><span class="count">${n}</span></div>${body}</section>`;
@@ -2954,9 +2986,67 @@ function meRenderRecord(head, k, id) {
   const hi = $("hedit-input");
   if (hi && homeEdit && !homeEdit.busy) { hi.focus({preventScroll: true}); const n = hi.value.length; hi.setSelectionRange(n, n); }
 }
-// 요약 — S3 에서 차트 4(히트맵·종류별 막대·기다리는 결정 띠·최근 변경 5). 블록 순서 = layout.blocks.summary
+// 요약 — 차트 4(13주 히트맵 · 종류별 막대 · 기다리는 결정 띠 · 최근 변경 5). 블록 순서 = layout.blocks.summary. 버튼 0(이동 링크만).
+// 숫자는 서버 /api/me/stats 그대로(전체 범위) — 화면에서 다시 세지 않는다. 최근 변경 5 만 S(바뀐 시각)에서.
+// 색: 히트맵 = 주색 한 색 농도 5단(0 = 빈 칸) · 막대 = 주색 한 색(계열 1 — 범례 없음, 제목이 이름) · 기다리는 결정 = 3 칸 + 칸마다 글자 범례(색만으로 구분하지 않음).
+const ME_KINDS = [["principle", "기준", "#_me/principle"], ["decision", "결정", "#_me/decision"], ["axis", "축", "#_me/axis"], ["custom", "커스텀", "#_me/custom"],
+  ["records", "내가 쓴 글", ""], ["readings", "읽기 자료", ""], ["people", "사람", "#_me/person"], ["sources", "출처", "#_me/source"]];
+const ME_KIND_LOCK = new Set(["principle", "decision", "axis", "people", "sources"]);
+const ME_WAIT = [["candidates_pending", "검토할 판단", "#structure/cand/pending", "mw1"], ["principles_pending", "확정 전 기준", "#_me/principle", "mw2"],
+  ["inbox_pending", "저장 승인 대기", "#_today", "mw3"]];
+const meToday = () => new Date().toLocaleDateString("sv-SE", {timeZone: "Asia/Seoul"});   // YYYY-MM-DD(KST)
+const meBlk = (cls, title, meta, body) => `<section class="mblk ${cls}"><header><h3>${esc(title)}</h3>${meta ? `<span class="count">${meta}</span>` : ""}</header>${body}</section>`;
+function meHeat(st) {
+  const h = st && st.heatmap;
+  if (!h || !Array.isArray(h.cells) || !h.cells.length) return meBlk("half", "13주 글·활동", "", `<p class="hint mfail">${ME_STATS_FAIL}</p>`);
+  const today = meToday(), cells = h.cells.map((c, i) => ({...c, w: Math.floor(i / 7), dw: i % 7, n: (c.records || 0) + (c.activities || 0), future: c.d > today}));
+  const past = cells.filter(c => !c.future), max = past.reduce((m, c) => Math.max(m, c.n), 0), sum = past.reduce((t, c) => t + c.n, 0);
+  const sumR = past.reduce((t, c) => t + (c.records || 0), 0), sumA = past.reduce((t, c) => t + (c.activities || 0), 0);
+  const lvl = n => n <= 0 ? 0 : Math.min(4, Math.ceil(4 * n / max));   // 하루 최대 = 가장 진한 칸
+  const C = 14, G = 3, P = C + G, L = 22, T = 16, W = L + 13 * P, H = T + 7 * P;
+  const months = []; let pm = "";
+  for (let w = 0; w < 13; w++) { const c = cells[w * 7]; if (!c) continue; const mo = c.d.slice(5, 7); if (mo !== pm) { months.push([w, +mo]); pm = mo; } }
+  if (months.length > 1 && months[1][0] - months[0][0] < 2) months.shift();   // 첫 달이 1주뿐이면 라벨이 겹친다
+  const mtxt = months.map(([w, m]) => `<text x="${L + w * P}" y="12">${m}월</text>`).join("");
+  const dtxt = [[0, "월"], [2, "수"], [4, "금"]].map(([d, t]) => `<text x="0" y="${T + d * P + 11}">${t}</text>`).join("");
+  const rects = cells.filter(c => !c.future).map(c => `<rect class="h${lvl(c.n)}" x="${L + c.w * P}" y="${T + c.dw * P}" width="${C}" height="${C}" rx="3"><title>${esc(dOnly(c.d))} · 글 ${c.records || 0} · 활동 ${c.activities || 0}</title></rect>`).join("");
+  const svg = `<svg class="mheat" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(`13주 날짜별 글·활동 · 합 ${sum}(글 ${sumR} · 활동 ${sumA}) · 하루 최대 ${max}`)}">${mtxt}${dtxt}${rects}</svg>`;
+  const legend = `<p class="mlegend"><span>적음</span>${[0, 1, 2, 3, 4].map(i => `<i class="h${i}"></i>`).join("")}<span>많음</span><span class="sep">하루 최대 ${esc(max)}</span></p>`;
+  const body = sum ? svg + legend : svg + `<p class="hint">이 기간에 날짜가 있는 글·활동이 없어요.</p>`;
+  return meBlk("half", "13주 글·활동", `${esc(sum)} · ${esc(dOnly(h.from))}–${esc(dOnly(today))}`, body);
+}
+function meKinds(st) {
+  const k = st && st.kinds;
+  if (!k) return meBlk("half", "종류별 건수", "", `<p class="hint mfail">${ME_STATS_FAIL}</p>`);
+  const max = ME_KINDS.reduce((m, [key]) => Math.max(m, k[key] || 0), 0);
+  const rows = ME_KINDS.map(([key, label, href]) => { const n = k[key] || 0, lab = `${esc(label)}${ME_KIND_LOCK.has(key) ? ' <span class="lk" aria-label="기본">🔒</span>' : ""}`;
+    return `<li class="${n ? "" : "zero"}">${href ? `<a href="${href}">${lab}</a>` : `<span>${lab}</span>`}<span class="mbar" aria-hidden="true">${n ? `<i style="width:${(n / max * 100).toFixed(2)}%"></i>` : ""}</span><b>${esc(n)}</b></li>`; }).join("");
+  return meBlk("half", "종류별 건수", "", `<ul class="mkinds">${rows}</ul>`);
+}
+function meWaiting(st) {
+  const w = st && st.waiting;
+  if (!w) return meBlk("full", "기다리는 결정", "", `<p class="hint mfail">${ME_STATS_FAIL}</p>`);
+  const tot = ME_WAIT.reduce((t, [key]) => t + (w[key] || 0), 0);
+  const band = tot ? `<div class="mwband" role="img" aria-label="${esc(ME_WAIT.map(([key, label]) => `${label} ${w[key] || 0}`).join(" · "))}">${ME_WAIT.map(([key, label, , cls]) =>
+    w[key] ? `<span class="${cls}" style="flex:${w[key]} 1 0" title="${esc(`${label} ${w[key]}`)}"></span>` : "").join("")}</div>` : "";
+  const legend = `<ul class="mwlegend">${ME_WAIT.map(([key, label, href, cls]) => `<li class="${w[key] ? "" : "zero"}"><i class="${cls}"></i><a href="${href}">${esc(label)}</a><b>${esc(w[key] || 0)}</b></li>`).join("")}</ul>`;
+  return meBlk("full", "기다리는 결정", esc(tot), (tot ? band : `<p class="hint">기다리는 결정이 없어요.</p>`) + legend);
+}
+// 최근 변경 5 — 항목(고친 시각)·내가 쓴 글(받은 시각)·읽고 든 생각(고친 시각). 불러온 범위(S) 안에서
+function meRecent() {
+  const xs = [];
+  for (const it of S.items || []) if (it.revision) xs.push({at: it.updated_at || it.created_at, kind: objLabel(it.object_id), title: (it.code ? it.code + " " : "") + (it.title || "(제목 없음)"), href: `#_me/${meTabOfItem(it)}/${it.id}`});
+  for (const r of homeRecords()) xs.push({at: r.created, kind: "내가 쓴 글", title: r.title || r.excerpt || "(제목 없음)", href: `#_me/journal/${r.id}`});
+  for (const x of reflList()) xs.push({at: x.updated || x.created, kind: "읽고 든 생각", title: firstLine(x.body) || "(내용 없음)", href: `#_me/refl/${x.id}`});
+  const top = xs.map((x, i) => [x, i]).sort((a, b) => homeTime(b[0].at) - homeTime(a[0].at) || a[1] - b[1]).slice(0, 5).map(p => p[0]);
+  const body = top.length ? `<ul class="hrows mrecent">${top.map(x => `<li><a href="${esc(x.href)}"><span class="ht"><span class="chip">${esc(x.kind)}</span> ${esc(x.title)}</span><span class="hk">${esc(mdhm(x.at))}</span></a></li>`).join("")}</ul>`
+    : `<div class="empty">${ME_EMPTY}</div>`;
+  return meBlk("full", "최근 변경", "", body);
+}
 function meSummary() {
-  return `<div class="mesum" id="me-summary"></div>`;
+  const st = meStats(), draw = {heatmap: meHeat, kinds: meKinds, waiting: meWaiting, recent: meRecent};
+  const blocks = ((meLayout().blocks || {}).summary || ME_BLOCKS).filter(b => draw[b]);
+  return `<div class="mesum" id="me-summary">${blocks.map(b => draw[b](st)).join("")}</div>`;
 }
 // ── /「나」 홈 (PR①) ──
 // 한 출처의 내 기록 · 내 요약 · 내 반응 — 「나」 홈 출처별 탭과 출처 상세가 같이 쓴다

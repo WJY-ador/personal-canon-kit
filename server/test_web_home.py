@@ -205,7 +205,7 @@ def test_static():
     for w in ('const ME_TABS = ["summary", "principle", "decision", "axis", "custom", "person", "source"];',
               'const ME_BLOCKS = ["heatmap", "kinds", "waiting", "recent"];', "const ME_LAYOUT_DEFAULT = {v: 1, tabs: ME_TABS.slice(), blocks: {summary: ME_BLOCKS.slice()}};",
               'getJSON("/api/me/layout"), getJSON("/api/me/stats")', "const meLayout = () => ME.layout || ME_LAYOUT_DEFAULT;",
-              "const meStats = () => ME.stats || meStatsFromS();", "meLayout().tabs.map(", "S.record_links", "readings: 0",
+              "const meStats = () => ME.stats;", "meLayout().tabs.map(", "통계를 불러오지 못했어요. 새로 고침해 주세요.", "항목·글",
               "const ME_AX_COLORS = 8;", 'i < ME_AX_COLORS ? `var(--ax${i + 1})` : "var(--soft)"', '"근거 역추적"', '"축 묶음"', '"사람 관계"',
               "/api/people/${encodeURIComponent(id)}/context", "/api/sources/${encodeURIComponent(sel.id)}/context",
               'location.replace(`#_me/${meTabOfItem(it)}/', "GRAPH_CAP.narrow : GRAPH_CAP.wide"):
@@ -214,10 +214,20 @@ def test_static():
     assert js.count('"/api/me/layout"') == 1 and js.count('"/api/me/stats"') == 1, "레이아웃·통계 주소는 meSync 안에만"
     assert "corePost(" not in v9 and "fetch(" not in v9 and "PUT" not in v9, "S2 「나」 화면 쓰기 요청 0"
     assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
+    assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
+    # S3 요약 — 차트 4(블록 순서 = layout.blocks.summary) · 서버 값 그대로 · 버튼 0 · 미래 칸 비움 · 색만으로 구분하지 않음(글자 범례)
+    for w in ("function meHeat(st)", "function meKinds(st)", "function meWaiting(st)", "function meRecent()",
+              "draw = {heatmap: meHeat, kinds: meKinds, waiting: meWaiting, recent: meRecent}", "(meLayout().blocks || {}).summary",
+              "future: c.d > today", 'cells.filter(c => !c.future)', '"Asia/Seoul"', "(c.records || 0) + (c.activities || 0)",
+              '"candidates_pending"', '"principles_pending"', '"inbox_pending"', "이 기간에 날짜가 있는 글·활동이 없어요.", "기다리는 결정이 없어요."):
+        assert w in v9, w
+    summ = v9[v9.index("// 요약 — 차트 4"):]
+    assert "<button" not in summ, "요약 버튼 0"
+    assert "created" not in summ[:summ.index("function meRecent()")], "히트맵·막대·띠에 생성일 대체 없음(서버 값만)"
     for i, (lt, dk) in enumerate(zip(("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
                                      ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767")), 1):
         assert f"--ax{i}: {lt};" in html and f"--ax{i}: {dk};" in html, ("축 색", i)
-    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0) 통과")
+    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만) 통과")
 
 
 async def run():
