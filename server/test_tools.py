@@ -9427,12 +9427,74 @@ async def test_pr2b_stack_b6():
           " · conversation·routine 우회 저장 불가(inbox 방법 고정·MCP record_add 인자 없음) 통과")
 
 
+async def test_pr2b_stack_r2():
+    """r2 추가 실패표 보강 — 두 세션이 같은 대상 수정(뒤 확정이 앞 변경을 덮지 않음: 409 CONFLICT·쓰기 0) · 만료 정리가 늦어도 접근·확정 즉시 차단
+    (sweep 전 만료 = 410·미리보기 재노출 0)."""
+    cleanup()
+    with SEED_ON():
+        U = db.user_by_email("tester@example.com")["id"]
+    T1 = {"authorization": "Bearer " + imports.device_connect(U, "합성 r2")["token"]}
+    ax = _pr2b_axis(U, "AX1", "합성 축 하나")
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+
+            async def stack(kw):
+                J = (await h.post("/api/jobs", json={"kind": "converse", "text": "합성 r2 대화"}, headers=origin)).json()
+                a = (await h.get("/api/device/jobs", params={"wait": 0}, headers=T1)).json()
+                q = {"lease_generation": a["lease"]["generation"]}
+                await h.get(f"/api/device/jobs/{a['id']}/input", params=q, headers=T1)
+                dv = (await h.get(f"/api/device/jobs/{a['id']}/definitions", params=q, headers=T1)).json()["definitions_version"]
+                ch = [{"cid": "c1", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "explicit_id", "value": ax},
+                       "fields": {"keywords": [kw]}, "links": [], "depends_on": []}]
+                un = [{"uid": "u1", "text": f"축에 {kw}.", "change_ids": ["c1"]}]
+                r = await h.post(f"/api/device/jobs/{J['id']}/result", headers=T1,
+                                 json=_pr2b_body({"id": J["id"]}, a["lease"]["generation"], dv, units=un, changes=ch))
+                assert r.status_code == 200, r.text
+                return J, (await h.get(f"/api/jobs/{J['id']}")).json()["preview"]
+
+            def cb(P, rq):
+                return {"request_id": rq, "preview_id": P["id"], "preview_version": P["preview_version"], "preview_sha": P["preview_sha"]}
+            with _job_fast(), _job_switch("CONVERSE_ENABLED"):
+                JA, PA = await stack("앞 세션")
+                JB, PB = await stack("뒤 세션")   # 둘 다 같은 대상 revision 을 읽고 미리보기를 만들었다
+                assert (await h.post(f"/api/jobs/{JA['id']}/confirm", json=cb(PA, "rq-r2-a-0001"), headers=origin)).status_code == 200
+                base = _pr2b_counts(U)
+                r = await h.post(f"/api/jobs/{JB['id']}/confirm", json=cb(PB, "rq-r2-b-0001"), headers=origin)
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT", r.text
+                assert _pr2b_counts(U) == base and db.item_get(U, ax)["data"]["keywords"] == ["앞 세션"], "뒤 확정이 앞 변경을 덮지 않는다"
+                db.job_cancel(U, JB["id"])
+                # 만료 정리가 늦어도(sweep 전) 접근·확정 즉시 차단, 미리보기 재노출 0
+                JC, PC = await stack("만료")
+                with db.tx() as c:
+                    _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() - interval '1 second' WHERE id=%s", (JC["session_id"],))
+                    _pr2b_sql(c, "UPDATE jobs SET expires_at = now() - interval '1 second' WHERE id=%s", (JC["id"],))
+                    prv = db._tmp_previews_name(c)
+                    assert c.execute(f"SELECT count(*) AS n FROM {prv} WHERE job_id=%s", (JC["id"],)).fetchone()["n"] == 1, "정리 전 — 행은 아직 있다"
+                r = await h.post(f"/api/jobs/{JC['id']}/confirm", json=cb(PC, "rq-r2-c-0001"), headers=origin)
+                assert r.status_code == 410 and r.json()["code"] == "JOB-GONE", r.text
+                r = await h.post(f"/api/stack/previews/{PC['id']}/exclude", json={"cids": ["c1"]}, headers=origin)
+                assert r.status_code in (404, 410), r.text
+                g = (await h.get(f"/api/jobs/{JC['id']}")).json()
+                s = (await h.get(f"/api/stack/sessions/{JC['session_id']}")).json()
+                assert g["status"] == "expired" and "preview" not in g and "result" not in g and s["preview"] is None, (g, s)
+                with db.tx() as c:
+                    assert c.execute(f"SELECT count(*) AS n FROM {prv} WHERE job_id=%s", (JC["id"],)).fetchone()["n"] == 0, "읽기 경로 정리로 삭제"
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 28 r2 보강(두 세션 같은 대상 = 뒤 확정 409·쓰기 0·앞 변경 보존 · 만료 정리 지연에도 확정 410·제외 차단·재노출 0) 통과")
+
+
 async def test_pr2b_stack():
     """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리 · B3 확정 트랜잭션·판 이력·stage·인용 · B6 경계·되돌림)."""
     test_pr2b_stack_b1()
     await test_pr2b_stack_b2()
     await test_pr2b_stack_b3()
     await test_pr2b_stack_b6()
+    await test_pr2b_stack_r2()
 
 
 def Web_polls_empty():
