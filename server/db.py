@@ -3922,8 +3922,11 @@ def _restack_arg(restack, text, session_id):
             "answers": out_ans}
 
 
+JOB_NO_DEVICE_MSG = "이 기능은 본인 PC에서 본인 Claude 구독으로 실행하며, PC 연결과 에이전트 실행이 필요합니다."   # PRD 1-2 고정 문구
+
+
 def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
-    """웹 접수 — 스위치 → 모양 → 길이(8,000 코드포인트·32KiB 각각) → 한도(종류별 하루·열린 작업 수) → jobs 행 + 임시 입력 한 트랜잭션.
+    """웹 접수 — 스위치 → 모양 → 길이(8,000 코드포인트·32KiB 각각) → 연결 장치(0 = NO-DEVICE) → 한도(종류별 하루·열린 작업 수) → jobs 행 + 임시 입력 한 트랜잭션.
     session_id 를 주면 그 사용자의 기존 세션이어야 한다(NOT-FOUND). 반환 {id, session_id}.
     한도(K3, ②-b): imports.JOB_REQUEST_LIMITS[kind] 가 None = 하루 무제한(카운터는 센다), 숫자 = 하루 상한, 키 없음 = 설정 누락 LIMIT-UNSET.
     converse(②-b) = 세션 행(stack_sessions) — 새 세션이면 만든다(input_kind 기본 converse, 만료 = 지금 + 24h 고정), 기존 세션이면
@@ -3970,6 +3973,9 @@ def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
                     raise CrmError("JOB-GONE", "이 대화 세션은 끝났어요(만료·확정).", "새 대화로 시작하세요.")
         elif session_id and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND session_id=%s LIMIT 1", (uid, sid)):
             raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+        # 연결 장치(연결 해제 안 된 device) 0 = 접수 거절 — 받을 PC 가 없어 queued 로 24시간 남는다. 오프라인 장치는 대기로 접수
+        if not _one(c, "SELECT 1 AS x FROM import_streams WHERE user_id=%s AND channel='device' AND revoked_at IS NULL LIMIT 1", (uid,)):
+            raise CrmError("NO-DEVICE", JOB_NO_DEVICE_MSG, "Setup › 연결 장치에서 PC 를 연결하세요.")
         n_open = _one(c, "SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s)", (uid, list(JOB_LIVE)))["n"]
         if n_open >= imports.JOBS_OPEN_MAX:
             raise CrmError("JOB-LIMIT", f"진행 중인 작업이 너무 많아요(최대 {imports.JOBS_OPEN_MAX}).", "끝나거나 취소된 뒤 다시 보내세요.")

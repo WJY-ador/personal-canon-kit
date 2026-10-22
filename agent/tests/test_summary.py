@@ -109,7 +109,7 @@ class SummaryTest(unittest.TestCase):
         self.assertNotIn(TOKEN, blob)
         self.assertNotIn(self.ks.get(_config.hmac_account(NAMESPACE)), blob)
         self.assertNotIn(NAMESPACE, blob)
-        self.assertEqual(set(call["env"]) - {"PATH", "HOME", "LANG"}, set())
+        self.assertEqual(set(call["env"]) - {"PATH", "HOME", "LANG", "USER", "LOGNAME"}, set())
         self.assertEqual(call["cwd"], self.th.paths.summary_work)
         self.assertEqual(call["timeout"], 300)
         argv = call["argv"]
@@ -121,6 +121,28 @@ class SummaryTest(unittest.TestCase):
         self.assertNotIn("--disallowedTools", argv)
         self.assertEqual(argv[argv.index("--max-turns") + 1], "1")
         self.assertEqual(argv[argv.index("--output-format") + 1], "json")
+
+    def test_child_env_user_logname_but_no_keys(self):
+        """B7: macOS·Linux 는 USER·LOGNAME 을 넘긴다(구독 CLI 로그인 찾기). 키·토큰 환경변수는 있어도 넘기지 않는다."""
+        put = {"USER": "synthuser", "LOGNAME": "synthlog", "ANTHROPIC_API_KEY": TOKEN, "CLAUDE_CODE_OAUTH_TOKEN": TOKEN,
+               "ANTHROPIC_AUTH_TOKEN": TOKEN, "MYCRM_SYNTH_SECRET": TOKEN}
+        saved = {k: os.environ.get(k) for k in put}
+        os.environ.update(put)
+        try:
+            env = summary.child_env(self.th.paths, "/usr/bin/true")
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        if osutil.IS_WINDOWS:
+            self.assertNotIn("USER", env)
+        else:
+            self.assertEqual((env.get("USER"), env.get("LOGNAME")), ("synthuser", "synthlog"))
+        self.assertNotIn(TOKEN, json.dumps(env))
+        self.assertFalse({"ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"} & set(env))
+        self.assertFalse(any("KEY" in k or "TOKEN" in k or "SECRET" in k for k in env), env.keys())
 
     def test_exit0_but_contract_fails_not_staged(self):
         self.write("a.md", "합성 기록")

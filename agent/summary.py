@@ -55,7 +55,8 @@ def build_argv(cli_path: str) -> list:
 
 def child_env(paths, cli_path: str | None = None) -> dict:
     """구독 CLI 가 로그인 정보를 찾는 데 필요한 최소 값만. 토큰·키·에이전트 설정은 없다.
-    PATH 앞에 CLI 가 있는 폴더를 둔다(node 실행기 등 같은 폴더의 런타임을 찾게)."""
+    PATH 앞에 CLI 가 있는 폴더를 둔다(node 실행기 등 같은 폴더의 런타임을 찾게).
+    macOS·Linux 는 USER·LOGNAME 도 넘긴다 — 없으면 구독 CLI 가 로그인을 못 찾는다(B7 실측 2026-10-22)."""
     base = "/usr/bin:/bin:/usr/sbin:/sbin"
     if cli_path:
         base = os.path.dirname(os.path.realpath(cli_path)) + os.pathsep + os.path.dirname(cli_path) + os.pathsep + base
@@ -64,6 +65,10 @@ def child_env(paths, cli_path: str | None = None) -> dict:
     env["HOME"] = home
     if osutil.IS_WINDOWS:
         for k in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot"):
+            if os.environ.get(k):
+                env[k] = os.environ[k]
+    else:
+        for k in ("USER", "LOGNAME"):
             if os.environ.get(k):
                 env[k] = os.environ[k]
     return env
