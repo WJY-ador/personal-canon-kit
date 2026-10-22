@@ -740,18 +740,20 @@ class LiveStackTest(_tj.LiveBase):
         self.assertNotIn("fake-session", json.dumps(p))
         self.assert_no_secret(w)
 
-    def test_b_blocked_accepted_inferred_unknown_rejected(self):
+    def test_b_blocked_and_inferred_unknown_demoted(self):
         jid, _ = self.start()
         out = self.sworker("blocked").poll_once()
         self.assertEqual(out["outcome"], "result-sent", out)
         prev = self.job(jid)["preview"]
         self.assertTrue(prev["changes"])
         self.assertTrue(prev["blocked"])
-        # 없는 항목을 추정 대상으로 = 서버 재검증 거절 → PC 가 바로 실패로 끝냄
+        # 없는 항목을 추정 대상으로 = 서버가 미해결(막힘)로 강등해 받는다(B3 — 거부 아님)
         jid, _ = self.start()
         out = self.sworker("inferred").poll_once()
-        self.assertEqual((out["outcome"], out["rule"]), ("server-contract", "target_not_found"), out)
-        self.assertEqual(self.row(jid), ("failed", 1, "result-shape"))
+        self.assertEqual(out["outcome"], "result-sent", out)
+        p = self.job(jid)
+        self.assertEqual(p["status"], "result_ready")
+        self.assertTrue(p["preview"]["blocked"], p["preview"])
 
     def test_c_contract_bad_fail_after_retry(self):
         jid, _ = self.start()
