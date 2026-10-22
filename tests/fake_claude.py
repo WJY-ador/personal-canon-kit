@@ -1,12 +1,80 @@
 """시험용 가짜 claude -p. stdin 프롬프트에서 기록 원문 첫 문장을 근거로 후보 하나를 돌려준다.
 FAKE_MODE=ungrounded 면 원문에 없는 인용을, FAKE_MODE=garbage 면 JSON 이 아닌 답을 낸다.
-FAKE_JOB=1 이면 agent/jobs.py 작업 결과 꼴(정리 텍스트·변경 목록)을 낸다 — 아래 분기."""
+FAKE_JOB=1 이면 agent/jobs.py 작업 결과 꼴(정리 텍스트·변경 목록)을 낸다 — 아래 분기.
+FAKE_JOB=1 이고 표준 입력에 '=== STACK/1 ===' 가 있으면 stack/1 본문을 낸다(FAKE_STACK 시나리오, _stack_body)."""
 import json
 import os
 import sys
 import time
 
 prompt = sys.stdin.read()
+
+
+def _section(text, name):
+    """'=== NAME ===' 다음 줄부터 다음 '=== ' 줄 전까지(입력 절은 끝까지)."""
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith("=== " + name):
+            out = []
+            for nx in lines[i + 1:]:
+                if nx.startswith("=== ") and not name.startswith(("INPUT", "EDITED")):
+                    break
+                out.append(nx)
+            return "\n".join(out).strip("\n")
+    return None
+
+
+def _stack_body(prompt, smode):
+    """FAKE_STACK 시나리오 — 정의 절에서 첫 정의(판단 종류 우선)를 골라 stack/1 본문을 만든다.
+    ok · contract-bad · forbidden-field · unref-link · inferred · blocked · restack · cycle · oversize
+    FAKE_STACK 에 쉼표로 여러 값을 주고 FAKE_COUNTER(파일 경로)를 주면 실행 차례마다 다음 값(재시도 시험)."""
+    counter = os.environ.get("FAKE_COUNTER")
+    if counter and "," in smode:
+        n = 0
+        if os.path.exists(counter):
+            with open(counter) as f:
+                n = int(f.read() or 0)
+        with open(counter, "w") as f:
+            f.write(str(n + 1))
+        seq = smode.split(",")
+        smode = seq[min(n, len(seq) - 1)]
+    defs = json.loads(_section(prompt, "DEFINITIONS"))
+    objs = defs["objects"]
+    obj = next((o for o in objs if o.get("kind") == "judgment"), objs[0])
+    fields = {f["key"]: (f["enum"][0] if f.get("enum") else "가짜 값") for f in obj["fields"] if f.get("required")}
+    text = _section(prompt, "INPUT") or _section(prompt, "EDITED TEXT") or ""
+    first = text.splitlines()[0][:40] if text else ""
+    ch = {"cid": "c1", "op": "create", "object_id": obj["object_id"], "target": None, "fields": fields,
+          "links": [], "depends_on": []}
+    body = {"units": [{"uid": "u1", "text": "정리: " + first, "change_ids": ["c1"]}], "changes": [ch], "blocked": []}
+    if smode == "contract-bad":
+        body["changes"][0]["op"] = "delete"
+    elif smode == "forbidden-field":
+        body["changes"][0]["stage"] = "confirmed"
+    elif smode == "unref-link":
+        rel = obj["relations"][0] if obj["relations"] else {"key": "axes"}
+        body["changes"][0]["links"] = [{"relation": rel["key"], "target": {"value": "same-date"}}]
+    elif smode == "inferred":
+        body["changes"].append({"cid": "c2", "op": "update", "object_id": obj["object_id"],
+                                "target": {"ref_kind": "inferred", "value": "item-guess-01"}, "fields": {}})
+        body["units"].append({"uid": "u2", "text": "추정: 앞 판단을 고친다", "change_ids": ["c2"]})
+    elif smode == "blocked":
+        body["changes"].append({"cid": "c2", "op": "update", "object_id": obj["object_id"],
+                                "target": {"ref_kind": "unresolved"}, "fields": {}})
+        body["units"].append({"uid": "u2", "text": "어느 항목인지 모름", "change_ids": ["c2"]})
+        body["blocked"] = [{"cid": "c2", "code": "unresolved_target", "question": "어느 항목을 고칠까요?"}]
+    elif smode == "restack":
+        prev = json.loads(_section(prompt, "PREVIOUS UNITS") or "[]")
+        uid = prev[0]["uid"] if prev else "u1"
+        body["units"] = [{"uid": uid, "text": "재정리: " + first, "change_ids": ["c1"]}]
+    elif smode == "cycle":
+        body["changes"].append({"cid": "c2", "op": "create", "object_id": obj["object_id"], "target": None,
+                                "fields": fields, "depends_on": ["c1"]})
+        body["changes"][0]["depends_on"] = ["c2"]
+    elif smode == "oversize":
+        body["units"][0]["text"] = "가" * 4001
+    return body
+
 
 if os.environ.get("FAKE_JOB") == "1":
     # agent/jobs.py 시험용 분기(가산만 — 아래 기존 [기록 원문] 경로는 그대로).
@@ -32,9 +100,12 @@ if os.environ.get("FAKE_JOB") == "1":
     if mode == "shape":
         print(json.dumps(["not", "an", "object"]))
         sys.exit(0)
-    inner = {"summary_text": "정리: 입력 %d자" % len(prompt), "changes": [], "blocked": [], "text_map": []}
-    if mode == "inner":
-        inner = {"unexpected": True}
+    if "=== STACK/1 ===" in prompt:
+        inner = _stack_body(prompt, os.environ.get("FAKE_STACK") or ("contract-bad" if mode == "inner" else "ok"))
+    else:
+        inner = {"summary_text": "정리: 입력 %d자" % len(prompt), "changes": [], "blocked": [], "text_map": []}
+        if mode == "inner":
+            inner = {"unexpected": True}
     out = {"type": "result", "is_error": mode == "is_error", "result": json.dumps(inner, ensure_ascii=False),
            "session_id": sid, "model": "fake-model", "resumed": resumed is not None}
     print(json.dumps(out, ensure_ascii=False))

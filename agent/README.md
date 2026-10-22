@@ -156,11 +156,22 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 - **CLI 격리**: `--tools ""` · `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` · `--setting-sources project` · `--permission-mode dontAsk` · `--max-turns 1` · `--output-format json`, 같은 대화는 `--resume`. 최소 환경변수, 빈 작업 폴더(`jobs-work/`), 입력은 표준 입력으로만. 토큰·HMAC 키·대응표는 넘기지 않습니다.
 - **실 CLI 차단**: 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 이 없으면 실 CLI 어댑터를 만들 수 없습니다. 시험은 `tests/fake_claude.py` 만 씁니다.
 
-PC 에 남는 것: `jobs-state.json`(현재 사용자만 읽기·쓰기) = 진행 중 작업의 임대 세대 · 날짜별 시도 수 · 대화 참조 → CLI 세션 ID 대응. **입력·결과·프롬프트 본문은 저장하지 않습니다**(메모리에서만 다룸). CLI 세션 ID 는 서버로 보내지 않습니다. 서버에 가는 결과의 모델 정보는 도구 이름·모델 이름·걸린 시간뿐입니다.
+**대화 정리(쌓기 단계, `stack.py` — kind `converse`)**:
+- **정의 스냅샷**: 입력을 받은 뒤 `GET /api/device/jobs/<id>/definitions?lease_generation=N` 을 한 번 받아 그 작업 동안 고정합니다(모델을 다시 돌려도 다시 받지 않음). 연결이 끊기면 한 번 더 받고, 서버가 작업을 줄 때 알려 준 정의 버전과 다르면 실행하지 않습니다.
+- **모델에게 주는 것**: 정의 요약(정의 ID·칸·관계·원천 ID 체계 — 보호 칸 제외)·`stack/1` 꼴·내용 제한·입력(재정리면 원 결과 문단 + 고친 글). 전부 표준 입력으로만, 입력은 맨 끝에 「데이터」로 둡니다.
+- **검증**(통과해야만 전송): 문단(units) ≤ 40 · 변경(changes) ≤ 60 · 정리 글 ≤ 4,000자 · 요청 전체 ≤ 64KiB · ID 중복 없음 · 의존(depends_on)은 있는 변경만, 순환 없음 · 정의에 있는 칸·관계만 · 대상·연결 근거는 `source_id`(정의의 원천 ID 체계)·`explicit_id`·`inferred`·`unresolved` 넷 중 하나(근거 없는 연결·날짜·출처·비슷한 문장 연결 = 거부) · 확정·판단·stage·인용·한도·보호 칸 같은 서버 관리값 = 거부. 근거 유형은 권한이 아닙니다 — 서버가 다시 검사하고, 추정은 확인 카드에, 미해결은 막힘으로 갑니다.
+- **보내는 꼴**: `{lease_generation, envelope:{contract:"stack/1", job_id, input_version, definitions_version, result_version, edit_generation, parent_result_version}, units, changes, blocked, model_meta}`. 봉투는 PC 가 만들고 모델은 만들지 않습니다.
+- **다시 돌리기**: 출력이 JSON 이 아니거나 계약을 어기면 CLI 를 **한 번만** 다시 돌립니다(같은 `--resume`). 임대가 1분+여유 이상 남았을 때만. 그래도 안 되면 `result-shape`(또는 `output-not-json`) 로 끝냅니다. 로그인·CLI 종료 오류는 다시 돌리지 않습니다. 작업당 시도(`attempts`)와 실제 재실행(`cli_retries`)은 따로 셉니다.
+- **같은 대화 한 번에 하나**: 같은 대화(session_ref)의 CLI 는 동시에 돌지 않습니다. 앞 실행이 남아 있으면 이 작업 임대 안(최소 1분 실행 시간을 남기고)에서 기다리고, 못 기다리면 입력도 받지 않고 넘깁니다(서버가 임대 만료 뒤 「확인 필요」로 남김).
+- **끝났는지 모를 때**(CLI 시간 초과): 실패를 보내지 않고 그 대화를 임대 만료(5분)까지 잠가 둡니다 — 서버는 「확인 필요」로 남기고, 같은 대화가 겹쳐 이어지지 않습니다.
+
+PC 에 남는 것: `jobs-state.json`(현재 사용자만 읽기·쓰기, 판 2 — 판 1 파일은 읽을 때 올림) = 진행 중 작업의 임대 세대·대화 참조·임대 만료 시각 · 날짜별 시도 수·재실행 수 · 대화 참조 → CLI 세션 ID 대응. **입력·결과·프롬프트·정의 본문은 저장하지 않습니다**(메모리에서만 다룸). CLI 세션 ID 는 서버로 보내지 않습니다. 서버에 가는 결과의 모델 정보는 도구 이름·모델 이름·걸린 시간·CLI 실행 횟수뿐입니다.
 
 시험:
 ```bash
 python3 -m unittest agent.tests.test_jobs        # 표준 라이브러리 스텁 서버(포트 0, JOBS_STUB_PORT 로 고정 가능) · 가짜 CLI
+python3 -m unittest agent.tests.test_stack       # 쌓기 단계 — 계약 검증 + 시나리오(FAKE_STACK: ok·contract-bad·forbidden-field·
+                                                 #   unref-link·inferred·blocked·restack·cycle·oversize) + 세션 직렬화
 ```
 실 서버로 다시 확인할 때만(로컬 주소·`crm_test_*` DB 가 아니면 건너뜀, 토큰은 환경변수로만):
 ```bash

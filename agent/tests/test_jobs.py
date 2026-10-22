@@ -23,6 +23,24 @@ TOKEN_B = "imp_is_6b6b6b6b6b6b6b6b6b6b6b6b.tok_Synth02." + "T" * 43
 SECRET_TEXT = "합성 원문 — 서버 일반 요청에 나오면 안 되는 문장 SYNTH-INPUT-7731"
 LEASE_SEC = 300
 EXPIRE_SEC = 24 * 3600
+DEFS_V = "defs-v1"
+DEFAULT_DEFS = {
+    "definitions_version": DEFS_V, "rule_version": 1,
+    "objects": [
+        {"id": "obj-judgment", "key": "judgment", "origin": "core", "label": "판단", "kind": "judgment",
+         "fields": [{"key": "text", "type": "text", "required": True, "max": 2000},
+                    {"key": "status", "type": "enum", "required": False, "enum": ["open", "closed"]}],
+         "relations": [{"key": "axes", "target_object": "obj-axis", "cardinality": "many"}],
+         "identity": [{"scheme": "board", "field": "board_id"}],
+         "protected_fields": ["board_id"], "stage_values": ["draft", "organized", "confirmed"],
+         "confirm_required": True},
+        {"id": "obj-axis", "key": "axis", "origin": "core", "label": "축", "kind": "classify",
+         "fields": [{"key": "name", "type": "text", "required": True}],
+         "relations": [], "identity": [], "protected_fields": [], "stage_values": ["draft", "organized"],
+         "confirm_required": False},
+    ],
+    "content_rules": ["타인의 말은 옮기지 않는다"],
+}
 
 
 class StubJobsServer:
@@ -38,6 +56,8 @@ class StubJobsServer:
         self.poll_script = []         # (status, headers, payload) 앞에서부터
         self.drop = {}                # (route, job_id) -> {"n": 남은 횟수, "apply": 적용 뒤 끊기}
         self.route_script = {}        # (route, job_id) -> [(status, payload, headers)] 앞에서부터 강제 응답
+        self.defs = DEFAULT_DEFS       # 정의 스냅샷(최초 발급 때 job 에 고정 — §3-2)
+        self.latest_edit = {}          # session_ref -> 받은 결과의 최대 edit_generation(재정리 역전 거부 흉내)
         self.inflight = {}
         self.max_inflight = {}
         stub = self
@@ -114,7 +134,9 @@ class StubJobsServer:
             self.jobs[jid] = {"id": jid, "kind": kind, "status": "queued", "device": None, "generation": 0,
                               "lease_expires": None, "expires": self.clock + EXPIRE_SEC, "text": text,
                               "input_version": input_version, "session_ref": session_ref, "attempts": 0,
-                              "result": None, "reason_code": None, "seq": len(self.jobs)}
+                              "result": None, "reason_code": None, "seq": len(self.jobs),
+                              "definitions_version": None, "edit_generation": 0, "parent_result_version": None,
+                              "input_kind": "converse", "restack": None, "defs_calls": 0}
         return jid
 
     def tick(self, sec: float):
@@ -174,7 +196,9 @@ class StubJobsServer:
                 j["lease_expires"] = self.clock + LEASE_SEC
                 return (200, {"id": j["id"], "kind": j["kind"], "session_ref": j["session_ref"],
                               "input_ref": "in_" + j["id"][:8], "input_version": j["input_version"],
-                              "definitions_version": 1,
+                              "definitions_version": j["definitions_version"],
+                              "edit_generation": j["edit_generation"],
+                              "parent_result_version": j["parent_result_version"],
                               "lease": {"generation": j["generation"], "expires_at": j["lease_expires"]}})
             if len(parts) != 5:
                 return (404, {"code": "NOT-FOUND"})
@@ -195,18 +219,42 @@ class StubJobsServer:
                     return (409, {"code": "JOB-LEASE"})
                 j["status"] = "running"
                 j["attempts"] += 1
-                return (200, {"text": j["text"], "input_version": j["input_version"]})
+                out = {"text": j["text"], "input_version": j["input_version"]}
+                if j["kind"] == "converse":
+                    out.update(input_kind=j["input_kind"], edit_generation=j["edit_generation"], restack=j["restack"])
+                return (200, out)
+            if rt == "definitions" and method == "GET":
+                gen = int((q.get("lease_generation") or ["-1"])[0])
+                if j["device"] != dev or gen != j["generation"] or j["status"] != "running":
+                    return (409, {"code": "JOB-LEASE"})
+                j["defs_calls"] += 1
+                if j["definitions_version"] is None:          # 최초 발급 때 고정, 이후 같은 값
+                    j["definitions_version"] = self.defs["definitions_version"]
+                    j["defs_snapshot"] = self.defs
+                return (200, j["defs_snapshot"])
             if rt == "result" and method == "POST":
                 if not isinstance(body, dict):
                     return (400, {"code": "BAD-REQUEST"})
+                env = body.get("envelope") if isinstance(body.get("envelope"), dict) else {}
+                rv = env.get("result_version", body.get("result_version"))
+                iv = env.get("input_version", body.get("input_version"))
                 if (j["status"] == "result_ready" and j["result"] is not None
-                        and j["result"]["result_version"] == body.get("result_version")):
+                        and _rv(j["result"]) == rv):
                     r = (200, {"duplicate": True})
                 elif j["device"] != dev or body.get("lease_generation") != j["generation"] or j["status"] != "running":
                     return (409, {"code": "JOB-LEASE"})
-                elif body.get("input_version") != j["input_version"]:
+                elif iv != j["input_version"]:
                     return (409, {"code": "JOB-VERSION"})
+                elif env and (env.get("definitions_version") != j["definitions_version"]
+                              or env.get("edit_generation") != j["edit_generation"]):
+                    return (409, {"code": "JOB-DEFS" if env.get("definitions_version") != j["definitions_version"]
+                                  else "JOB-VERSION"})
+                elif env and j["session_ref"] and env["edit_generation"] < self.latest_edit.get(j["session_ref"], 0):
+                    return (409, {"code": "JOB-VERSION"})            # 늦게 온 옛 편집 세대 결과
                 else:
+                    if env and j["session_ref"]:
+                        self.latest_edit[j["session_ref"]] = max(self.latest_edit.get(j["session_ref"], 0),
+                                                                 env["edit_generation"])
                     j["status"], j["result"] = "result_ready", body
                     r = (200, {"status": "result_ready"})
                 if d and d["n"] > 0 and d["apply"]:
@@ -222,6 +270,11 @@ class StubJobsServer:
                 j["status"], j["reason_code"] = "failed", body["reason_code"]
                 return (200, {"status": "failed"})
             return (404, {"code": "NOT-FOUND"})
+
+
+def _rv(body):
+    env = body.get("envelope") if isinstance(body.get("envelope"), dict) else {}
+    return env.get("result_version", body.get("result_version"))
 
 
 class VClock:
@@ -284,7 +337,8 @@ class Base(unittest.TestCase):
 
 class HappyPathTest(Base):
     def test_poll_input_result(self):
-        jid = self.srv.create()
+        """converse 외 종류(summarize_reading)는 ②-a 꼴 그대로. converse(stack/1) 꼴은 test_stack."""
+        jid = self.srv.create(kind="summarize_reading")
         w = self.worker()
         out = w.poll_once()
         self.assertEqual(out["outcome"], "result-sent")
@@ -404,7 +458,8 @@ class Row3DisconnectTest(Base):
         self.srv.drop[("result", jid)] = {"n": 1, "apply": True}
         w = self.worker()
         out = w.poll_once()
-        self.assertEqual(out, {"job_id": jid, "kind": "converse", "outcome": "result-sent", "duplicate": True})
+        self.assertEqual({k: out[k] for k in ("job_id", "kind", "outcome", "duplicate")},
+                         {"job_id": jid, "kind": "converse", "outcome": "result-sent", "duplicate": True})
         self.assertEqual(len(w.runner.calls), 1)
 
     def test_undeliverable_then_needs_check_not_rerun(self):
@@ -478,10 +533,11 @@ class Row20RateLimitedSendTest(Base):
 
 
 class Row5ModelFailTest(Base):
-    """5 모델 실패·잘못된 계약 — 미검증 값 전송 없음, 실행마다 시도 차감, 실패 = 코드만."""
+    """5 모델 실패·잘못된 계약 — 미검증 값 전송 없음, 실행마다 시도 차감, 실패 = 코드만.
+    ②-a 경로(summarize_reading, CLI 재시도 없음). converse(stack/1 — 재시도 1·종료 불명확)는 test_stack."""
 
     def _fail_case(self, mode, expect, **kw):
-        jid = self.srv.create()
+        jid = self.srv.create(kind="summarize_reading")
         w = self.worker(mode, **kw)
         out = w.poll_once()
         self.assertEqual((out["outcome"], out["reason_code"]), ("failed", expect))
@@ -538,7 +594,7 @@ class Row5ModelFailTest(Base):
 
     def test_each_rerun_counts(self):
         for _ in range(3):
-            self.srv.create()
+            self.srv.create(kind="summarize_reading")
         w = self.worker("garbage")
         for _ in range(3):
             w.poll_once()
@@ -748,7 +804,24 @@ class StateTest(unittest.TestCase):
         self.assertEqual(again.attempts("2026-10-22"), 1)
         self.assertEqual(again.leases(), {"0f1e2d3c-aaaa-bbbb-cccc-111122223333": {"generation": 3}})
         with open(path, encoding="utf-8") as f:
-            self.assertEqual(set(json.load(f)), {"v", "sessions", "attempts", "leases"})
+            self.assertEqual(set(json.load(f)), {"v", "sessions", "attempts", "cli_retries", "leases"})
+
+    def test_v1_state_upgraded(self):
+        path = os.path.join(self.th.paths.home, jobs.STATE_FILE)
+        with open(path, "w") as f:
+            json.dump({"v": 1, "sessions": {"sess-ref-01": "fake-session-0001"}, "attempts": {"2026-10-21": 2},
+                       "leases": {}}, f)
+        st = jobs.JsonState(path)
+        self.assertEqual(st.session_get("sess-ref-01"), "fake-session-0001")
+        self.assertEqual(st.cli_retries("2026-10-22"), 0)
+        st.cli_retry_bump("2026-10-22")
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertEqual((data["v"], data["cli_retries"]), (jobs.STATE_VERSION, {"2026-10-22": 1}))
+        with open(path, "w") as f:
+            json.dump({"v": 3, "sessions": {}, "attempts": {}, "leases": {}}, f)
+        with self.assertRaises(jobs.JobsError):                   # 모르는 판 = 멈춤
+            jobs.JsonState(path)
 
     def test_worker_state_file_has_no_input(self):
         srv = StubJobsServer()
