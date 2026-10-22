@@ -24,6 +24,7 @@ python3 -m agent [--home 경로] <명령>
 | `status` | 연결·토큰·키 유무, 켜진 어댑터, 무인 요약, 예약, 건수(이벤트·대기·접수·멈춤·충돌·거절·격리·사람), 오늘 요약 시도, 멈춤 범위 |
 | `schedule install` · `schedule remove` | launchd 예약 등록(1시간마다)·해제. 둘 다 여러 번 해도 같습니다. 해제는 원문·대응표를 지우지 않습니다 |
 | `serve [--port N]` | 원문 보기(127.0.0.1 전용, 기본 포트 8790). Ctrl+C 로 끕니다 |
+| `serve --jobs` | 작업 실행 상주(11절, 준비 중 · 기본 꺼짐). 끝내기 = Ctrl+C·SIGTERM, 실행 중 작업은 최대 30초 기다립니다 |
 | `disconnect` | 순서대로 ① 서버 토큰 폐기(`POST /api/imports/device/revoke`) ② 로컬 업로드 토큰 제거. 서버가 장애·네트워크 오류면 로컬 토큰을 그대로 두고 종료 코드 1로 멈춥니다(다시 시도). 토큰이 이미 폐기·만료됐으면 서버는 「이미 무효」로 보고 로컬만 지웁니다. 결과는 서버·로컬·HMAC 키를 따로 보여 줍니다. HMAC 키는 지우지 않습니다 |
 | `disconnect --local-only` | 서버를 건너뛰고 로컬 토큰만 지웁니다 — 웹 「연결 장치」에서 이미 해제했을 때 |
 | `disconnect --forget-hmac-key` | 그 키 공간의 HMAC 키도 지웁니다. **지우면 같은 사람 연결이 끊깁니다** — 다시 연결해도 전에 본 사람을 같은 사람으로 잇지 못하고, 서버의 HMAC 으로 되살릴 수 없습니다. 백업 없이 쓰지 마세요 |
@@ -144,7 +145,14 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 
 ## 11. 작업 전달 (`jobs.py`, 준비 중 · 기본 꺼짐)
 
-웹에서 들어온 작업(대화 정리 등)을 서버가 이 PC 에 맡기고, PC 가 구독 CLI(`claude -p`)로 한 번 실행해 결과를 돌려주는 부분입니다. 지금은 **모듈과 시험만** 있습니다 — 상주 실행 명령(`python3 -m agent …`)은 아직 없고, 서버의 작업 스위치(`CRM_CONVERSE_ENABLED`·`CRM_ROUTINE_ENABLED`)도 꺼져 있습니다. 실 CLI 는 이용 조건 확인 전에는 돌지 않게 막아 두었습니다(아래).
+웹에서 들어온 작업(대화 정리 등)을 서버가 이 PC 에 맡기고, PC 가 구독 CLI(`claude -p`)로 한 번 실행해 결과를 돌려주는 부분입니다. 상주 실행 명령은 `python3 -m agent serve --jobs` 입니다. 서버의 작업 스위치(`CRM_CONVERSE_ENABLED`·`CRM_ROUTINE_ENABLED`)는 꺼져 있고, 실 CLI 는 이용 조건 확인 전에는 돌지 않게 막아 두었습니다(아래).
+
+**상주 실행(`serve --jobs`)**:
+- **시작**: 홈 잠금 `locks/jobs.lock`(OS 파일 잠금 — 프로세스가 강제로 죽어도 OS 가 풀어 다음 시작을 막지 않습니다) → 장치 확인(`GET /api/imports/device`). 이미 다른 `serve --jobs` 가 돌고 있으면 종료 코드 1, 토큰이 없거나 거절·폐기면 종료 코드 3 으로 CLI 를 부르지 않고 끝납니다. 서버에 닿지 못하면 30초부터 최대 15분까지 늘려 기다리며 다시 확인합니다.
+- **끝내기**: 첫 Ctrl+C·SIGTERM = 새 작업을 받지 않습니다. 실행 중 작업이 있으면 최대 30초 동안 완료·결과 전송을 기다립니다(작업이 없으면 바로 끝). 30초를 넘기거나 신호가 한 번 더 오면 CLI 와 그 하위 프로세스를 함께 끝내고(종료 확인) 멈춥니다. 서버에는 임대 갱신이 없어, 기다리는 동안도 처음 받은 5분 임대 안에서만 결과가 받아집니다.
+- **끊긴 실행**: 끝났는지 모르는 실행은 실패로 보내지 않습니다 — 서버가 임대 만료 뒤 「확인 필요」로 남기고 다시 실행하지 않습니다. 다시 시작해도 그 작업을 다시 받거나 CLI 를 다시 부르지 않습니다.
+- **출력**: 한 줄에 JSON 하나 — 작업 ID·종류·결과 코드·HTTP 상태·오류 코드·걸린 시간만. 입력·결과·프롬프트·토큰·서버 주소·CLI 출력·예외 문구는 쓰지 않습니다(예외는 클래스 이름만).
+- **폴 주기**: 정상 = 롱폴 30초(소켓 여유 포함 최대 45초, `jobs.MAX_POLL_PERIOD_SEC`). CLI 실행 중(최대 5분)·서버 오류 대기(최대 15분)·429(최대 1시간) 동안은 폴하지 않습니다.
 
 동작:
 - **받기**: `GET /api/device/jobs?wait=30` 롱폴. 폴링 시작 간격 15초 이상(장치 분당 4). 서버가 429 를 주면 `Retry-After`(없으면 60초, 최대 1시간)를 지키고, 서버 오류·스위치 꺼짐·네트워크 오류면 30초부터 최대 15분까지 늘려 기다립니다. 토큰이 거절되면(401·폐기) 멈춥니다.
@@ -152,7 +160,7 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 - **결과 전송**: 연결이 끊기면 **같은 내용(같은 결과 버전)** 으로 다시 보냅니다. 모델은 다시 돌리지 않습니다. 429 면 임대가 남아 있는 동안만 `Retry-After` 를 지켜 다시 보냅니다. 끝내 못 보내면 버리고, 서버가 임대 만료 뒤 「확인 필요」로 남깁니다(중복 실행 없음).
 - **실패 전송**: 사유 코드 하나만 보냅니다 — `output-not-json`·`output-shape`·`result-shape`·`timeout`·`cli-exit`·`login`·`input-too-large`. 입력·모델 출력·오류 문구는 보내지 않습니다.
 - **입력 제한**: 8,000 코드포인트 **그리고** UTF-8 32KiB. 넘으면 실행하지 않고 `input-too-large` 로 끝냅니다.
-- **동시 1**: 한 프로세스는 한 번에 작업 하나, 한 홈에는 작업 프로세스 하나(상주 명령이 생기면 잠금 `locks/jobs.lock` 을 씁니다 — 예약 실행의 `run` 잠금과 다른 이름이라 서로 막지 않습니다).
+- **동시 1**: 한 프로세스는 한 번에 작업 하나, 한 홈에는 작업 프로세스 하나(잠금 `locks/jobs.lock` — 예약 실행의 `run` 잠금과 다른 이름이라 서로 막지 않습니다).
 - **CLI 격리**: `--tools ""` · `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` · `--setting-sources project` · `--permission-mode dontAsk` · `--max-turns 1` · `--output-format json`, 같은 대화는 `--resume`. 최소 환경변수, 빈 작업 폴더(`jobs-work/`), 입력은 표준 입력으로만. 토큰·HMAC 키·대응표는 넘기지 않습니다.
 - **실 CLI 차단**: 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 이 없으면 실 CLI 어댑터를 만들 수 없습니다. 시험은 `tests/fake_claude.py` 만 씁니다.
 
@@ -171,6 +179,7 @@ PC 에 남는 것: `jobs-state.json`(현재 사용자만 읽기·쓰기, 판 2 �
 시험:
 ```bash
 python3 -m unittest agent.tests.test_jobs        # 표준 라이브러리 스텁 서버(포트 0, JOBS_STUB_PORT 로 고정 가능) · 가짜 CLI
+python3 -m unittest agent.tests.test_serve       # 상주 실행 — 잠금·인증·신호·유예·자식 그룹 종료(FAKE_MODE=hang)·전달 재개
 python3 -m unittest agent.tests.test_stack       # 쌓기 단계 — 계약 검증 + 시나리오(FAKE_STACK: ok·contract-bad·forbidden-field·
                                                  #   unref-link·inferred·blocked·restack·cycle·oversize) + 세션 직렬화
 ```
