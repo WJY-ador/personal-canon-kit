@@ -664,3 +664,31 @@ CREATE TABLE IF NOT EXISTS page_layouts (
   version    integer NOT NULL CHECK (version > 0),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- PR ②-a 작업 전달(2026-10-22, 구현계획 §5). 세션(session_id) = 여러 실행을 묶는 불투명 ID, 작업 = PC 실행 1번.
+-- 이 행엔 본문이 없다 — 입력·결과(미확정 내용 전체)는 임시 보관(tmp 스키마, db._init_tmp 가 만든다 — 운영 백업 -n public 밖, 24h 만료 삭제).
+-- 종료 표식 = status·terminal_at·reason_code(코드만). CLI 세션 ID 는 PC 에만. 계정 삭제는 db.DELETE_TABLES(입력원 앞) + tmp 명시 삭제.
+CREATE TABLE IF NOT EXISTS jobs (
+  id                  uuid PRIMARY KEY,
+  user_id             text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  session_id          uuid NOT NULL,
+  kind                text NOT NULL CHECK (kind IN ('converse','summarize_reading','routine_ingest')),
+  status              text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','leased','running','result_ready','confirmed','failed',
+                                                                      'cancelled','expired','needs_check')),
+  device_id           text,                       -- 임대한 장치(import_streams.id). 임대 전 NULL. FK 없음 — 옛 DB 재현 시험이 import_streams 를 지운다
+  lease_generation    integer NOT NULL DEFAULT 0 CHECK (lease_generation >= 0),
+  lease_expires_at    timestamptz,
+  input_version       integer NOT NULL DEFAULT 1 CHECK (input_version > 0),
+  definitions_version integer,                    -- ②-b 구조 정의 스냅샷. ②-a 는 NULL
+  attempts            integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),   -- 입력 조회 성공 수(PC 시도 기록)
+  reason_code         text CHECK (reason_code IN ('output-not-json','output-shape','result-shape','timeout','cli-exit','login',
+                                                  'input-too-large')),
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  expires_at          timestamptz NOT NULL,       -- created_at + 24h(서버 시각). 연장 없음
+  terminal_at         timestamptz,
+  UNIQUE (user_id, id),
+  CHECK ((status IN ('confirmed','failed','cancelled','expired','needs_check')) = (terminal_at IS NOT NULL)),
+  CHECK (status <> 'failed' OR reason_code IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS ix_jobs_queue ON jobs (user_id, created_at) WHERE status = 'queued';
+CREATE INDEX IF NOT EXISTS ix_jobs_session ON jobs (user_id, session_id);

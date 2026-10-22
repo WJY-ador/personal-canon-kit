@@ -8,6 +8,7 @@
 세션 쿠키 v2(β2): {uid, iat, exp} — 요청마다 users 행 1건으로 차단·웹 끊기(web_revoked_before)를 본다. 옛 쿠키에 남은 ra 키는 읽지 않는다.
 환경변수: AUTHKIT_WEB_CLIENT_ID · CRM_SESSION_SECRET (둘 다 없으면 웹 로그인만 503, MCP 는 산다).
 """
+import asyncio
 import base64
 import datetime as _dt
 import hashlib
@@ -1671,6 +1672,183 @@ class Web:
         """GET — 「나」 통계(축 띠·히트맵·종류별·기다리는 결정). 전체 범위, 읽기만. 모양은 db.me_stats."""
         return await self._core_read(request, db.me_stats)
 
+    # ── PR ②-a 작업 전달 (2026-10-22, 구현계획 §5·G3) ──
+    # 장치 경로 = Bearer 장치 토큰(imports.authenticate)만 — 웹 쿠키·MCP 토큰 아님. 장치 권한에 확정 없음.
+    # 폴링 버킷(GET /api/device/jobs · GET /api/jobs/<id>) = imports.POLL_LIMITS · 동시 롱폴 = imports.POLL_CONCURRENT(이 프로세스 메모리).
+    # /input·/result·/fail 은 기존 장치 요청 버킷(imports._rate, 분당 10·30). 오류 = {code, msg} + _JOB_HTTP.
+    _JOB_HTTP = {"JOB-LEASE": 409, "JOB-VERSION": 409, "JOB-GONE": 410, "SWITCH-OFF": 503, "LIMIT-UNSET": 503, "RATE-LIMIT": 429,
+                 "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413}
+    _polls: dict = {}   # (scope, key) → 진행 중 롱폴 수
+
+    @classmethod
+    def _job_err(cls, e, headers=None, extra=None):
+        body = {"code": e.code, "msg": e.message}
+        if getattr(e, "resume_at", None):
+            body["resume_at"] = e.resume_at
+        if extra:
+            body = {**extra, **body}
+        status = cls._JOB_HTTP.get(e.code) or imports.http_status(e.code)
+        h = {"cache-control": "no-store", **(headers or {})}
+        if status == 429 and "retry-after" not in h:
+            h["retry-after"] = str(max(1, 60 - _dt.datetime.now().second))
+        return JSONResponse(body, status_code=status, headers=h)
+
+    @staticmethod
+    def _poll_bump(uid, device_id=None):
+        """폴링 버킷 +1(별도 트랜잭션 — 뒤가 실패해도 남는다). 장치면 장치·사용자 둘 다, 웹이면 사용자만. 넘으면 RATE-LIMIT."""
+        with db.tx() as c:
+            for scope, key in ((("device", device_id),) if device_id else ()) + (("user", "user"),):
+                lim = imports.POLL_LIMITS[(scope, "minute")]
+                if imports._bump(c, uid, key, "minute", "poll")["n"] > lim:
+                    raise db.CrmError("RATE-LIMIT", f"작업 확인이 너무 잦아요(분당 {lim}회).", "잠시 뒤 다시 확인하세요.")
+
+    def _poll_enter(self, scope, key):
+        k = (scope, key)
+        if self._polls.get(k, 0) >= imports.POLL_CONCURRENT[scope]:
+            return False
+        self._polls[k] = self._polls.get(k, 0) + 1
+        return True
+
+    def _poll_leave(self, scope, key):
+        k = (scope, key)
+        self._polls[k] = self._polls.get(k, 1) - 1
+        if self._polls[k] <= 0:
+            self._polls.pop(k, None)
+
+    def _wait_arg(self, request):
+        return self._qint(request, "wait", imports.POLL_WAIT_MAX, 0, imports.POLL_WAIT_MAX)
+
+    async def _device(self, request):
+        return await run_in_threadpool(imports.authenticate, request.headers.get("authorization", ""))
+
+    async def api_device_jobs(self, request):
+        """GET /api/device/jobs?wait=0..30 — 롱폴. 200 {id,kind,session_ref,input_ref,input_version,definitions_version,lease:{generation,expires_at}}
+        · 204 없음 · 429 폴링 버킷·동시 1(Retry-After). 끊긴 연결엔 할당하지 않는다(1초마다 확인)."""
+        code = "EXC"
+        try:
+            dev = await self._device(request)
+            if not self._poll_enter("device", dev["id"]):
+                raise db.CrmError("RATE-LIMIT", "이 장치의 작업 확인이 이미 진행 중이에요.", "앞 확인이 끝난 뒤 다시 하세요.")
+            try:
+                await run_in_threadpool(self._poll_bump, dev["user_id"], dev["id"])
+                loop = asyncio.get_running_loop()
+                deadline = loop.time() + self._wait_arg(request)
+                while True:
+                    if await request.is_disconnected():
+                        code = "GONE"
+                        return Response(status_code=204, headers={"cache-control": "no-store"})
+                    job = await run_in_threadpool(db.job_assign, dev)
+                    if job:
+                        code = "OK"
+                        return JSONResponse(job, headers={"cache-control": "no-store"})
+                    left = deadline - loop.time()
+                    if left <= 0:
+                        code = "OK"
+                        return Response(status_code=204, headers={"cache-control": "no-store"})
+                    await asyncio.sleep(min(1.0, left))
+            finally:
+                self._poll_leave("device", dev["id"])
+        except db.CrmError as e:
+            code = e.code
+            return self._job_err(e)
+        finally:
+            db.usage_count(None, "api:device_jobs", code)
+
+    async def api_device_job(self, request):
+        """GET .../input?lease_generation=N → {text, input_version}(ensure_ascii=False — Starlette JSONResponse 기본) ·
+        POST .../result · POST .../fail. 임대·버전·만료 판정은 db. 409 JOB-LEASE·JOB-VERSION · 410 JOB-GONE · 503 SWITCH-OFF."""
+        jid, op = request.path_params["jid"], request.path_params["op"]
+        code = "EXC"
+        try:
+            if (op, request.method) not in (("input", "GET"), ("result", "POST"), ("fail", "POST")):
+                raise db.CrmError("NOT-FOUND", "그런 경로는 없어요.")
+            dev = await self._device(request)
+            await run_in_threadpool(imports._rate, dev)
+            if op == "input":
+                g = request.query_params.get("lease_generation", "")
+                gen = int(g) if g.isdigit() else None
+                out = await run_in_threadpool(db.job_input, dev, jid, gen)
+            else:
+                raw = await request.body()
+                if len(raw) > db.JOB_RESULT_MAX_BYTES:
+                    raise db.CrmError("PAYLOAD-LIMIT", f"본문이 너무 커요(상한 {db.JOB_RESULT_MAX_BYTES} 바이트).")
+                try:
+                    body = json.loads(raw)
+                except ValueError:
+                    raise db.CrmError("ARG-INVALID", "JSON 본문이 필요해요.") from None
+                out = await run_in_threadpool(db.job_result if op == "result" else db.job_fail, dev, jid, body)
+            code = "OK"
+            return JSONResponse(out, headers={"cache-control": "no-store"})
+        except db.CrmError as e:
+            code = e.code
+            return self._job_err(e)
+        finally:
+            db.usage_count(None, f"api:device_job_{op}" if op in ("input", "result", "fail") else "api:device_job", code)
+
+    async def api_jobs(self, request):
+        """POST {kind, text, session_id?} — 작업 접수(스위치·길이 8,000자/32KiB·한도·열린 작업 수). 201 {id, session_id}."""
+        resp = await self._core_write(request, "job_create",
+                                      {"kind": ((str,), True), "text": ((str,), True), "session_id": ((str,), False)},
+                                      lambda uid, b: db.job_create(uid, b["kind"], b["text"], b.get("session_id")))
+        return self._job_remap(resp, ok=201)
+
+    def _job_remap(self, resp, ok=200):
+        """_core_write 의 공용 매핑(그 밖 400)을 작업 코드에 맞게 — 성공 상태·503·429·410·409."""
+        if resp.status_code == 200:
+            resp.status_code = ok
+        elif resp.status_code == 400:
+            body = json.loads(resp.body)
+            code = body.get("code")
+            if code in self._JOB_HTTP and code != "PAYLOAD-LIMIT":
+                if code == "JOB-QUOTA":   # _crm_err 는 resume_at 을 싣지 않는다 — 장치 경로와 같은 꼴로
+                    body["resume_at"] = imports.next_kst_midnight()
+                return self._job_err(db.CrmError(code, body.get("msg", ""), body.get("action", "")), extra=body)
+        return resp
+
+    async def api_job(self, request):
+        """GET /api/jobs/<id>?wait=0..30 — 상태(본인만, 남·없음 404). 살아 있는 동안(queued·leased·running) 롱폴, result_ready 면 result 를 싣는다.
+        폴링 버킷(사용자) · 웹 동시 2."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self._poll_enter("web", uid):
+            return self._job_err(db.CrmError("RATE-LIMIT", "작업 확인이 이미 여러 개 진행 중이에요.", "잠시 뒤 다시 확인하세요."))
+        try:
+            await run_in_threadpool(self._poll_bump, uid)
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + self._wait_arg(request)
+            while True:
+                out = await run_in_threadpool(db.job_get, uid, request.path_params["jid"])
+                left = deadline - loop.time()
+                if out["status"] not in ("queued", "leased", "running") or left <= 0 or await request.is_disconnected():
+                    return JSONResponse(out, headers={"cache-control": "no-store"})
+                await asyncio.sleep(min(1.0, left))
+        except db.CrmError as e:
+            return self._job_err(e)
+        finally:
+            self._poll_leave("web", uid)
+
+    async def api_job_op(self, request):
+        """POST /api/jobs/<id>/cancel — 취소(스위치 무관, 멱등, 본문 없음) · POST /api/jobs/<id>/confirm — ②-b 전 = 503 SWITCH-OFF."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        op = request.path_params["op"]
+        try:
+            if op == "confirm":
+                raise db.CrmError("SWITCH-OFF", "확인(확정)은 아직 열리지 않았어요.", "다음 판을 기다리세요.")
+            if op != "cancel":
+                raise db.CrmError("NOT-FOUND", "그런 경로는 없어요.")
+
+            def cancel():
+                db.write_gate("job_cancel", {}, uid, quota=False)   # 지우는 쪽이라 전역 크기 관문 면제
+                return db.job_cancel(uid, request.path_params["jid"])
+            return JSONResponse(await run_in_threadpool(cancel), headers={"cache-control": "no-store"})
+        except db.CrmError as e:
+            return self._job_err(e) if e.code in self._JOB_HTTP else self._crm_err(e)
+
     async def api_me_aggregate(self, request):
         """GET ?period=7d|30d|90d|all — 「나」 집계(웹·MCP 같은 서버 함수). /api/state 엔 30d 만 실린다."""
         period = request.query_params.get("period", activity.DEFAULT_PERIOD)
@@ -2343,6 +2521,12 @@ class Web:
             Route("/api/me/aggregate", u("web:me_aggregate", self.api_me_aggregate)),
             Route("/api/me/layout", u("web:me_layout", self.api_me_layout), methods=["GET", "PUT", "DELETE"]),   # PR ①-b 쓰기 예외(이 라우트만)
             Route("/api/me/stats", u("web:me_stats", self.api_me_stats)),   # PR ①-b — 읽기만
+            # PR ②-a 작업 전달 — 장치(Bearer 장치 토큰) 2 · 웹(세션) 3
+            Route("/api/device/jobs", self.api_device_jobs),
+            Route("/api/device/jobs/{jid}/{op}", self.api_device_job, methods=["GET", "POST"]),
+            Route("/api/jobs", u("web:jobs", self.api_jobs), methods=["POST"]),
+            Route("/api/jobs/{jid}", u("web:job", self.api_job)),
+            Route("/api/jobs/{jid}/{op}", u("web:job_op", self.api_job_op), methods=["POST"]),
             Route("/api/activities", u("web:activities", self.api_activities)),
             Route("/api/activities/{aid}", u("web:activity", self.api_activity)),
             Route("/api/people/{pid}/context", u("web:person_context", self.api_person_context)),
