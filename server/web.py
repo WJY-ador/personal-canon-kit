@@ -1288,9 +1288,9 @@ class Web:
         uid, err = await self._need(request)
         if err:
             return err
-        st, me, flags, std, srcs, cnt, home, people, refl = await run_in_threadpool(lambda: (
+        st, me, flags, std, srcs, cnt, home, people, refl, devst = await run_in_threadpool(lambda: (
             db.state(uid), db.user_get(uid), db.app_user_flags(uid), db.std_status(uid), db.sources(uid), db.source_counts(uid),
-            db.me_home(uid), db.people_all(uid), db.reflections_all(uid)))
+            db.me_home(uid), db.people_all(uid), db.reflections_all(uid), db.devices_status(uid)))
         # PR① 홈 「더 보기」 — journal(기본 50편) 마지막 행 커서. 50편 미만이면 null(정확히 50 이면 커서 — 다음 호출이 0편+null 일 수 있음). /app 전용
         st["journal_next_before"] = record_cursor(st["journal"][-1]) if len(st["journal"]) >= JOURNAL_PAGE else None
         st["std"] = std   # PR #20 사용자 표준 상태(contract.std_state 모양) — /app 전용, MCP state_get 에는 넣지 않는다
@@ -1303,6 +1303,7 @@ class Web:
                       "display_name": home["display_name"], "nav": home["nav"]}   # PR B: 표시 이름(null = 이름 입력 화면) · 새 탐색 new|old
         st["switches"] = {"converse": db.job_switch_on("converse")}   # PR ②-b — 「대화」 버튼 표시(켜짐일 때만). /app 전용, MCP state_get 에는 넣지 않는다
         st["stack_session"] = await run_in_threadpool(db.stack_session_current, uid)   # ②-b 새로 고침 복원·두 탭 공유 — {id, expires_at} | null
+        st["devices_status"] = devst   # ③-0.2 장치 상태 {state: none|recent|offline, last_seen_at, threshold_seconds} — 본인만, /app 전용(활동 부분과 독립)
         st["me"] = {"counts": home["counts"]}   # PR B 「나」 홈 개수(판단·기준·결정·사람·출처·요약/반응) — 본인만, /app 전용
         st["people"], st["reflections"] = people, refl   # PR B 코어 사람·출처 요약/반응(본인 것 전부, 최근 순) — /app 전용
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
@@ -1725,7 +1726,12 @@ class Web:
         return self._qint(request, "wait", imports.POLL_WAIT_MAX, 0, imports.POLL_WAIT_MAX)
 
     async def _device(self, request):
-        return await run_in_threadpool(imports.authenticate, request.headers.get("authorization", ""))
+        """장치 토큰 인증 + 마지막 연결 시각(서버 수신 시각, ③-0.2). 인증 실패면 시각을 쓰지 않는다."""
+        def auth(h):
+            dev = imports.authenticate(h)
+            db.device_seen(dev["user_id"], dev["id"])
+            return dev
+        return await run_in_threadpool(auth, request.headers.get("authorization", ""))
 
     async def api_device_jobs(self, request):
         """GET /api/device/jobs?wait=0..30 — 롱폴. 200 {id,kind,session_ref,input_ref,input_version,definitions_version,lease:{generation,expires_at}}

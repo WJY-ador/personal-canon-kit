@@ -4078,6 +4078,41 @@ def job_assign(dev):
             "lease": {"generation": j["lease_generation"], "expires_at": j["lease_expires_at"].isoformat()}}
 
 
+# ③-0.2 장치 상태(2026-10-22, 구현계획 §2-2) — 등록 ≠ 최근 연결. 마지막 연결 = 서버 수신 시각(import_streams.last_used_at, now()).
+# 쓰는 곳 = 인증된 장치 작업 요청(web._device: 롱폴·input·definitions·result·fail) · 가져오기 수신(imports). PC 가 보낸 시각·작업 성공 시각은 쓰지 않는다.
+# 기준 = max(180초, 정상 최대 폴 주기×3). 정상 최대 폴 주기 = 롱폴 대기 imports.POLL_WAIT_MAX(30) — PC agent/jobs.py WAIT_SEC 30·MIN_POLL_INTERVAL 15
+# (시험이 둘을 묶는다). /app 전용 — MCP state_get(db.state)에는 넣지 않는다.
+DEVICE_POLL_MAX_SECONDS = 30
+DEVICE_RECENT_SECONDS = max(180, DEVICE_POLL_MAX_SECONDS * 3)
+DEVICE_SEEN_GAP_SECONDS = 60   # 마지막 연결 시각 쓰기 최소 간격(해상도). 기준보다 충분히 짧아야 한다(시험이 묶는다)
+
+
+def device_seen(uid, device_id):
+    """인증된 장치 요청 1번 = 마지막 연결 시각을 서버 시각으로. 연결 해제 장치는 그대로(인증이 이미 막는다).
+    쓰기 줄이기: 직전 값이 DEVICE_SEEN_GAP_SECONDS 안이면 쓰지 않는다(폴 30초마다 쓰기 0 — 기준 180초라 60초 해상도면 충분)."""
+    with tx() as c:
+        c.execute("UPDATE import_streams SET last_used_at=now() WHERE user_id=%s AND id=%s AND channel='device' AND revoked_at IS NULL "
+                  "AND (last_used_at IS NULL OR last_used_at < now() - make_interval(secs => %s))", (uid, device_id, DEVICE_SEEN_GAP_SECONDS))
+
+
+def devices_status(uid):
+    """{"state": none|recent|offline, "last_seen_at": ISO|null, "threshold_seconds"} — 본인 장치만(장치 id·이름 없음).
+    none = 연결 해제 안 된 장치 0 · recent = 그 장치들 중 가장 최근 수신 시각이 기준 안, 또는 그 장치가 만료 전 임대(running)를 가짐
+    · offline = 그 밖(아직 수신 없음 포함). 임대 갱신 경로가 없어 PC 는 CLI 실행 중(최대 300초) 폴하지 않는다 — 유효 임대 = 연결 근거.
+    last_seen_at 은 늘 마지막 수신 시각(임대로 꾸미지 않는다)."""
+    with tx() as c:
+        r = _one(c, "SELECT count(*) AS n, max(s.last_used_at) AS seen, "
+                    "COALESCE(max(s.last_used_at) >= now() - make_interval(secs => %s), false) "
+                    "OR EXISTS (SELECT 1 FROM jobs j JOIN import_streams d ON d.user_id=j.user_id AND d.id=j.device_id "
+                    "AND d.channel='device' AND d.revoked_at IS NULL "
+                    "WHERE j.user_id=%s AND j.status='running' AND j.lease_expires_at > now()) AS recent "
+                    "FROM import_streams s WHERE s.user_id=%s AND s.channel='device' AND s.revoked_at IS NULL",
+                 (DEVICE_RECENT_SECONDS, uid, uid))
+    state = "none" if not r["n"] else ("recent" if r["recent"] else "offline")
+    return {"state": state, "last_seen_at": r["seen"].isoformat() if r["n"] and r["seen"] else None,
+            "threshold_seconds": DEVICE_RECENT_SECONDS}
+
+
 def _job_dev_row(c, dev, jid):
     """장치 경로 공통 — 본인 사용자 작업만(남·없음·만료·취소 = JOB-GONE). 행 잠금."""
     j = _one(c, "SELECT *, (expires_at <= now()) AS gone_ttl, COALESCE(lease_expires_at > now(), false) AS lease_ok FROM jobs "
@@ -4259,6 +4294,14 @@ def _job_result_stack(dev, jid, body):
 def _preview_display(c, uid, row, sess=None):
     import stack_service as ss
     out = ss.display(c, uid, row)
+    # ③-0.2 뺀 변경 이름 — 제외는 같은 작업의 미리보기 v1 에서 시작하므로(재정리 결과도 v1 부터) 그 행의 표시 요약을 excluded 순서대로 싣는다.
+    # 새 저장 없음 · 본인 행만 · 표시 요약(서버가 만든 한 줄)만
+    out["excluded_changes"] = []
+    if row["excluded"]:
+        first = _one(c, f"SELECT * FROM {_tmp_previews_name(c)} WHERE user_id=%s AND job_id=%s AND preview_version=1", (uid, row["job_id"]))
+        if first:
+            by = {ch["cid"]: ch["summary"] for ch in ss.display(c, uid, first)["changes"]}
+            out["excluded_changes"] = [{"cid": cid, "summary": by[cid]} for cid in row["excluded"] if cid in by]
     if sess is None:
         sess = _one(c, "SELECT latest_preview_id, terminal_at FROM stack_sessions WHERE user_id=%s AND id=%s", (uid, row["session_id"]))
     out["latest"] = bool(sess and sess["latest_preview_id"] == row["id"] and sess["terminal_at"] is None)

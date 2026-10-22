@@ -1,4 +1,4 @@
-"""CLI — connect · validate · run-once · status · schedule install/remove · serve · disconnect.
+"""CLI — connect · validate · run-once · status · schedule install/remove · serve(원문 뷰어·--jobs 작업 실행) · disconnect.
 
 사용: python3 -m agent [--home 경로] <명령> ...
 출력엔 토큰·HMAC 키·원문·실명·URL 을 쓰지 않는다.
@@ -18,7 +18,8 @@ EXIT_OK, EXIT_ERR, EXIT_USAGE, EXIT_HALT = 0, 1, 2, 3
 
 class Ctx:
     def __init__(self, home, *, ks_factory=None, getpass_fn=None, uploader_factory=None,
-                 schedule_runner=None, launch_agents_dir=None, exec_runner=None, out=None, stdin=None):
+                 schedule_runner=None, launch_agents_dir=None, exec_runner=None, out=None, stdin=None,
+                 jobs_adapter_factory=None, jobs_client_factory=None, jobs_serve_kw=None):
         self.paths = _config.Paths(home)
         self.ks_factory = ks_factory or keystore.for_platform
         self.getpass_fn = getpass_fn or getpass.getpass
@@ -26,6 +27,9 @@ class Ctx:
         self.schedule_runner = schedule_runner
         self.launch_agents_dir = launch_agents_dir
         self.exec_runner = exec_runner
+        self.jobs_adapter_factory = jobs_adapter_factory    # (runner) → jobs 어댑터 — 시험은 fake
+        self.jobs_client_factory = jobs_client_factory      # (server, token) → jobs.Client
+        self.jobs_serve_kw = dict(jobs_serve_kw or {})      # 시험용 serve_jobs 인자(유예 등)
         self.out = out or sys.stdout
         self.stdin = stdin or sys.stdin
 
@@ -63,8 +67,9 @@ def _parser() -> argparse.ArgumentParser:
     s = sub.add_parser("schedule", help="launchd 예약")
     s.add_argument("action", choices=("install", "remove"))
 
-    sv = sub.add_parser("serve", help="원문 뷰어(127.0.0.1)")
+    sv = sub.add_parser("serve", help="원문 뷰어(127.0.0.1) · --jobs = 작업 실행(상주)")
     sv.add_argument("--port", type=int)
+    sv.add_argument("--jobs", action="store_true", help="서버 작업을 받아 이 PC 의 claude -p 로 실행(상주, 종료 = SIGTERM·Ctrl+C)")
 
     d = sub.add_parser("disconnect", help="서버 토큰 폐기 + 로컬 업로드 토큰 제거")
     d.add_argument("--local-only", action="store_true", help="서버 폐기를 건너뛰고 로컬만 지운다")
@@ -299,6 +304,8 @@ def cmd_schedule(ctx: Ctx, a) -> int:
 
 
 def cmd_serve(ctx: Ctx, a, *, serve_forever=True):
+    if getattr(a, "jobs", False):
+        return cmd_serve_jobs(ctx, a)
     from . import viewer
     cfg = _config.load(ctx.paths)
     port = a.port or cfg["viewer_port"]
@@ -313,6 +320,75 @@ def cmd_serve(ctx: Ctx, a, *, serve_forever=True):
     finally:
         srv.server_close()
     return EXIT_OK
+
+
+def cmd_serve_jobs(ctx: Ctx, a) -> int:
+    """작업 실행 상주(③-0.1). 잠금 → 장치 인증 → 롱폴·실행. 출력 = 코드만 담은 JSON 줄(jobs._log_line) — 본문·토큰·주소·예외 메시지 없음.
+    exit: 신호로 멈춤 0 · 설정·잠금 충돌·기타 1 · 인증(토큰 없음·거절·폐기) 3."""
+    from . import jobs
+    from .uploader import AUTH_CODES, DeviceError
+
+    def log(line: str) -> None:
+        ctx.say(line)
+        flush = getattr(ctx.out, "flush", None)
+        if flush:
+            flush()
+
+    def stop(why: str, err=None, code=EXIT_ERR) -> int:
+        log(jobs._log_line({"event": "start", "stopped": why, "error": type(err).__name__ if err else None}))
+        return code
+
+    try:
+        cfg = _config.load(ctx.paths)
+    except _config.ConfigError as e:
+        return stop("config", e)
+    sid, server = cfg.get("source_instance_id"), cfg.get("server_url")
+    if not sid or not server:
+        return stop("not-connected")
+    ctx.paths.ensure()
+    try:
+        token = ctx.keystore(cfg).get(_config.token_account(sid))
+    except keystore.KeyStoreError as e:
+        return stop("keystore", e)
+    if not token:
+        return stop("auth", code=EXIT_HALT)
+    runner = jobs.GroupRunner()
+    try:
+        if ctx.jobs_adapter_factory:
+            adapter = ctx.jobs_adapter_factory(runner)
+        else:   # 실 CLI — MYCRM_JOBS_ALLOW_REAL_CLI=1 이 없으면 JobsError(약관 확인 전)
+            cli_path = (cfg.get("summary") or {}).get("cli_path")
+            adapter = jobs.ClaudeAdapter([cli_path] if cli_path else [], exec_runner=runner, paths=ctx.paths)
+    except jobs.JobsError as e:
+        return stop("adapter", e)
+
+    def authenticate() -> str:
+        try:
+            info = _uploader(ctx, server, token).device()
+        except DeviceError as e:
+            if e.kind == "auth" or e.code in AUTH_CODES:
+                return "auth"
+            if e.kind == "network" or e.status == 429 or (e.status or 0) >= 500:
+                return "network"
+            return "error"
+        return "ok" if isinstance(info, dict) and info.get("stream_id") == sid else "error"
+
+    def make_worker(stopping, abort):
+        client = (ctx.jobs_client_factory or jobs.Client)(server, token)
+        return jobs.Worker(client, adapter, jobs.JsonState.for_paths(ctx.paths), sleep=lambda s: abort.wait(s),
+                           stopping=stopping, abort=abort)
+
+    try:
+        res = jobs.serve_jobs(lock_path=ctx.paths.lock("jobs"), authenticate=authenticate, make_worker=make_worker,
+                              runner=runner, log=log, **ctx.jobs_serve_kw)
+    except jobs.JobsError as e:   # 깨진 jobs-state 등 — 고치지 않고 멈춘다
+        return stop("state", e)
+    s = res["stopped"]
+    if s in ("signal", "worker-exit"):
+        return EXIT_OK
+    if s in ("auth", "auth-halted"):
+        return EXIT_HALT
+    return EXIT_ERR
 
 
 def cmd_disconnect(ctx: Ctx, a) -> int:

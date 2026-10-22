@@ -827,6 +827,13 @@ ol.dnd .grip { color: var(--muted); font-size: 1rem; padding: .2rem .25rem; touc
 /* 대화 서랍 (PR ②-b B5) — 넓은 화면 = 오른쪽 고정 폭(본문은 왼쪽으로 비켜 선다) · 768 미만 = 화면 전체 */
 .tab.chatbtn { margin-left: auto; cursor: pointer; }
 .tab.chatbtn.on { color: var(--ai); border-color: var(--ai); }
+/* 장치 없음(③-0.2) — 「대화」 버튼 자리에 안내 1줄(버튼 아님). 좁은 화면은 탭 줄 안에서 줄바꿈 */
+.chatnote { margin-left: auto; align-self: center; max-width: 60%; padding: 0 .3rem .3rem; font-size: .72rem; line-height: 1.4; color: var(--muted); text-align: right; }
+.chatnote-m { margin: 0; padding-top: .35rem; padding-bottom: .35rem; font-size: .72rem; line-height: 1.4; color: var(--muted); }
+.chatnote-m[hidden] { display: none; }
+/* 좁은 화면(탭 줄 = 가로 스크롤·nowrap, 700 이하)은 탭 줄 안 안내가 잘린다 — 탭 줄 아래 한 줄(#chat-note-m)로 내린다. 탭 스크롤은 그대로 */
+@media (min-width: 701px) { .chatnote-m { display: none; } }
+@media (max-width: 700px) { nav.tabs .chatnote { display: none; } }
 .chat { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; z-index: 30; background: var(--card); border-left: 1px solid var(--line);
   display: flex; flex-direction: column; min-width: 0; }
 .chat[hidden] { display: none; }
@@ -834,6 +841,7 @@ body.chat-open { padding-right: 380px; }
 .chat .chead { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem .5rem; border-bottom: 1px solid var(--line); }
 .chat .chead h3 { margin: 0; font-size: .9rem; }
 .chat .chead .ctx { flex: 1; min-width: 0; font-size: .72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 767px) { .chat .chead .ctx { white-space: normal; overflow: visible; line-height: 1.35; } }   /* 휴대폰 = 말줄임 대신 줄바꿈(만료 시각이 보이게) */
 .chat .cbody { flex: 1; overflow-y: auto; padding: .7rem .9rem; display: flex; flex-direction: column; gap: .6rem; }
 .chat .cturns { display: flex; flex-direction: column; gap: .6rem; }
 .chat .cempty { color: var(--muted); font-size: .8rem; margin: 0; }
@@ -860,6 +868,7 @@ body.chat-open { padding-right: 380px; }
 .chat .cline { margin: 0; padding: .35rem .9rem; border-top: 1px solid var(--line); min-height: 1.9em; font-size: .74rem; color: var(--muted); }
 .chat .cline.bad { color: var(--fail); }
 .chat .ccomp { padding: .5rem .9rem .8rem; display: flex; flex-direction: column; gap: .35rem; }
+.chat .ccomp[hidden] { display: none; }
 .chat .ccomp textarea { font: inherit; font-size: .84rem; resize: vertical; min-height: 4.2em; padding: .4rem .5rem; border: 1px solid var(--line);
   border-radius: 6px; background: var(--card); color: var(--ink); }
 .chat .crow { display: flex; align-items: center; gap: .6rem; font-size: .76rem; color: var(--muted); }
@@ -903,6 +912,7 @@ body.chat-open { padding-right: 380px; }
     </div></details><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><a class="refresh setup-gear" id="setup-link" href="/admin/setup" hidden title="관리 Setup" aria-label="관리 Setup">⚙</a><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
 </div></header>
 <nav class="tabs" id="nav" aria-label="내 탭"></nav>
+<p class="wrap chatnote-m" id="chat-note-m" role="note" hidden></p>
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
 <main id="view" class="wrap"></main>
@@ -910,6 +920,7 @@ body.chat-open { padding-right: 380px; }
 <aside class="chat" id="chat" hidden aria-label="대화"><header class="chead"><h3>대화</h3><span class="ctx" id="chat-ctx"></span><button type="button" class="tertiary" id="chat-close">닫기</button></header>
 <div class="cbody" id="chat-body"><div class="cturns" id="chat-turns"></div><div id="chat-cardbox"></div></div>
 <p class="cline" id="chat-line" role="status" aria-live="polite"></p>
+<p class="cline" id="chat-nodev" role="note" hidden></p>
 <form class="ccomp" id="chat-form"><textarea id="chat-in" rows="3" placeholder="말하거나 원문을 붙여 넣으세요" aria-label="대화 입력"></textarea>
 <div class="crow"><label id="chat-vb"><input type="checkbox" id="chat-verbatim"> 원문으로 저장</label><span class="ccount" id="chat-count"></span><button type="submit" class="primary" id="chat-send">보내기</button></div></form></aside>
 <!--user--><dialog id="desk-dlg" aria-labelledby="desk-dlg-title"><div class="dh"><b id="desk-dlg-title">문의</b>
@@ -3943,8 +3954,26 @@ function navOpen() {
 const CHAT_MAX = 8000;   // 서버 JOB_TEXT_MAX_CP 와 같은 기준(코드포인트)
 const CHAT_WAIT = ["queued", "leased", "running"];
 const CHAT = {booted: false, open: false, sid: "", kind: "", jid: "", want: "", rv: "", gen: 0, exp: "", preview: null, ready: false,
-              dirty: false, busy: "", line: "", bad: false, reqId: "", reqFor: "", turns: [], drawn: "", polling: ""};
+              dirty: false, busy: "", line: "", bad: false, reqId: "", reqFor: "", turns: [], drawn: "", polling: "", known: {}};
 const chatOn = () => !!(S && S.switches && S.switches.converse);
+// 장치 상태(③-0.2) — 서버 S.devices_status = {state: none·recent·offline, last_seen_at, threshold_seconds}(내 장치만).
+// 판정은 서버 state 그대로(화면이 시각으로 다시 계산하지 않는다) · 필드가 없거나 모르는 값이면 현행대로(버튼 표시) · 읽는 키는 state·last_seen_at 둘.
+// 「최근 연결」 = 서버가 최근 PC 신호를 받았다는 뜻 — CLI 인증·구독 잔여량까지 보장하지 않아 「실행 가능」이라 쓰지 않는다
+const CHAT_NODEV = "이 기능은 본인 PC에서 본인 Claude 구독으로 실행하며, PC 연결과 에이전트 실행이 필요합니다.";   // PRD 1-2 고정 문구
+const chatDev = () => { const d = S && S.devices_status; return d && ["none", "recent", "offline"].includes(d.state) ? d : null; };
+const chatNoDev = () => { const d = chatDev(); return !!d && d.state === "none"; };
+const chatSeen = d => d.last_seen_at ? `마지막 연결 ${mdhm(d.last_seen_at)}` : "";
+function chatDevText() {
+  const d = chatDev();
+  if (!d || d.state === "none") return "";
+  return d.state === "recent" ? "최근 연결" : ["PC 오프라인", chatSeen(d)].filter(Boolean).join(" · ");
+}
+// 받기를 기다리는 작업 — 오프라인이면 PC 연결 대기·취소·만료를 알린다(취소·만료가 실제로 나면 CHAT_DONE 문구로 바뀐다)
+function chatQueuedLine() {
+  const d = chatDev();
+  if (d && d.state === "offline") return `PC 연결을 기다리고 있어요${d.last_seen_at ? `(${chatSeen(d)})` : ""}. 연결되지 않으면 작업이 취소되거나 대화가 만료될 수 있어요.`;
+  return "PC 가 받기를 기다리고 있어요… PC 가 켜져 있어야 정리돼요.";
+}
 const chatCp = s => [...String(s || "")].length;
 const chatSleep = ms => new Promise(r => setTimeout(r, ms));
 function chatUuid() {
@@ -3981,22 +4010,30 @@ const chatErr = res => CHAT_ERR[res.code] || res.msg || "보내지 못했어요.
 function chatLine(text, bad) { CHAT.line = text || ""; CHAT.bad = !!bad; const n = $("chat-line"); if (n) { n.textContent = CHAT.line; n.classList.toggle("bad", CHAT.bad); } }
 function chatReset() {
   Object.assign(CHAT, {sid: "", kind: "", jid: "", want: "", rv: "", gen: 0, exp: "", preview: null, ready: false, dirty: false, busy: "",
-                       reqId: "", reqFor: "", turns: [], drawn: null});   // drawn null = 카드 칸을 다시 그린다(비운다)
+                       reqId: "", reqFor: "", turns: [], drawn: null, known: {}});   // drawn null = 카드 칸을 다시 그린다(비운다)
   const v = $("chat-verbatim"); if (v) v.checked = false;
 }
 // 탭 줄 오른쪽 「대화」 — render() 가 탭 줄을 그릴 때 붙인다. 스위치가 꺼져 있으면 버튼·서랍 모두 없다
 function chatNavHtml() {
   if (!chatOn() || !navNew()) return "";
+  if (chatNoDev() && !chatSid()) return `<span class="chatnote" role="note">${esc(CHAT_NODEV)}</span>`;   // 장치 없음 = 새 대화 버튼 대신 안내(죽은 버튼 0)
   return `<a href="#" class="tab chatbtn${CHAT.open ? " on" : ""}" data-chat-toggle role="button" aria-pressed="${CHAT.open}" aria-controls="chat">대화</a>`;
 }
+const chatSid = () => CHAT.sid || (S && S.stack_session && String(S.stack_session.id || "")) || "";   // 이어 받을 세션(첫 그리기 땐 아직 CHAT.sid 전)
+// 장치 없음 안내 — 좁은 화면용 탭 줄 아래 한 줄. 넓은 화면은 탭 줄 안(chatNavHtml) — CSS 가 폭에 따라 한쪽만 보인다
+function chatNoteSync() {
+  const n = $("chat-note-m"), show = chatOn() && navNew() && chatNoDev() && !chatSid();
+  n.hidden = !show; n.textContent = show ? CHAT_NODEV : "";
+}
 function chatSync() {
-  const on = chatOn() && navNew();
+  const on = chatOn() && navNew();   // 장치 없음이어도 확정만 남은 세션은 이어 받는다(확정은 서버 작업 — PC 불필요). 새 작업 접수만 막는다
   if (!on) CHAT.open = false;
   if (on && !CHAT.booted) {
     CHAT.booted = true;
     const sid = S.stack_session && S.stack_session.id;   // 확인을 기다리는 대화가 있으면 서랍을 열어 이어 받는다
     if (sid) { CHAT.sid = String(sid); CHAT.open = true; chatRestore(CHAT.sid); }
   }
+  chatNoteSync();
   chatShowOpen();
 }
 function chatShowOpen() {
@@ -4010,7 +4047,10 @@ function chatShowOpen() {
 // 서랍 그리기 — 입력 칸(#chat-in)은 마크업에 고정이라 다시 그려도 쓰던 글·커서가 남는다.
 // 확인 카드는 미리보기(id·판)가 바뀔 때만 다시 그린다 — 재정리를 기다리는 동안 고친 글이 화면에 그대로 남는다
 function chatDraw() {
-  $("chat-ctx").textContent = CHAT.sid ? `${CHAT.kind === "verbatim" ? "원문으로 저장 · " : ""}임시 보관${CHAT.exp ? ` · ${mdhm(CHAT.exp)}까지` : ""}` : "";
+  $("chat-ctx").textContent = [chatDevText(),
+    CHAT.sid ? `${CHAT.kind === "verbatim" ? "원문으로 저장 · " : ""}임시 보관${CHAT.exp ? ` · ${mdhm(CHAT.exp)}까지` : ""}` : ""].filter(Boolean).join(" · ");
+  const nodev = chatNoDev();   // 장치 없음 = 입력 칸(보내기) 대신 안내 1줄 — 보이는 미리보기의 끄기·확정만 된다
+  $("chat-form").hidden = nodev; $("chat-nodev").hidden = !nodev; $("chat-nodev").textContent = nodev ? CHAT_NODEV : "";
   $("chat-vb").hidden = !!CHAT.sid;   // 원문으로 저장 = 세션 첫 입력만(재정리·다음 턴에서 다시 고르지 않는다)
   chatCount();
   chatLine(CHAT.line, CHAT.bad);
@@ -4029,23 +4069,27 @@ const chatIncluded = p => { const off = chatOff(p); return chatChanges(p).filter
 const chatBlocking = p => { const off = chatOff(p); return (p.blocked || []).filter(b => !b.cid || !off.has(b.cid)); };
 const chatIsGuess = c => c.inferred === true || c.ref_kind === "inferred";   // 서버 표시 꼴 inferred(bool) — 「추정」 칩
 const chatInferred = p => new Set(chatChanges(p).filter(chatIsGuess).map(c => c.cid));
+const chatLabel = c => c.summary || c.label || c.cid;
 function chatCardHtml(p) {
   const inf = chatInferred(p), off = chatOff(p), blk = chatBlocking(p);
   const units = (p.units || []).map(u => {
     const guess = (u.change_ids || []).some(c => inf.has(c));
     return `<div class="cunit"><textarea data-uid="${esc(u.uid)}" rows="${Math.min(8, Math.max(2, Math.ceil(chatCp(u.text) / 34)))}" aria-label="정리 글">${esc(u.text)}</textarea>${guess ? `<span class="chip o-ai" title="문맥으로 고른 대상이에요. 맞지 않으면 아래에서 끄거나 글을 고치세요.">추정</span>` : ""}</div>`;
   }).join("");
-  const chg = chatChanges(p).map(c => {
-    const out = off.has(c.cid);
-    return `<li class="${out ? "out" : ""}"><label><input type="checkbox" data-cid="${esc(c.cid)}"${out ? " disabled" : " checked"}>
-      <span>${esc(c.summary || c.label || c.cid)}</span></label>${chatIsGuess(c) ? `<span class="chip o-ai">추정</span>` : ""}${out ? `<span class="cnote">뺐어요</span>` : ""}</li>`;
-  }).join("");
+  const inc = chatIncluded(p), chg = inc.map(c => `<li><label><input type="checkbox" data-cid="${esc(c.cid)}" checked>
+      <span>${esc(chatLabel(c))}</span></label>${chatIsGuess(c) ? `<span class="chip o-ai">추정</span>` : ""}</li>`).join("");
+  // 뺀 것 = 이 미리보기의 excluded 그대로(확정이 가리키는 판의 제외 목록 — 연쇄로 함께 빠진 것 포함). 서버는 뺀 변경을 changes 에서 지운다.
+  // 이름 = 서버 excluded_changes[].summary(첫 판의 표시 요약) → 없으면 같은 결과에서 본 변경(CHAT.known) → 그래도 없으면 「앞서 뺀 변경」.
+  // 되돌릴 수 없어 체크 칸은 두지 않는다
+  const xname = new Map((p.excluded_changes || []).map(x => [x.cid, x.summary]));
+  const outs = [...off].map(cid => `<li class="out" data-xcid="${esc(cid)}"><span>${esc(xname.get(cid) || CHAT.known[cid] || "앞서 뺀 변경")}</span><span class="cnote">뺐어요</span></li>`).join("");
   const qs = blk.map(b => `<div class="cblk"><p>${esc(b.question || "이 부분을 정하지 못했어요.")}</p>
       <input type="text" data-bq="${esc(b.cid || "")}" data-q="${esc(b.question || "")}" placeholder="답을 적고 Enter" aria-label="답"></div>`).join("");
   return `<section class="ccard" id="chat-card" aria-label="확인">
     <p class="clead">이렇게 정리했어요. 맞나요? 고칠 곳은 바로 고치세요 — 고친 글은 다시 정리해요.</p>
     <div class="cunits" id="chat-units">${units}</div>
-    ${chg ? `<h4>바뀌는 것 ${chatIncluded(p).length}</h4><ul class="cchg">${chg}</ul>` : ""}
+    ${chg ? `<h4>바뀌는 것 ${inc.length}</h4><ul class="cchg">${chg}</ul>` : ""}
+    ${outs ? `<h4>뺀 것 ${off.size}</h4><ul class="cchg">${outs}</ul>` : ""}
     ${qs ? `<h4>정해 주세요 ${blk.length}</h4>${qs}` : ""}
     <div class="cacts"><button type="button" class="primary" id="chat-confirm">확정</button></div>
   </section>`;
@@ -4056,8 +4100,11 @@ function chatLock() {
   const b = $("chat-confirm");
   if (b) b.disabled = !chatCanConfirm();
   document.querySelectorAll("#chat-card li:not(.out) input[data-cid]").forEach(x => { x.disabled = !chatCanToggle(); });   // 고치는 중·보내는 중엔 끄기도 잠금
+  const nodev = chatNoDev();   // 장치 없음 = 재정리(작업 접수)를 부르는 칸 잠금 — 정리 글은 읽기만, 막힘 답 칸 잠금
+  document.querySelectorAll("#chat-units textarea[data-uid]").forEach(x => { x.readOnly = nodev; });
+  document.querySelectorAll("#chat-card input[data-bq]").forEach(x => { x.disabled = nodev; });
   const s = $("chat-send"), t = $("chat-in");
-  if (s && t) s.disabled = !!CHAT.busy || !t.value.trim() || chatCp(t.value) > CHAT_MAX;
+  if (s && t) s.disabled = nodev || !!CHAT.busy || !t.value.trim() || chatCp(t.value) > CHAT_MAX;
 }
 function chatCount() {
   const t = $("chat-in"), n = $("chat-count");
@@ -4071,7 +4118,9 @@ function chatCount() {
 function chatShow(p, jid, rv) {
   if (jid !== CHAT.want || CHAT.dirty) return false;
   CHAT.preview = p; CHAT.jid = jid; CHAT.ready = p.latest !== false;   // latest=false = 늦게 온 옛 결과(확정 불가)
+  if (rv && String(rv) !== CHAT.rv) CHAT.known = {};   // 변경 ID 는 결과 하나 안에서만 같은 뜻 — 결과가 바뀌면 본 이름을 잊는다
   if (rv) CHAT.rv = String(rv);
+  for (const c of chatChanges(p)) CHAT.known[c.cid] = chatLabel(c);   // 뺀 것 이름 — 빼기 전 판에서 본 변경
   if (p.edit_generation != null) CHAT.gen = Math.max(CHAT.gen, Number(p.edit_generation) || 0);   // 재정리 세대 = 세션 현재 값 + 1
   chatLine(p.latest === false ? "이 결과는 최신이 아니에요. 최신 결과를 기다려 주세요." : chatOpenBlock(p) ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.", p.latest === false);
   chatDraw();
@@ -4097,7 +4146,7 @@ async function chatPoll(jid, say) {
     const j = res.j;
     if (j.expires_at) CHAT.exp = j.expires_at;
     if (CHAT_WAIT.includes(j.status)) {
-      chatLine(j.status === "queued" ? "PC 가 받기를 기다리고 있어요… PC 가 켜져 있어야 정리돼요." : "정리하고 있어요…");
+      chatLine(j.status === "queued" ? chatQueuedLine() : "정리하고 있어요…");
       if (Date.now() - t0 < 1000) await chatSleep(1000);   // 롱폴이 바로 돌아와도 초당 1번 넘게 묻지 않는다
       continue;
     }
@@ -4113,6 +4162,7 @@ async function chatPoll(jid, say) {
 }
 // 작업 접수 공통 — 새 턴·재정리 모두 같은 세션(서버·PC 가 세션 안에서 한 번에 하나씩 실행한다)
 async function chatSubmit(body, say) {
+  if (chatNoDev()) { CHAT.dirty = false; chatLine(CHAT_NODEV, true); chatLock(); return false; }   // 장치 없음 = 작업 접수 0(새 턴·재정리·막힘 답)
   CHAT.busy = "send"; CHAT.ready = false;
   chatLine("보내는 중…"); chatLock();
   const res = await stackApi.send(body);
@@ -4169,7 +4219,7 @@ async function chatExclude(box) {
   CHAT.busy = "";
   if (!res) return;
   if (res.ok) { chatShow(res.j.preview || res.j, CHAT.want, CHAT.rv); return; }
-  if (res.code === "PREVIEW-NEEDS-RESTACK") { chatRestackExcluding(cid); return; }
+  if (res.code === "PREVIEW-NEEDS-RESTACK") { if (chatNoDev()) box.checked = true; chatRestackExcluding(cid); return; }   // 장치 없음 = 재정리 못 함 — 다시 켜 둔다
   if (res.code === "CONFIRM-STALE" && CHAT.sid) { chatLine("이 결과는 최신이 아니에요. 최신 상태를 불러올게요.", true); chatRestore(CHAT.sid); return; }
   box.checked = true;
   chatLine(chatErr(res), true); chatLock();
@@ -4226,7 +4276,11 @@ async function chatRestore(sid) {
   CHAT.gen = Math.max(CHAT.gen, Number(s.edit_generation) || 0);
   const lj = s.latest_job || {};
   CHAT.dirty = false; CHAT.preview = null; CHAT.ready = false;
-  if (lj.id && CHAT_WAIT.includes(lj.status)) { CHAT.preview = s.preview || null; chatDraw(); chatWait(lj.id); return "wait"; }
+  if (lj.id && CHAT_WAIT.includes(lj.status)) {   // 오프라인이면 첫 롱폴을 기다리지 않고 바로 PC 연결 대기 문구(최근 연결 = 기존 문구)
+    CHAT.preview = s.preview || null; chatDraw();
+    const d = chatDev();
+    chatWait(lj.id, d && d.state === "offline" ? chatQueuedLine() : undefined); return "wait";
+  }
   CHAT.want = lj.id || "";
   if (s.preview && lj.status === "result_ready") {   // 원 결과 버전은 작업 응답에만 있다 — 그 작업을 한 번 읽어 미리보기와 같이 그린다
     const r = await stackApi.poll(lj.id);
