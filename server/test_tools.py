@@ -10,7 +10,7 @@
    (MCP·웹) · DB 크기 400MB 넘으면 비관리자 쓰기 QUOTA-GLOBAL(관리자·읽기 정상, 측정 실패면 허용)
 7) 문의 데스크(desk-0): 401·Origin 403 · 4KB+1 PAYLOAD-LIMIT(웹·MCP) · 사용자 11번째·전역 101번째 RATE-LIMIT · QUOTA-GLOBAL 면제
    · 「내 문의」에 운영자 메모·hint·남의 글 없음 · privacy → privacy_log · hint · page·tool 정규화 · MCP echo · 파기 181/179일·reopen
-   · 비DEV+CRM_CONTACT 없음·공백 → 기동 성공(선택 env) · app.html 문의 구간 esc 정적 검사
+   · 비DEV+CRM_CONTACT 없음·공백 → 기동 성공(선택 env) (app.html 정적 단언은 ③-0.2 에 test_web_home.py test_static_moved 로 옮겼다)
    · 관리자 문의 처리(/admin/tickets POST): /app·/api 에 관리자 키·남의 글 없음 · 옛 /api/feedback/status·note 없음(404) · 404·Origin 403
      · 상태 전이·closed_at · privacy_log 종결 기록 · 메모 2KB
 8) 화면 자산: /assets/{name} 허용 목록·캐시 헤더·404 · / 자리표시 치환·스크립트는 외부 self theme.js 하나(인라인 0) · /help 무배경 ·
@@ -32,7 +32,7 @@
    · escape · 리포트 400(모르는 키·조합·기간) · 행 상한 200 · 프리셋 전부 200 · 개요 = 프리셋 정의 · 표준 구조(템플릿 + 코어)
 15) /app 계정 메뉴(P5): users.desk_hidden 열 · /api/desk-visibility 401·403·400·저장·no-store·동의 게이트 밖(화면은 안 씀 — Q1b)
    · /api/state user 의 struct_names(비동의·동의·철회·옛 버전)·desk_hidden · MCP state_get 엔 두 키 없음
-   · app.html 정적(인라인 스크립트 1개·CSP 해시 일치·인라인 이벤트 속성 0·메뉴 항목·⚙ 유지)
+   · /app 응답 CSP 해시 일치
 16) 통합(P5-6): 권한 회수 뒤 /admin 전부 404·문의 처리 거절 · 문의 소유권(웹·MCP) · 공개/내부 이력 · 파기 cascade
    · 관리자 세션으로도 /app·/api 에 관리자 데이터 0 · 이름 공유(사용자 상세에만·리포트 0·철회 뒤 0) · 「내 문의」 공개 갱신순(웹=MCP)
 17) R1(PR #20 2단계): 기능 플래그 CRM_FEATURE_STANDARD·SOURCES 둘 다 미설정(off)에서 로그인(웹·DEV) · /admin 권한(일반 404·관리자 바로·재인증 없음)
@@ -1732,7 +1732,7 @@ async def test_start_assets():
             assert re.findall(r'/assets/[^"?]+', r.text) == ["/assets/theme.js"] and "data-theme-toggle" in r.text, "도움말은 theme.js·토글만"
             assert f'/assets/theme.js?v={web.ASSETS["theme.js"][2]}' in r.text
             # 기본 밝은 화면: OS 다크 설정·?theme 를 따르지 않는다. 어두운 화면은 토글(data-theme="dark")로만
-            for f in ("app.html", "start.html"):
+            for f in ("start.html",):   # app.html 몫은 test_web_home.py B1(③-0.2)
                 src = (HERE / f).read_text(encoding="utf-8")
                 assert "prefers-color-scheme" not in src and "dataset.theme" not in src and src.count(':root[data-theme="dark"] {') >= 1, f
                 assert '<html lang="ko">' in src and "data-theme" not in src.split("<head>", 1)[0], f"{f}: 기본은 라이트"
@@ -1748,7 +1748,7 @@ async def test_start_assets():
         site.dev, site.dev_user = real
     # 외부 셰이더 문자열 0건(바이너리 포함). 이 파일 자신에 걸리지 않게 조립한다
     needles = [b"shaders" + b".com", b"type" + b"gpu"]
-    files = [*HERE.glob("*.html"), *HERE.glob("*.py"), *adir.glob("*")]
+    files = [*(f for f in HERE.glob("*.html") if f.name != "app.html"), *HERE.glob("*.py"), *adir.glob("*")]   # app.html 은 test_web_home.py B2
     hits = [(f.name, n) for f in files for n in needles if n in f.read_bytes()]
     assert not hits, hits
     # theme.js: 외부 주소·네트워크 호출 0, localStorage 는 try 안에서만, OS 설정 미추종
@@ -2079,7 +2079,7 @@ async def test_feedback_admin():
 
 
 def test_feedback_units():
-    """ua 계열 판정 · CRM_CONTACT 선택(비DEV 에서 없어도 기동) · app.html 문의 구간의 esc 정적 검사."""
+    """ua 계열 판정 · CRM_CONTACT 선택(비DEV 에서 없어도 기동)."""
     import subprocess
     for ua, fam in (("", ""), (None, ""), ("Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/130.0 Safari/537.36 Edg/130.0", "edge"),
                     ("Mozilla/5.0 (X11; Linux x86_64; rv:131.0) Gecko/20100101 Firefox/131.0", "firefox"),
@@ -2096,40 +2096,8 @@ def test_feedback_units():
     for extra in ({}, {"CRM_CONTACT": "   "}, {"CRM_CONTACT": "help@example.com"}):
         r = boot(extra)
         assert r.returncode == 0, (extra, r.stderr[-400:])
-    # app.html: 문의 구간의 모든 보간은 esc(…) · innerHTML 우변은 템플릿 하나(이어 붙이기 없음) · 다른 HTML 삽입 API 없음
-    html = (HERE / "app.html").read_text(encoding="utf-8")
-    blk = html[html.index("// ── 문의 데스크 (desk-0) ──"):html.index("// ── /문의 데스크 ──")]
-    assert blk.count("${") == blk.count("${esc(") >= 4, re.findall(r"\$\{(?!esc\()[^}]*", blk)
-    for bad in ("insertAdjacentHTML", "outerHTML", "document.write", "DOMParser", "createContextualFragment"):
-        assert bad not in blk, bad
-    sites = list(re.finditer(r"\.innerHTML\s*=\s*", blk))
-    assert sites, "행은 innerHTML 템플릿으로 만든다"
-    for m in sites:
-        rest = blk[m.end():]
-        assert rest.startswith("`"), rest[:60]
-        end = rest.index("`", 1)
-        assert rest[end + 1:].lstrip().startswith(";"), rest[end:end + 40]
-    i = html.index('<dialog id="desk-dlg"')   # Q1b: 문의 폼·목록은 계정 메뉴에서 여는 대화창
-    sec = html[i:html.index("</dialog>", i)]
-    assert "${" not in sec and db.NOTICE in sec and 'href="/privacy"' in sec, "정적 대화창 — 고지 문장·처리방침 링크"
-    for w in ('value="bug"', 'value="request"', 'value="question"', 'value="privacy"', "개인정보 요청", "내 문의", "4096"):
-        assert w in sec, w
-    assert 'ticketStatus: {open: "접수", ack: "확인", doing: "처리중", done: "완료", wontfix: "보류"}' in html
-    assert "const DESK_MAX = 4096;" in html and db.LIMIT_TICKET == 4096
-    # 내 문의(P5): 상세는 본인 API 하나 · 글·답변은 esc · 이력은 textContent · 관리자 문의함·띠·옛 API 흔적 0
-    for w in ('fetch("/api/feedback/" + encodeURIComponent(id)', "${esc(j.text)}", "${esc(j.reply || ", "li.textContent = ",
-              "${esc(t.has_reply ? ", "${esc(md(t.public_updated)"):
-        assert w in blk, w
-    assert "${t." not in blk and "${j." not in blk
-    for gone in ("admin-band", "deskBand", "deskAdmin", "/api/feedback/status", "/api/feedback/note", "admin_tickets", "admin_note",
-                 "desk-admin", "DESK_NOTE_MAX", "j.admin"):
-        assert gone not in html, ("app.html 에 관리자 문의함 흔적", gone)
-    # ⚙ Setup 링크: 기본 hidden · /admin/setup · 인라인 이벤트 속성 0(CSP) · 상태가 admin 일 때만 hidden 해제
-    gear = re.search(r'<a\b[^>]*\bid="setup-link"[^>]*>', html)
-    assert gear and re.search(r"\shidden(\s|>)", gear.group(0)) and 'href="/admin/setup"' in gear.group(0), gear
-    assert not re.search(r"\son[a-z]+\s*=", html, re.I), "app.html 인라인 이벤트 속성 0"
-    assert '$("setup-link").hidden = !(S.user && S.user.admin);' in html
-    print("OK — 문의 단위(ua 계열·CRM_CONTACT 선택·app.html esc 정적 검사) 통과")
+    # app.html 문의 구간 esc 정적 검사는 test_web_home.py test_static_moved(A1)로 옮겼다(③-0.2)
+    print("OK — 문의 단위(ua 계열·CRM_CONTACT 선택) 통과")
 
 
 # ── 9) α2 — 동의 게이트 · 일일 한도 · usage_daily ─────────────
@@ -2193,7 +2161,7 @@ def test_consent_versions():
 
 async def test_consent_gate():
     """필수 동의 게이트 없음: agreements 행이 없는 사용자도 MCP·웹 쓰기 통과 · /app 200 · /consent 302 /app(세션 있든 없든)
-    · POST /api/consent 404 · 사용량은 그 uid 로 flush(로그인 전 요청만 '') · 코드·app.html 에 CONSENT-REQUIRED·/consent 링크 0."""
+    · POST /api/consent 404 · 사용량은 그 uid 로 flush(로그인 전 요청만 '') · 코드에 CONSENT-REQUIRED·/consent 링크 0(app.html 은 test_web_home.py B3)."""
     site = main.site
     origin = {"origin": PUBLIC}
     nc = db.user_by_email(NOCONSENT)["id"]
@@ -2238,7 +2206,7 @@ async def test_consent_gate():
         os.environ["CRM_DEV_USER"] = TESTER
     # 정적: 코드·화면에 CONSENT-REQUIRED·/consent 링크 0(옛 주소 302 라우트만 남는다)
     for f in [*HERE.glob("*.py"), *HERE.glob("*.html")]:
-        if f.name == "test_tools.py":
+        if f.name in ("test_tools.py", "test_web_home.py", "app.html"):   # 시험 파일 = 단언 문자열 자신 · app.html 은 test_web_home.py B3
             continue
         t = f.read_text(encoding="utf-8")
         assert "CONSENT-REQUIRED" not in t and "/api/consent" not in t and "consent_grant" not in t, f.name
@@ -2702,7 +2670,7 @@ async def test_beta2():
         assert not hasattr(web, "reauth_ok") and not hasattr(web, "REAUTH_WINDOWS") and not hasattr(web, "AUTH_TIME_SKEW")
         assert not hasattr(web.Web, "_reauth_fresh")
         code = "\n".join(Path(__file__).with_name(n).read_text(encoding="utf-8") for n in
-                         ("web.py", "admin_db.py", "db.py", "auth.py", "main.py", "admin_cli.py", "app.html", "start.html"))
+                         ("web.py", "admin_db.py", "db.py", "auth.py", "main.py", "admin_cli.py", "start.html"))   # app.html 은 test_web_home.py B4
         for word in ("REAUTH", "reauth_ok", "auth_time", "_reauth_fresh", "state.ra", "재인증"):
             assert word not in code, f"정적: {word} 0"
 
@@ -3920,6 +3888,7 @@ async def run():
         await test_pr1b_layout_stats()   # PR ①-b — 맨 끝(시작 때 tester·other 를 새로 만든다)
         await test_pr2a_jobs()   # PR ②-a — 맨 끝(시작 때 tester·other 를 새로 만든다)
         await test_pr2b_stack()   # PR ②-b 28절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
+        await test_serve_devices_status()   # ③-0.2 29절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -3945,7 +3914,7 @@ AM = {"user": "am-user@example.com", "nocon": "am-nocon@example.com"}   # user =
 
 async def test_app_account_menu():
     """users.desk_hidden · POST /api/desk-visibility(401 → 403 → 400 → 저장, no-store, 게이트 밖) · /api/state user 두 키
-    · MCP state_get 에는 없음 · app.html 정적. 시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
+    · MCP state_get 에는 없음 · /app 응답 CSP 해시. 시험 사용자는 이 절에서 만들고 끝에 지운다(TEST_EMAILS 밖)."""
     site = main.site
     emails = list(AM.values())
 
@@ -4034,24 +4003,7 @@ async def test_app_account_menu():
         async with Client(main.mcp) as mc:
             st = val(await mc.call_tool("state_get", {}))
         assert "desk_hidden" not in json.dumps(st) and "struct_names" not in json.dumps(st), "MCP state_get 응답에 두 키 없음"
-        # app.html 정적: 인라인 스크립트 1개(CSP 해시 = 보낸 본문) · 인라인 이벤트 속성 0 · 메뉴 항목 · ⚙ 유지 · #who 말줄임
-        html = (HERE / "app.html").read_text(encoding="utf-8")
-        assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
-        assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
-        menu = html[html.index('<details class="acct" id="acct">'):html.index("</details>")]
-        for act in ("send", "mine", "privacy", "names", "logout"):
-            assert f'data-acct="{act}"' in menu, act
-        for w in ('<span id="who"></span>', 'id="logout"', 'id="acct-names"', "구조 이름 공유", "로그아웃"):
-            assert w in menu, w
-        for w in ('data-acct="desk"', 'id="acct-desk"', "문의 섹션"):   # Q1b: 숨기기 메뉴 없음(서버 API·열은 남는다)
-            assert w not in menu, w
-        assert 'id="setup-link"' not in menu and 'id="setup-link"' in html, "⚙ 는 메뉴 밖에 그대로"
-        assert re.search(r"#who \{[^}]*text-overflow: ellipsis[^}]*\}", html) and re.search(r"#who \{[^}]*min-width: 0", html), "#who 말줄임"
-        for w in ('fetch(url, {method: "POST"', '"/api/optional-consent", {kind: "struct_names"',
-                  '[name="kind"][value="privacy"]', '$("desk-dlg").showModal()'):
-            assert w in html, w
-        for w in ("/api/desk-visibility", "desk_hidden", "deskPeek", 'id="desk"'):   # Q1b: 화면은 숨김 상태를 안 쓴다
-            assert w not in html, w
+        # app.html 정적(메뉴 항목·⚙·#who 말줄임)은 test_web_home.py test_static_moved(A2)로 옮겼다(③-0.2) — 여기는 응답 CSP 해시만
         async with client(U["user"]) as h:
             r = await h.get("/app")
             assert r.status_code == 200 and f"'sha256-{web.inline_script_hashes(r.text)[0]}'" in r.headers["content-security-policy"], "CSP 해시 = 보낸 본문"
@@ -4060,7 +4012,7 @@ async def test_app_account_menu():
         wipe()
     with db.tx() as c:
         assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
-    print("OK — /app 계정 메뉴(desk_hidden·/api/desk-visibility·state 두 키·MCP 없음·app.html 정적) 통과")
+    print("OK — /app 계정 메뉴(desk_hidden·/api/desk-visibility·state 두 키·MCP 없음·CSP 해시) 통과")
 
 
 # ── 16) 통합(P5-6) — 운영 콘솔 묶음 최종 ─────────────────
@@ -4397,7 +4349,7 @@ def test_r2_contract():
     for name in ("STD_CHOICE_NEEDS_FLAG", "_feature_off"):
         assert not hasattr(db, name), name
     for f in sorted(HERE.glob("*.py")) + [HERE / "render.yaml"]:
-        if f.name != "test_tools.py":
+        if f.name not in ("test_tools.py", "test_web_home.py"):   # 시험 파일 = 단언 문자열 자신(app.html FEATURE-OFF 0 은 test_web_home.py A5)
             assert not re.search(r"CRM_FEATURE_|FEATURE_(STANDARD|SOURCES)|FEATURE-OFF|feature_on|standard_on|sources_on",
                                  f.read_text(encoding="utf-8")), f.name
     # ── 예제 동결 ──
@@ -5658,7 +5610,7 @@ Q45 = {k: f"q45{k}@example.com" for k in ("a", "b")}   # a = 화면 주인 · b 
 
 
 async def test_q45_user():
-    """app.html 정적(「구조 정의」 보기·편입 대화창 마크업·체크 게이트·출처 미확인·재검토 문구·인라인 스크립트 1개·on* 0·목록/그래프 전환)
+    """(app.html 정적은 test_web_home.py A3 로 옮겼다)
     · /api/state structure == contract.respond(self) · structure_svg == structure_svg.render(structure)(결정적·script·on* 0·다른 사용자 이름 0)(기대값은 SQL 로 읽은 std_marks·std_choices + db.definitions + db.sources)
     · 편입 전후 locked·origin 변화 · MCP state(db.state)엔 structure 없음 · 다른 사용자 이름 0(/api/state·/api/std/preview)
     · 출처 있는 기록·없는 기록·재검토 후보가 화면 입력에 있다 · 관리자 /app 에도 편입 대화창(사용자·관리자 구간 밖).
@@ -5711,48 +5663,7 @@ async def test_q45_user():
 
     wipe()
     try:
-        # ── app.html 정적 ──
-        html = (HERE / "app.html").read_text(encoding="utf-8")
-        assert len(web.inline_script_hashes(html)) == 1 and html.count("<script>") == 1, "인라인 스크립트 1개"
-        assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
-        assert '"구조 정의"' in html and "/defs" in html and 'if (a === "defs") return renderDefs(tab);' in html, "구조 정의 보기·라우트"
-        assert "S.structure" in html and "/api/std/preview" in html and "/api/std/choose" in html
-        i = html.index('<dialog id="std-dlg"')
-        dlg = html[i:html.index("</dialog>", i)]
-        for w in ('id="std-dlg-ok"', 'type="checkbox"', 'id="std-dlg-go" disabled', 'id="std-dlg-lock"', 'id="std-dlg-oktext"',
-                  'id="std-dlg-cancel"'):
-            assert w in dlg, w
-        for mark in ("<!--user-->", "<!--admin-->"):   # 관리자 /app 도 구조 탭을 쓴다 — 대화창은 두 구간 표식 밖
-            for a in [m.start() for m in re.finditer(re.escape(mark), html)]:
-                b = html.index(mark.replace("<!--", "<!--/"), a)
-                assert not (a < i < b), ("편입 대화창이 구간 안", mark)
-        for w in ('같은 뜻으로 쓴다', 'confirmed_meaning = true', 'expected_revision = o.object ? o.object.revision : null',
-                  '$("std-dlg-go").disabled = !$("std-dlg-ok").checked', '"DEF-INVALID":', '"CONFLICT":',
-                  "표준 정의 보호", "출처 미확인", "source_counts", "확정 전 재검토", "S.sources"):
-            assert w in html, w
-        for code in contract.LOCKED_CHANGES:   # 잠금 영향 문구 — 서버 코드 전부
-            assert re.search(rf"\b{code}: \"", html), code
-        for code in contract.REVIEW_REASONS:
-            assert re.search(rf"\b{code}: \"", html), code
-        fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
-        assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
-        assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
-        # 목록/그래프 전환(PR①: 새 탐색 기본 그래프) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
-        for w in ('let defsMode = "graph", defsAt = "";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
-                  'id="dmo-o${i + 1}"', 'id="dmo-r${i + 1}"', 'id="dmo-core-${esc(x.kind)}"', 'closest(".dmo a")', 'getAttribute("href")',
-                  "e.preventDefault(); defsJump(", "scrollIntoView"):
-            assert w in html, w
-        assert (structure_svg.node_anchor(0), structure_svg.rel_anchor(0), structure_svg.core_anchor("record")) == (
-            "dmo-o1", "dmo-r1", "dmo-core-record"), "app.html 의 id 꼴 = structure_svg 앵커"
-        assert tokens in html and "prefers-color-scheme" not in tokens and "prefers-color-scheme" not in html, "토큰 = 테마 토글(data-theme)만"
-        assert '[data-theme="dark"]' in tokens
-        chip = html[html.index("const ORIGIN_CHIP = {"):html.index("};", html.index("const ORIGIN_CHIP = {"))]
-        assert dict(re.findall(r'(\w+): \["[^"]*", "([^"]+)"\]', chip)) == structure_svg.ORIGIN_TEXT, "구분 용어 — 그래프 = 목록 칩"
-        assert '<th scope="col">출처</th>' not in html and '<th scope="col">구분</th><th scope="col">보호</th>' in html, "필드 표 열 머리 = 구분(정의 구분 뜻의 '출처' 0)"
-        sv = html[html.index("function structViews("):html.index("\n}", html.index("function structViews("))]   # 구조 탭 순서: 보기 전환 → 오브젝트 필(항목 보기만)
-        assert sv.index('aria-label="구조 보기"') < sv.index("+ sub;") and 'subnav("");\n  const sub = `<nav class="pills sobjs" aria-label="구조 고르기">' in html \
-            and '"구조 고르기");' not in html and 'structViews(tab, "defs", ' not in html and html.count('structViews(tab, "items", sub)') == 3, "보기 전환이 맨 위 · 오브젝트 필은 그 아래 항목 보기에서만"
-        assert "min-width: 420px" in html and ".dmo { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; }" in html
+        # app.html 정적(구조 정의·편입 대화창·토큰·칩)은 test_web_home.py test_static_moved(A3)로 옮겼다(③-0.2)
 
         # ── 사용자 A(기존 사용자형 — 표식 없음) · B(다른 사용자) ──
         A = db.user_by_subject("q45a_sub", Q45["a"])["id"]
@@ -5853,7 +5764,7 @@ async def test_q45_user():
         wipe()
     with db.tx() as c:
         assert c.execute("SELECT count(*) AS n FROM users WHERE email = ANY(%s)", (emails,)).fetchone()["n"] == 0
-    print("OK — Q4·Q5 사용자 화면(app.html 정적·structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
+    print("OK — Q4·Q5 사용자 화면(structure = contract.respond(self)·편입 전후 locked·MCP 없음·다른 사용자 이름 0"
           "·구조 그래프 structure_svg = render(structure)·script·on* 0·토큰 data-theme"
           "·출처 미확인·재검토·관리자 /app 대화창) 통과")
 
@@ -6054,10 +5965,8 @@ async def test_prA_setup():
         assert svg.count("<line ") == 2 * len(drawn), "관계마다 선(+투명 넓은 선) 하나"
         assert [(r["name"], r["to_text"] or r["from_text"]) for o in sd["objects"] for r in o["relations"] if not r["graph"]] == [
             ("붙는 곳 · 관심 축", "항목 — 대상 오브젝트 모름(정의 미확인) · 분류 대상은 사용자별 역할로 정함"), ("변경 이력", "문의 변경 이력(오브젝트 아님)")]
-        # 코어 표시명 = 기존 정본(web.CORE_LABEL · app.html LABELS). 출처는 두 정본에 없다(보고)
-        app = (HERE / "app.html").read_text(encoding="utf-8")
+        # 코어 표시명 = 기존 정본(web.CORE_LABEL · app.html LABELS — 화면 몫은 test_web_home.py A4). 출처는 두 정본에 없다(보고)
         assert [o["name"] for o in sd["objects"][:4]] == [web.CORE_LABEL[t_] for _, t_, _, _ in service_schema.CORE[:4]]
-        assert all(f'{k}: "{v}"' in app for k, v in (("question", "질문"), ("record", "기록"), ("candidate", "후보"))), "app.html LABELS"
         # API 이름 = 코어 열·테이블 · std@1 key(Salesforce API Name 꼴) — 표시명과 함께
         assert [o["api"] for o in sd["objects"]] == ["questions", "records", "candidates", "tickets", "sources", "users", "people", "source_reflections",
                                                      "activities", "axes", "decision_events", "principles"]
@@ -7082,36 +6991,7 @@ async def test_prb_r5():
 
 
 async def test_prb_app():
-    """24h 화면(app.html) 정적 · /app 본문은 nav old/new 에서 같다(서버는 nav 로 분기하지 않는다) · 라우트 접두 `_` 근거."""
-    html = (HERE / "app.html").read_text(encoding="utf-8")
-    assert html.count("<script>") == 1 and len(web.inline_script_hashes(html)) == 1, "인라인 스크립트 1개"
-    assert not re.search(r"\son[a-z]+\s*=", html, re.I), "인라인 이벤트 속성 0"
-    assert "FEATURE-OFF" not in html, "플래그 제거 — 화면에도 FEATURE-OFF 0"
-    for w in ('if (needName()) return renderNameGate();', 'data-form="name"',
-              "실명이 아니어도 돼요. 다른 사람에게 보이지 않고 운영자 화면에도 나오지 않아요.",
-              '"/api/nav/accept"', '"/api/me/name"', '"/api/people', '"/api/reflections',
-              'id: "_me"', 'id: "_obj"', 'id: "_settings"',
-              "if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];",   # PR ①-b 탭 3: 나 · 오늘 · Setup(B1)
-              'if (R.tab === "_settings") return "#_setup/structure";', "function axisChips",
-              "출처를 접한 뒤 내가 한 생각만 적어요. 다른 사람의 말·경험·생각을 옮기는 곳이 아니에요.",
-              "별칭도 그 사람을 알아볼 수 있으면 개인정보예요.", "삭제 완료"):
-        assert w in html, w
-    assert re.search(r"REFL_HELP\s*=\s*\"출처를 접한 뒤 내가 한 생각만 적어요", html) and re.search(r"PERSON_HELP\s*=\s*\"별칭도", html)
-    assert html.count("${reviewNote(c)}") >= 4, "오늘·후보·기록·나 화면 재검토 표시"
-    # 대화창 둘 — 관리자도 쓴다(관문은 관리자 포함): <!--user-->/<!--admin--> 구간 밖(std-dlg 와 같은 검사)
-    for dlg_id in ("name-dlg", "nav-dlg"):
-        i = html.index(f'<dialog id="{dlg_id}"')
-        for mark in ("<!--user-->", "<!--admin-->"):
-            for a in [m.start() for m in re.finditer(re.escape(mark), html)]:
-                b = html.index(mark.replace("<!--", "<!--/"), a)
-                assert not (a < i < b), (dlg_id, "구간 안", mark)
-    i = html.index('<dialog id="nav-dlg"')
-    nav = html[i:html.index("</dialog>", i)]
-    for w in ("「나」 홈", "「자료 종류」", "「내 구조 설정」", "데이터는 바뀌지 않아요", "되돌릴 수 없어요"):   # PR① 새 탐색 안내 = 탭 3(나·자료 종류·지도)
-        assert w in nav, ("nav 대화창", w)
-    menu = html[html.index('id="acct-menu"'):html.index("</details>")]
-    for a in ("name", "nav", "settings"):
-        assert f'data-acct="{a}"' in menu, a
+    """/app 본문은 nav old/new 에서 같다(서버는 nav 로 분기하지 않는다) · 라우트 접두 `_` 근거. 24h 화면 정적은 test_web_home.py A5(③-0.2)."""
     # /app 본문 = nav old/new 같다(서버는 nav 로 분기하지 않는다 — 화면이 /api/state user.nav 로 고른다)
     site = main.site
     real = (site.dev, site.dev_user)
@@ -7134,8 +7014,7 @@ async def test_prb_app():
     assert '"tab": re.compile(r"^t-\d{3,}$")' in (HERE.parent / "crmkit" / "schema.py").read_text(encoding="utf-8"), "키트 탭 id 규칙"
     code = "".join((HERE / f).read_text(encoding="utf-8") for f in ("db.py", "web.py", "main.py", "admin_db.py"))
     assert not re.search(r"(INSERT INTO|UPDATE)\s+tabs\b", code) and "/api/tabs" not in code and "def tabs_" not in code, "서버 탭 쓰기 경로 0"
-    print("OK — 24h 화면 정적(이름 관문·대화창 구간 밖·nav 문구·새 경로·_ 접두 라우트·오늘 탭 없음·재검토 4·축 칩·안내 문구·삭제 완료·FEATURE-OFF 0·"
-          "script 1·on* 0) · /app 본문 nav 무관 · 탭 쓰기 경로 0 통과")
+    print("OK — 24h /app 본문 nav 무관 · 탭 쓰기 경로 0 통과")
 
 
 async def test_prb_privacy():
@@ -8948,6 +8827,12 @@ async def test_pr2b_stack_b2():
                     s = (await h.get(f"/api/stack/sessions/{S}")).json()
                     assert s["preview"]["id"] == P3["id"] and s["input_kind"] == "verbatim" and not s["confirmed"] and s["edit_generation"] == 0
                     assert s["latest_job"] == {"id": J["id"], "status": "result_ready"}
+                    # ③-0.2 뺀 변경 이름(excluded_changes) — v1 표시 요약 그대로·excluded 순서·새로 고침(세션 조회) 뒤에도 같다
+                    v1 = {ch["cid"]: ch["summary"] for ch in P["changes"]}
+                    assert P["excluded_changes"] == [] and P2["excluded_changes"] == [{"cid": "c4", "summary": v1["c4"]}], P2["excluded_changes"]
+                    assert P3["excluded_changes"] == [{"cid": x, "summary": v1[x]} for x in ("c4", "c1", "c3")], P3["excluded_changes"]
+                    assert s["preview"]["excluded_changes"] == P3["excluded_changes"], "새로 고침 뒤 이름 유지"
+                    assert all(set(e) == {"cid", "summary"} for e in P3["excluded_changes"]), "cid·표시 요약만"
                     # ── 재정리 ──
                     EDIT = "합성 편집본 STACKB2"
                     rq = lambda **kw: h.post("/api/jobs", json={"kind": "converse", "session_id": S, "text": EDIT, **kw}, headers=origin)   # noqa: E731
@@ -9555,6 +9440,202 @@ async def test_pr2b_stack():
     await test_pr2b_stack_b6()
     await test_pr2b_stack_r2()
     await test_pr2b_stack_candidates()
+
+
+# ── 29) ③-0.2 장치 상태 — /api/state.devices_status (2026-10-22, 구현계획 §2-2) ─────────────────────
+# 사용자 = tester@·other@example.com 재사용(TEST_EMAILS 불변). run() 맨 끝(28절 뒤)에서 돌고 시작 때 두 계정을 새로 만든다.
+
+async def test_serve_devices_status():
+    """29절 — 3값(미연결 none · 최근 연결 recent · 오프라인 offline, 기준 직전/직후) · 등록 ≠ 최근 연결 · 마지막 연결 = 서버 수신 시각(PC 시각 무시,
+    여러 장치면 가장 최근) · 작업 요청도 연결 · 유효 임대(running·만료 전) = recent(시각 그대로, 만료 뒤 offline, 남 임대 영향 0) · 인증 실패(틀린 토큰·폐기·만료) 폴은 시각 0 · 쓰기 간격 60초(안 = 쓰기 0, 넘으면 갱신) · 남 장치 정보 0 · 기준 = max(180, 롱폴×3)(서버·PC 상수 묶음)
+    · 필드 추가만(기존 키 유지 · MCP state_get·db.state 에 없음) · 출력(print·stderr·logging 핸들러)에 토큰 비밀값·시험 표식 0."""
+    import contextlib
+    import io
+    import logging
+    import uuid
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    T = db.DEVICE_RECENT_SECONDS
+    # 기준값 = max(180, 정상 최대 폴 주기×3). 정상 최대 폴 주기 = 서버 롱폴 상한 = PC 롱폴 대기(시작 간격 하한은 그보다 짧다)
+    assert db.DEVICE_POLL_MAX_SECONDS == imports.POLL_WAIT_MAX and T == max(180, 3 * imports.POLL_WAIT_MAX) == 180, T
+    pc = (HERE.parent / "agent" / "jobs.py").read_text(encoding="utf-8")
+    wait_sec = int(re.search(r"^WAIT_SEC = (\d+)", pc, re.M).group(1))
+    min_iv = float(re.search(r"^MIN_POLL_INTERVAL = ([\d.]+)", pc, re.M).group(1))
+    assert wait_sec == imports.POLL_WAIT_MAX and min_iv <= wait_sec, ("PC 롱폴·간격과 서버 기준이 어긋남", wait_sec, min_iv)
+
+    def one(sql, args=()):
+        with db.tx() as c:
+            return c.execute(sql, args).fetchone()
+
+    def seen(dev_id):
+        return one("SELECT last_used_at FROM import_streams WHERE id=%s", (dev_id,))["last_used_at"]
+
+    def set_seen(dev_id, secs_ago):
+        _sql("UPDATE import_streams SET last_used_at = now() - make_interval(secs => %s) WHERE id=%s", (secs_ago, dev_id))
+
+    def db_now():
+        return one("SELECT now() AS t")["t"]
+
+    site = main.site
+    real = site.dev, site.dev_user
+    out = io.StringIO()
+    secrets_seen = []
+    logged = []   # logging 핸들러 출력(print 밖) — root + 전파 안 하는 로거 전부에 캡처 핸들러
+
+    class _Cap(logging.Handler):
+        def emit(self, rec):
+            try:
+                logged.append(self.format(rec))
+            except Exception:   # noqa: BLE001 — 형식 실패여도 원 메시지는 본다
+                logged.append(str(rec.msg))
+    cap = _Cap(level=logging.DEBUG)
+    cap_on = [logging.getLogger()] + [lg for lg in logging.Logger.manager.loggerDict.values()
+                                      if isinstance(lg, logging.Logger) and not lg.propagate]
+    for lg in cap_on:
+        lg.addHandler(cap)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            async def state(email="tester@example.com"):
+                site.dev, site.dev_user = True, email
+                r = await h.get("/api/state")
+                assert r.status_code == 200, r.text
+                return r.json()
+
+            def poll(tk, **hdr):
+                return h.get("/api/device/jobs", params={"wait": 0}, headers={"authorization": "Bearer " + tk, **hdr})
+
+            with _job_fast(), _job_switch(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                # ── 미연결: 장치 0 ──
+                st = await state()
+                assert st["devices_status"] == {"state": "none", "last_seen_at": None, "threshold_seconds": T}, st["devices_status"]
+                for k in ("journal", "definitions", "switches", "stack_session", "user", "me", "devices", "activity_ui"):   # 기존 키 유지(추가만)
+                    assert k in st, k
+                # ── 등록 ≠ 최근 연결: 연결만 하고 요청 없음 = offline(시각 없음) ──
+                d1 = imports.device_connect(U, "장치 상태 1")
+                D1, K1 = d1["device"]["id"], d1["token"]
+                secrets_seen.append(K1.rsplit(".", 1)[1])
+                assert (await state())["devices_status"] == {"state": "offline", "last_seen_at": None, "threshold_seconds": T}
+                # ── 인증 실패 폴은 시각 0: 틀린 비밀값 · 형식 틀림 · 폐기 · 만료 ──
+                bad = K1[:-4] + ("AAAA" if not K1.endswith("AAAA") else "BBBB")
+                for tk in (bad, "imp_garbage", ""):
+                    r = await poll(tk)
+                    assert r.status_code == 401, (r.status_code, r.text)
+                d2 = imports.device_connect(U, "장치 상태 2")
+                D2, K2 = d2["device"]["id"], d2["token"]
+                secrets_seen.append(K2.rsplit(".", 1)[1])
+                imports.device_revoke(U, D2)
+                assert (await poll(K2)).status_code == 401
+                d3 = imports.device_connect(U, "장치 상태 3")
+                D3, K3 = d3["device"]["id"], d3["token"]
+                secrets_seen.append(K3.rsplit(".", 1)[1])
+                _sql("UPDATE import_streams SET token_expires_at = now() - interval '1 second' WHERE id=%s", (D3,))
+                assert (await poll(K3)).status_code == 401
+                assert (seen(D1), seen(D2), seen(D3)) == (None, None, None), "인증 실패 = 시각 갱신 0"
+                assert (await state())["devices_status"]["state"] == "offline"
+                imports.device_revoke(U, D3)
+                # ── 마지막 연결 = 서버 수신 시각(PC 가 보낸 시각 무시) ──
+                t0 = db_now()
+                r = await poll(K1, date="Sat, 01 Jan 2000 00:00:00 GMT", **{"x-client-time": "2000-01-01T00:00:00Z"})
+                t1 = db_now()
+                assert r.status_code == 204, r.text
+                s1 = seen(D1)
+                assert s1 is not None and t0 <= s1 <= t1, (t0, s1, t1)
+                ds = (await state())["devices_status"]
+                assert ds == {"state": "recent", "last_seen_at": s1.isoformat(), "threshold_seconds": T}, ds
+                # ── 쓰기 줄이기: 간격(60초) 안 반복 요청 = 쓰기 0(행 xmin 불변) · 넘으면 갱신 ──
+                G = db.DEVICE_SEEN_GAP_SECONDS
+                assert G == 60 and 3 * G <= T, "간격 해상도는 기준보다 충분히 짧다"
+                xmin = lambda: one("SELECT xmin::text AS x FROM import_streams WHERE id=%s", (D1,))["x"]   # noqa: E731
+                x0 = xmin()
+                for _ in range(3):
+                    assert (await poll(K1)).status_code == 204
+                assert seen(D1) == s1 and xmin() == x0, "간격 안 반복 폴 = 쓰기 0"
+                set_seen(D1, G + 1)
+                old, t0 = seen(D1), db_now()
+                assert (await poll(K1)).status_code == 204
+                assert seen(D1) > old and seen(D1) >= t0, "간격 넘으면 갱신"
+                # ── 기준 경계: 직전 = recent · 직후 = offline(마지막 연결 시각은 그대로 보인다) ──
+                set_seen(D1, T - 2)
+                ds = (await state())["devices_status"]
+                assert ds["state"] == "recent" and ds["last_seen_at"] == seen(D1).isoformat(), ds
+                set_seen(D1, T + 2)
+                ds = (await state())["devices_status"]
+                assert ds["state"] == "offline" and ds["last_seen_at"] == seen(D1).isoformat(), ds
+                # ── 작업 요청(input·result 등)도 인증된 연결 — 없는 작업 410 이어도 수신 시각은 남는다 ──
+                t0 = db_now()
+                r = await h.get(f"/api/device/jobs/{uuid.uuid4()}/input", params={"lease_generation": 1}, headers={"authorization": "Bearer " + K1})
+                assert r.status_code == 410, r.text
+                assert t0 <= seen(D1) and (await state())["devices_status"]["state"] == "recent"
+                # ── 여러 장치 = 가장 최근 값 ──
+                d4 = imports.device_connect(U, "장치 상태 4")
+                D4 = d4["device"]["id"]
+                secrets_seen.append(d4["token"].rsplit(".", 1)[1])
+                set_seen(D1, T + 100)
+                set_seen(D4, 5)
+                ds = (await state())["devices_status"]
+                assert ds["state"] == "recent" and ds["last_seen_at"] == seen(D4).isoformat(), ds
+                set_seen(D4, T + 2)
+                set_seen(D1, T + 50)
+                ds = (await state())["devices_status"]
+                assert ds["state"] == "offline" and ds["last_seen_at"] == seen(D4).isoformat(), ds
+                # ── 유효 임대 = 최근 연결(A'): CLI 실행 중 폴 공백 > 기준이어도 running·임대 만료 전이면 recent, 시각은 꾸미지 않는다 ──
+                origin = {"origin": PUBLIC}
+                with _job_switch("CONVERSE_ENABLED"):
+                    site.dev, site.dev_user = True, "other@example.com"   # 다른 사용자 임대 먼저 — U 에 영향 0
+                    jo = (await h.post("/api/jobs", json={"kind": "converse", "text": "합성 DSJOB 남"}, headers=origin)).json()["id"]
+                    do = imports.device_connect(O, "남 장치 상태 DSOTHER")
+                    DO, KO = do["device"]["id"], do["token"]
+                    secrets_seen.append(KO.rsplit(".", 1)[1])
+                    a = (await poll(KO)).json()
+                    assert a["id"] == jo and (await h.get(f"/api/device/jobs/{jo}/input", params={"lease_generation": a["lease"]["generation"]},
+                                                          headers={"authorization": "Bearer " + KO})).status_code == 200
+                    set_seen(DO, T + 50)
+                    assert (await state("other@example.com"))["devices_status"]["state"] == "recent", "O 자신은 임대로 recent"
+                    assert (await state())["devices_status"]["state"] == "offline", "남 사용자 임대 = U 영향 0"
+                    site.dev, site.dev_user = True, "tester@example.com"
+                    ju = (await h.post("/api/jobs", json={"kind": "converse", "text": "합성 DSJOB"}, headers=origin)).json()["id"]
+                    a = (await poll(K1)).json()
+                    assert a["id"] == ju, a
+                    assert (await h.get(f"/api/device/jobs/{ju}/input", params={"lease_generation": a["lease"]["generation"]},
+                                        headers={"authorization": "Bearer " + K1})).status_code == 200
+                    assert _job_status(ju)["status"] == "running"
+                    set_seen(D1, T + 60)   # 실행 중 폴 0 → 수신 시각은 기준 밖
+                    ds = (await state())["devices_status"]
+                    assert ds["state"] == "recent" and ds["last_seen_at"] == seen(D4).isoformat(), ("유효 임대 = recent, 시각은 마지막 수신 그대로", ds)
+                    _sql("UPDATE jobs SET lease_expires_at = now() - interval '1 second' WHERE id=%s", (ju,))
+                    assert (await state())["devices_status"]["state"] == "offline", "임대 만료 뒤 = offline"
+                    await h.post(f"/api/jobs/{ju}/cancel", headers=origin)
+                # ── 남 장치 정보 0: O 가 방금 연결해도 U 는 그대로, U 응답에 O 장치 id·이름·시각 없음 ──
+                assert (await poll(KO)).status_code == 204
+                so = (await state("other@example.com"))["devices_status"]
+                assert so["state"] == "recent" and so["last_seen_at"] == seen(DO).isoformat(), so
+                su = await state()
+                assert su["devices_status"]["state"] == "offline" and su["devices_status"]["last_seen_at"] == seen(D4).isoformat()
+                blob = json.dumps(su["devices_status"], ensure_ascii=False)
+                assert DO not in blob and "DSOTHER" not in blob and seen(DO).isoformat() not in blob, "남 장치 정보 0"
+                assert set(su["devices_status"]) == {"state", "last_seen_at", "threshold_seconds"}, "장치 id·이름 키 없음"
+                # ── 장치 전부 연결 해제 = 미연결(시각도 감춤) ──
+                imports.device_revoke(U, D1)
+                imports.device_revoke(U, D4)
+                assert (await state())["devices_status"] == {"state": "none", "last_seen_at": None, "threshold_seconds": T}
+                # ── MCP state_get · db.state 에는 없다(/app 전용) ──
+                assert "devices_status" not in db.state(U)
+                site.dev, site.dev_user = True, "tester@example.com"
+                async with Client(main.mcp) as mc:
+                    assert "devices_status" not in val(await mc.call_tool("state_get", {})), "MCP state_get 모양 불변"
+    finally:
+        site.dev, site.dev_user = real
+        for lg in cap_on:
+            lg.removeHandler(cap)
+    log = out.getvalue()
+    sys.stdout.write(log)
+    assert logged, "logging 캡처가 실제로 붙었다(httpx 요청 로그)"
+    for text, where in ((log, "print·stderr"), ("\n".join(logged), "logging")):
+        assert secrets_seen and not any(s in text for s in secrets_seen), (where, "출력에 토큰 비밀값 0")
+        assert "DSJOB" not in text and "DSOTHER" not in text, (where, "시험 표식(작업 본문·장치 이름) 0")
+    print("OK — 29절 ③-0.2 장치 상태(none·recent·offline 경계 · 등록≠최근 · 서버 수신 시각 · 작업 요청 · 여러 장치 최댓값 · 유효 임대 · 인증 실패 0 · 쓰기 간격 60초"
+          " · 남 장치 0 · 기준 max(180, 롱폴×3) · /app 전용 · 비밀값·표식 출력 0(print·logging)) 통과")
 
 
 def Web_polls_empty():
