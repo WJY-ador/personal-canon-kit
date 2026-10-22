@@ -103,7 +103,7 @@ class ValidateTest(unittest.TestCase):
         self.bad(b, "ref")
         b["changes"][0]["links"] = [{"relation": "axes", "target": {"ref_kind": "explicit_id", "value": "axis-1"}}]
         self.assertEqual(len(stack.validate(b, DEFS)["changes"][0]["links"]), 1)
-        self.assertEqual(stack.validate(b, DEFS)["changes"][0]["links"][0]["target"]["target_kind"], "classify")
+        self.assertEqual(stack.validate(b, DEFS)["changes"][0]["links"][0]["target"]["target_kind"], "item")
         b["changes"][0]["links"] = [{"relation": "axes", "target": {"ref_kind": "source_id", "scheme": "code",
                                                                      "value": "AX-1"}}]
         stack.validate(b, DEFS)                                                # 축 = 정의 안 대상, 원천 ID 가능
@@ -232,6 +232,31 @@ class ValidateTest(unittest.TestCase):
         b = body()
         b["changes"][0]["fields"]["text"] = "가" * 2001                            # 정의 max
         self.bad(b, "limit")
+
+    def test_candidates_parsed_and_capped(self):
+        self.assertEqual([c["id"] for c in DEFS.candidates["items"]], ["i_axis_0001", "i_judg_0001"])
+        self.assertEqual(DEFS.candidates["sources"], [])
+        d = copy.deepcopy(DEFAULT_DEFS)
+        del d["candidates"]
+        self.assertEqual(stack.Definitions(d).candidates, {"items": [], "people": [], "sources": []})   # 선택
+        d["candidates"] = {"items": [{"id": "i%d" % n, "object_id": "obj-axis", "title": "t"}
+                                     for n in range(stack.MAX_CAND_ITEMS + 1)]}
+        with self.assertRaises(stack.DefsError):
+            stack.Definitions(d)
+        d["candidates"] = {"people": [{"id": "p", "alias": 3}]}
+        with self.assertRaises(stack.DefsError):
+            stack.Definitions(d)
+        d["candidates"] = {"people": [{"id": "p", "alias": "a", "phone": "x"}]}       # 모르는 키는 버림
+        self.assertEqual(stack.Definitions(d).candidates["people"], [{"id": "p", "alias": "a"}])
+
+    def test_prompt_candidates_table(self):
+        p = stack.build_prompt(DEFS, "합성 입력")
+        cand = json.loads(p.split("=== CANDIDATES ===\n")[1].split("\n")[0])
+        self.assertEqual(cand["people"], [{"alias": "합성 별칭 CAND-ALIAS", "id": "p_0001"}])
+        self.assertLess(p.index("=== CANDIDATES ==="), p.index("=== INPUT"))       # 입력은 맨 끝
+        self.assertIn("not in CANDIDATES and not written in the input is unresolved", p)
+        self.assertIn("explicit_id with its id", p)
+        self.assertNotIn("candidates_at", p)
 
     def test_parse_body_fence(self):
         self.assertEqual(stack.parse_body("```json\n{\"units\": []}\n```"), {"units": []})
@@ -364,6 +389,17 @@ class ScenarioTest(Base):
         w = self.worker(mode="garbage")
         out = w.poll_once()
         self.assertEqual((out["reason_code"], len(w.runner.calls)), ("output-not-json", 2))
+
+    def test_candidate_links_explicit(self):
+        """후보 표의 항목·사람을 explicit_id 로 — 관계 target_kind 를 채워 보낸다."""
+        jid = self.create()
+        w = self.worker("candidate")
+        self.assertEqual(w.poll_once()["outcome"], "result-sent")
+        links = self.result(jid)["changes"][0]["links"]
+        self.assertEqual(links, [
+            {"relation": "axes", "target": {"ref_kind": "explicit_id", "target_kind": "item", "value": "i_axis_0001"}},
+            {"relation": "people", "target": {"ref_kind": "explicit_id", "target_kind": "person", "value": "p_0001"}}])
+        self.assertIn("CAND-AXIS-TITLE", w.runner.stdins[0])
 
     def test_inferred_passes_as_proposal(self):
         jid = self.create()
@@ -672,7 +708,8 @@ class StateFileTest(Base):
         self.assertEqual(w.poll_once()["outcome"], "result-sent")
         with open(st.path, "rb") as f:
             data = f.read()
-        for s in (SECRET_TEXT, "BODY-TWO", "OLD-UNIT-TEXT", "정리", "어느 항목", "판단", "타인의 말", DEFS_V):
+        for s in (SECRET_TEXT, "BODY-TWO", "OLD-UNIT-TEXT", "정리", "어느 항목", "판단", "타인의 말", DEFS_V,
+                  "CAND-AXIS-TITLE", "CAND-ALIAS", "i_axis_0001"):
             self.assertNotIn(s.encode("utf-8"), data, s)
         self.assertEqual(set(json.loads(data)), {"v", "sessions", "attempts", "cli_retries", "leases"})
 
@@ -754,6 +791,19 @@ class LiveStackTest(_tj.LiveBase):
         p = self.job(jid)
         self.assertEqual(p["status"], "result_ready")
         self.assertTrue(p["preview"]["blocked"], p["preview"])
+
+    def test_b2_candidates_explicit_link(self):
+        """실 후보 표(합성 축 1개 — 준비 단계에서 만듦) → explicit_id 연결이 서버 재검증을 통과."""
+        jid, _ = self.start()
+        w = self.sworker("candidate")
+        out = w.poll_once()
+        self.assertEqual(out["outcome"], "result-sent", out)
+        cand = json.loads(w.runner.stdins[0].split("=== CANDIDATES ===\n")[1].split("\n")[0])
+        if not cand["items"]:
+            self.skipTest("이 시험 사용자에 후보 항목 없음")
+        links = self.sent_result(w)["changes"][0]["links"]
+        self.assertTrue(links and links[0]["target"]["ref_kind"] == "explicit_id", links)
+        self.assertEqual(self.job(jid)["status"], "result_ready")
 
     def test_c_contract_bad_fail_after_retry(self):
         jid, _ = self.start()

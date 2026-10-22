@@ -26,7 +26,7 @@ def _section(text, name):
 
 def _stack_body(prompt, smode):
     """FAKE_STACK 시나리오 — 정의 절에서 첫 정의(판단 종류 우선)를 골라 stack/1 본문을 만든다.
-    ok · contract-bad · forbidden-field · unref-link · inferred · blocked · restack · cycle · oversize
+    ok · contract-bad · forbidden-field · unref-link · inferred · blocked · restack · cycle · oversize · candidate
     FAKE_STACK 에 쉼표로 여러 값을 주고 FAKE_COUNTER(파일 경로)를 주면 실행 차례마다 다음 값(재시도 시험)."""
     counter = os.environ.get("FAKE_COUNTER")
     if counter and "," in smode:
@@ -72,6 +72,21 @@ def _stack_body(prompt, smode):
                                 "fields": fields, "depends_on": ["c1"]})
         body["units"][0]["change_ids"].append("c2")
         body["changes"][0]["depends_on"] = ["c2"]
+    elif smode == "candidate":
+        # 후보 표의 첫 항목·사람을 explicit_id 로(후보가 없으면 ok 와 같다)
+        cands = json.loads(_section(prompt, "CANDIDATES") or "{}")
+        links = []
+        for rel in obj["relations"]:
+            tk, to = rel.get("target_kind"), rel.get("target_object")
+            pool = cands.get("people" if tk == "person" else "sources" if tk == "source" else "items", [])
+            if tk == "item" or to:
+                pool = [c for c in pool if not to or c.get("object_id") == to]
+            elif tk not in ("person", "source"):
+                pool = []
+            if pool:
+                links.append({"relation": rel["key"], "target": {"ref_kind": "explicit_id", "target_kind": tk,
+                                                                 "value": pool[0]["id"]}})
+        body["changes"][0]["links"] = links
     elif smode == "oversize":
         body["units"][0]["text"] = "가" * 4001
     return body
