@@ -215,6 +215,10 @@ def test_static():
     assert "corePost(" not in v9 and "fetch(" not in v9 and "PUT" not in v9, "S2 「나」 화면 쓰기 요청 0"
     assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
+    # S2 판정 ①: 51편 이후 글 = 출처 상세 「더 보기」 1개가 PR① 읽기 API(/api/records 커서)로 이어 받는다(새 API 0)
+    for w in ('getJSON("/api/records?before=" + encodeURIComponent(cur) + "&limit=50")', "data-me-more", "S.journal_next_before",
+              "meRec.extra = []; meRec.next = undefined;"):
+        assert w in js, w
     # S3 요약 — 차트 4(블록 순서 = layout.blocks.summary) · 서버 값 그대로 · 버튼 0 · 미래 칸 비움 · 색만으로 구분하지 않음(글자 범례)
     for w in ("function meHeat(st)", "function meKinds(st)", "function meWaiting(st)", "function meRecent()",
               "draw = {heatmap: meHeat, kinds: meKinds, waiting: meWaiting, recent: meRecent}", "(meLayout().blocks || {}).summary",

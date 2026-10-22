@@ -988,6 +988,7 @@ async function fetchState() {
 }
 function applyState(next) {
   S = next;
+  meRec.extra = []; meRec.next = undefined; meRec.err = "";   // 이어 받은 기록 — 새 상태(S.journal·첫 커서)부터 다시
   loadedAt = mdhm(S.generated);
   render();
 }
@@ -2360,7 +2361,21 @@ const HOME_URLKIND = ["journal", "q", "cand", "item", "refl"];
 let homeFromList = false, homeListY = 0, homeListTop = 0, homeScrollTo = null;
 const homeMobile = () => window.matchMedia(HOME_MOBILE).matches;
 const homeTime = iso => { const d = toDate(iso); return d ? d.getTime() : 0; };
-const homeRecords = () => ok("journal") ? (S.journal || []) : [];   // 불러온 기록(S.journal) — 없는 기록은 본문 API(/api/journal)로 연다
+// 불러온 기록 = S.journal(50편) + 출처 상세 「더 보기」로 이어 받은 것(GET /api/records — 서버 정렬·커서 그대로). 없는 기록은 본문 API(/api/journal)로 연다
+const meRec = {extra: [], next: undefined, busy: false, err: ""};   // next: undefined = 아직 안 받음(→ S.journal_next_before) · null = 끝
+const homeRecords = () => ok("journal") ? (S.journal || []).concat(meRec.extra) : [];
+const meRecNext = () => meRec.next !== undefined ? meRec.next : (S.journal_next_before || null);
+async function meRecMore() {
+  const cur = meRecNext();
+  if (!cur || meRec.busy) return;
+  meRec.busy = true; meRec.err = ""; homeRerender();
+  const st = S, res = await getJSON("/api/records?before=" + encodeURIComponent(cur) + "&limit=50");   // 커서는 서버 값 그대로(불투명)
+  meRec.busy = false;
+  if (!res || S !== st) return;   // 그사이 상태를 새로 받았으면 버린다(applyState 가 비웠다)
+  if (res.ok) { meRec.extra = meRec.extra.concat(res.j.records || []); meRec.next = res.j.next_before || null; }
+  else meRec.err = "더 불러오지 못했어요. 다시 눌러 주세요.";
+  if (route().tab === "_me") homeRerender();
+}
 const firstLine = s => (String(s || "").split("\n").find(l => l.trim()) || "").trim();
 // 행 = {k: 주소 종류, f: 종류 선택 키, id, title, kind(표시 이름), at(만든 시각), x(원래 객체)}
 function homeRows() {
@@ -2887,9 +2902,12 @@ function meCenter(tab, sel) {
   if (tab === "source") {
     const x = sel.x, recs = homeRecords().filter(j => j.source_id === x.id), total = ((S.source_counts || {}).by_source || {})[x.id] || 0;
     const rs = reflList().filter(r => r.source_id === x.id);
-    const recBox = recs.length ? `${meFold(recs.map(j => `<li><a href="#_me/journal/${esc(j.id)}">${esc(j.title || j.excerpt || "(제목 없음)")}</a><span class="hk">${esc(md(j.created))}</span></li>`))}
+    // 이 출처의 글이 더 있고 서버에 이어 받을 글이 남았으면 「더 보기」 1개 — 다음 50편(모든 출처)을 받아 이 출처 것만 보인다
+    const more = total > recs.length && meRecNext() ? `<button class="secondary more" type="button" data-me-more${meRec.busy ? " disabled" : ""}>${meRec.busy ? "불러오는 중이에요…" : "더 보기"}</button>
+      <p class="ferr" role="alert" aria-atomic="true">${esc(meRec.err)}</p>` : "";
+    const recBox = (recs.length ? `${meFold(recs.map(j => `<li><a href="#_me/journal/${esc(j.id)}">${esc(j.title || j.excerpt || "(제목 없음)")}</a><span class="hk">${esc(j.source_date ? dOnly(j.source_date) : md(j.created))}</span></li>`))}
       ${total > recs.length ? `<p class="hint">불러온 글만 보여요. 이 출처의 글은 모두 ${esc(total)}편이에요.</p>` : ""}`
-      : `<div class="empty">${total ? `불러온 글 중엔 이 출처의 글이 없어요(모두 ${esc(total)}편).` : "이 출처의 글이 없어요."}</div>`;
+      : `<div class="empty">${total ? `불러온 글 중엔 이 출처의 글이 없어요(모두 ${esc(total)}편).` : "이 출처의 글이 없어요."}</div>`) + more;
     const reflBox = rs.length ? meFold(rs.map(r => `<li><a href="#_me/refl/${esc(r.id)}">${esc(firstLine(r.body) || "(내용 없음)")}</a><span class="hk">${esc(REFL_KIND[r.kind] || r.kind)} · ${esc(r.review === "reviewed" ? "확인했어요" : "확인 전")}</span></li>`))
       : `<div class="empty">아직 없어요.</div>`;
     return `<div class="hkind">출처 · ${esc(SRC_KIND[x.kind] || x.kind)}</div><h2 class="title">${esc(x.name)}</h2>
@@ -3627,6 +3645,8 @@ document.addEventListener("click", e => {
   if (e.target.closest("button[data-conn-mode]")) { homeConnMode = homeConnMode === "graph" ? "list" : "graph"; homeRerender(); const b = document.querySelector("button[data-conn-mode]"); if (b) b.focus(); return; }
   const cr = e.target.closest("button[data-conn-retry]");
   if (cr) { const k = cr.dataset.connRetry; if (k.startsWith("p:")) delete meExtra[k]; else delete homeConnExtra[k]; homeRerender(); return; }
+  const mm = e.target.closest("button[data-me-more]");
+  if (mm) { if (!mm.disabled) meRecMore(); return; }
   const hb = e.target.closest("button[data-home-back]");
   if (hb) {
     if (homeFromList) { homeFromList = false; history.back(); } else location.hash = hb.dataset.to || "#_me";
