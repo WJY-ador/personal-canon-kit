@@ -10,6 +10,7 @@ import os
 import socket
 import stat
 import threading
+import time
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -777,6 +778,280 @@ class StateTest(unittest.TestCase):
         for d in range(1, 12):
             st.attempt_bump("2026-10-%02d" % d)
         self.assertEqual(len(st.data["attempts"]), jobs.ATTEMPT_DAYS_KEPT)
+
+
+# ── J3 실 API 재시험(opt-in) ───────────────────────────────
+# 환경변수가 없으면 건너뛴다(CI 포함). 시험 DB·로컬 서버만:
+#   JOBS_LIVE_URL=http://127.0.0.1:8807  JOBS_LIVE_TOKEN=<장치 A>  JOBS_LIVE_TOKEN_B=<같은 사용자 장치 B>
+#   JOBS_LIVE_DB=postgresql://localhost/crm_test_jobs  (JOBS_LIVE_ORIGIN 기본 http://127.0.0.1:8800)
+# DB 는 psql 로 ① 상태 읽기(status·attempts·reason_code — 본문 없음) ② **서버 시각 경과 흉내**(expires_at·lease_expires_at
+# 을 지금 이전으로)만 쓴다. 판정·저장은 전부 API 를 거친다. 토큰은 파일에 적지 않는다.
+LIVE_URL = os.environ.get("JOBS_LIVE_URL", "")
+LIVE_TOKEN = os.environ.get("JOBS_LIVE_TOKEN", "")
+LIVE_TOKEN_B = os.environ.get("JOBS_LIVE_TOKEN_B", "")
+LIVE_DB = os.environ.get("JOBS_LIVE_DB", "")
+LIVE_ORIGIN = os.environ.get("JOBS_LIVE_ORIGIN", "http://127.0.0.1:8800")
+LIVE_GAP = 15.5                      # 장치 폴링 버킷(분당 4) 안 — 같은 토큰의 폴 시작 간격
+_live_last = {}
+_live_lock = threading.Lock()
+
+
+def _live_ok() -> bool:
+    return bool(LIVE_URL and LIVE_TOKEN and LIVE_DB) and LIVE_URL.startswith(("http://127.0.0.1:", "http://localhost:")) \
+        and "/crm_test_" in LIVE_DB
+
+
+@unittest.skipUnless(_live_ok(), "J3 실 API 재시험 — JOBS_LIVE_* 없음(로컬·crm_test_* 전용)")
+class LiveApiTest(unittest.TestCase):
+    """같은 실패표 행을 실 서버(J2)로. 모델 = fake. 연결 끊김은 PC 쪽에서 주입(서버는 그대로)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import re as _re
+        m = _re.match(r"^imp_(is_[0-9a-f]{24})\.", LIVE_TOKEN)
+        cls.stream = m.group(1) if m else ""
+        cls.uid = cls.sql("SELECT user_id FROM import_streams WHERE id='%s'" % cls.stream)
+
+    @staticmethod
+    def sql(q: str) -> str:
+        import subprocess
+        r = subprocess.run(["psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", LIVE_DB, "-c", q],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            raise AssertionError("psql failed: exit %d" % r.returncode)
+        return r.stdout.strip()
+
+    def setUp(self):
+        # 앞 시험이 남긴 살아 있는 작업을 API 로 취소(다음 시험에 끼어들지 않게)
+        ids = self.sql("SELECT id FROM jobs WHERE user_id='%s' AND status IN ('queued','leased','running')" % self.uid)
+        for jid in filter(None, ids.splitlines()):
+            self.web("POST", "/api/jobs/%s/cancel" % jobs._job_id(jid), {})
+
+    def web(self, method, path, body=None):
+        import urllib.error
+        import urllib.request
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        req = urllib.request.Request(LIVE_URL + path, data=data, method=method)
+        req.add_header("Origin", LIVE_ORIGIN)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=40) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else {})
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, (json.loads(raw) if raw else {})
+
+    def create(self, text=SECRET_TEXT, session_id=None) -> str:
+        body = {"kind": "converse", "text": text}
+        if session_id:
+            body["session_id"] = session_id
+        st, p = self.web("POST", "/api/jobs", body)
+        self.assertEqual(st, 201, p)
+        return p["id"]
+
+    def row(self, jid):
+        st, att, rc = self.sql("SELECT status, attempts, COALESCE(reason_code,'') FROM jobs WHERE id='%s'"
+                               % jobs._job_id(jid)).split("|")
+        return st, int(att), rc
+
+    def past(self, jid, col):
+        assert col in ("expires_at", "lease_expires_at")
+        self.sql("UPDATE jobs SET %s = now() - interval '1 second' WHERE id='%s'" % (col, jobs._job_id(jid)))
+
+    def worker(self, mode="ok", token=LIVE_TOKEN, hook=None, wait=2, **kw):
+        runner = CountingRunner(hook)
+        client = jobs.Client(LIVE_URL, token, wait=wait)
+        sent = []
+        orig_send, orig_poll = client._send, client.poll
+
+        def send(method, path, data, extra):
+            sent.append((method, path, data))
+            return orig_send(method, path, data, extra)
+
+        def poll():
+            with _live_lock:
+                gap = _live_last.get(token, -1e9) + LIVE_GAP - time.monotonic()
+            if gap > 0:
+                time.sleep(gap)
+            with _live_lock:
+                _live_last[token] = time.monotonic()
+            return orig_poll()
+        client._send, client.poll = send, poll
+        w = jobs.Worker(client, jobs.fake_adapter(mode, exec_runner=runner), jobs.MemoryState(), min_interval=0, **kw)
+        w.runner, w.sent = runner, sent
+        return w
+
+    def assert_no_secret(self, w):
+        for _m, _p, data in w.sent:
+            self.assertNotIn(SECRET_TEXT.encode("utf-8"), data or b"")
+            self.assertNotIn("SYNTH-INPUT-7731", _p)
+
+    def test_a_happy(self):
+        jid = self.create()
+        w = self.worker()
+        out = w.poll_once()
+        self.assertEqual(out["outcome"], "result-sent", out)
+        self.assertEqual(self.row(jid)[:2], ("result_ready", 1))
+        st, p = self.web("GET", "/api/jobs/%s?wait=0" % jid)
+        self.assertEqual(st, 200)
+        self.assertEqual(p.get("status"), "result_ready")
+        self.assertNotIn("fake-session", json.dumps(p))           # CLI 세션 ID 는 서버에 없음
+        self.assert_no_secret(w)
+
+    def test_r1_queued_then_expired_not_run(self):
+        jid = self.create()
+        self.assertEqual(self.row(jid)[0], "queued")              # PC 꺼짐 = 대기(실행 아님)
+        self.past(jid, "expires_at")
+        w = self.worker()
+        self.assertEqual(w.poll_once()["outcome"], "idle")
+        self.assertEqual(self.row(jid)[0], "expired")
+        self.assertEqual(w.runner.calls, [])
+
+    def test_r1_cancelled_between_lease_and_input(self):
+        jid = self.create()
+        w = self.worker()
+        orig = w.client.input
+
+        def input_after_cancel(j, g):
+            self.web("POST", "/api/jobs/%s/cancel" % j, {})
+            return orig(j, g)
+        w.client.input = input_after_cancel
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out.get("code")), ("gone", "JOB-GONE"))
+        self.assertEqual(w.runner.calls, [])
+        self.assertEqual(self.row(jid)[0], "cancelled")
+
+    @unittest.skipUnless(LIVE_TOKEN_B, "장치 B 토큰 없음")
+    def test_r2_two_devices_one_lease(self):
+        jid = self.create()
+        a, b = self.worker(), self.worker(token=LIVE_TOKEN_B)
+        outs, go = [], threading.Barrier(2)
+
+        def run(w):
+            go.wait()
+            outs.append(w.poll_once()["outcome"])
+        ts = [threading.Thread(target=run, args=(w,)) for w in (a, b)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(90)
+        self.assertEqual(sorted(outs), ["idle", "result-sent"])
+        self.assertEqual(len(a.runner.calls) + len(b.runner.calls), 1)
+        self.assertEqual(self.row(jid)[:2], ("result_ready", 1))
+
+    def _drop_result(self, w, n, after_send):
+        orig, left = w.client.result_bytes, {"n": n}
+
+        def result_bytes(j, data):
+            if left["n"] > 0:
+                left["n"] -= 1
+                if after_send:
+                    orig(j, data)                                  # 서버는 받았고 응답만 유실
+                raise jobs.NetworkError()
+            return orig(j, data)
+        w.client.result_bytes = result_bytes
+
+    def test_r3_request_lost_same_bytes(self):
+        jid = self.create()
+        w = self.worker()
+        self._drop_result(w, 1, after_send=False)
+        self.assertEqual(w.poll_once()["outcome"], "result-sent")
+        self.assertEqual(len(w.runner.calls), 1)
+        self.assertEqual(self.row(jid)[0], "result_ready")
+
+    def test_r3_response_lost_duplicate(self):
+        jid = self.create()
+        w = self.worker()
+        self._drop_result(w, 1, after_send=True)
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out.get("duplicate")), ("result-sent", True))
+        posts = [d for m, p, d in w.sent if p.endswith("/result")]
+        self.assertEqual(len(posts), 2)
+        self.assertEqual(posts[0], posts[1])
+        self.assertEqual(len(w.runner.calls), 1)
+        self.assertEqual(self.row(jid)[0], "result_ready")
+
+    def test_r3_undeliverable_needs_check(self):
+        jid = self.create()
+        w = self.worker(result_retries=1)
+        self._drop_result(w, 99, after_send=False)
+        self.assertEqual(w.poll_once()["outcome"], "result-undelivered")
+        self.assertEqual(self.row(jid)[0], "running")             # 실행 여부 불명 보존
+        self.past(jid, "lease_expires_at")
+        w2 = self.worker()
+        self.assertEqual(w2.poll_once()["outcome"], "idle")       # 재할당 없음
+        self.assertEqual(self.row(jid)[0], "needs_check")
+        self.assertEqual(len(w.runner.calls) + len(w2.runner.calls), 1)
+
+    def test_r5_garbage_fail_code_only(self):
+        jid = self.create()
+        w = self.worker("garbage")
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out["reason_code"], out["status"]), ("failed", "output-not-json", 200))
+        self.assertEqual(self.row(jid), ("failed", 1, "output-not-json"))
+        fails = [json.loads(d) for m, p, d in w.sent if p.endswith("/fail")]
+        self.assertEqual(fails, [{"lease_generation": fails[0]["lease_generation"], "reason_code": "output-not-json"}])
+        self.assertEqual([d for m, p, d in w.sent if p.endswith("/result")], [])
+        self.assert_no_secret(w)
+
+    def test_r5_login(self):
+        jid = self.create()
+        out = self.worker("login").poll_once()
+        self.assertEqual(out["reason_code"], "login")
+        self.assertEqual(self.row(jid), ("failed", 1, "login"))
+
+    def test_r7_cancel_while_running(self):
+        holder = {}
+        w = self.worker(hook=lambda: self.web("POST", "/api/jobs/%s/cancel" % holder["jid"], {}))
+        holder["jid"] = jid = self.create()
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out.get("code")), ("gone", "JOB-GONE"))
+        self.assertEqual(len([1 for m, p, d in w.sent if p.endswith("/result")]), 1)
+        self.assertEqual([1 for m, p, d in w.sent if p.endswith("/fail")], [])
+        self.assertEqual(self.row(jid)[0], "cancelled")
+
+    def test_r10_lease_expired_during_run(self):
+        holder = {}
+        w = self.worker(hook=lambda: self.past(holder["jid"], "lease_expires_at"))
+        holder["jid"] = jid = self.create()
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out.get("code")), ("lease-lost", "JOB-LEASE"))
+        self.assertEqual(len([1 for m, p, d in w.sent if p.endswith("/result")]), 1)
+        self.assertIsNone(self.sql("SELECT 1 FROM tmp.job_results WHERE job_id='%s'" % jid) or None)   # 늦은 결과 미저장
+        st, p = self.web("GET", "/api/jobs/%s?wait=0" % jid)     # 상태 조회가 정리(sweep)를 부른다 — 그 뒤 needs_check
+        self.assertEqual((st, p.get("status")), (200, "needs_check"))
+        self.assertEqual(len(w.runner.calls), 1)
+
+    def test_z_r20_rate_limit_and_concurrency(self):
+        # 정상: 자체 간격(15초)으로 3회 → 429 없음
+        w = self.worker()
+        w.min_interval = jobs.MIN_POLL_INTERVAL
+        t0 = time.monotonic()
+        res = w.run_forever(max_iterations=3)
+        self.assertEqual(res["outcomes"], {"idle": 3})
+        self.assertGreaterEqual(time.monotonic() - t0, 2 * jobs.MIN_POLL_INTERVAL - 1)
+        # 같은 장치 동시 롱폴 2 → 하나는 429(동시 1)
+        c1, c2 = jobs.Client(LIVE_URL, LIVE_TOKEN, wait=5), jobs.Client(LIVE_URL, LIVE_TOKEN, wait=5)
+        sts, go = [], threading.Barrier(2)
+
+        def p(c):
+            go.wait()
+            sts.append(c.poll()[0])
+        ts = [threading.Thread(target=p, args=(c,)) for c in (c1, c2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(30)
+        self.assertIn(429, sts)
+        # 폭주: 간격 없이 → 버킷(분당 4) 넘으면 429 + Retry-After 를 워커가 지킴
+        w2 = jobs.Worker(jobs.Client(LIVE_URL, LIVE_TOKEN, wait=0), jobs.fake_adapter("ok"), jobs.MemoryState(),
+                         min_interval=0, sleep=lambda s: None)
+        outs = [w2.poll_once() for _ in range(6)]
+        rl = [o for o in outs if o["outcome"] == "rate-limit"]
+        self.assertTrue(rl, outs)
+        self.assertGreater(rl[0]["retry_in"], 0)
 
 
 if __name__ == "__main__":
