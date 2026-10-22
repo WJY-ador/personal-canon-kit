@@ -8364,7 +8364,15 @@ async def test_pr2a_jobs():
                     site.dev, site.dev_user = True, "tester@example.com"
                     assert (await h.post("/api/jobs", json={"kind": "converse", "text": TXT}, headers={"origin": "https://evil.example"})).status_code == 403
                     r = await new("routine_ingest")
-                    assert r.status_code == 503 and r.json()["code"] == "LIMIT-UNSET", ("한도 미정 = fail-closed", r.text)
+                    assert r.status_code == 201, ("스위치 켜짐 = 접수(K3 가안 한도)", r.text)
+                    await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
+                    saved_lim = imports.JOB_REQUEST_LIMITS["routine_ingest"]
+                    imports.JOB_REQUEST_LIMITS["routine_ingest"] = None
+                    try:
+                        r = await new("routine_ingest")
+                        assert r.status_code == 503 and r.json()["code"] == "LIMIT-UNSET", ("한도 값 없음 = fail-closed", r.text)
+                    finally:
+                        imports.JOB_REQUEST_LIMITS["routine_ingest"] = saved_lim
                     r = await new("summarize_reading")
                     assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF", "읽기 자료 = ②-d 전 스위치 없음(늘 꺼짐)"
                     r = await h.post("/api/jobs", json={"kind": "converse", "text": "가" * 8001}, headers=origin)

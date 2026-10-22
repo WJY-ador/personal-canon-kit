@@ -65,7 +65,8 @@ BUCKETS = ("request", "self", "activity")
 POLL_LIMITS = {("device", "minute"): 4, ("user", "minute"): 12}   # GET /api/device/jobs(장치·사용자) · GET /api/jobs/<id>(사용자)
 POLL_CONCURRENT = {"device": 1, "web": 2}                         # 동시 롱폴(장치당 · 사용자당 웹) — 서버 프로세스 메모리
 POLL_WAIT_MAX = 30                                                # 롱폴 최대 초
-JOB_REQUEST_LIMITS = {"summarize_reading": 10, "converse": 60, "routine_ingest": None}   # 사용자 하루 접수 — converse 60 = K3 가안(r2 R1). None = 미정 → 접수 거절
+JOB_REQUEST_LIMITS = {"summarize_reading": 10, "converse": 60, "routine_ingest": 10}   # 사용자 하루 접수 — K3 가안(r2 R1, 원작자 결정 전). None = 접수 거절
+# PC 시도(입력 조회 성공 = CLI 시작 직전) 기록은 jobs.attempts. 시도 한도(K3 가안 converse 60·routine 10)는 PC 쪽(agent/jobs.py)이 센다
 JOBS_OPEN_MAX = 20                                                # 사용자당 살아 있는 작업(queued·leased·running·result_ready) — 임시 용량 가안
 JOB_BUCKETS = ("poll",) + tuple("job_" + k for k in JOB_REQUEST_LIMITS)   # import_counters.bucket 추가 열거
 ALIAS_PREFIX = "사람-"        # 장치가 만든 사람의 기본 별칭(사람-0001). 실명에서 만들지 않는다
