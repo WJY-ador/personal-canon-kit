@@ -7089,7 +7089,7 @@ async def test_prb_app():
               '"/api/nav/accept"', '"/api/me/name"', '"/api/people', '"/api/reflections',
               'id: "_me"', 'id: "_obj"', 'id: "_settings"',
               "if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];",   # PR ①-b 탭 3: 나 · 오늘 · Setup(B1)
-              'location.replace("#_settings/structure")', "function axisChips",
+              'if (R.tab === "_settings") return "#_setup/structure";', "function axisChips",
               "출처를 접한 뒤 내가 한 생각만 적어요. 다른 사람의 말·경험·생각을 옮기는 곳이 아니에요.",
               "별칭도 그 사람을 알아볼 수 있으면 개인정보예요.", "삭제 완료"):
         assert w in html, w
