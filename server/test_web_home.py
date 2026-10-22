@@ -215,6 +215,10 @@ def test_static():
     assert "corePost(" not in v9 and "fetch(" not in v9 and "PUT" not in v9, "S2 「나」 화면 쓰기 요청 0"
     assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
+    # S2 스크린샷 판정: 옆 묶음 = 종류별 5 + 「더 N」 1(그 목록만 펼침) · 활동 = 행동 · 날짜(문맥 API 값) + 부제 관계·사람 별칭
+    for w in ("const ME_SHOW = 5;", "data-me-open=", "meActs[a.id] = a", "a.action_label || actLabel(a.action)", "x.id !== selfPerson"):
+        assert w in js, w
+    assert "<details" not in v9, "접힘(details) 대신 「더 N」 버튼"
     # S2 판정 ①: 51편 이후 글 = 출처 상세 「더 보기」 1개가 PR① 읽기 API(/api/records 커서)로 이어 받는다(새 API 0)
     for w in ('getJSON("/api/records?before=" + encodeURIComponent(cur) + "&limit=50")', "data-me-more", "S.journal_next_before",
               "meRec.extra = []; meRec.next = undefined;"):

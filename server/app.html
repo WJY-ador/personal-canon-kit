@@ -754,9 +754,7 @@ ul.hrows li.mgrph + li { border-top: none; }
 .msec { margin-top: 1rem; }
 .msec h3 { display: flex; gap: .4rem; align-items: baseline; margin: 0 0 .4rem; font-size: .86rem; }
 .msolo { max-width: 860px; }
-.mfold { margin-top: .35rem; }
-.mfold summary { cursor: pointer; font-size: .8rem; font-weight: 600; color: var(--accent); min-height: 28px; display: flex; align-items: center; }
-.mfold ul { margin-top: .35rem; }
+button.mmore { margin-top: .3rem; padding-left: .4rem; padding-right: .4rem; }
 .mesum { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
 .mblk { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; min-width: 0; }
 .mblk.full { grid-column: 1 / -1; }
@@ -2562,7 +2560,8 @@ function graphNode(kind, id) {
   else if (kind === "refl") { label = x ? firstLine(x.body) : ""; href = `#_me/refl/${id}`; }
   else if (kind === "person") { label = x ? x.alias : ""; href = `#_obj/person/${id}`; }
   else if (kind === "source") { label = x ? x.name : ""; href = `#_obj/source/${id}`; }
-  else if (kind === "activity") { href = `#_obj/activity/${id}`; lazy = "activity"; }
+  else if (kind === "activity") { href = `#_obj/activity/${id}`; const a = meActs[id];   // 축·사람 문맥 API 로 받은 활동이면 바로 이름(행동 · 날짜), 아니면 따로 받는다
+    if (a) label = `${a.action_label || actLabel(a.action)} · ${a.occurred_on ? dOnly(a.occurred_on) : "날짜 미확인"}`; else lazy = "activity"; }
   return {key: `${kind}:${id}`, kind, id, label: label || graphKindName(kind, x), kindName: graphKindName(kind, x), href, lazy};
 }
 const LINK_KIND = {record: "journal", candidate: "cand", item: "item", person: "person", source: "source", activity: "activity"};
@@ -2609,6 +2608,7 @@ async function graphLoadExtra(id) {
   const seq = renderSeq, res = await getJSON(`/api/axes/${encodeURIComponent(id)}/context`);
   graphBusy.delete(id);
   if (!res) return;
+  if (res.ok) for (const a of res.j.activities || []) meActs[a.id] = a;
   homeConnExtra[id] = res.ok ? {ok: true, acts: res.j.activities || [], count: res.j.activity_count || 0}
     : res.code === "NOT-FOUND" ? {ok: true, acts: [], count: 0} : {ok: false};
   if (seq === renderSeq && route().tab === "_me") { const y = window.scrollY; homeListTop = $("home-list") ? $("home-list").scrollTop : 0; render(); window.scrollTo(0, y); }
@@ -2838,6 +2838,7 @@ function mePick(tab, rows, want) {
   for (const r of rows) { const n = meN(tab, r.id) || 0; if (n > bn) { best = r; bn = n; } }   // 사람처럼 아직 모르는 수는 0 으로(같으면 앞 행)
   return best;
 }
+const meActs = {};   // 활동 id → 문맥 API(/api/axes|people/{id}/context)가 준 활동(행동·날짜·사람 별칭) — 이 화면에 머무는 동안
 const meExtra = {};   // "p:<사람 id>" → {ok, acts, count, records, items} — /api/people/{id}/context(이 화면에 머무는 동안)
 const meBusy = new Set();
 async function meLoadPerson(id) {
@@ -2847,11 +2848,12 @@ async function meLoadPerson(id) {
   const seq = renderSeq, res = await getJSON(`/api/people/${encodeURIComponent(id)}/context`);
   meBusy.delete(key);
   if (!res) return;
+  if (res.ok) for (const a of res.j.activities || []) meActs[a.id] = a;
   meExtra[key] = res.ok ? {ok: true, acts: res.j.activities || [], count: res.j.activity_count || 0, records: res.j.records || [], items: res.j.items || []} : {ok: false};
   if (seq === renderSeq && route().tab === "_me") homeRerender();
 }
 // 오른쪽 묶음 — 같은 연결 목록(graphEdges)을 자료 종류별로. 한 이웃이 여러 관계면 한 줄에 관계를 모은다
-function meGroups(edges, title) {
+function meGroups(edges, title, selfPerson) {
   if (!edges.length) return `<aside class="mgroups" aria-label="${esc(title)}"><h3 class="mgh">${esc(title)}</h3><div class="empty">연결된 데이터가 없어요.</div></aside>`;
   const groups = new Map();
   for (const e of edges) {
@@ -2861,14 +2863,20 @@ function meGroups(edges, title) {
     if (!row.rels.includes(rel)) row.rels.push(rel);
     g.set(e.node.key, row); groups.set(e.node.kindName, g);
   }
+  // 제목 = 그 데이터 이름(활동은 행동 · 날짜), 부제 = 관계 + (활동이면) 연결된 사람 별칭 — 가운데가 그 사람이면 별칭은 빼고
+  const who = n => { const a = n.kind === "activity" && meActs[n.id]; return a ? (a.people || []).filter(x => x.id !== selfPerson).map(x => x.alias) : []; };
   const li = r => `<li>${r.node.href ? `<a href="${esc(r.node.href)}" data-lazy-key="${esc(r.node.lazy ? r.node.key : "")}">${esc(r.node.label)}</a>` : esc(r.node.label)}
-      <span class="hk">${esc(r.rels.join(" · "))}</span></li>`;
+      <span class="hk">${esc(r.rels.concat(who(r.node)).join(" · "))}</span></li>`;
   return `<aside class="mgroups" aria-label="${esc(title)}"><h3 class="mgh">${esc(title)}</h3>${[...groups].map(([k, g]) => `<section class="mgrp"><h4>${esc(k)}<span class="count">${g.size}</span></h4>
-    ${meFold([...g.values()].map(li))}</section>`).join("")}</aside>`;
+    ${meMore("grp:" + k, [...g.values()].map(li))}</section>`).join("")}</aside>`;
 }
-// 긴 목록 — 앞 8줄 + 나머지는 접힘(펼치면 전부). 쓰기 없음
-const ME_FOLD = 8;
-const meFold = lis => `<ul class="hconnlist">${lis.slice(0, ME_FOLD).join("")}</ul>${lis.length > ME_FOLD ? `<details class="mfold"><summary>나머지 ${lis.length - ME_FOLD}개 보기</summary><ul class="hconnlist">${lis.slice(ME_FOLD).join("")}</ul></details>` : ""}`;
+// 긴 목록 — 종류별 5줄 + 「더 N」 1(누르면 그 목록만 펼침, 쓰기 없음). 펼침은 같은 가운데 데이터에 머무는 동안만
+const ME_SHOW = 5;
+const meOpen = new Set();
+function meMore(key, lis) {
+  const all = meOpen.has(key) || lis.length <= ME_SHOW;
+  return `<ul class="hconnlist" data-me-list="${esc(key)}">${(all ? lis : lis.slice(0, ME_SHOW)).join("")}</ul>${all ? "" : `<button class="tertiary mmore" type="button" data-me-open="${esc(key)}">더 ${lis.length - ME_SHOW}</button>`}`;
+}
 function meListHtml(tab, rows, sel) {
   const label = ME_TAB_LABEL[tab], n = rows.length;
   let body = "";
@@ -2905,10 +2913,10 @@ function meCenter(tab, sel) {
     // 이 출처의 글이 더 있고 서버에 이어 받을 글이 남았으면 「더 보기」 1개 — 다음 50편(모든 출처)을 받아 이 출처 것만 보인다
     const more = total > recs.length && meRecNext() ? `<button class="secondary more" type="button" data-me-more${meRec.busy ? " disabled" : ""}>${meRec.busy ? "불러오는 중이에요…" : "더 보기"}</button>
       <p class="ferr" role="alert" aria-atomic="true">${esc(meRec.err)}</p>` : "";
-    const recBox = (recs.length ? `${meFold(recs.map(j => `<li><a href="#_me/journal/${esc(j.id)}">${esc(j.title || j.excerpt || "(제목 없음)")}</a><span class="hk">${esc(j.source_date ? dOnly(j.source_date) : md(j.created))}</span></li>`))}
+    const recBox = (recs.length ? `${meMore("src:rec", recs.map(j => `<li><a href="#_me/journal/${esc(j.id)}">${esc(j.title || j.excerpt || "(제목 없음)")}</a><span class="hk">${esc(j.source_date ? dOnly(j.source_date) : md(j.created))}</span></li>`))}
       ${total > recs.length ? `<p class="hint">불러온 글만 보여요. 이 출처의 글은 모두 ${esc(total)}편이에요.</p>` : ""}`
       : `<div class="empty">${total ? `불러온 글 중엔 이 출처의 글이 없어요(모두 ${esc(total)}편).` : "이 출처의 글이 없어요."}</div>`) + more;
-    const reflBox = rs.length ? meFold(rs.map(r => `<li><a href="#_me/refl/${esc(r.id)}">${esc(firstLine(r.body) || "(내용 없음)")}</a><span class="hk">${esc(REFL_KIND[r.kind] || r.kind)} · ${esc(r.review === "reviewed" ? "확인했어요" : "확인 전")}</span></li>`))
+    const reflBox = rs.length ? meMore("src:refl", rs.map(r => `<li><a href="#_me/refl/${esc(r.id)}">${esc(firstLine(r.body) || "(내용 없음)")}</a><span class="hk">${esc(REFL_KIND[r.kind] || r.kind)} · ${esc(r.review === "reviewed" ? "확인했어요" : "확인 전")}</span></li>`))
       : `<div class="empty">아직 없어요.</div>`;
     return `<div class="hkind">출처 · ${esc(SRC_KIND[x.kind] || x.kind)}</div><h2 class="title">${esc(x.name)}</h2>
       <p class="recmeta">${x.location ? `${esc(x.location)} · ` : ""}<a href="#_obj/source/${esc(x.id)}">읽고 든 생각 쓰기</a></p>
@@ -2935,7 +2943,7 @@ function meGraph(center, all, hiddenActs) {
   const omitN = new Set(all.map(e => e.node.key)).size - nodes.length + hidden, omitE = all.length - edges.length + hidden;
   const filter = (omitN > 0 || omitE > 0 || homeConnKind) && kinds.length > 1 ? `<div class="hconnf"><label class="sr" for="conn-kind">연결 종류</label><select id="conn-kind"><option value="">전체 종류</option>${kinds.map(k =>
     `<option value="${k}"${k === homeConnKind ? " selected" : ""}>${esc(graphKindName(k, null))}</option>`).join("")}</select></div>` : "";
-  return graphSvg(graphNode(center.k, center.id), {nodes, edges}) + (omitN > 0 || omitE > 0 ? `<p class="hint">노드 ${omitN}개·연결 ${omitE}개 생략 — 옆 목록에 전부 있어요.</p>` : "") + filter;
+  return graphSvg(graphNode(center.k, center.id), {nodes, edges}) + (omitN > 0 || omitE > 0 ? `<p class="hint">노드 ${omitN}개·연결 ${omitE}개 생략 — 옆 목록에서 전부 볼 수 있어요.</p>` : "") + filter;
 }
 // 항목 렌즈의 가운데 연결 — 축이면 그 축의 활동을 기존 API 로 받아 같이 그린다(PR① 과 같은 경로)
 function meLensConn(r, lens) {
@@ -2976,13 +2984,13 @@ function renderMeV9(tab, a, b) {
     const showList = !mobile || !want, showDetail = !mobile || !!want;
     const lens = !!ME_LENS[t];
     const center = gone ? HOME_GONE : sel ? meCenter(t, sel) : "";
-    const groups = lens && sel ? meGroups(meLensEdges(t, sel), t === "axis" ? "이 축에 묶인 데이터" : t === "person" ? "이 사람과의 관계" : "근거·연결") : "";
+    const groups = lens && sel ? meGroups(meLensEdges(t, sel), t === "axis" ? "이 축에 묶인 데이터" : t === "person" ? "이 사람과의 관계" : "근거·연결", t === "person" ? sel.id : "") : "";
     body = `<div class="melens${lens ? " three" : ""}">${showList ? meListHtml(t, rows, sel) : ""}
       ${showDetail ? `<section class="paper hdetail mcenter" id="home-detail" aria-live="polite">${meBack(t)}${center}</section>${groups}` : ""}</div>`;
   }
   $("view").innerHTML = head + meSubtabs(t) + meAxisBand(axSel) + body;
   const key = sel ? `#_me/${t}/${sel.id}` : "";
-  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; }
+  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; meOpen.clear(); }
   if (sel) graphFillLazy();
   if (sel && t === "source") fill("me-src-ctx", `/api/sources/${encodeURIComponent(sel.id)}/context`, j => sourceCtx(j, sel.id), "이 출처의 활동");
   if ($("home-list")) $("home-list").scrollTop = homeListTop;
@@ -2997,7 +3005,7 @@ function meRenderRecord(head, k, id) {
   const detail = r ? homeDetailHtml(r) : loose ? LOADING : HOME_GONE;
   $("view").innerHTML = head + meSubtabs("") + `<section class="paper hdetail msolo" id="home-detail" aria-live="polite">${homeBack()}${detail}</section>`;
   const key = location.hash;
-  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; }
+  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; meOpen.clear(); }
   if (r) graphFillLazy();
   if (r && k === "journal") homeLoadRec(id, false);
   else if (loose) homeLoadRec(id, true);
@@ -3645,6 +3653,9 @@ document.addEventListener("click", e => {
   if (e.target.closest("button[data-conn-mode]")) { homeConnMode = homeConnMode === "graph" ? "list" : "graph"; homeRerender(); const b = document.querySelector("button[data-conn-mode]"); if (b) b.focus(); return; }
   const cr = e.target.closest("button[data-conn-retry]");
   if (cr) { const k = cr.dataset.connRetry; if (k.startsWith("p:")) delete meExtra[k]; else delete homeConnExtra[k]; homeRerender(); return; }
+  const mo2 = e.target.closest("button[data-me-open]");
+  if (mo2) { const k = mo2.dataset.meOpen; meOpen.add(k); homeRerender();   // 키보드 — 새로 펼친 첫 줄로
+    const a = document.querySelectorAll(`ul[data-me-list="${CSS.escape(k)}"] > li a`)[ME_SHOW]; if (a) a.focus(); return; }
   const mm = e.target.closest("button[data-me-more]");
   if (mm) { if (!mm.disabled) meRecMore(); return; }
   const hb = e.target.closest("button[data-home-back]");
