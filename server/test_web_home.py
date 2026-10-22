@@ -211,7 +211,7 @@ def test_static():
               'location.replace(`#_me/${meTabOfItem(it)}/', "GRAPH_CAP.narrow : GRAPH_CAP.wide"):
         assert w in v9, w
     assert js.count("async function meSync()") == 1 and js.count("= meSync();") == 1, "서버 접점 = meSync 한 곳(정의 + load 호출)"
-    assert js.count('"/api/me/layout"') == 1 and js.count('"/api/me/stats"') == 1, "레이아웃·통계 주소는 meSync 안에만"
+    assert js.count('getJSON("/api/me/layout")') == 2 and js.count('"/api/me/stats"') == 1, "읽기 = meSync(+ STALE 때 레이아웃 다시 받기) — 통계는 meSync 안에만"
     assert "corePost(" not in v9 and "fetch(" not in v9 and "PUT" not in v9, "S2 「나」 화면 쓰기 요청 0"
     assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
@@ -232,10 +232,24 @@ def test_static():
     summ = v9[v9.index("// 요약 — 차트 4"):]
     assert "<button" not in summ, "요약 버튼 0"
     assert "created" not in summ[:summ.index("function meRecent()")], "히트맵·막대·띠에 생성일 대체 없음(서버 값만)"
+    # S4 Setup — 페이지 6 · 레이아웃 쓰기는 layFetch 한 곳(PUT·DELETE /api/me/layout) · PUT version = 마지막 응답 version(복원 뒤 포함) ·
+    # 한 번에 하나(보내는 중이면 마지막 배치만 줄 세움) · 실패 = 마지막 저장 배치로 복원 · STALE = 서버 배치 다시 받기 · 옛 묶음 주소 replace
+    setup = js[js.index("// ── Setup (PR ①-b S4)"):js.index("// ── /Setup ──")]
+    for w in ('["layout", "페이지 레이아웃"]', '["structure", "내 구조 설정"]', '["objects", "자료 종류"]', '["devices", "연결 장치"]', '["map", "지도"]',
+              '["help", "문의 및 개인정보"]', 'fetch("/api/me/layout"', '{layout: op.layout, version: ME.version}', 'layFetch("DELETE")',
+              "ME.version = Number(res.j.version) || 0;", "if (LAY.busy) LAY.queued = op; else laySend(op);", 'res.code === "LAYOUT-STALE"',
+              "ME.layout = LAY.saved.layout; ME.version = LAY.saved.version;", "기본으로 되돌리기", "e.altKey",
+              'if (R.tab === "_obj" && !R.a) return "#_setup/objects";', 'if (R.tab === "_settings") return "#_setup/structure";',
+              'if (R.tab === "_devices") return "#_setup/devices";', 'if (R.tab === "map") return "#_setup/map";',
+              'if (R.tab === "_inbox" && !R.a) return "#_today";', 'if (R.tab === "structure") {'):
+        assert w in setup, w
+    assert js.count('fetch("/api/me/layout"') == 1, "레이아웃 쓰기 = layFetch 한 곳"
+    assert "corePost(" not in setup and "/api/" not in setup.replace("/api/me/layout", ""), "Setup 의 다른 쓰기·API 0"
+    assert "if (navNew()) { const to = navReplace(R); if (to) { location.replace(to); return; } }" in js
     for i, (lt, dk) in enumerate(zip(("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
                                      ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767")), 1):
         assert f"--ax{i}: {lt};" in html and f"--ax{i}: {dk};" in html, ("축 색", i)
-    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만) 통과")
+    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만 · Setup 페이지 6·레이아웃 쓰기 한 곳·version·옛 주소 replace) 통과")
 
 
 async def run():
