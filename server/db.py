@@ -3862,12 +3862,51 @@ def _job_out(j):
 STACK_INPUT_KINDS = ("converse", "verbatim")   # ②-b 세션 입력 종류 — 첫 입력 때 정한다(verbatim = 원문 던지기, 확정 때 원문 기록 동반)
 
 
-def job_create(uid, kind, text, session_id=None, input_kind=None):
+RESTACK_KEYS = frozenset({"parent_result_version", "edit_generation", "edited_text", "excluded_cids", "answers"})
+
+
+def _restack_arg(restack, text, session_id):
+    """restack 인자 모양 검사(트랜잭션 전). 반환 정규화 dict. 대조(원 결과·편집 세대)는 세션 잠근 뒤 job_create 안에서."""
+    import stack_service as ss
+    bad = lambda why: CrmError("ARG-INVALID", f"restack: {why}", "{parent_result_version, edit_generation, edited_text, excluded_cids?, answers?} 꼴로 보내세요.")   # noqa: E731
+    if not isinstance(restack, dict) or set(restack) - RESTACK_KEYS or {"parent_result_version", "edit_generation", "edited_text"} - set(restack):
+        raise bad("키")
+    if not session_id:
+        raise bad("재정리는 기존 세션(session_id)에서만")
+    if restack["edited_text"] != text:
+        raise bad("text 와 edited_text 가 달라요")
+    if not _is_int(restack["edit_generation"]) or restack["edit_generation"] < 1:
+        raise bad("edit_generation 은 1 이상 정수")
+    try:
+        parent = str(_uuid.UUID(str(restack["parent_result_version"])))
+    except ValueError:
+        raise bad("parent_result_version 은 UUID") from None
+    ex = restack.get("excluded_cids") or []
+    if not isinstance(ex, list) or len(ex) > ss.MAX_CHANGES or not all(isinstance(x, str) and ss._ID_RE.match(x) for x in ex):
+        raise bad("excluded_cids")
+    ans = restack.get("answers") or []
+    if not isinstance(ans, list) or len(ans) > ss.RESTACK_ANSWERS_MAX:
+        raise bad("answers")
+    out_ans = []
+    for a in ans:
+        if not isinstance(a, dict) or set(a) != {"cid", "text"} or not (a["cid"] is None or (isinstance(a["cid"], str) and ss._ID_RE.match(a["cid"]))) \
+                or not isinstance(a["text"], str) or not a["text"].strip() or len(a["text"]) > ss.RESTACK_ANSWER_MAX:
+            raise bad("answers 항목은 {cid|null, text}")
+        out_ans.append({"cid": a["cid"], "text": a["text"]})
+    return {"parent_result_version": parent, "edit_generation": restack["edit_generation"], "excluded_cids": list(dict.fromkeys(ex)),
+            "answers": out_ans}
+
+
+def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
     """웹 접수 — 스위치 → 모양 → 길이(8,000 코드포인트·32KiB 각각) → 한도(종류별 하루·열린 작업 수) → jobs 행 + 임시 입력 한 트랜잭션.
     session_id 를 주면 그 사용자의 기존 세션이어야 한다(NOT-FOUND). 반환 {id, session_id}.
     한도(K3, ②-b): imports.JOB_REQUEST_LIMITS[kind] 가 None = 하루 무제한(카운터는 센다), 숫자 = 하루 상한, 키 없음 = 설정 누락 LIMIT-UNSET.
     converse(②-b) = 세션 행(stack_sessions) — 새 세션이면 만든다(input_kind 기본 converse, 만료 = 지금 + 24h 고정), 기존 세션이면
-    살아 있어야 하고(만료·확정 = JOB-GONE) input_kind 는 무시한다. 작업 만료 = min(지금 + 24h, 세션 만료)."""
+    살아 있어야 하고(만료·확정 = JOB-GONE) input_kind 는 무시한다. 작업 만료 = min(지금 + 24h, 세션 만료).
+    세션의 새 작업(후속 턴·재정리)은 세션 최신 미리보기를 무효로 한다(latest_preview_id NULL) — 그 세션의 result_ready 작업은 취소(대체됨).
+    restack(재정리, 구조화 입력) = {parent_result_version, edit_generation, edited_text(= text), excluded_cids?, answers?}:
+    parent = 세션이 지금 보여 주는 결과(최신 미리보기의 결과, 재정리 중이면 그 재정리의 원 결과), edit_generation = 세션 값 + 1 —
+    다르면 CONFIRM-STALE(옛 화면). 원 결과의 정리 단위(제외 반영본)를 임시 입력 meta 에 실어 PC 가 받는다."""
     import imports
     if kind not in JOB_KINDS:
         raise CrmError("ARG-INVALID", f"kind 는 {', '.join(JOB_KINDS)} 중 하나예요.")
@@ -3875,6 +3914,8 @@ def job_create(uid, kind, text, session_id=None, input_kind=None):
         raise CrmError("ARG-INVALID", f"input_kind 는 converse 작업에서만 {', '.join(STACK_INPUT_KINDS)} 중 하나예요.")
     if not job_switch_on(kind):
         raise _job_off()
+    if restack is not None and kind != "converse":
+        raise CrmError("ARG-INVALID", "재정리(restack)는 converse 작업만이에요.")
     if not isinstance(text, str) or not text.strip():
         raise CrmError("ARG-INVALID", "text 가 비어 있어요.")
     nb = len(text.encode("utf-8"))
@@ -3886,8 +3927,10 @@ def job_create(uid, kind, text, session_id=None, input_kind=None):
     limit = imports.JOB_REQUEST_LIMITS[kind]
     if limit is not None and not _is_int(limit):
         raise CrmError("LIMIT-UNSET", "이 작업 종류의 한도 설정이 올바르지 않아요.", "운영자가 한도를 정할 때까지 기다리세요.")
+    rs = _restack_arg(restack, text, session_id) if restack is not None else None
     sid = _job_uuid(session_id, gone=False) if session_id else _uuid.uuid4()
     jid = _uuid.uuid4()
+    meta = {}
     with tx() as c:
         _user_lock(c, uid)
         _job_sweep(c)
@@ -3909,17 +3952,40 @@ def job_create(uid, kind, text, session_id=None, input_kind=None):
         if limit is not None and n_day > limit:
             raise imports._with_resume(CrmError("JOB-QUOTA", f"오늘 보낼 수 있는 작업 수를 넘었어요(하루 {limit}).",
                                                  "내일(KST 0시 이후) 다시 보내세요."))
+        parent = None
+        if rs is not None:
+            parent = _session_shown_result(c, uid, sess)
+            if parent != rs["parent_result_version"] or rs["edit_generation"] != sess["edit_generation"] + 1:
+                raise _confirm_stale("화면이 보고 있는 정리가 최신이 아니에요.")
+            units = None
+            if sess["latest_preview_id"]:   # 보여 주는 미리보기(제외 반영본)의 정리 단위
+                u = _one(c, f"SELECT units FROM {_tmp_previews_name(c)} WHERE user_id=%s AND id=%s", (uid, sess["latest_preview_id"]))
+                units = u and u["units"]
+            elif sess["latest_job_id"]:   # 재정리 진행 중에 또 고침 — 앞 재정리가 실어 둔 원 결과 단위를 그대로 넘긴다
+                inp0, _r0 = _tmp_names(c)
+                m = _one(c, f"SELECT meta FROM {inp0} WHERE user_id=%s AND job_id=%s", (uid, sess["latest_job_id"]))
+                units = m and ((m["meta"] or {}).get("restack") or {}).get("units")
+            if not units:
+                raise _confirm_stale("원 결과가 없어요(만료·정리됨).")
+            meta = {"restack": {"parent_result_version": parent, "units": units, "excluded_cids": rs["excluded_cids"],
+                                "answers": rs["answers"]}}
         if kind == "converse" and sess is None:
             sess = _one(c, "INSERT INTO stack_sessions (id,user_id,input_kind,expires_at) "
                            "VALUES (%s,%s,%s,now() + make_interval(hours => %s)) RETURNING *",
                         (sid, uid, input_kind or "converse", JOB_TTL_HOURS))
-        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,edit_generation,expires_at) "
-                  "VALUES (%s,%s,%s,%s,%s,LEAST(now() + make_interval(hours => %s), %s::timestamptz))",
-                  (jid, uid, sid, kind, sess["edit_generation"] if sess else 0, JOB_TTL_HOURS, sess["expires_at"] if sess else None))
+        gen = rs["edit_generation"] if rs else (sess["edit_generation"] if sess else 0)
+        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,edit_generation,parent_result_version,expires_at) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,LEAST(now() + make_interval(hours => %s), %s::timestamptz))",
+                  (jid, uid, sid, kind, gen, parent, JOB_TTL_HOURS, sess["expires_at"] if sess else None))
         if sess:
-            c.execute("UPDATE stack_sessions SET latest_job_id=%s WHERE user_id=%s AND id=%s", (jid, uid, sid))
+            c.execute("UPDATE stack_sessions SET latest_job_id=%s, latest_preview_id=NULL, edit_generation=%s WHERE user_id=%s AND id=%s",
+                      (jid, gen, uid, sid))
+            # 대체된 작업 — 결과(result_ready)는 다시 확정 대상이 되지 않는다. 재정리면 아직 안 시작한(queued) 앞 작업도 버린다.
+            # 실행 중(leased·running)은 건드리지 않는다(같은 세션 직렬화 — 늦게 온 결과는 채택하지 않는다)
+            c.execute("UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%s AND session_id=%s AND id<>%s "
+                      "AND status = ANY(%s)", (uid, sid, jid, ["result_ready", "queued"] if rs else ["result_ready"]))
         inp, _res = _tmp_names(c)
-        c.execute(f"INSERT INTO {inp} (job_id,user_id,text,bytes) VALUES (%s,%s,%s,%s)", (jid, uid, text, nb))
+        c.execute(f"INSERT INTO {inp} (job_id,user_id,text,bytes,meta) VALUES (%s,%s,%s,%s,%s)", (jid, uid, text, nb, Jsonb(meta)))
     return {"id": str(jid), "session_id": str(sid)}
 
 
@@ -3934,8 +4000,15 @@ def job_get(uid, job_id):
         out = _job_out(j)
         if j["status"] == "result_ready":
             _inp, res = _tmp_names(c)
-            r = _one(c, f"SELECT result_version,summary_text,changes,blocked,text_map FROM {res} WHERE job_id=%s", (jid,))
+            r = _one(c, f"SELECT result_version,summary_text,changes,blocked,text_map,units FROM {res} WHERE job_id=%s", (jid,))
+            stack = bool(r and r.pop("units") is not None)
             out["result"] = {**r, "result_version": str(r["result_version"])} if r else None
+            if stack:   # ②-b — 미리보기가 있을 때만 키가 생긴다(②-a 옛 꼴 결과엔 없다). 이 작업의 가장 늦은 미리보기
+                out["result"] = {"result_version": out["result"]["result_version"], "summary_text": out["result"]["summary_text"]}
+                row = _one(c, f"SELECT * FROM {_tmp_previews_name(c)} WHERE user_id=%s AND job_id=%s ORDER BY preview_version DESC LIMIT 1",
+                           (uid, jid))
+                if row:
+                    out["preview"] = _preview_display(c, uid, row)
     return out
 
 
@@ -3973,6 +4046,8 @@ def job_assign(dev):
         return None
     return {"id": str(j["id"]), "kind": j["kind"], "session_ref": str(j["session_id"]), "input_ref": str(j["id"]),
             "input_version": j["input_version"], "definitions_version": j["definitions_version"],
+            "edit_generation": j["edit_generation"],
+            "parent_result_version": str(j["parent_result_version"]) if j["parent_result_version"] else None,
             "lease": {"generation": j["lease_generation"], "expires_at": j["lease_expires_at"].isoformat()}}
 
 
@@ -3990,18 +4065,23 @@ def _lease_ok(j, dev, gen):
 
 
 def job_input(dev, job_id, gen):
-    """GET input — 임대 유효(장치·세대·만료 전)일 때만. 성공마다 leased→running · attempts +1(PC 시도 기록). 반환 {text, input_version}."""
+    """GET input — 임대 유효(장치·세대·만료 전)일 때만. 성공마다 leased→running · attempts +1(PC 시도 기록).
+    반환 {text, input_version, input_kind, edit_generation, restack}. input_kind = 세션 입력 종류(converse 만, 그 밖 null),
+    restack = null 또는 {parent_result_version, units, excluded_cids, answers}(재정리 구조화 입력 — 임시 보관)."""
     jid = _job_uuid(job_id)
     with tx() as c:
         j = _job_dev_row(c, dev, jid)
         if j["status"] not in ("leased", "running") or not _lease_ok(j, dev, gen):
             raise _job_lease()
         inp, _res = _tmp_names(c)
-        t = _one(c, f"SELECT text FROM {inp} WHERE job_id=%s", (jid,))
+        t = _one(c, f"SELECT text, meta FROM {inp} WHERE job_id=%s", (jid,))
         if not t:
             raise _job_gone()
         c.execute("UPDATE jobs SET status='running', attempts=attempts+1 WHERE id=%s", (jid,))
-    return {"text": t["text"], "input_version": j["input_version"]}
+        s = _one(c, "SELECT input_kind FROM stack_sessions WHERE user_id=%s AND id=%s", (j["user_id"], j["session_id"])) \
+            if j["kind"] == "converse" else None
+    return {"text": t["text"], "input_version": j["input_version"], "input_kind": s["input_kind"] if s else None,
+            "edit_generation": j["edit_generation"], "restack": (t["meta"] or {}).get("restack")}
 
 
 def _job_result_shape(body):
@@ -4023,8 +4103,11 @@ def _job_result_shape(body):
 
 def job_result(dev, job_id, body):
     """POST result — 같은 result_version 재전송(이미 result_ready) = {duplicate: true}. 그 밖엔 임대(running·장치·세대·만료 전) → JOB-LEASE,
-    input_version → JOB-VERSION, 스위치(수신) → SWITCH-OFF. 저장 = 임시 결과 + result_ready."""
+    input_version → JOB-VERSION, 스위치(수신) → SWITCH-OFF. 저장 = 임시 결과 + result_ready.
+    본문에 envelope 가 있으면 ②-b stack/1 경로(_job_result_stack), 없으면 ②-a 옛 꼴 그대로."""
     jid = _job_uuid(job_id)
+    if isinstance(body, dict) and "envelope" in body:
+        return _job_result_stack(dev, jid, body)
     rv = _job_result_shape(body)
     with tx() as c:
         j = _job_dev_row(c, dev, jid)
@@ -4045,6 +4128,162 @@ def job_result(dev, job_id, body):
                    Jsonb(body["model_meta"])))
         c.execute("UPDATE jobs SET status='result_ready' WHERE id=%s", (jid,))
     return {"status": "result_ready"}
+
+
+def _confirm_stale(msg):
+    return CrmError("CONFIRM-STALE", msg, "새로 고침한 뒤 최신 정리를 보고 다시 하세요.")
+
+
+def _session_shown_result(c, uid, sess):
+    """세션이 지금 화면에 보여 주는 결과 버전 — 최신 미리보기의 결과, 없으면(재정리 진행 중) 최신 작업의 원 결과. 둘 다 없으면 None."""
+    if sess["latest_preview_id"]:
+        r = _one(c, f"SELECT result_version FROM {_tmp_previews_name(c)} WHERE user_id=%s AND id=%s", (uid, sess["latest_preview_id"]))
+        if r:
+            return str(r["result_version"])
+    if sess["latest_job_id"]:
+        j = _one(c, "SELECT parent_result_version FROM jobs WHERE user_id=%s AND id=%s", (uid, sess["latest_job_id"]))
+        if j and j["parent_result_version"]:
+            return str(j["parent_result_version"])
+    return None
+
+
+def _stack_session_lock(c, uid, sid):
+    return _one(c, "SELECT *, (expires_at <= now()) AS gone_ttl FROM stack_sessions WHERE user_id=%s AND id=%s FOR UPDATE", (uid, sid))
+
+
+def _preview_insert(c, uid, job, sess_id, rv, version, gen, units, changes, blocked, tv, excluded):
+    import stack_service as ss
+    p = {"result_version": str(rv), "preview_version": version, "edit_generation": gen, "units": units, "changes": changes,
+         "blocked": blocked, "excluded": excluded, "target_versions": tv}
+    pid = _uuid.uuid4()
+    sha = ss.preview_sha(p)
+    c.execute(f"INSERT INTO {_tmp_previews_name(c)} (id,job_id,user_id,session_id,result_version,preview_version,preview_sha,edit_generation,"
+              "units,changes,blocked,target_versions,excluded) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+              (pid, job, uid, sess_id, rv, version, sha, gen, Jsonb(units), Jsonb(changes), Jsonb(blocked), Jsonb(tv), Jsonb(excluded)))
+    return pid
+
+
+def job_definitions(dev, job_id, gen):
+    """GET definitions — 정의 스냅샷. 임대 유효(leased·running·장치·세대·만료 전)일 때만. 최초 발급 때 jobs.definitions_version 에 해시를 고정하고,
+    다시 부르면 지금 해시가 같을 때 같은 응답, 다르면 JOB-DEFS(재정리 요구). 스냅샷 본문은 저장하지 않는다."""
+    import stack_service as ss
+    jid = _job_uuid(job_id)
+    with tx() as c:
+        j = _job_dev_row(c, dev, jid)
+        if j["status"] not in ("leased", "running") or not _lease_ok(j, dev, gen):
+            raise _job_lease()
+        snap = ss.snapshot(c, dev["user_id"])
+        if j["definitions_version"] is None:
+            c.execute("UPDATE jobs SET definitions_version=%s WHERE id=%s", (snap["definitions_version"], jid))
+        elif j["definitions_version"] != snap["definitions_version"]:
+            raise ss.defs_changed()
+    return snap
+
+
+def _job_result_stack(dev, jid, body):
+    """stack/1 결과 — 봉투 대조 → 정의 해시(발급값 = 지금) → 본문 재검증 → 임시 결과 + 미리보기 v1. 세션 최신 작업·편집 세대가 맞을 때만
+    세션 최신 미리보기로 채택(늦게 온 옛 결과는 저장만 — 확정 대상 아님). 잠금 순서 = users → stack_sessions → jobs."""
+    import stack_service as ss
+    if set(body) != ss.RESULT_KEYS:
+        raise ss.bad("result", "keys")
+    env = body["envelope"]
+    try:
+        rv_in = _uuid.UUID(env.get("result_version")) if isinstance(env, dict) and isinstance(env.get("result_version"), str) else None
+    except ValueError:
+        rv_in = None
+    uid = dev["user_id"]
+    with tx() as c:
+        _user_lock(c, uid)
+        pre = _one(c, "SELECT session_id, kind FROM jobs WHERE user_id=%s AND id=%s", (uid, jid))
+        sess = _stack_session_lock(c, uid, pre["session_id"]) if pre and pre["kind"] == "converse" else None
+        j = _job_dev_row(c, dev, jid)
+        _inp, res = _tmp_names(c)
+        if j["status"] == "result_ready" and rv_in is not None:
+            r = _one(c, f"SELECT result_version FROM {res} WHERE job_id=%s", (jid,))
+            if r and r["result_version"] == rv_in:
+                return {"duplicate": True}
+        if j["status"] != "running" or not _lease_ok(j, dev, body["lease_generation"]):
+            raise _job_lease()
+        if not job_switch_on(j["kind"]):
+            raise _job_off()
+        if j["kind"] != "converse" or sess is None:
+            raise ss.bad("envelope", "kind")
+        rv = ss.check_envelope(env, j)
+        index = ss._index(c, uid)
+        if ss.snapshot(c, uid, index)["definitions_version"] != j["definitions_version"]:
+            raise ss.defs_changed()
+        v = ss.validate_result(c, uid, j, body, index)
+        if sess["gone_ttl"] or sess["terminal_at"] is not None:
+            raise _job_gone()
+        c.execute(f"INSERT INTO {res} (job_id,user_id,result_version,summary_text,changes,blocked,text_map,model_meta,units) "
+                  "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (jid, uid, rv, v["text"], Jsonb(v["changes"]), Jsonb(v["blocked"]), Jsonb([]), Jsonb(v["model_meta"]), Jsonb(v["units"])))
+        pid = _preview_insert(c, uid, jid, sess["id"], rv, 1, j["edit_generation"], v["units"], v["changes"], v["blocked"],
+                              v["target_versions"], [])
+        c.execute("UPDATE jobs SET status='result_ready' WHERE id=%s", (jid,))
+        if sess["latest_job_id"] == jid and sess["edit_generation"] == j["edit_generation"]:
+            c.execute("UPDATE stack_sessions SET latest_preview_id=%s WHERE user_id=%s AND id=%s", (pid, uid, sess["id"]))
+    return {"status": "result_ready"}
+
+
+def _preview_display(c, uid, row, sess=None):
+    import stack_service as ss
+    out = ss.display(c, uid, row)
+    if sess is None:
+        sess = _one(c, "SELECT latest_preview_id, terminal_at FROM stack_sessions WHERE user_id=%s AND id=%s", (uid, row["session_id"]))
+    out["latest"] = bool(sess and sess["latest_preview_id"] == row["id"] and sess["terminal_at"] is None)
+    return out
+
+
+def stack_exclude(uid, preview_id, cids):
+    """POST exclude — 세션 최신 미리보기에서 항목 끄기. 의존 연쇄·같은 정리 단위를 함께 뺀 새 미리보기(v+1)를 세션 최신으로.
+    최신 아님 = CONFIRM-STALE · 세션 끝 = JOB-GONE · 남는 글 없음 = PREVIEW-NEEDS-RESTACK. 반환 {preview, removed}."""
+    import stack_service as ss
+    pid = _job_uuid(preview_id, gone=False)
+    if not isinstance(cids, list) or not cids or len(cids) > ss.MAX_CHANGES or not all(isinstance(x, str) for x in cids):
+        raise CrmError("ARG-INVALID", "cids 는 뺄 변경 ID 목록이에요.")
+    with tx() as c:
+        _user_lock(c, uid)
+        prv = _tmp_previews_name(c)
+        row = _one(c, f"SELECT * FROM {prv} WHERE user_id=%s AND id=%s", (uid, pid))
+        if not row:
+            raise CrmError("NOT-FOUND", "그 미리보기를 찾을 수 없어요.")
+        sess = _stack_session_lock(c, uid, row["session_id"])
+        job = _one(c, "SELECT status FROM jobs WHERE user_id=%s AND id=%s", (uid, row["job_id"]))
+        if not sess or sess["gone_ttl"] or sess["terminal_at"] is not None or not job or job["status"] != "result_ready":
+            raise _job_gone()
+        if sess["latest_preview_id"] != pid:
+            raise _confirm_stale("이 미리보기는 최신이 아니에요.")
+        units, changes, blocked, removed = ss.exclude_plan(row["units"], row["changes"], row["blocked"], cids)
+        keep = set()
+        for ch in changes:
+            if ch["item_id"]:
+                keep.add(f"item:{ch['item_id']}")
+            keep |= {f"{ln['target_kind']}:{ln['target_id']}" for ln in ch["links"] if ln["target_id"]}
+        tv = {k: v for k, v in row["target_versions"].items() if k in keep}
+        npid = _preview_insert(c, uid, row["job_id"], row["session_id"], row["result_version"], row["preview_version"] + 1,
+                               row["edit_generation"], units, changes, blocked, tv, list(row["excluded"]) + removed)
+        c.execute("UPDATE stack_sessions SET latest_preview_id=%s WHERE user_id=%s AND id=%s", (npid, uid, row["session_id"]))
+        nrow = _one(c, f"SELECT * FROM {prv} WHERE id=%s", (npid,))
+        return {"preview": _preview_display(c, uid, nrow), "removed": removed}
+
+
+def stack_session_get(uid, session_id):
+    """GET 세션 — 새로고침 복원. {session_id, input_kind, expires_at, edit_generation, latest_job, preview(최신|null), confirmed}. 본인만."""
+    sid = _job_uuid(session_id, gone=False)
+    with tx() as c:
+        _job_sweep(c)
+        s = _one(c, "SELECT * FROM stack_sessions WHERE user_id=%s AND id=%s", (uid, sid))
+        if not s:
+            raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+        lj = _one(c, "SELECT id, status FROM jobs WHERE user_id=%s AND id=%s", (uid, s["latest_job_id"])) if s["latest_job_id"] else None
+        pv = None
+        if s["latest_preview_id"] and s["terminal_at"] is None:
+            row = _one(c, f"SELECT * FROM {_tmp_previews_name(c)} WHERE user_id=%s AND id=%s", (uid, s["latest_preview_id"]))
+            pv = _preview_display(c, uid, row, s) if row else None
+        return {"session_id": str(s["id"]), "input_kind": s["input_kind"], "expires_at": s["expires_at"].isoformat(),
+                "edit_generation": s["edit_generation"], "latest_job": {"id": str(lj["id"]), "status": lj["status"]} if lj else None,
+                "preview": pv, "confirmed": s["confirm_event_id"] is not None}
 
 
 def job_fail(dev, job_id, body):

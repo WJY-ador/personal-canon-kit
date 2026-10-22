@@ -8400,7 +8400,8 @@ async def test_pr2a_jobs():
                     r = await poll(T1)
                     assert r.status_code == 200, r.text
                     a = r.json()
-                    assert set(a) == {"id", "kind", "session_ref", "input_ref", "input_version", "definitions_version", "lease"}
+                    assert set(a) == {"id", "kind", "session_ref", "input_ref", "input_version", "definitions_version", "lease",
+                                      "edit_generation", "parent_result_version"}   # ②-b 키 2 추가
                     assert a["id"] == J1 and a["session_ref"] == S1 and a["input_version"] == 1 and a["lease"]["generation"] == 1
                     assert a["definitions_version"] is None and "T" in a["lease"]["expires_at"]
                     assert (await poll(T2)).status_code == 204, "원자 할당 — 둘째 장치는 없음"
@@ -8410,7 +8411,8 @@ async def test_pr2a_jobs():
                         assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE", (g, r.text)
                     assert _job_status(J1)["status"] == "leased" and _job_status(J1)["attempts"] == 0
                     r = await dj(J1, "input", T1, params={"lease_generation": 1})
-                    assert r.status_code == 200 and r.json() == {"text": TXT, "input_version": 1}, r.text
+                    assert r.status_code == 200 and r.json() == {"text": TXT, "input_version": 1, "input_kind": "converse", "edit_generation": 0,
+                                                                 "restack": None}, r.text   # ②-b 키 3 추가
                     assert "JOBTEXT" in r.content.decode("utf-8") and "\\u" not in r.content.decode("utf-8"), "ensure_ascii=False"
                     assert (await dj(J1, "input", T1, params={"lease_generation": 1})).status_code == 200
                     assert dict(_job_status(J1)) == {"status": "running", "attempts": 2, "reason_code": None}, "입력 조회마다 attempts +1"
@@ -8733,9 +8735,286 @@ def test_pr2b_stack_b1():
           " · 표식 파기(확정 세션 보존) · 계정 삭제 0 통과")
 
 
+def _pr2b_axis(uid, code, title):
+    """축 항목 하나(코드 있음) — 제안 → 적용."""
+    rev = db.definitions(uid, ["od_axes"])[0]["revision"]
+    p = db.item_propose(uid, "od_axes", rev, None, 0, code, title, "", {}, [])
+    return db.item_decide(uid, p["item_id"], 0, p["proposal_id"], "apply")["id"]
+
+
+def _pr2b_body(job, gen, defs_v, rv=None, units=None, changes=None, blocked=None, **env):
+    import uuid
+    e = {"contract": "stack/1", "job_id": job["id"], "input_version": job.get("input_version", 1), "definitions_version": defs_v,
+         "result_version": rv or str(uuid.uuid4()), "edit_generation": job.get("edit_generation", 0),
+         "parent_result_version": job.get("parent_result_version")}
+    e.update(env)
+    return {"lease_generation": gen, "envelope": e, "units": units if units is not None else [], "changes": changes if changes is not None else [],
+            "blocked": blocked if blocked is not None else [], "model_meta": {"tool": "fake", "cli_attempts": 1}}
+
+
+async def test_pr2b_stack_b2():
+    """B2 — 정의 스냅샷(임대 유효 때만·최초 발급 고정·재발급 같은 값·정의 변경 409 JOB-DEFS) · stack/1 수신 재검증(봉투·허위 ID·금지 관계·근거 유형 없는
+    연결·중복 cid·순환·보호 필드·금지 키·URL·단위 없는 변경) · source_id 해석(실패 = 미해결 강등) · 미리보기 v1(표시 요약·추정·막힘 잠금)
+    · exclude(의존 연쇄·같은 단위·새 버전·옛 미리보기 409·남는 글 0 = NEEDS-RESTACK) · 세션 GET · 재정리(restack 모양·text 일치·세대·원 결과 단위 전달·
+    대체 작업 취소) · 도착 역전(늦은 옛 결과 채택 안 함) · /api/state switches · 일반 테이블 본문 0 · 남 격리."""
+    import uuid
+    cleanup()
+    with SEED_ON():   # 표준 시드(축·결정·기준) 있는 계정 — 서버 그대로
+        U = db.user_by_email("tester@example.com")["id"]
+        O = db.user_by_email("other@example.com")["id"]
+    d1 = imports.device_connect(U, "합성 쌓기 1")
+    T1 = {"authorization": "Bearer " + d1["token"]}
+    TO = {"authorization": "Bearer " + imports.device_connect(O, "남 쌓기")["token"]}
+    ax = _pr2b_axis(U, "AX1", "합성 축 하나")
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    TXT = "합성 입력 STACKB2 — 일반 테이블에 남으면 안 된다"
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+            poll = lambda tk=T1: h.get("/api/device/jobs", params={"wait": 0}, headers=tk)   # noqa: E731
+            dget = lambda jid, op, gen, tk=T1: h.get(f"/api/device/jobs/{jid}/{op}", params={"lease_generation": gen}, headers=tk)   # noqa: E731
+            dres = lambda jid, body, tk=T1: h.post(f"/api/device/jobs/{jid}/result", json=body, headers=tk)   # noqa: E731
+            with _job_fast():
+                with _job_switch():
+                    st = (await h.get("/api/state")).json()
+                    assert st["switches"] == {"converse": False}, st.get("switches")
+                with _job_switch("CONVERSE_ENABLED"):
+                    st = (await h.get("/api/state")).json()
+                    assert st["switches"] == {"converse": True}
+                    r = await h.post("/api/jobs", json={"kind": "converse", "text": TXT, "input_kind": "verbatim"}, headers=origin)
+                    assert r.status_code == 201, r.text
+                    J = r.json()
+                    S = J["session_id"]
+                    a = (await poll()).json()
+                    assert a["id"] == J["id"] and a["edit_generation"] == 0 and a["parent_result_version"] is None and a["definitions_version"] is None
+                    gen = a["lease"]["generation"]
+                    # ── 정의 스냅샷 ──
+                    r = await dget(J["id"], "definitions", gen + 1)
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-LEASE", "옛 세대"
+                    r = await dget(J["id"], "definitions", gen, TO)
+                    assert r.status_code == 410, "남 장치"
+                    r = await dget(J["id"], "definitions", gen)
+                    assert r.status_code == 200, r.text
+                    D = r.json()
+                    DV = D["definitions_version"]
+                    assert re.fullmatch(r"[0-9a-f]{64}", DV) and D["rule_version"] == 1 and len(D["content_rules"]) == 3
+                    kinds = {o["id"]: o["kind"] for o in D["objects"]}
+                    assert kinds == {"od_axes": "classify", "od_events": "event", "od_principles": "judgment"}, kinds
+                    pr = next(o for o in D["objects"] if o["id"] == "od_principles")
+                    assert pr["confirm_required"] and pr["protected_fields"] == ["code", "decision"] and pr["identity"] == [{"scheme": "code", "field": "code"}]
+                    assert {x["key"] for x in pr["relations"]} == {"evidence_claims", "evidence_events", "axes"}
+                    assert (await dget(J["id"], "definitions", gen)).json() == D, "재발급 = 같은 값"
+                    with db.tx() as c:
+                        assert c.execute("SELECT definitions_version FROM jobs WHERE id=%s", (J["id"],)).fetchone()["definitions_version"] == DV
+                    r = await dget(J["id"], "input", gen)
+                    assert r.json() == {"text": TXT, "input_version": 1, "input_kind": "verbatim", "edit_generation": 0, "restack": None}, r.text
+                    job = {"id": J["id"]}
+                    U1 = [{"uid": "u1", "text": "새 기준 하나를 정리했어요.", "change_ids": ["c1", "c3"]},
+                          {"uid": "u2", "text": "축 설명을 보탰어요.", "change_ids": ["c2"]},
+                          {"uid": "u3", "text": "고칠 항목을 못 찾았어요.", "change_ids": ["c4"]}]
+                    C1 = [{"cid": "c1", "op": "create", "object_id": "od_principles", "fields": {"title": "합성 기준 문장", "body": ""},
+                           "links": [{"relation": "axes", "target": {"ref_kind": "inferred", "value": ax}}], "depends_on": []},
+                          {"cid": "c2", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "source_id", "scheme": "code", "value": "AX1"},
+                           "fields": {"keywords": ["합성"]}, "links": [], "depends_on": []},
+                          {"cid": "c3", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정"}, "links": [],
+                           "depends_on": ["c1"]},
+                          {"cid": "c4", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "source_id", "scheme": "code", "value": "NOPE"},
+                           "fields": {}, "links": [], "depends_on": []}]
+
+                    def body(**kw):
+                        b = _pr2b_body(job, gen, DV, units=json.loads(json.dumps(U1)), changes=json.loads(json.dumps(C1)))
+                        for k, v in kw.items():
+                            b[k] = v
+                        return b
+
+                    async def reject(b, code, rule=None, status=400):
+                        r = await dres(J["id"], b)
+                        assert r.status_code == status and r.json()["code"] == code, (code, rule, r.status_code, r.text)
+                        if rule:
+                            assert rule in r.json()["msg"], (rule, r.json()["msg"])
+                    # ── 수신 재검증 거부 ──
+                    b = body()
+                    b["changes"][1]["target"] = {"ref_kind": "explicit_id", "value": "i_fake0000"}
+                    await reject(b, "CONTRACT-INVALID", "target_not_found")   # 허위 ID
+                    other_ax = _pr2b_axis(O, "AX9", "남 축")
+                    b = body()
+                    b["changes"][0]["links"][0]["target"]["value"] = other_ax
+                    await reject(b, "CONTRACT-INVALID", "target_not_found")   # 남의 항목
+                    b = body()
+                    b["changes"][0]["links"] = [{"relation": "evidence_records", "target": {"ref_kind": "explicit_id", "value": ax}}]
+                    await reject(b, "CONTRACT-INVALID", "relation_not_allowed")   # 정의에 없는 관계(record 간·임의 evidence)
+                    b = body()
+                    b["changes"][0]["links"] = [{"relation": "axes", "target": {"target_kind": "item", "value": ax}}]
+                    await reject(b, "CONTRACT-INVALID", "ref_kind_missing")   # 근거 유형 없는 연결(같은 날짜·유사 문장만의 연결)
+                    b = body()
+                    b["changes"][0]["links"] = [{"relation": "axes", "target": {"ref_kind": "same_date", "value": ax}}]
+                    await reject(b, "CONTRACT-INVALID", "ref_kind")
+                    b = body()
+                    b["changes"][2]["cid"] = "c1"
+                    await reject(b, "CONTRACT-INVALID", "duplicate")
+                    b = body()
+                    b["changes"][0]["depends_on"] = ["c3"]
+                    await reject(b, "CONTRACT-INVALID", "depends_cycle")
+                    b = body()
+                    b["changes"][0]["fields"]["decision"] = "confirmed"
+                    await reject(b, "CONTRACT-INVALID", "protected_field")   # 모델이 확정을 고르지 못한다
+                    b = body()
+                    b["changes"][0]["stage"] = "confirmed"
+                    await reject(b, "CONTRACT-INVALID", "forbidden_key")
+                    b = body()
+                    b["units"][0]["text"] = "자세한 건 https://example.com/x 참고"
+                    await reject(b, "CONTRACT-INVALID", "url_not_allowed")
+                    b = body()
+                    b["changes"][1]["fields"]["keywords"] = ["메일 someone@example.com"]
+                    await reject(b, "CONTRACT-INVALID", "email_not_allowed")
+                    b = body()
+                    b["units"][1]["change_ids"] = []
+                    await reject(b, "CONTRACT-INVALID", "cid_without_unit")
+                    b = body()
+                    b["envelope"]["job_id"] = str(uuid.uuid4())
+                    await reject(b, "CONTRACT-INVALID", "envelope.job_id")
+                    b = body()
+                    b["envelope"]["contract"] = "stack/2"
+                    await reject(b, "CONTRACT-INVALID", "envelope.contract")
+                    b = body()
+                    b["envelope"]["edit_generation"] = 1
+                    await reject(b, "CONTRACT-INVALID", "edit_generation")
+                    b = body()
+                    b["summary_text"] = "옛 키 섞기"
+                    await reject(b, "CONTRACT-INVALID", "keys")
+                    b = body()
+                    b["envelope"]["definitions_version"] = "0" * 64
+                    await reject(b, "JOB-DEFS", status=409)
+                    with db.tx() as c:   # 결과 생성 뒤 정의 변경 → 수신·재발급 409
+                        _pr2b_sql(c, "UPDATE object_defs SET label='합성 축 바뀜' WHERE user_id=%s AND id='od_axes'", (U,))
+                    await reject(body(), "JOB-DEFS", status=409)
+                    r = await dget(J["id"], "definitions", gen)
+                    assert r.status_code == 409 and r.json()["code"] == "JOB-DEFS"
+                    with db.tx() as c:
+                        _pr2b_sql(c, "UPDATE object_defs SET label='축' WHERE user_id=%s AND id='od_axes'", (U,))
+                    assert _job_status(J["id"])["status"] == "running", "거부는 상태를 바꾸지 않는다"
+                    # ── 정상 수신 → 미리보기 v1 ──
+                    RV = str(uuid.uuid4())
+                    b = body()
+                    b["envelope"]["result_version"] = RV
+                    r = await dres(J["id"], b)
+                    assert r.status_code == 200 and r.json() == {"status": "result_ready"}, r.text
+                    assert (await dres(J["id"], b)).json() == {"duplicate": True}
+                    g = (await h.get(f"/api/jobs/{J['id']}")).json()
+                    P = g["preview"]
+                    assert g["result"] == {"result_version": RV, "summary_text": "\n\n".join(u["text"] for u in U1)}
+                    assert P["preview_version"] == 1 and P["latest"] and P["blocked_open"] and P["excluded"] == [] and P["text"] == g["result"]["summary_text"]
+                    ch = {x["cid"]: x for x in P["changes"]}
+                    assert ch["c1"]["inferred"] and ch["c1"]["summary"] == "새 기준: 합성 기준 문장" and ch["c1"]["unit_ids"] == ["u1"]
+                    assert ch["c2"]["ref_kind"] == "source_id" and ch["c2"]["summary"] == "축 고침: 합성 축 하나" and not ch["c2"]["inferred"]
+                    assert ch["c4"]["ref_kind"] == "unresolved", "해석 못 한 source_id = 대상 미해결로 강등"
+                    assert {(x["cid"], x["code"]) for x in P["blocked"]} == {("c4", "unresolved_target")}, P["blocked"]
+                    assert set(ch["c1"]) == {"cid", "op", "object_id", "object_label", "summary", "ref_kind", "inferred", "depends_on", "unit_ids"}
+                    with db.tx() as c:
+                        prv = db._tmp_previews_name(c)
+                        tv = c.execute(f"SELECT target_versions FROM {prv} WHERE id=%s", (P["id"],)).fetchone()["target_versions"]
+                        rev = c.execute("SELECT revision FROM items WHERE id=%s", (ax,)).fetchone()["revision"]
+                    assert tv == {f"item:{ax}": rev}, ("대상 버전 = 결과 생성 때 읽은 items.revision", tv)
+                    # ── exclude ──
+                    ex = lambda pid, cids: h.post(f"/api/stack/previews/{pid}/exclude", json={"cids": cids}, headers=origin)   # noqa: E731
+                    r = await ex(P["id"], ["zz"])
+                    assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+                    site.dev_user = "other@example.com"
+                    assert (await ex(P["id"], ["c4"])).status_code == 404, "남 미리보기"
+                    assert (await h.get(f"/api/stack/sessions/{S}")).status_code == 404, "남 세션"
+                    site.dev_user = "tester@example.com"
+                    r = await ex(P["id"], ["c4"])
+                    assert r.status_code == 200, r.text
+                    P2 = r.json()["preview"]
+                    assert r.json()["removed"] == ["c4"] and P2["preview_version"] == 2 and P2["latest"] and not P2["blocked_open"]
+                    assert [u["uid"] for u in P2["units"]] == ["u1", "u2"] and P2["excluded"] == ["c4"] and P2["preview_sha"] != P["preview_sha"]
+                    r = await ex(P["id"], ["c2"])
+                    assert r.status_code == 409 and r.json()["code"] == "CONFIRM-STALE", "옛 미리보기"
+                    r = await ex(P2["id"], ["c1"])   # c1 → 같은 단위 c3(의존도 c1) 함께 → u2 만 남는다
+                    assert r.status_code == 200 and r.json()["removed"] == ["c1", "c3"], r.text
+                    P3 = r.json()["preview"]
+                    assert [u["uid"] for u in P3["units"]] == ["u2"] and P3["excluded"] == ["c4", "c1", "c3"]
+                    r = await ex(P3["id"], ["c2"])
+                    assert r.status_code == 409 and r.json()["code"] == "PREVIEW-NEEDS-RESTACK", "남는 글 0"
+                    s = (await h.get(f"/api/stack/sessions/{S}")).json()
+                    assert s["preview"]["id"] == P3["id"] and s["input_kind"] == "verbatim" and not s["confirmed"] and s["edit_generation"] == 0
+                    assert s["latest_job"] == {"id": J["id"], "status": "result_ready"}
+                    # ── 재정리 ──
+                    EDIT = "합성 편집본 STACKB2"
+                    rq = lambda **kw: h.post("/api/jobs", json={"kind": "converse", "session_id": S, "text": EDIT, **kw}, headers=origin)   # noqa: E731
+                    good = {"parent_result_version": RV, "edit_generation": 1, "edited_text": EDIT, "excluded_cids": ["c2"],
+                            "answers": [{"cid": None, "text": "축은 합성 축 하나예요"}]}
+                    r = await rq(restack={**good, "edited_text": "다른 글"})
+                    assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", "text ≠ edited_text"
+                    r = await rq(restack={**good, "extra": 1})
+                    assert r.status_code == 400
+                    r = await rq(restack={**good, "edit_generation": 2})
+                    assert r.status_code == 409 and r.json()["code"] == "CONFIRM-STALE", "세대 건너뜀"
+                    r = await rq(restack={**good, "parent_result_version": str(uuid.uuid4())})
+                    assert r.status_code == 409 and r.json()["code"] == "CONFIRM-STALE", "보고 있지 않은 결과"
+                    r = await rq(restack=good)
+                    assert r.status_code == 201, r.text
+                    R1 = r.json()
+                    assert _job_status(J["id"])["status"] == "cancelled", "대체된 결과는 확정 대상이 아니다"
+                    s = (await h.get(f"/api/stack/sessions/{S}")).json()
+                    assert s["preview"] is None and s["edit_generation"] == 1 and s["latest_job"]["id"] == R1["id"]
+                    a = (await poll()).json()
+                    assert a["id"] == R1["id"] and a["edit_generation"] == 1 and a["parent_result_version"] == RV
+                    g1 = a["lease"]["generation"]
+                    inp = (await dget(R1["id"], "input", g1)).json()
+                    assert inp["text"] == EDIT and inp["input_kind"] == "verbatim", "입력 종류는 첫 입력 그대로"
+                    assert inp["restack"] == {"parent_result_version": RV, "units": P3["units"], "excluded_cids": ["c2"],
+                                              "answers": good["answers"]}, inp["restack"]
+                    DV1 = (await dget(R1["id"], "definitions", g1)).json()["definitions_version"]
+                    # ── 도착 역전: 재정리 1 실행 중에 또 고침(재정리 2) → 재정리 1 결과는 채택하지 않는다 ──
+                    r = await rq(restack={**good, "edit_generation": 2, "excluded_cids": []})
+                    assert r.status_code == 201, r.text
+                    R2 = r.json()
+                    assert (await poll()).status_code == 204, "같은 세션 실행 중 — 다음 작업 안 준다"
+                    one = [{"uid": "u1", "text": "다시 정리했어요.", "change_ids": ["c1"]}]
+                    cone = [{"cid": "c1", "op": "create", "object_id": "od_principles", "fields": {"title": "고친 기준"}, "links": [],
+                             "depends_on": []}]
+                    r = await dres(R1["id"], _pr2b_body({"id": R1["id"], "edit_generation": 1, "parent_result_version": RV}, g1, DV1,
+                                                        units=one, changes=cone))
+                    assert r.status_code == 200, r.text
+                    g = (await h.get(f"/api/jobs/{R1['id']}")).json()
+                    assert g["preview"]["latest"] is False, "늦게 온 옛 재정리 결과 = 채택 안 함"
+                    assert (await h.get(f"/api/stack/sessions/{S}")).json()["preview"] is None
+                    a = (await poll()).json()
+                    assert a["id"] == R2["id"] and a["edit_generation"] == 2
+                    g2 = a["lease"]["generation"]
+                    assert (await dget(R2["id"], "input", g2)).json()["restack"]["units"] == P3["units"], "앞 재정리의 원 결과 단위를 그대로"
+                    DV2 = (await dget(R2["id"], "definitions", g2)).json()["definitions_version"]
+                    r = await dres(R2["id"], _pr2b_body({"id": R2["id"], "edit_generation": 2, "parent_result_version": RV}, g2, DV2,
+                                                        units=one, changes=cone))
+                    assert r.status_code == 200, r.text
+                    s = (await h.get(f"/api/stack/sessions/{S}")).json()
+                    assert s["preview"]["job_id"] == R2["id"] and s["preview"]["latest"] and s["edit_generation"] == 2
+                    # ── 끝난 세션: 만료 뒤 수신·exclude·접수 = 410 ──
+                    with db.tx() as c:
+                        _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() - interval '1 second' WHERE id=%s", (S,))
+                    r = await ex(s["preview"]["id"], ["c1"])
+                    assert r.status_code == 410, r.text
+                    r = await rq()
+                    assert r.status_code == 410 and r.json()["code"] == "JOB-GONE", r.text
+            # ── 본문 0 ──
+            with db.tx() as c:
+                for t in ("jobs", "stack_sessions", "confirm_events"):
+                    n = c.execute(f"SELECT count(*) AS n FROM {t} x WHERE user_id=%s AND row_to_json(x)::text LIKE '%%STACKB2%%'", (U,)).fetchone()["n"]
+                    assert n == 0, ("일반 테이블 본문 0", t)
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — 28 B2 정의 스냅샷(임대·고정·재발급·JOB-DEFS) · stack/1 재검증(봉투·허위·남 ID·금지 관계·근거 유형 없음·중복·순환·보호·금지 키·URL·이메일·"
+          "단위 없는 변경·옛 키) · source_id 해석·강등 · 미리보기(요약·추정·막힘 잠금·대상 버전) · exclude(단위·의존 연쇄·옛 409·NEEDS-RESTACK) · 세션 GET·격리"
+          " · 재정리(모양·text 일치·세대·원 결과 단위·대체 취소) · 도착 역전 채택 안 함 · 만료 410 · switches · 본문 0 통과")
+
+
 async def test_pr2b_stack():
-    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션)."""
+    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리)."""
     test_pr2b_stack_b1()
+    await test_pr2b_stack_b2()
 
 
 def Web_polls_empty():
