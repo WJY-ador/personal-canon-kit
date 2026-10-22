@@ -8,6 +8,7 @@ A. /api/records — 401 · no-store · 기본(before 없음) = /api/state journa
 B. app.html 정적 — 「나」 상세(PR①: 빈 상태 문구·옛 링크 #_me/<출처> 이동·쓰기는 저장·동작 버튼 두 곳) +
    「나」 v9(PR ①-b S2: 탭 나·오늘·Setup · 하위 탭 7 = 레이아웃 순서 · 서버 접점 meSync 한 곳(GET 만) · 축 색 코드 순 8 + 회색 ·
    렌즈 3 + 커스텀·출처 목록/상세 · 추정 연결 0).
+C. app.html 정적 — 대화 서랍(PR ②-b B5: 스위치 · 버튼 3 · 기본 포함 · 자동 확정 0 · 쓰기 3곳 · 편집 잠금 → 이탈 재정리 · 최신 결과만).
 """
 import asyncio
 import datetime as dt
@@ -266,11 +267,64 @@ def test_static():
     print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만 · Setup 페이지 6·레이아웃 쓰기 한 곳·version·옛 주소 replace · 오늘 대기/보관됨·날짜 머리글·삭제 0) 통과")
 
 
+def test_static_chat():
+    """PR ②-b B5 대화 서랍 — 스위치 켜짐일 때만 · 버튼 3(보내기·확정·닫기) · 변경 기본 포함(기본 off 0) · [정리 반영] 0 · 자동 확정 0 ·
+    쓰기 = 작업 접수·제외·확정 3곳(stackApi 한 곳) · 편집 = 즉시 잠금(요청 0) → 칸 이탈 때 재정리 1 · 최신 작업 결과만 채택 · 이어 받기 = 서버 세션(저장소 0)."""
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    chat = js[js.index("// ── 대화 (PR ②-b B5)"):js.index("// ── /대화 ──")]
+    aside = html[html.index('<aside class="chat" id="chat"'):html.index("</aside>", html.index('<aside class="chat" id="chat"'))]
+    assert aside.count("<button") + chat.count("<button") == 3, "서랍 버튼 = 닫기·보내기·확정 3"
+    for w in ('id="chat-close"', 'id="chat-send"', 'id="chat-in"', 'id="chat-verbatim"', "원문으로 저장", 'role="status"'):
+        assert w in aside, w
+    assert 'id="chat-confirm">확정</button>' in chat
+    assert "정리 반영" not in html, "[정리 반영] 버튼 0(편집 = 칸 이탈 때 자동 재정리)"
+    assert '${out ? " disabled" : " checked"}' in chat and chat.count('" checked"') == 1 and "box.checked = true" in chat, "변경 = 기본 포함(기본 off 0, 실패하면 다시 켬)"
+    # 스위치 — 꺼지면 버튼·서랍 없음. 탭 줄 오른쪽(render 의 탭 줄 끝)
+    assert 'if (!chatOn() || !navNew()) return "";' in chat and "const chatOn = () => !!(S && S.switches && S.switches.converse);" in chat
+    assert '}).join("")}${chatNavHtml()}</div>`;' in js and js.count("chatSync();") == 1
+    # 서버 접점 한 곳 — 쓰기 3(작업 접수·제외·확정) · 읽기 2(작업 롱폴·세션 복원). 그 밖 fetch·corePost 0
+    for w in ('send: body => stackPost("/api/jobs", body)', "poll: jid => getJSON(`/api/jobs/${encodeURIComponent(jid)}?wait=30`)",
+              "exclude: (pid, cids) => stackPost(`/api/stack/previews/${encodeURIComponent(pid)}/exclude`, {cids})",
+              "confirm: (jid, body) => stackPost(`/api/jobs/${encodeURIComponent(jid)}/confirm`, body)",
+              "session: sid => getJSON(`/api/stack/sessions/${encodeURIComponent(sid)}`)"):
+        assert w in chat, w
+    assert chat.count("fetch(") == 1 and chat.count("stackPost(") == 4 and "corePost(" not in chat, "쓰기 = stackPost 3곳"
+    assert js.count("/api/jobs") == 3 and js.count("/api/stack/") == 2, "작업·쌓기 API 는 stackApi 밖에서 부르지 않는다"
+    # 자동 확정 0 — 확정은 [확정] 클릭 한 곳에서만 · 요청 ID = 미리보기당 1(재시도 재사용) · 미리보기 판·해시 동봉
+    assert chat.count("stackApi.confirm(") == 1 and chat.count("chatConfirm()") == 2 and 'if (e.target.closest("#chat-confirm")) chatConfirm();' in chat
+    assert "if (CHAT.reqFor !== key) { CHAT.reqId = chatUuid(); CHAT.reqFor = key; }" in chat
+    assert "{request_id: CHAT.reqId, preview_id: p.id, preview_version: p.preview_version, preview_sha: p.preview_sha}" in chat
+    assert "!chatOpenBlock(CHAT.preview)" in chat and "p.blocked_open === true ||" in chat, "막힌 질문이 남으면 확정 잠금(서버 blocked_open 우선)"
+    assert "c.inferred === true" in chat and "CHAT.gen = rs.edit_generation;" in chat, "「추정」 = 서버 inferred · 재정리 세대는 접수됐을 때만 올림"
+    # 편집 — 입력 = 즉시 잠금(요청 0) · 칸 이탈(focusout, 정리 글 밖으로) = 재정리 1(원 결과·편집 세대·고친 글) · 늦은 결과 폐기
+    inp = chat[chat.index('document.addEventListener("input"'):chat.index('document.addEventListener("focusout"')]
+    assert "if (!CHAT.dirty) { CHAT.dirty = true;" in inp and "stackApi" not in inp and "chatRestack" not in inp, "입력 = 잠금만"
+    assert 'if (to && to.closest && to.closest("#chat-units")) return;' in chat and "if (CHAT.dirty && !CHAT.busy) chatRestack();" in chat
+    assert "{parent_result_version: CHAT.rv, edit_generation: CHAT.gen + 1, edited_text: text}" in chat and \
+        '{kind: "converse", session_id: CHAT.sid, text, restack: rs}' in chat, "재정리 = 구조(원 결과·편집 세대·고친 글, text = edited_text)"
+    assert "excluded_cids: off" in chat and "chatRestack({answers})" in chat and 'const CHAT_UNIT_JOIN = "\\n\\n";' in chat, \
+        "뺀 변경·막힘 답은 재정리 구조로(자유 턴 아님) · 정리 글 결합 = PC 와 같은 구분"
+    assert "if (CHAT.polling === jid) return;" in chat, "같은 작업 롱폴 겹침 0"
+    assert "CHAT.ready = p.latest !== false;" in chat and "chatShow(j.preview, jid, j.result && j.result.result_version)" in chat, \
+        "늦게 온 옛 결과(latest=false) 확정 불가 · 원 결과 버전 = 그린 작업의 result.result_version"
+    assert "if (jid !== CHAT.want || CHAT.dirty) return false;" in chat and "if (CHAT.want !== jid || !res) return;" in chat, "최신 작업 결과만 · 고치는 중 도착 = 버림"
+    assert 'res.code === "PREVIEW-NEEDS-RESTACK"' in chat and 'res.code === "CONFIRM-STALE"' in chat
+    # 원문으로 저장 = 세션 첫 입력만 · 8,000자 카운터(코드포인트) · 기억 = 세션 ID 만(본문 0) · 확정 뒤 load()(상태 + meSync)
+    assert 'else body.input_kind = $("chat-verbatim").checked ? "verbatim" : "converse";' in chat and '$("chat-vb").hidden = !!CHAT.sid;' in chat
+    assert "const CHAT_MAX = 8000;" in chat and 'const chatCp = s => [...String(s || "")].length;' in chat
+    assert "Storage" not in chat and "const sid = S.stack_session && S.stack_session.id;" in chat, "이어 받기 = 서버 세션(브라우저 저장소 0)"
+    assert "저장했어요 · 변경 ${n}" in chat and "await load();   // 「나」 통계·목록 갱신(상태 + meSync)" in chat
+    assert "@media (max-width: 767px)" in html[html.index("/* 대화 서랍 (PR ②-b B5)"):html.index("</style>")]
+    print("OK — 대화 서랍 정적(스위치·버튼 3·기본 포함·[정리 반영] 0·자동 확정 0·접점 한 곳 쓰기 3·편집 잠금→이탈 재정리·최신만·원문 첫 입력만·8,000자·저장소 0) 통과")
+
+
 async def run():
     db.init_schema()
     cleanup()
     try:
         test_static()
+        test_static_chat()
         await test_records_api()
     finally:
         cleanup()

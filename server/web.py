@@ -34,6 +34,7 @@ import contract
 import db
 import imports
 import service_schema
+import stack_service
 import structure_svg
 from envnames import env
 
@@ -1300,6 +1301,8 @@ class Web:
         st["structure_svg"] = structure_svg.render(st["structure"])   # 같은 응답의 DMO 그래프(서버 결정적 배치) — 목록과 같은 순번 앵커. /app 전용
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"],   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
                       "display_name": home["display_name"], "nav": home["nav"]}   # PR B: 표시 이름(null = 이름 입력 화면) · 새 탐색 new|old
+        st["switches"] = {"converse": db.job_switch_on("converse")}   # PR ②-b — 「대화」 버튼 표시(켜짐일 때만). /app 전용, MCP state_get 에는 넣지 않는다
+        st["stack_session"] = await run_in_threadpool(db.stack_session_current, uid)   # ②-b 새로 고침 복원·두 탭 공유 — {id, expires_at} | null
         st["me"] = {"counts": home["counts"]}   # PR B 「나」 홈 개수(판단·기준·결정·사람·출처·요약/반응) — 본인만, /app 전용
         st["people"], st["reflections"] = people, refl   # PR B 코어 사람·출처 요약/반응(본인 것 전부, 최근 순) — /app 전용
         if getattr(request.state, "role", None) == "admin":   # ⚙ Setup 링크용. 관리자가 아니면 키 자체가 없다. MCP state_get 에는 넣지 않는다
@@ -1677,7 +1680,10 @@ class Web:
     # 폴링 버킷(GET /api/device/jobs · GET /api/jobs/<id>) = imports.POLL_LIMITS · 동시 롱폴 = imports.POLL_CONCURRENT(이 프로세스 메모리).
     # /input·/result·/fail 은 기존 장치 요청 버킷(imports._rate, 분당 10·30). 오류 = {code, msg} + _JOB_HTTP.
     _JOB_HTTP = {"JOB-LEASE": 409, "JOB-VERSION": 409, "JOB-GONE": 410, "SWITCH-OFF": 503, "LIMIT-UNSET": 503, "RATE-LIMIT": 429,
-                 "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413}
+                 "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413,
+                 # PR ②-b 쌓기 단계·확인 1번
+                 "JOB-DEFS": 409, "CONTRACT-INVALID": 400, "PREVIEW-NEEDS-RESTACK": 409, "CONFIRM-STALE": 409, "CONFIRM-CONFLICT": 409,
+                 "CONFIRM-REQUEST-MISMATCH": 409, "IMPORT-QUOTA": 429, "QUOTA-GLOBAL": 507}
     _polls: dict = {}   # (scope, key) → 진행 중 롱폴 수
 
     @classmethod
@@ -1760,14 +1766,14 @@ class Web:
         jid, op = request.path_params["jid"], request.path_params["op"]
         code = "EXC"
         try:
-            if (op, request.method) not in (("input", "GET"), ("result", "POST"), ("fail", "POST")):
+            if (op, request.method) not in (("input", "GET"), ("definitions", "GET"), ("result", "POST"), ("fail", "POST")):
                 raise db.CrmError("NOT-FOUND", "그런 경로는 없어요.")
             dev = await self._device(request)
             await run_in_threadpool(imports._rate, dev)
-            if op == "input":
+            if op in ("input", "definitions"):   # definitions = ②-b 정의 스냅샷(임대 유효 때만, 최초 발급 때 해시 고정)
                 g = request.query_params.get("lease_generation", "")
                 gen = int(g) if g.isdigit() else None
-                out = await run_in_threadpool(db.job_input, dev, jid, gen)
+                out = await run_in_threadpool(db.job_input if op == "input" else db.job_definitions, dev, jid, gen)
             else:
                 raw = await request.body()
                 if len(raw) > db.JOB_RESULT_MAX_BYTES:
@@ -1783,14 +1789,37 @@ class Web:
             code = e.code
             return self._job_err(e)
         finally:
-            db.usage_count(None, f"api:device_job_{op}" if op in ("input", "result", "fail") else "api:device_job", code)
+            db.usage_count(None, f"api:device_job_{op}" if op in ("input", "definitions", "result", "fail") else "api:device_job", code)
 
     async def api_jobs(self, request):
-        """POST {kind, text, session_id?} — 작업 접수(스위치·길이 8,000자/32KiB·한도·열린 작업 수). 201 {id, session_id}."""
+        """POST {kind, text, session_id?, input_kind?, restack?} — 작업 접수(스위치·길이 8,000자/32KiB·한도·열린 작업 수). 201 {id, session_id}.
+        ②-b: input_kind(converse|verbatim) = 세션 첫 입력에서만 쓰인다 · restack = 재정리 구조화 입력(db.job_create)."""
         resp = await self._core_write(request, "job_create",
-                                      {"kind": ((str,), True), "text": ((str,), True), "session_id": ((str,), False)},
-                                      lambda uid, b: db.job_create(uid, b["kind"], b["text"], b.get("session_id")))
+                                      {"kind": ((str,), True), "text": ((str,), True), "session_id": ((str,), False),
+                                       "input_kind": ((str,), False), "restack": ((dict,), False)},
+                                      lambda uid, b: db.job_create(uid, b["kind"], b["text"], b.get("session_id"), b.get("input_kind"),
+                                                                   b.get("restack")),
+                                      json_limits={"restack": 3 * db.JOB_TEXT_MAX_BYTES})
         return self._job_remap(resp, ok=201)
+
+    async def api_stack_exclude(self, request):
+        """POST /api/stack/previews/<id>/exclude {cids} — 항목 끄기(의존·같은 정리 단위 함께). 200 {preview, removed} · 409 PREVIEW-NEEDS-RESTACK·
+        CONFIRM-STALE · 410 JOB-GONE. 스위치 무관(줄이는 쪽) — 확정만 스위치를 본다."""
+        resp = await self._core_write(request, "stack_exclude", {"cids": ((list,), True)},
+                                      lambda uid, b: db.stack_exclude(uid, request.path_params["pid"], b["cids"]),
+                                      json_limits={"cids": 8 * 1024})
+        return self._job_remap(resp)
+
+    async def api_stack_session(self, request):
+        """GET /api/stack/sessions/<id> — 새로고침 복원(세션 최신 미리보기). 본인만, 남·없음 404. 읽기만."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.stack_session_get, uid, request.path_params["sid"])
+        except db.CrmError as e:
+            return self._job_err(e) if e.code in self._JOB_HTTP else self._crm_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
 
     def _job_remap(self, resp, ok=200):
         """_core_write 의 공용 매핑(그 밖 400)을 작업 코드에 맞게 — 성공 상태·503·429·410·409."""
@@ -1829,7 +1858,9 @@ class Web:
             self._poll_leave("web", uid)
 
     async def api_job_op(self, request):
-        """POST /api/jobs/<id>/cancel — 취소(스위치 무관, 멱등, 본문 없음) · POST /api/jobs/<id>/confirm — ②-b 전 = 503 SWITCH-OFF."""
+        """POST /api/jobs/<id>/cancel — 취소(스위치 무관, 멱등, 본문 없음) · POST /api/jobs/<id>/confirm — 확인 1번(②-b, 스위치 꺼짐 = 503 SWITCH-OFF).
+        confirm 200 {confirm_event_id, created:{records, items}, updated:{items}, versions} · 409 CONFIRM-CONFLICT·CONFIRM-STALE·
+        CONFIRM-REQUEST-MISMATCH·JOB-DEFS · 410 JOB-GONE · 429 IMPORT-QUOTA(+resume_at)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1837,8 +1868,18 @@ class Web:
             return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
         op = request.path_params["op"]
         try:
-            if op == "confirm":
-                raise db.CrmError("SWITCH-OFF", "확인(확정)은 아직 열리지 않았어요.", "다음 판을 기다리세요.")
+            if op == "confirm":   # PR ②-b 확인 1번 — 스위치 → 본문 → 쓰기 관문 → 확정 트랜잭션(stack_service.confirm)
+                if not db.job_switch_on("converse"):
+                    raise db._job_off()
+                try:
+                    body = await request.json()
+                except Exception:
+                    raise db.CrmError("ARG-INVALID", "JSON 본문이 필요해요: {request_id, preview_id, preview_version, preview_sha}.") from None
+
+                def confirm():
+                    db.write_gate("job_confirm", {}, uid)
+                    return stack_service.confirm(uid, request.path_params["jid"], body)
+                return JSONResponse(await run_in_threadpool(confirm), headers={"cache-control": "no-store"})
             if op != "cancel":
                 raise db.CrmError("NOT-FOUND", "그런 경로는 없어요.")
 
@@ -2527,6 +2568,8 @@ class Web:
             Route("/api/jobs", u("web:jobs", self.api_jobs), methods=["POST"]),
             Route("/api/jobs/{jid}", u("web:job", self.api_job)),
             Route("/api/jobs/{jid}/{op}", u("web:job_op", self.api_job_op), methods=["POST"]),
+            Route("/api/stack/previews/{pid}/exclude", u("web:stack_exclude", self.api_stack_exclude), methods=["POST"]),
+            Route("/api/stack/sessions/{sid}", u("web:stack_session", self.api_stack_session)),
             Route("/api/activities", u("web:activities", self.api_activities)),
             Route("/api/activities/{aid}", u("web:activity", self.api_activity)),
             Route("/api/people/{pid}/context", u("web:person_context", self.api_person_context)),

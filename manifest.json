@@ -136,6 +136,10 @@
       "required": false
     },
     {
+      "path": "agent/stack.py",
+      "required": false
+    },
+    {
       "path": "agent/store.py",
       "required": false
     },
@@ -233,6 +237,10 @@
     },
     {
       "path": "agent/tests/test_shared_vectors.py",
+      "required": false
+    },
+    {
+      "path": "agent/tests/test_stack.py",
       "required": false
     },
     {
