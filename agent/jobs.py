@@ -14,6 +14,7 @@
   5xx(스위치 꺼짐 포함)·네트워크 = 지수 대기(30초→최대 15분). 401·폐기 = 멈춤(auth).
 - 임대: 받은 세대를 입력 조회·결과·실패에 그대로 싣는다. 409·410 을 받으면 그 작업을 버린다(재실행·재전송 없음).
 - 결과 전송이 끊기면 **같은 바이트(같은 result_version)** 로 다시 보낸다. 모델은 다시 돌리지 않는다.
+  `/result`·`/fail` 이 429 면 임대가 남아 있는 동안 Retry-After 를 지켜 같은 바이트로 다시 보낸다(임대 만료면 중단).
   끝내 못 보내면 버린다 — 서버 임대 만료가 needs_check 로 남긴다(중복 실행 금지).
 - 일반 저장(`jobs-state.json`, 0600, 원자적 쓰기)엔 본문 0: 임대 세대·작업 ID·시도 수·session_ref→CLI 세션 ID 만.
   입력·결과·프롬프트 원문은 메모리에서만 다룬다. CLI 세션 ID 는 서버로 보내지 않는다.
@@ -51,6 +52,7 @@ POLL_BACKOFF_BASE = 30
 POLL_BACKOFF_MAX = 900
 RESULT_RETRIES = 5             # 결과·실패 전송 재시도(같은 바이트)
 RESULT_RETRY_BASE = 2.0
+LEASE_SEC = 300                # 임대 5분 — PC 는 받은 시각(단조 시계) 기준으로 센다(서버·PC 시각 차이 무관)
 CLI_TIMEOUT = 300
 MAX_INPUT_CHARS = 8000         # 코드포인트
 MAX_INPUT_BYTES = 32 * 1024    # UTF-8 32KiB
@@ -385,6 +387,12 @@ def _check_input(text) -> bool:
     return isinstance(text, str) and len(text) <= MAX_INPUT_CHARS and len(text.encode("utf-8")) <= MAX_INPUT_BYTES
 
 
+def _retry_after(headers) -> int:
+    ra = headers.get("Retry-After") if headers is not None else None
+    sec = int(ra) if ra and str(ra).isdigit() else RETRY_AFTER_DEFAULT
+    return min(sec, RETRY_AFTER_MAX)
+
+
 def _job_shape(p) -> dict | None:
     """200 응답 → 쓸 값만. 꼴이 틀리면 None(임대를 쓰지 않는다 — 서버 임대 만료가 needs_check 로 남긴다)."""
     if not isinstance(p, dict):
@@ -461,9 +469,7 @@ class Worker:
                 self.halted = "auth"
                 return {"outcome": "auth", "status": status, "code": code}
             if status == 429:
-                ra = headers.get("Retry-After") if headers is not None else None
-                sec = int(ra) if ra and str(ra).isdigit() else RETRY_AFTER_DEFAULT
-                sec = min(sec, RETRY_AFTER_MAX)
+                sec = _retry_after(headers)
                 self._defer(sec)
                 return {"outcome": "rate-limit", "retry_in": sec, "code": code}
             if status != 200:
@@ -472,6 +478,7 @@ class Worker:
             job = _job_shape(payload)
             if job is None:
                 return {"outcome": "bad-job"}
+            job["deadline"] = self.monotonic() + LEASE_SEC
             return self._process(job)
         finally:
             self._busy.release()
@@ -508,7 +515,7 @@ class Worker:
         if iv != job["input_version"]:
             return dict(base, outcome="input-version")
         if not _check_input(text):
-            return dict(base, **self._send_fail(jid, gen, "input-too-large"))
+            return dict(base, **self._send_fail(jid, gen, "input-too-large", job["deadline"]))
 
         ref = job["session_ref"] if job["kind"] == "converse" else None
         resume = self.state.session_get(ref) if ref else None
@@ -516,7 +523,7 @@ class Worker:
         try:
             res = self.adapter.run(job["kind"], text, resume)
         except JobFail as e:
-            return dict(base, **self._send_fail(jid, gen, e.reason_code))
+            return dict(base, **self._send_fail(jid, gen, e.reason_code, job["deadline"]))
         finally:
             text = None   # noqa: F841 — 원문 참조를 빨리 놓는다
         if ref and res.get("session_id"):
@@ -527,24 +534,33 @@ class Worker:
                 "model_meta": {"tool": "claude-cli", "model": res.get("model"), "duration_ms": res["duration_ms"]}}
         data = json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8")
         body = res = None
-        return dict(base, **self._send_result(jid, data))
+        return dict(base, **self._send_result(jid, data, job["deadline"]))
 
-    def _retrying(self, send):
-        """같은 요청을 네트워크·5xx 에만 다시 보낸다. (status, payload) 또는 None(끝내 실패)."""
-        for i in range(self.result_retries + 1):
-            if i:
-                self.sleep(RESULT_RETRY_BASE * (2 ** (i - 1)))
+    def _retrying(self, send, deadline: float):
+        """같은 요청(같은 바이트)을 다시 보낸다. 네트워크·5xx = 지수 대기로 result_retries 번까지.
+        429 = Retry-After 를 지키되 그 뒤가 임대 만료(deadline) 이후면 중단. (status, payload) 또는 None(끝내 실패)."""
+        tries = 0
+        while True:
             try:
-                status, _h, payload = send()
+                status, headers, payload = send()
             except NetworkError:
+                status, headers, payload = None, None, {}
+            if status == 429:
+                sec = _retry_after(headers)
+                if self.monotonic() + sec >= deadline:
+                    return None
+                self.sleep(sec)
                 continue
-            if status >= 500:
+            if status is None or status >= 500:
+                tries += 1
+                if tries > self.result_retries:
+                    return None
+                self.sleep(RESULT_RETRY_BASE * (2 ** (tries - 1)))
                 continue
             return status, payload
-        return None
 
-    def _send_result(self, jid: str, data: bytes) -> dict:
-        r = self._retrying(lambda: self.client.result_bytes(jid, data))
+    def _send_result(self, jid: str, data: bytes, deadline: float) -> dict:
+        r = self._retrying(lambda: self.client.result_bytes(jid, data), deadline)
         if r is None:
             return {"outcome": "result-undelivered"}
         status, payload = r
@@ -560,8 +576,8 @@ class Worker:
             return {"outcome": "version-mismatch" if code == "JOB-VERSION" else "lease-lost", "code": code}
         return {"outcome": "result-rejected", "status": status, "code": code}
 
-    def _send_fail(self, jid: str, gen: int, reason_code: str) -> dict:
-        r = self._retrying(lambda: self.client.fail(jid, gen, reason_code))
+    def _send_fail(self, jid: str, gen: int, reason_code: str, deadline: float) -> dict:
+        r = self._retrying(lambda: self.client.fail(jid, gen, reason_code), deadline)
         if r is None:
             return {"outcome": "failed-undelivered", "reason_code": reason_code}
         status, payload = r

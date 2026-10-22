@@ -36,6 +36,7 @@ class StubJobsServer:
         self.log = []                 # {method, path, query, body, device}
         self.poll_script = []         # (status, headers, payload) 앞에서부터
         self.drop = {}                # (route, job_id) -> {"n": 남은 횟수, "apply": 적용 뒤 끊기}
+        self.route_script = {}        # (route, job_id) -> [(status, payload, headers)] 앞에서부터 강제 응답
         self.inflight = {}
         self.max_inflight = {}
         stub = self
@@ -181,6 +182,8 @@ class StubJobsServer:
             if j is None or j["status"] in ("deleted", "expired", "cancelled"):
                 return (410, {"code": "JOB-GONE"})
             key = (rt, jid)
+            if self.route_script.get(key):
+                return self.route_script[key].pop(0)
             d = self.drop.get(key)
             if d and d["n"] > 0 and not d["apply"]:
                 d["n"] -= 1
@@ -422,6 +425,55 @@ class Row3DisconnectTest(Base):
         self.assertEqual(w.poll_once()["outcome"], "input-network")
         self.assertEqual(w.runner.calls, [])
         self.assertEqual(self.srv.requests("fail"), [])
+
+
+class Row20RateLimitedSendTest(Base):
+    """20 보강 — /result·/fail 429: 임대가 남아 있는 동안 Retry-After 를 지켜 같은 바이트 재전송, 임대 만료면 중단."""
+
+    def _times(self, w, name):
+        times, orig = [], getattr(w.client, name)
+
+        def wrapped(*a):
+            times.append(w.clock.now())
+            return orig(*a)
+        setattr(w.client, name, wrapped)
+        return times
+
+    def test_result_429_retry_after_same_bytes(self):
+        jid = self.srv.create()
+        rl = (429, {"code": "RATE-LIMIT"}, {"Retry-After": "40"})
+        self.srv.route_script[("result", jid)] = [rl, rl]
+        w = self.worker()
+        times = self._times(w, "result_bytes")
+        self.assertEqual(w.poll_once()["outcome"], "result-sent")
+        posts = self.srv.requests("result")
+        self.assertEqual(len(posts), 3)
+        self.assertEqual(len({p["raw"] for p in posts}), 1)
+        self.assertEqual([round(b - a) for a, b in zip(times, times[1:])], [40, 40])
+        self.assertEqual(len(w.runner.calls), 1)
+        self.assertEqual(self.srv.status(jid), "result_ready")
+
+    def test_result_429_stops_at_lease_expiry(self):
+        jid = self.srv.create()
+        rl = (429, {"code": "RATE-LIMIT"}, {"Retry-After": "200"})
+        self.srv.route_script[("result", jid)] = [rl, rl, rl]
+        w = self.worker()
+        self.assertEqual(w.poll_once()["outcome"], "result-undelivered")
+        self.assertEqual(len(self.srv.requests("result")), 2)          # 0초·200초 — 400초는 임대(300초) 밖
+        self.assertEqual(len(w.runner.calls), 1)
+        self.srv.tick(LEASE_SEC)
+        self.assertEqual(self.srv.status(jid), "needs_check")
+
+    def test_fail_429_retry_after(self):
+        jid = self.srv.create()
+        self.srv.route_script[("fail", jid)] = [(429, {"code": "RATE-LIMIT"}, None)]
+        w = self.worker("garbage")
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out["status"]), ("failed", 200))
+        fails = self.srv.requests("fail")
+        self.assertEqual(len(fails), 2)
+        self.assertEqual(fails[0]["raw"], fails[1]["raw"])
+        self.assertEqual(self.srv.status(jid), "failed")
 
 
 class Row5ModelFailTest(Base):
