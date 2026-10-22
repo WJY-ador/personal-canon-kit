@@ -221,7 +221,9 @@ def _target(c, uid, op, oid, t, path):
     _keys(t, {"ref_kind", "value"}, path)
     row = _item_live(c, uid, t["value"]) if isinstance(t["value"], str) else None
     if not row or row["object_id"] != oid:
-        raise bad(path, "target_not_found")   # 허위·남의·다른 오브젝트·보관된 항목 ID
+        if rk == "inferred":   # 모델 추정은 틀릴 수 있다 — 없거나 남의 항목 = 대상 미해결(막힘), 거부 아님
+            return None, "unresolved", False, None
+        raise bad(path, "target_not_found")   # explicit_id 의 허위·남의·다른 오브젝트·보관된 항목 ID
     return row["id"], rk, rk == "inferred", row
 
 
@@ -256,6 +258,8 @@ def _link(c, uid, o, ln, path):
     tid = t["value"] if isinstance(t["value"], str) else ""
     got = db._resolve_target(c, uid, kind, tid)
     if not got or (kind == "item" and got["object_id"] != f["target_object_id"]):
+        if rk == "inferred":   # 추정 연결이 없는·남의 대상 = 미해결 연결(막힘)
+            return {**base, "ref_kind": "unresolved", "inferred": False}
         raise bad(f"{path}.target", "target_not_found")
     return {**base, "target_id": tid}
 

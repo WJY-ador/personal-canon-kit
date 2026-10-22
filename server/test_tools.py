@@ -8843,8 +8843,8 @@ async def test_pr2b_stack_b2():
                     await reject(b, "CONTRACT-INVALID", "target_not_found")   # 허위 ID
                     other_ax = _pr2b_axis(O, "AX9", "남 축")
                     b = body()
-                    b["changes"][0]["links"][0]["target"]["value"] = other_ax
-                    await reject(b, "CONTRACT-INVALID", "target_not_found")   # 남의 항목
+                    b["changes"][0]["links"][0]["target"] = {"ref_kind": "explicit_id", "value": other_ax}
+                    await reject(b, "CONTRACT-INVALID", "target_not_found")   # 남의 항목(명시 ID)
                     b = body()
                     b["changes"][0]["links"] = [{"relation": "evidence_records", "target": {"ref_kind": "explicit_id", "value": ax}}]
                     await reject(b, "CONTRACT-INVALID", "relation_not_allowed")   # 정의에 없는 관계(record 간·임의 evidence)
@@ -9262,6 +9262,19 @@ async def test_pr2b_stack_b3():
                 r = await conf(J6, cbody(P6))
                 assert P6["blocked_open"] and r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT", "막힘 = 확정 잠금"
                 db.job_cancel(U, J6)
+                other_ax = db.items(O, "od_axes")[0]["id"] if db.items(O, "od_axes") else _pr2b_axis(O, "AX8", "남 축")
+                CI = [{"cid": "c1", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "inferred", "value": "i_fake0000"},
+                       "fields": {}, "links": [], "depends_on": []},
+                      {"cid": "c2", "op": "create", "object_id": "od_principles", "fields": {"title": "합성 추정 연결"},
+                       "links": [{"relation": "axes", "target": {"ref_kind": "inferred", "value": other_ax}}], "depends_on": []}]
+                UI = [{"uid": "u1", "text": "추정 대상.", "change_ids": ["c1"]}, {"uid": "u2", "text": "추정 연결.", "change_ids": ["c2"]}]
+                J6b, _S6b, P6b = await stack(UI, CI)   # 모델 추정이 없는·남의 항목 = 거부 아님, 미해결 강등 + 막힘
+                chi = {x["cid"]: x for x in P6b["changes"]}
+                assert chi["c1"]["ref_kind"] == "unresolved" and P6b["blocked_open"], P6b
+                assert {(b["cid"], b["code"]) for b in P6b["blocked"]} == {("c1", "unresolved_target"), ("c2", "unresolved_target")}, P6b["blocked"]
+                r = await conf(J6b, cbody(P6b))
+                assert r.status_code == 409 and r.json()["code"] == "CONFIRM-CONFLICT"
+                db.job_cancel(U, J6b)
                 UX = [{"uid": "u1", "text": "결정 하나.", "change_ids": ["c1"]}, {"uid": "u2", "text": "결정 둘.", "change_ids": ["c2"]}]
                 CX = [{"cid": "c1", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정 X1"}, "links": [], "depends_on": []},
                       {"cid": "c2", "op": "create", "object_id": "od_events", "fields": {"title": "합성 결정 X2"}, "links": [], "depends_on": []}]
