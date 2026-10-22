@@ -4067,12 +4067,13 @@ function chatCount() {
   n.classList.toggle("bad", k > CHAT_MAX);
 }
 // 미리보기 그리기 — 최신 작업(want)의 결과만. 고치는 중이면 버린다(다음 칸 이탈이 새 작업을 접수한다)
-function chatShow(p, jid) {
+// rv = 그 미리보기를 낸 작업의 result.result_version — 재정리의 parent_result_version(그린 결과만 바꾼다. 버린 결과는 건드리지 않는다)
+function chatShow(p, jid, rv) {
   if (jid !== CHAT.want || CHAT.dirty) return false;
-  CHAT.preview = p; CHAT.jid = jid; CHAT.ready = true;
-  if (p.result_version) CHAT.rv = String(p.result_version);
+  CHAT.preview = p; CHAT.jid = jid; CHAT.ready = p.latest !== false;   // latest=false = 늦게 온 옛 결과(확정 불가)
+  if (rv) CHAT.rv = String(rv);
   if (p.edit_generation != null) CHAT.gen = Math.max(CHAT.gen, Number(p.edit_generation) || 0);   // 재정리 세대 = 세션 현재 값 + 1
-  chatLine(chatOpenBlock(p) ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.");
+  chatLine(p.latest === false ? "이 결과는 최신이 아니에요. 최신 결과를 기다려 주세요." : chatOpenBlock(p) ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.", p.latest === false);
   chatDraw();
   return true;
 }
@@ -4101,8 +4102,7 @@ async function chatPoll(jid, say) {
       continue;
     }
     if (j.status === "result_ready" && j.preview) {
-      if (j.result && j.result.result_version) CHAT.rv = String(j.result.result_version);
-      if (!chatShow(j.preview, jid) && CHAT.want === jid) chatLine("고친 글은 입력 칸을 벗어나면 다시 정리해요.");
+      if (!chatShow(j.preview, jid, j.result && j.result.result_version) && CHAT.want === jid) chatLine("고친 글은 입력 칸을 벗어나면 다시 정리해요.");
       return;
     }
     if (j.status === "expired") chatReset();
@@ -4168,7 +4168,7 @@ async function chatExclude(box) {
   const res = await stackApi.exclude(p.id, [cid]);
   CHAT.busy = "";
   if (!res) return;
-  if (res.ok) { chatShow(res.j.preview || res.j, CHAT.want); return; }
+  if (res.ok) { chatShow(res.j.preview || res.j, CHAT.want, CHAT.rv); return; }
   if (res.code === "PREVIEW-NEEDS-RESTACK") { chatRestackExcluding(cid); return; }
   if (res.code === "CONFIRM-STALE" && CHAT.sid) { chatLine("이 결과는 최신이 아니에요. 최신 상태를 불러올게요.", true); chatRestore(CHAT.sid); return; }
   box.checked = true;
@@ -4228,7 +4228,11 @@ async function chatRestore(sid) {
   CHAT.dirty = false; CHAT.preview = null; CHAT.ready = false;
   if (lj.id && CHAT_WAIT.includes(lj.status)) { CHAT.preview = s.preview || null; chatDraw(); chatWait(lj.id); return "wait"; }
   CHAT.want = lj.id || "";
-  if (s.preview && lj.status === "result_ready") { chatShow(s.preview, lj.id); return "shown"; }
+  if (s.preview && lj.status === "result_ready") {   // 원 결과 버전은 작업 응답에만 있다 — 그 작업을 한 번 읽어 미리보기와 같이 그린다
+    const r = await stackApi.poll(lj.id);
+    if (sid !== CHAT.sid || CHAT.want !== lj.id) return "fail";
+    if (r && r.ok && r.j.status === "result_ready" && r.j.preview) { chatShow(r.j.preview, lj.id, r.j.result && r.j.result.result_version); return "shown"; }
+  }
   if (lj.status && CHAT_DONE[lj.status]) chatLine(CHAT_DONE[lj.status], true);
   chatDraw();
   return "fail";

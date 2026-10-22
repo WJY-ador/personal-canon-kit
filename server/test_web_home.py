@@ -306,6 +306,8 @@ def test_static_chat():
     assert "excluded_cids: off" in chat and "chatRestack({answers})" in chat and 'const CHAT_UNIT_JOIN = "\\n\\n";' in chat, \
         "뺀 변경·막힘 답은 재정리 구조로(자유 턴 아님) · 정리 글 결합 = PC 와 같은 구분"
     assert "if (CHAT.polling === jid) return;" in chat, "같은 작업 롱폴 겹침 0"
+    assert "CHAT.ready = p.latest !== false;" in chat and "chatShow(j.preview, jid, j.result && j.result.result_version)" in chat, \
+        "늦게 온 옛 결과(latest=false) 확정 불가 · 원 결과 버전 = 그린 작업의 result.result_version"
     assert "if (jid !== CHAT.want || CHAT.dirty) return false;" in chat and "if (CHAT.want !== jid || !res) return;" in chat, "최신 작업 결과만 · 고치는 중 도착 = 버림"
     assert 'res.code === "PREVIEW-NEEDS-RESTACK"' in chat and 'res.code === "CONFIRM-STALE"' in chat
     # 원문으로 저장 = 세션 첫 입력만 · 8,000자 카운터(코드포인트) · 기억 = 세션 ID 만(본문 0) · 확정 뒤 load()(상태 + meSync)
