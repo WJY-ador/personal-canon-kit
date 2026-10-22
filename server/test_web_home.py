@@ -5,7 +5,9 @@
 
 A. /api/records — 401 · no-store · 기본(before 없음) = /api/state journal 과 같은 50편 · next_before 커서로 겹침·빠짐 없이 이어 받기 ·
    created 동률 블록(한 tx 의 now())이 페이지 경계에 걸쳐도 겹침·누락 0 · limit 끝값 · 틀린 before 400 · 남의 기록 0 · db.records 기본 호출 결과 불변.
-B. app.html 정적 — 새 홈(종류 선택·빈 상태 문구·「더 보기」가 /api/records 로 이어 받음)·옛 링크 #_me/<출처> 이동·쓰기 요청 0(홈 코드에 POST 없음).
+B. app.html 정적 — 「나」 상세(PR①: 빈 상태 문구·옛 링크 #_me/<출처> 이동·쓰기는 저장·동작 버튼 두 곳) +
+   「나」 v9(PR ①-b S2: 탭 나·오늘·Setup · 하위 탭 7 = 레이아웃 순서 · 서버 접점 meSync 한 곳(GET 만) · 축 색 코드 순 8 + 회색 ·
+   렌즈 3 + 커스텀·출처 목록/상세 · 추정 연결 0).
 """
 import asyncio
 import datetime as dt
@@ -166,11 +168,11 @@ def test_static():
     html = (HERE / "app.html").read_text(encoding="utf-8")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
     assert html.count("<script>") == 1
-    home = js[js.index("// ── 「나」 홈 (PR①)"):js.index("// ── /「나」 홈 (PR①)")]
-    # 빈 상태 문구(r1 T2) · 종류 6 · 이어 받기 · 옛 링크
-    for w in ("아직 표시할 데이터가 없어요. 데이터가 들어오면 여기서 볼 수 있어요.", "이 종류의 데이터가 없어요.", "이 데이터를 열 수 없어요.",
-              '"내가 쓴 글"', '"질문"', '"검토할 판단"', '"확정한 판단"', '"읽고 든 생각"', '"/api/records?before="',
-              'location.replace("#_obj/source/"', "더 보기", "(max-width: 767px)"):
+    home = js[js.index("// ── 「나」 상세 (PR①)"):js.index("// ── /「나」 홈 (PR①)")]
+    # 빈 상태 문구(r1 T2) · 상세 종류 이름 · 옛 링크
+    for w in ("아직 표시할 데이터가 없어요. 데이터가 들어오면 여기서 볼 수 있어요.", "이 데이터를 열 수 없어요.",
+              '"내가 쓴 글"', '"질문"', '"검토할 판단"', '"확정한 판단"', '"읽고 든 생각"',
+              'location.replace("#_obj/source/"', "(max-width: 767px)"):
         assert w in home, w
     # S5: 홈 쓰기는 두 곳(저장 homeSave · 동작 버튼 homeDo)에서만 기존 엔드포인트로 — 그 밖(선택·입력·포커스 이탈·취소·전환)은 요청 0.
     # 목록 위치·종류·편집 중인 글은 메모리에만
@@ -181,12 +183,13 @@ def test_static():
     for w in ('"/api/me/name"', "/api/reflections/${encodeURIComponent(x.id)}", '"/api/candidate/decide"', '"edit_confirm"', '"/api/item/decide"',
               "/review`", "확인했어요", "확인 전으로", "고쳐서 남기기", "남기지 않기", "저장", "취소"):
         assert w in home, w
-    assert "/api/sources" not in home and "/api/people" not in home, "출처·사람 편집 진입점 없음(홈)"
+    assert not re.search(r"corePost\([^)]*/api/(people|sources)", home), "출처·사람 쓰기 없음(홈) — 고치기는 기존 화면(#_obj/person·#_obj/source) 링크로"
     # 미저장 보호 — 대화창 문구 · hashchange 가드 · 새로 고침 경고
     for w in ("저장하지 않은 변경이 있어요", "계속 편집", "변경 버리기"):
         assert w in html, w
     assert "if (homeLeaveGuard()) return;" in js and 'addEventListener("beforeunload"' in js
-    assert "「최근" not in home and "최근 " not in home, "「최근」 표현 금지"
+    pr1 = home[:home.index("// ── 「나」 v9 (PR ①-b)")]   # PR① 상세 — 「최근」 금지(섞인 정렬). v9 요약 「최근 변경 5」는 PRD v9 B6 이 정한 이름
+    assert "「최근" not in pr1 and "최근 " not in pr1, "「최근」 표현 금지"
     assert "@media (max-width: 767px)" in html, "모바일 분기점 = 768 미만(JS 와 같은 값)"
     # S4 연결 그래프 — 빈 상태 2종 · 상한(넓은 25·40 / 1열 12·18) · 생략 문구 · 기존 읽기 API 만 · 외부 라이브러리 0
     for w in ("연결된 데이터가 없어요.", "연결을 불러오지 못했어요.", "다시 시도", 'wide: [25, 40], narrow: [12, 18]', "개·연결 ",
@@ -196,7 +199,25 @@ def test_static():
     # 타입 그래프 기본 = 그래프(새 탐색) · 영속 없음(저장소에 쓰지 않는다)
     assert 'let defsMode = "graph", defsAt = "";' in js and 'defsMode = navNew() ? "graph" : "list"' in js
     assert not re.search(r"localStorage\.setItem\([^)]*defs", js)
-    print("OK — 홈 정적(빈 상태 문구·종류 6·이어 받기·옛 링크·쓰기 0·「최근」 0·분기점·연결 그래프 빈 상태·상한·읽기 API·타입 그래프 기본) 통과")
+    # PR ①-b S2 — 탭 3 · 하위 탭 7(기본 레이아웃 = 계약 §3 JSON) · 서버 접점 한 곳(GET 만, 실패는 폴백) · 축 색 · 렌즈 · 추정 연결 0
+    v9 = home[home.index("// ── 「나」 v9 (PR ①-b)"):]
+    assert "if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];" in js, "탭 나·오늘·Setup"
+    for w in ('const ME_TABS = ["summary", "principle", "decision", "axis", "custom", "person", "source"];',
+              'const ME_BLOCKS = ["heatmap", "kinds", "waiting", "recent"];', "const ME_LAYOUT_DEFAULT = {v: 1, tabs: ME_TABS.slice(), blocks: {summary: ME_BLOCKS.slice()}};",
+              'getJSON("/api/me/layout"), getJSON("/api/me/stats")', "const meLayout = () => ME.layout || ME_LAYOUT_DEFAULT;",
+              "const meStats = () => ME.stats || meStatsFromS();", "meLayout().tabs.map(", "S.record_links", "readings: 0",
+              "const ME_AX_COLORS = 8;", 'i < ME_AX_COLORS ? `var(--ax${i + 1})` : "var(--soft)"', '"근거 역추적"', '"축 묶음"', '"사람 관계"',
+              "/api/people/${encodeURIComponent(id)}/context", "/api/sources/${encodeURIComponent(sel.id)}/context",
+              'location.replace(`#_me/${meTabOfItem(it)}/', "GRAPH_CAP.narrow : GRAPH_CAP.wide"):
+        assert w in v9, w
+    assert js.count("async function meSync()") == 1 and js.count("= meSync();") == 1, "서버 접점 = meSync 한 곳(정의 + load 호출)"
+    assert js.count('"/api/me/layout"') == 1 and js.count('"/api/me/stats"') == 1, "레이아웃·통계 주소는 meSync 안에만"
+    assert "corePost(" not in v9 and "fetch(" not in v9 and "PUT" not in v9, "S2 「나」 화면 쓰기 요청 0"
+    assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
+    for i, (lt, dk) in enumerate(zip(("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
+                                     ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767")), 1):
+        assert f"--ax{i}: {lt};" in html and f"--ax{i}: {dk};" in html, ("축 색", i)
+    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0) 통과")
 
 
 async def run():

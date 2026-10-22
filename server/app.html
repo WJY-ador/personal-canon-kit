@@ -711,6 +711,62 @@ ul.rows .inrow b { font-size: .88rem; }
   .bars li { grid-template-columns: minmax(0, 8rem) minmax(2rem, 1fr) auto; }
   .finput.tok { font-size: 14px; }
 }
+/* 「나」 v9 (PR ①-b) — 하위 탭 · 축 띠 · 렌즈(목록 | 가운데 | 옆 묶음). 축 색 8 = dataviz 기준 팔레트 순서 그대로(validate_palette:
+   라이트 #FFFFFF·다크 #1E2224 위 인접 CVD ΔE ≥ 8.4·정상 시각 ≥ 19.3 통과, 라이트 3색 대비 < 3:1 → 칩에 코드·이름·건수 글자를 늘 같이 쓴다). 코드 순 1~8, 9번째부터 --soft */
+:root { --ax1: #2a78d6; --ax2: #eb6834; --ax3: #1baf7a; --ax4: #eda100; --ax5: #e87ba4; --ax6: #008300; --ax7: #6250d6; --ax8: #e34948; }
+:root[data-theme="dark"] { --ax1: #3987e5; --ax2: #d95926; --ax3: #199e70; --ax4: #c98500; --ax5: #d55181; --ax6: #008300; --ax7: #9085e9; --ax8: #e66767; }
+nav.mesub { display: flex; gap: .15rem; overflow-x: auto; border-bottom: 1px solid var(--line); margin: 0 0 .8rem; scrollbar-width: thin; }
+nav.mesub a { flex: none; display: inline-flex; align-items: center; gap: .3rem; min-height: 36px; padding: .4rem .75rem; margin-bottom: -1px;
+  font-size: .84rem; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; }
+nav.mesub a:hover { color: var(--ink); }
+nav.mesub a.on { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
+nav.mesub .n { font-family: var(--mono); font-size: .7rem; color: var(--muted); }
+.lk { font-size: .72em; opacity: .75; }
+.meaxis { margin: 0 0 1rem; }
+.meaxis .axrow { display: flex; align-items: center; gap: .6rem; }
+.meaxis .axl { flex: none; font-size: .76rem; font-weight: 600; color: var(--muted); }
+.axstrip { flex: 1; display: flex; gap: 2px; height: 10px; border-radius: 4px; overflow: hidden; }
+.axstrip.none { background: var(--line); }
+.axstrip span { min-width: 3px; }
+.axchips { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .1rem .9rem; margin-top: .45rem; }
+.axchips a { display: flex; align-items: center; gap: .35rem; min-width: 0; min-height: 28px; padding: .15rem .3rem; border-radius: 6px;
+  font-size: .78rem; color: var(--ink); text-decoration: none; }
+.axchips a:hover { background: var(--accent-soft); }
+.axchips a[aria-current="true"] { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.axchips a.zero { color: var(--muted); }
+.axchips i, .axdot { flex: none; display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
+.axchips b, .axchips .v { flex: none; font-family: var(--mono); font-size: .74rem; }
+.axchips .axt { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.melens { display: grid; grid-template-columns: minmax(240px, 300px) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.melens.three { grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) minmax(220px, 300px); }
+.melens > * { min-width: 0; }
+.mlist .htools .count { font-family: var(--mono); font-size: .74rem; color: var(--muted); }
+.hrows .cd { font-family: var(--mono); font-size: .76rem; font-weight: 600; color: var(--muted); }
+.hrows .axdot { margin-right: .35rem; vertical-align: .05em; }
+ul.hrows li.mgrph { display: flex; gap: .4rem; padding: .7rem .55rem .25rem; font-size: .74rem; font-weight: 600; color: var(--muted); }
+ul.hrows li.mgrph + li { border-top: none; }
+.mgroups { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: .8rem; }
+.mgroups .mgh { font-size: .82rem; margin: 0 0 .5rem; }
+.mgrp + .mgrp { margin-top: .8rem; }
+.mgrp h4 { display: flex; gap: .4rem; margin: 0 0 .35rem; font-size: .76rem; color: var(--muted); }
+.mgrp h4 .count, .msec h3 .count { font-family: var(--mono); font-weight: 500; }
+.chip.lens { margin-left: .5rem; }
+.msec { margin-top: 1rem; }
+.msec h3 { display: flex; gap: .4rem; align-items: baseline; margin: 0 0 .4rem; font-size: .86rem; }
+.msolo { max-width: 860px; }
+.mfold { margin-top: .35rem; }
+.mfold summary { cursor: pointer; font-size: .8rem; font-weight: 600; color: var(--accent); min-height: 28px; display: flex; align-items: center; }
+.mfold ul { margin-top: .35rem; }
+.mesum:empty { display: none; }
+@media (max-width: 1099px) {
+  .melens.three { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
+  .melens.three > .mgroups { grid-column: 2; }
+}
+@media (max-width: 767px) {
+  .melens, .melens.three { grid-template-columns: minmax(0, 1fr); }
+  .melens.three > .mgroups { grid-column: auto; }
+  .axchips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (prefers-reduced-motion: reduce) { button, .btn, .asset-card { transition: none; } }
 </style>
 </head>
@@ -895,15 +951,16 @@ async function fetchState() {
 }
 function applyState(next) {
   S = next;
-  homeRec.extra = []; homeRec.next = undefined; homeRec.err = "";   // 「나」 홈 이어 받은 기록 — 새 상태(S.journal·첫 커서)부터 다시
   loadedAt = mdhm(S.generated);
   render();
 }
 async function load() {
   let next;
+  const me = meSync();   // 「나」 레이아웃·통계(서버 접점) — 상태와 같이 받는다. 실패해도 폴백으로 뜬다
   try {
     next = await fetchState();
     if (!next) return false;
+    await me;
   } catch (e) {
     $("bands").innerHTML = `<div class="band fail" role="alert"><b>서버에 연결하지 못했어요.</b> 잠시 뒤 새로 고침해 주세요.
       ${loadedAt ? `아래 화면은 ${esc(loadedAt)}에 불러온 내용이에요.` : ""}</div>`;
@@ -934,6 +991,9 @@ const NAVTAB = {
   // board 이전 — 탭 줄에 없는 화면(계정 메뉴 「연결 장치」 · 「나」 홈 [승인 대기 N]). 새 탐색 전용
   _devices: {id: "_devices", label: "연결 장치", view: "devices", blocks: []},
   _inbox: {id: "_inbox", label: "저장 승인 대기", view: "inbox", blocks: []},
+  // PR ①-b 탭 3: 「나」 · 「오늘」 · Setup(B1). 자료 종류·지도·내 구조 설정·연결 장치는 Setup 안으로(옛 링크는 그대로 열린다)
+  _today: {id: "_today", label: "오늘", view: "today2", blocks: []},
+  _setup: {id: "_setup", label: "Setup", view: "setup", blocks: []},
 };
 const navNew = () => !!(S && S.user && S.user.nav === "new");
 const needName = () => !!(S && S.user && "display_name" in S.user && !S.user.display_name);
@@ -945,7 +1005,7 @@ function userTabs() {
 function tabsList() {
   const user = ok("tabs") ? (S.tabs || []) : [];
   const mine = userTabs();
-  if (navNew()) return [NAVTAB._me, NAVTAB._obj, BASE.map];
+  if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];
   if (!user.length) return [BASE.today, BASE.q, BASE.journal, BASE.structure, BASE.map];
   return mine.concat([Object.assign({}, BASE.structure, {maplink: true}), BASE.map]);
 }
@@ -960,8 +1020,9 @@ function pickTab(R, tabs) {
 }
 // 새 탐색에서 탭 줄에 없는 화면이 켤 탭 — 오늘은 「나」, 항목 보기는 「오브젝트」
 // PR①: 질문·기록·사용자 탭 화면은 「자료 종류」를 켠다
-const navOn = tab => navNew() ? ({today: "_me", structure: "_obj", _devices: "_me", _inbox: "_me"}[tab.id] ||
-  (tab.view === "question" || tab.view === "record" ? "_obj" : tab.id)) : tab.id;
+// PR ①-b: 오늘·승인 대기 = 「오늘」, 자료 종류·지도·내 구조 설정·연결 장치·항목 보기·질문·기록·사용자 탭 = Setup
+const navOn = tab => navNew() ? ({today: "_today", _inbox: "_today", structure: "_setup", _obj: "_setup", _settings: "_setup", _devices: "_setup", map: "_setup"}[tab.id] ||
+  (tab.view === "question" || tab.view === "record" ? "_setup" : tab.id)) : tab.id;
 function tabCount(t) {
   if (t === BASE.q) return ok("candidates") ? (S.candidates || []).filter(c => c.status === "pending" && c.question_id).length : 0;
   if (t === BASE.journal) return ok("journal") ? (S.journal || []).length : 0;
@@ -979,7 +1040,7 @@ function render() {
   const tab = pickTab(R, tabs);
   const curId = navOn(tab);
   // 새 탐색 라우트(나·자료 종류·내 구조 설정·연결 장치·저장 승인 대기·지도)는 마스트를 숨긴다 — 머리글 = 화면 제목만
-  document.body.classList.toggle("navnew-screen", navNew() && R.a !== "review" && ["me", "objects", "settings", "devices", "inbox", "map"].includes(tab.view));
+  document.body.classList.toggle("navnew-screen", navNew() && R.a !== "review" && ["me", "objects", "settings", "devices", "inbox", "map", "today2", "setup"].includes(tab.view));
   if (!(tab.view === "settings" || (tab.view === "structure" && R.a === "defs"))) defsAt = "";   // 구조 화면을 떠나면 보기 방식을 잊는다
   $("nav").innerHTML = `<div class="wrap">${tabs.map(t => {
     const on = t.id === curId, n = tabCount(t);
@@ -1009,7 +1070,9 @@ function render() {
   else if (tab.view === "structure") renderStructure(tab, R.a, R.b);
   else if (tab.view === "map") renderMap(tab);
   else if (tab.view === "record") renderRecordTab(tab, R.a);
-  else if (tab.view === "me") renderMe(tab, R.a, R.b);
+  else if (tab.view === "me") renderMeV9(tab, R.a, R.b);
+  else if (tab.view === "today2") renderInbox(R.a);       // S5 에서 오늘 화면(승인 대기 + 장치 활동 + 들어온 글)으로 바꾼다
+  else if (tab.view === "setup") renderObjects(tab, R.a, R.b, R.c);   // S4 에서 Setup(레이아웃 DnD + 기존 설정 진입)으로 바꾼다
   else if (tab.view === "objects") renderObjects(tab, R.a, R.b, R.c);
   else if (tab.view === "settings") renderDefs(tab);
   else if (tab.view === "devices") renderDevices();
@@ -2253,45 +2316,14 @@ const meCount = k => ((S.me || {}).counts || {})[k] || 0;
 const recTabId = () => (userTabs().find(t => t.view === "record") || BASE.journal).id;   // 사용자 탭이 있으면 그 첫 탭(탭 줄 유무와 무관)
 const qTabId = () => (userTabs().find(t => t.view === "question") || BASE.q).id;
 const msgLine = () => `<p class="fok" id="core-msg" role="status" aria-atomic="true"></p>`;
-// ── 「나」 홈 (PR①) — 표시 이름 + 왼쪽 「내 데이터」(종류 선택 1 · 50건씩 「더 보기」) + 오른쪽 상세. 이 화면은 읽기만. nav=new 전용 ──
-// 라우트 #_me · #_me/<kind>/<id>(kind = journal·q·cand·item·refl). 옛 #_me/<출처 id> 는 출처 상세로 옮긴다(replace).
-// 정렬 = 만든 시각(항목은 created_at) 최신순, 불러온 범위 안에서만. 서버에 기록이 더 남았으면 불러온 가장 오래된 기록보다
-// 오래된 다른 종류 행은 「더 보기」 뒤로 미룬다 — 그래야 섞인 순서가 거짓이 되지 않는다. 기록은 /api/records 로 이어 받는다.
-// 건수 = 조회 범위 전체(기록은 source_counts 합). 못 읽은 종류는 숫자를 붙이지 않는다(0 으로 보이지 않게).
+// ── 「나」 상세 (PR①) — 데이터 한 건의 상세(제목·자료 종류·본문·동작)·연결. 화면 틀은 아래 「나」 v9(하위 탭·렌즈)가 그린다. nav=new 전용 ──
+// 라우트 #_me/<kind>/<id>(kind = journal·q·cand·item·refl). 옛 #_me/<출처 id> 는 출처 상세로 옮긴다(replace).
 const HOME_MOBILE = "(max-width: 767px)";
-const HOME_PAGE = 50;
-const HOME_KINDS = [["all", "전체"], ["journal", "내가 쓴 글"], ["q", "질문"], ["pend", "검토할 판단"], ["conf", "확정한 판단"], ["item", "항목"], ["refl", "읽고 든 생각"]];
 const HOME_URLKIND = ["journal", "q", "cand", "item", "refl"];
-let homeKind = "all", homeShow = HOME_PAGE;
 let homeFromList = false, homeListY = 0, homeListTop = 0, homeScrollTo = null;
-const homeRec = {extra: [], next: undefined, busy: false, err: ""};   // 이어 받은 기록(S.journal 뒤) · 다음 커서(서버 next_before 그대로 · null = 끝 · undefined = 아직 안 받음 → S.journal_next_before)
-const homeNext = () => homeRec.next !== undefined ? homeRec.next : (S.journal_next_before || null);
 const homeMobile = () => window.matchMedia(HOME_MOBILE).matches;
 const homeTime = iso => { const d = toDate(iso); return d ? d.getTime() : 0; };
-function homeRecords() {
-  const js = ok("journal") ? (S.journal || []) : [];
-  return js.concat(homeRec.extra);
-}
-function homeRecTotal() {
-  if (!ok("journal") || !S.source_counts) return null;
-  const c = S.source_counts;
-  return Object.values(c.by_source || {}).reduce((s, n) => s + n, 0) + (c.unconfirmed || 0);
-}
-const homeRecMore = () => ok("journal") && !!homeNext();   // 서버에 기록이 더 있나 = 받을 커서가 있나
-function homeCounts() {
-  const cs = S.candidates || [];
-  const n = {
-    journal: homeRecTotal(),
-    q: ok("questions") && Array.isArray(S.questions) ? S.questions.length : null,
-    pend: ok("candidates") && Array.isArray(S.candidates) ? cs.filter(c => c.status === "pending").length : null,
-    conf: ok("candidates") && Array.isArray(S.candidates) ? cs.filter(c => c.status === "confirmed").length : null,
-    item: ok("items") && Array.isArray(S.items) ? S.items.length : null,
-    refl: ok("reflections") && Array.isArray(S.reflections) ? S.reflections.length : null,
-  };
-  const parts = Object.values(n);
-  n.all = parts.some(x => x === null) ? null : parts.reduce((s, x) => s + x, 0);
-  return n;
-}
+const homeRecords = () => ok("journal") ? (S.journal || []) : [];   // 불러온 기록(S.journal) — 없는 기록은 본문 API(/api/journal)로 연다
 const firstLine = s => (String(s || "").split("\n").find(l => l.trim()) || "").trim();
 // 행 = {k: 주소 종류, f: 종류 선택 키, id, title, kind(표시 이름), at(만든 시각), x(원래 객체)}
 function homeRows() {
@@ -2308,37 +2340,6 @@ function homeRows() {
   return out.map((r, i) => [r, i]).sort((a, b) => homeTime(b[0].at) - homeTime(a[0].at) || a[1] - b[1]).map(p => p[0]);
 }
 // 지금 종류 선택으로 보일 행 + 「더 보기」 필요 여부
-function homeView(rows) {
-  let xs = homeKind === "all" ? rows : rows.filter(r => r.f === homeKind);
-  let cut = false;
-  if (homeRecMore() && homeKind === "all") {
-    const recs = homeRecords(), oldest = recs.length ? homeTime(recs[recs.length - 1].created) : Infinity;
-    const keep = xs.filter(r => r.k === "journal" || homeTime(r.at) >= oldest);
-    cut = keep.length < xs.length;
-    xs = keep;
-  }
-  const more = xs.length > homeShow || cut || (homeRecMore() && (homeKind === "all" || homeKind === "journal"));
-  return {shown: xs.slice(0, homeShow), total: xs.length, more};
-}
-const homeHref = r => `#_me/${r.k}/${r.id}`;
-function homeRowHtml(r, sel) {
-  const on = sel && sel.k === r.k && sel.id === r.id;
-  return `<li><a href="${esc(homeHref(r))}" data-home-row${on ? ' aria-current="true"' : ""}><span class="ht">${esc(r.title)}</span><span class="hk">${esc(r.kind)}</span></a></li>`;
-}
-function homeListHtml(rows, sel, counts) {
-  const v = homeView(rows);
-  const opts = HOME_KINDS.map(([k, l]) => `<option value="${k}"${k === homeKind ? " selected" : ""}>${esc(l)}${counts[k] === null ? "" : ` (${counts[k]})`}</option>`).join("");
-  const fails = [["journal", "내가 쓴 글 목록"], ["questions", "질문 목록"], ["candidates", "판단 목록"], ["items", "항목 목록"], ["reflections", "읽고 든 생각 목록"]]
-    .filter(([p]) => !ok(p)).map(([p, w]) => partFail(S.read[p].error, w)).join("");
-  let body;
-  if (!rows.length && !fails) body = `<div class="empty">아직 표시할 데이터가 없어요. 데이터가 들어오면 여기서 볼 수 있어요.</div>`;
-  else if (!v.total && !v.more) body = `<div class="empty">이 종류의 데이터가 없어요. <button class="tertiary" type="button" data-home-kind="all">전체 보기</button></div>`;
-  else body = `<ul class="hrows">${v.shown.map(r => homeRowHtml(r, sel)).join("")}</ul>`;
-  const more = v.more ? `<button class="more" type="button" data-home-more${homeRec.busy ? " disabled" : ""}>${homeRec.busy ? "불러오는 중이에요…" : "더 보기"}</button>
-    <p class="ferr" role="alert" aria-atomic="true">${esc(homeRec.err)}</p>` : "";
-  return `<section class="hlist" id="home-list" aria-labelledby="home-list-h"><div class="htools"><h3 id="home-list-h">내 데이터</h3>
-    <label class="sr" for="home-kind">종류</label><select id="home-kind">${opts}</select></div>${fails}${body}${more}</section>`;
-}
 // 상세 — 제목·자료 종류·본문(자르지 않음). 동작·연결은 다음 단계(S4·S5)에서 이 아래에 붙는다
 function homeFieldRows(it) {
   const d = defById(it.object_id);
@@ -2366,8 +2367,10 @@ function homeErrText(res) {   // 원인 + 다음 행동 2문장
   const m = String(res.msg || "저장하지 못했어요.").trim();
   return `${/[.?!요]$/.test(m) ? m : m + "."} 고친 뒤 다시 해 주세요.`;
 }
+// 지금 주소의 데이터 — #_me/<kind>/<id>(옛 상세) 또는 #_me/<항목 탭>/<id>(렌즈·목록의 항목)
+function homeCur() { const R = route(), k = ME_TABS.includes(R.a) ? "item" : R.a; return homeRows().find(x => x.k === k && x.id === R.b) || null; }
 function homeEditStart(key) {
-  const R = route(), r = homeRows().find(x => x.k === R.a && x.id === R.b), name = (S.user && S.user.display_name) || "";
+  const r = homeCur(), name = (S.user && S.user.display_name) || "";
   let e = null;
   if (key === "name") e = {label: "표시 이름", multi: false, orig: name, url: "/api/me/name", body: d => ({display_name: d}), done: "표시 이름을 바꿨어요."};
   else if (r && key === "refl:" + r.id) { const x = r.x;
@@ -2406,7 +2409,7 @@ async function homeSave() {
 }
 // 버튼 한 번 = 쓰기 한 번(중복 방지). 남기지 않기 뒤엔 그 판단이 홈 목록에서 빠지므로 목록 첫 화면으로
 async function homeDo(b) {
-  const R = route(), r = homeRows().find(x => x.k === R.a && x.id === R.b), act = b.dataset.hact;
+  const r = homeCur(), act = b.dataset.hact;
   if (!r || (homeAct && homeAct.busy) || homeEdit) return;
   const x = r.x;
   let url, body, done, after = "";
@@ -2450,7 +2453,7 @@ function homeActs(r) {
 }
 // 값을 눌러 편집 — 키보드(Tab·Enter)로도. 편집할 수 있는 값만 버튼 모양
 const homeEditable = (key, inner, cls) => `<button type="button" class="hval ${cls || ""}" data-edit="${esc(key)}" title="눌러서 고치기">${inner}</button>`;
-function homeDetailHtml(r) {
+function homeDetailHtml(r, lens) {   // lens = 「나」 렌즈 이름(그래프 + 옆 목록) · "list"·없음 = 연결 그래프/목록 전환
   const x = r.x, when = mdhm(r.at);
   const head = (kind, title, meta) => `<div class="hkind">${esc(kind)}</div><h2 class="title">${title}</h2>${meta ? `<p class="recmeta">${esc(meta)}</p>` : ""}`;
   if (r.k === "journal") {
@@ -2466,7 +2469,7 @@ function homeDetailHtml(r) {
   }
   if (r.k === "item") {
     return head(r.kind, `${x.code ? `<span class="chip code">${esc(x.code)}</span> ` : ""}${esc(r.title)}`, [when, x.semantic_kind === "principle" && x.decision === "confirmed" ? "확정" : ""].filter(Boolean).join(" · ")) +
-      (x.body ? `<p class="hbody">${esc(x.body)}</p>` : "") + homeFieldRows(x) + homeActs(r) + homeConnHtml(r);
+      (x.body ? `<p class="hbody">${esc(x.body)}</p>` : "") + homeFieldRows(x) + homeActs(r) + (lens && lens !== "list" ? meLensConn(r, lens) : homeConnHtml(r));
   }
   const ed = homeEditing("refl:" + x.id);
   return head(r.kind, esc(srcName(x.source_id)), [when, x.review === "reviewed" ? "확인했어요" : "확인 전"].join(" · ")) +
@@ -2537,6 +2540,11 @@ function graphEdges(kind, id) {
     for (const r of homeRecords()) if (r.question_id === id) add("journal", r.id, "질문", "in");
   }
   if (kind === "item" && homeConnExtra[id] && homeConnExtra[id].ok) for (const a of homeConnExtra[id].acts) add("activity", a.id, "축", "in");
+  // 사람 — 기존 읽기 API(/api/people/{id}/context) 결과만: 이 사람이 연결된 활동·글, 이 사람을 가리키는 항목
+  if (kind === "person" && meExtra["p:" + id] && meExtra["p:" + id].ok) { const c = meExtra["p:" + id];
+    for (const a of c.acts) add("activity", a.id, "사람", "in");
+    for (const r of c.records) add("journal", r.id, "사람", "in");
+    for (const i of c.items) add("item", i.id, itemFieldLabel(i, i.field_key), "in"); }
   const rank = e => GRAPH_ORDER.indexOf(e.node.kind);
   return out.sort((a, b) => rank(a) - rank(b) || (a.node.id < b.node.id ? -1 : a.node.id > b.node.id ? 1 : 0) || (a.dir < b.dir ? -1 : 1));
 }
@@ -2638,7 +2646,7 @@ async function graphNameOf(key) {
 }
 function graphPaintName(key, name) {
   const kn = graphKindName(key.split(":")[0], null);
-  for (const e of document.querySelectorAll(`#home-detail [data-lazy-key="${CSS.escape(key)}"]`)) {
+  for (const e of document.querySelectorAll(`#view [data-lazy-key="${CSS.escape(key)}"]`)) {
     const tx = e.querySelector("text");
     if (tx) {   // 그래프 노드 — 줄을 새로 만든다(처음 이름이 한 줄이었어도 두 줄까지)
       const x = tx.getAttribute("x");
@@ -2652,7 +2660,7 @@ function graphPaintName(key, name) {
 }
 // 이어 받지 않은 기록·활동 노드의 이름 — 기존 읽기 API(본인 것만), 최대 30개를 함께 받는다. 그사이 화면이 바뀌면 버린다
 async function graphFillLazy() {
-  const seq = renderSeq, keys = [...new Set([...document.querySelectorAll("#home-detail [data-lazy-key]")].map(e => e.dataset.lazyKey).filter(Boolean))].slice(0, 30);
+  const seq = renderSeq, keys = [...new Set([...document.querySelectorAll("#view [data-lazy-key]")].map(e => e.dataset.lazyKey).filter(Boolean))].slice(0, 30);
   for (const k of keys) if (graphNames[k]) graphPaintName(k, graphNames[k]);
   const names = await Promise.all(keys.filter(k => !graphNames[k]).map(k => graphNameOf(k).then(n => [k, n])));
   if (seq !== renderSeq) return;
@@ -2671,52 +2679,7 @@ async function homeLoadRec(id, whole) {
   }
   if ($("home-body")) $("home-body").innerHTML = `<div class="doc">${docHtml(r, "").html}</div>`;
 }
-const homeBack = () => homeMobile() ? `<p class="hback"><button class="secondary" type="button" data-home-back>목록</button></p>` : "";
-function renderMe(tab, a, b) {
-  subnav("");
-  if (a && !b && srcById(a)) { location.replace("#_obj/source/" + a); return; }   // 옛 「나」 홈 출처 고르기 링크
-  const rows = homeRows(), counts = homeCounts(), mobile = homeMobile();
-  const want = a ? {k: a, id: b} : null;
-  let sel = want ? rows.find(r => r.k === want.k && r.id === want.id) || null : null;
-  if (!want && !mobile) { const v = homeView(rows); sel = v.shown[0] || null; }   // 넓은 화면 첫 진입 = 첫 행
-  const loose = want && !sel && want.k === "journal" && want.id;   // 아직 이어 받지 않은 기록 — 본문 API 로 연다
-  const gone = want && !sel && !loose;
-  const name = (S.user && S.user.display_name) || "";
-  const head = homeEditing("name") ? `<div class="hhead hhead-edit">${homeEditor()}${msgLine()}</div>`
-    : `<div class="hhead"><h2 title="${esc(name)}">${homeEditable("name", esc(name), "hname")}</h2>${msgLine()}</div>`;
-  const detail = sel ? homeBack() + homeDetailHtml(sel) : loose ? homeBack() + LOADING : gone ? homeBack() + HOME_GONE : "";
-  const showList = !mobile || !want, showDetail = !mobile ? true : !!want;
-  $("view").innerHTML = head + `<div class="home">${showList ? homeListHtml(rows, sel, counts) : ""}
-    ${showDetail ? `<section class="paper hdetail" id="home-detail" aria-live="polite"${detail ? "" : " hidden"}>${detail}</section>` : ""}</div>`;
-  const centerKey = sel ? homeHref(sel) : loose ? location.hash : "";
-  if (centerKey !== homeConnAt) { homeConnKind = ""; homeConnAt = centerKey; }
-  if (sel) graphFillLazy();
-  if (sel && sel.k === "journal") homeLoadRec(sel.id, false);
-  else if (loose) homeLoadRec(want.id, true);
-  if (showList && $("home-list")) $("home-list").scrollTop = homeListTop;
-  homeScrollTo = mobile && !want ? homeListY : null;
-  const hi = $("hedit-input");
-  if (hi && homeEdit && !homeEdit.busy) { hi.focus({preventScroll: true}); const n = hi.value.length; hi.setSelectionRange(n, n); }
-}
-async function homeMore(btn) {
-  homeShow += HOME_PAGE;
-  homeRec.err = "";
-  if (homeRecMore() && (homeKind === "all" || homeKind === "journal") && !homeRec.busy) {
-    homeRec.busy = true;
-    btn.disabled = true;
-    // 커서는 서버가 준 값(불투명, + 가 들어 있다)을 그대로 되돌려 보낸다. 첫 커서 = S.journal_next_before
-    const st = S, res = await getJSON("/api/records?before=" + encodeURIComponent(homeNext()) + "&limit=" + HOME_PAGE);
-    homeRec.busy = false;
-    if (!res || S !== st) return;   // 그사이 상태를 새로 받았으면(applyState 가 비웠다) 버린다
-    if (res.ok) { homeRec.extra = homeRec.extra.concat(res.j.records || []); homeRec.next = res.j.next_before || null; }
-    else { homeShow -= HOME_PAGE; homeRec.err = "더 불러오지 못했어요. 다시 눌러 주세요."; }
-  }
-  if (route().tab !== "_me") return;
-  homeListTop = $("home-list") ? $("home-list").scrollTop : 0;
-  const y = window.scrollY;
-  render();
-  window.scrollTo(0, y);
-}
+const homeBack = () => homeMobile() ? `<p class="hback"><button class="secondary" type="button" data-home-back data-to="#_me">돌아가기</button></p>` : "";
 // 같은 화면 다시 그리기 — 페이지·목록 스크롤 유지(연결 보기 전환·거르기·다시 시도)
 function homeRerender() {
   homeListTop = $("home-list") ? $("home-list").scrollTop : 0;
@@ -2724,18 +2687,276 @@ function homeRerender() {
   render();
   window.scrollTo(0, y);
 }
-function homeSetKind(k) {
-  homeKind = HOME_KINDS.some(x => x[0] === k) ? k : "all";
-  homeShow = HOME_PAGE;
-  homeListTop = 0;
-  const R = route();
-  if (!homeMobile()) {   // 넓은 화면 — 선택이 새 목록에 남아 있으면 그대로, 아니면 첫 행(이력은 바꾸지 않는다)
-    const v = homeView(homeRows());
-    const keep = R.a && v.shown.some(r => r.k === R.a && r.id === R.b);
-    const to = keep ? location.hash : v.shown[0] ? homeHref(v.shown[0]) : "#_me";
-    if (to !== location.hash) { location.replace(to); return; }
+// ── 「나」 v9 (PR ①-b) — 하위 탭 7(순서 = 레이아웃) · 축 띠 · 렌즈 3(기준·결정 = 역추적 · 축 = 묶음 · 사람 = 관계) · 커스텀·출처 = 목록 + 상세 ──
+// 라우트 #_me/<탭>[/<id>](탭 = summary·principle·decision·axis·custom·person·source). 옛 #_me/<journal|q|cand|refl>/<id> 는 그 데이터 상세 —
+// 그래프 노드·근거 링크가 닿는 곳(하위 탭 줄 아래 단독). #_me/item/<id> 는 그 항목의 탭으로 replace.
+// 이 화면은 읽기만 — 쓰기는 상세의 기존 동작 버튼(PR①)뿐. 연결 = 저장된 관계만(추정 연결 없음). 고른 데이터는 주소(hash)에만 남는다.
+// 서버 접점은 meSync() 한 곳: GET /api/me/layout · GET /api/me/stats. 없거나 못 읽으면 코드 기본 레이아웃 · S 로 센 축 건수(같은 규칙).
+const ME_TABS = ["summary", "principle", "decision", "axis", "custom", "person", "source"];
+const ME_TAB_LABEL = {summary: "요약", principle: "기준", decision: "결정", axis: "축", custom: "커스텀", person: "사람", source: "출처"};
+const ME_BLOCKS = ["heatmap", "kinds", "waiting", "recent"];
+const ME_LAYOUT_DEFAULT = {v: 1, tabs: ME_TABS.slice(), blocks: {summary: ME_BLOCKS.slice()}};
+const ME_STD = {principle: "std:principles", decision: "std:decision_events", axis: "std:axes"};   // 기본 종류 = 표준 정의(std_id)
+const ME_LOCKED = new Set(["principle", "decision", "axis", "person", "source"]);   // 「기본 🔒」 — 커스텀이 아닌 종류(요약은 종류가 아니다)
+const ME_LENS = {principle: "근거 역추적", decision: "근거 역추적", axis: "축 묶음", person: "사람 관계"};
+const ME_EMPTY = "아직 표시할 데이터가 없어요. 데이터가 들어오면 여기서 볼 수 있어요.";
+const ME_AX_COLORS = 8;   // 축 색 = 코드 순 1~8, 9번째부터 회색(건수와 무관하게 고정)
+const ME = {layout: null, version: 0, stats: null, layoutApi: false, statsApi: false};
+const meLayoutValid = l => !!(l && Array.isArray(l.tabs) && l.tabs.length === ME_TABS.length && new Set(l.tabs).size === ME_TABS.length && l.tabs.every(t => ME_TABS.includes(t)));
+// 서버 접점 — 레이아웃·통계를 받는다. 실패·없음은 폴백(화면은 그대로 뜬다). load() 가 상태와 같이 부른다
+async function meSync() {
+  const [l, s] = await Promise.all([getJSON("/api/me/layout"), getJSON("/api/me/stats")]);
+  ME.layoutApi = !!(l && l.ok); ME.statsApi = !!(s && s.ok);
+  ME.layout = ME.layoutApi && meLayoutValid(l.j.layout) ? l.j.layout : null;
+  ME.version = ME.layoutApi ? Number(l.j.version) || 0 : 0;
+  ME.stats = ME.statsApi && s.j && Array.isArray(s.j.axes) ? s.j : null;
+}
+const meLayout = () => ME.layout || ME_LAYOUT_DEFAULT;
+const meStats = () => ME.stats || meStatsFromS();
+const meDefs = () => defsList().filter(d => !d.archived_at);
+const meStdDef = tab => meDefs().find(d => d.std_id === ME_STD[tab]) || null;
+const meCustomDefs = () => meDefs().filter(d => !Object.values(ME_STD).includes(d.std_id));
+const meItemsOf = defId => (S.items || []).filter(it => it.object_id === defId);
+const meCodeCmp = (a, b) => (a.code ? 0 : 1) - (b.code ? 0 : 1) || String(a.code || "").localeCompare(String(b.code || ""), "ko", {numeric: true});
+const meSorted = xs => xs.map((x, i) => [x, i]).sort((p, q) => meCodeCmp(p[0], q[0]) || p[1] - q[1]).map(p => p[0]);
+function meTabOfItem(it) {
+  const d = it && defById(it.object_id);
+  for (const t of ["principle", "decision", "axis"]) if (d && d.std_id === ME_STD[t]) return t;
+  return "custom";
+}
+// 폴백 통계(서버 /api/me/stats 가 없을 때) — 축 = 그 축에 직접 연결된 고유 항목·글 수(양방향 저장 관계, 자기 자신·간접 제외). 읽기 자료는 ② 전 0.
+// S.items·S.record_links 는 사용자 전체 범위(기록 50편 로드와 무관). 히트맵·종류·기다리는 결정은 서버 값만 그린다(S 에 날짜 키가 없다)
+function meStatsFromS() {
+  const ax = meStdDef("axis");
+  const axes = ax ? meSorted(meItemsOf(ax.id)).map(a => {
+    const items = new Set(), recs = new Set();
+    for (const it of S.items || []) if (it.id !== a.id) for (const l of it.links || []) if (l.target_kind === "item" && l.target_id === a.id) items.add(it.id);
+    for (const l of a.links || []) { if (l.target_kind === "item" && l.target_id !== a.id) items.add(l.target_id); if (l.target_kind === "record") recs.add(l.target_id); }
+    for (const l of S.record_links || []) if (l.target_kind === "item" && l.target_id === a.id) recs.add(l.record_id);
+    return {id: a.id, code: a.code, title: a.title, items: items.size, records: recs.size, readings: 0, n: items.size + recs.size};
+  }) : [];
+  return {axes, heatmap: null, kinds: null, waiting: null};
+}
+// 축 목록(코드 순) — 서버 값이면 서버 순서를 코드 순으로 한 번 더 고정한다(색 배정이 건수·응답 순서와 무관하게)
+const meAxes = () => meSorted((meStats().axes || []).slice());
+const meAxColor = i => i < ME_AX_COLORS ? `var(--ax${i + 1})` : "var(--soft)";
+const meAxShort = t => String(t || "").replace(/\s*\(.*\)\s*$/, "").replace(/\s+—\s+.*$/, "");
+const meAxTip = a => `${a.code ? a.code + " " : ""}${meAxShort(a.title)} · 항목 ${a.items} · 글 ${a.records} · 읽기 자료 ${a.readings || 0}`;
+function meAxisBand(selId) {
+  const axes = meAxes();
+  if (!axes.length) return "";
+  const tot = axes.reduce((s, a) => s + (a.n || 0), 0);
+  const strip = tot ? axes.map((a, i) => a.n ? `<span style="flex:${a.n} 1 0;background:${meAxColor(i)}" title="${esc(meAxTip(a))}"></span>` : "").join("") : "";
+  const chips = axes.map((a, i) => `<a href="#_me/axis/${esc(a.id)}" class="${a.n ? "" : "zero"}"${a.id === selId ? ' aria-current="true"' : ""} title="${esc(meAxTip(a))}" aria-label="축 ${esc(meAxTip(a))}">
+    <i style="background:${meAxColor(i)}"></i>${a.code ? `<b>${esc(a.code)}</b>` : ""}<span class="axt">${esc(meAxShort(a.title))}</span><span class="v">${esc(a.n || 0)}</span></a>`).join("");
+  return `<section class="meaxis" aria-label="축별 연결 건수"><div class="axrow"><span class="axl">축</span>
+    <div class="axstrip${tot ? "" : " none"}" role="img" aria-label="${esc(`축별 연결 비율 · 합 ${tot}`)}">${strip}</div></div><div class="axchips">${chips}</div></section>`;
+}
+// 하위 탭 — 순서 = 레이아웃. 건수 = 그 종류 전체(못 읽은 종류는 숫자 없음)
+function meTabCount(t) {
+  if (t === "summary") return null;
+  if (t === "person") return Array.isArray(S.people) ? S.people.length : null;
+  if (t === "source") return Array.isArray(S.sources) ? S.sources.length : null;
+  if (!ok("items") || !Array.isArray(S.items)) return null;
+  if (t === "custom") return meCustomDefs().reduce((s, d) => s + meItemsOf(d.id).length, 0);
+  const d = meStdDef(t);
+  return d ? meItemsOf(d.id).length : 0;
+}
+function meSubtabs(cur) {
+  return `<nav class="mesub" aria-label="「나」 하위 탭">${meLayout().tabs.map(t => {
+    const n = meTabCount(t), on = t === cur;
+    return `<a href="#_me/${t}"${on ? ' aria-current="page" class="on"' : ""}>${esc(ME_TAB_LABEL[t])}${ME_LOCKED.has(t) ? `<span class="lk" title="기본" aria-label="기본">🔒</span>` : ""}${n === null ? "" : `<span class="n">${esc(n)}</span>`}</a>`;
+  }).join("")}</nav>`;
+}
+// 한 행의 연결 수(목록 오른쪽 숫자 · 연결 최다 진입) — 저장된 관계만. 축 = 통계 n, 사람 = 그 사람을 가리키는 항목, 출처 = 글 + 읽고 든 생각
+function meN(tab, id) {
+  if (tab === "axis") { const a = meAxes().find(x => x.id === id); return a ? a.n || 0 : 0; }
+  if (tab === "source") return (((S.source_counts || {}).by_source || {})[id] || 0) + reflList().filter(x => x.source_id === id).length;
+  if (tab === "person") { const c = meExtra["p:" + id]; return c && c.ok ? c.count + c.records.length + c.items.length : null; }   // 사람 연결은 열어 봐야 안다(S 에 없다)
+  return new Set(graphEdges("item", id).map(e => e.node.key)).size;
+}
+// 탭의 행 — {id, title, code, meta, x}
+function meRows(tab) {
+  if (tab === "person") return peopleList().map(p => ({id: p.id, title: p.alias, code: "", meta: "", x: p}));
+  if (tab === "source") return (S.sources || []).map(s => ({id: s.id, title: s.name, code: "", meta: SRC_KIND[s.kind] || s.kind, x: s}));
+  if (tab === "custom") return meCustomDefs().flatMap(d => meSorted(meItemsOf(d.id)).map(it => ({id: it.id, title: it.title || "(제목 없음)", code: it.code, meta: d.label, grp: d.id, x: it})));
+  const d = meStdDef(tab);
+  return d ? meSorted(meItemsOf(d.id)).map(it => ({id: it.id, title: it.title || "(제목 없음)", code: it.code,
+    meta: tab === "principle" ? (it.decision === "confirmed" ? "확정" : it.decision === "excluded" ? "남기지 않음" : "확정 전") : "", x: it})) : [];
+}
+// 진입 — 주소의 id 가 그 탭에 있으면 그것, 없으면 연결 최다(같으면 앞 행). 50편 로드와 무관한 값으로만 센다
+function mePick(tab, rows, want) {
+  if (want) return rows.find(r => r.id === want) || null;
+  let best = null, bn = -1;
+  for (const r of rows) { const n = meN(tab, r.id) || 0; if (n > bn) { best = r; bn = n; } }   // 사람처럼 아직 모르는 수는 0 으로(같으면 앞 행)
+  return best;
+}
+const meExtra = {};   // "p:<사람 id>" → {ok, acts, count, records, items} — /api/people/{id}/context(이 화면에 머무는 동안)
+const meBusy = new Set();
+async function meLoadPerson(id) {
+  const key = "p:" + id;
+  if (meBusy.has(key)) return;
+  meBusy.add(key);
+  const seq = renderSeq, res = await getJSON(`/api/people/${encodeURIComponent(id)}/context`);
+  meBusy.delete(key);
+  if (!res) return;
+  meExtra[key] = res.ok ? {ok: true, acts: res.j.activities || [], count: res.j.activity_count || 0, records: res.j.records || [], items: res.j.items || []} : {ok: false};
+  if (seq === renderSeq && route().tab === "_me") homeRerender();
+}
+// 오른쪽 묶음 — 같은 연결 목록(graphEdges)을 자료 종류별로. 한 이웃이 여러 관계면 한 줄에 관계를 모은다
+function meGroups(edges, title) {
+  if (!edges.length) return `<aside class="mgroups" aria-label="${esc(title)}"><h3 class="mgh">${esc(title)}</h3><div class="empty">연결된 데이터가 없어요.</div></aside>`;
+  const groups = new Map();
+  for (const e of edges) {
+    const g = groups.get(e.node.kindName) || new Map();
+    const row = g.get(e.node.key) || {node: e.node, rels: []};
+    const rel = `${e.rel} · ${e.dir === "out" ? "가리킴" : "가리켜짐"}`;
+    if (!row.rels.includes(rel)) row.rels.push(rel);
+    g.set(e.node.key, row); groups.set(e.node.kindName, g);
   }
-  render();
+  const li = r => `<li>${r.node.href ? `<a href="${esc(r.node.href)}" data-lazy-key="${esc(r.node.lazy ? r.node.key : "")}">${esc(r.node.label)}</a>` : esc(r.node.label)}
+      <span class="hk">${esc(r.rels.join(" · "))}</span></li>`;
+  return `<aside class="mgroups" aria-label="${esc(title)}"><h3 class="mgh">${esc(title)}</h3>${[...groups].map(([k, g]) => `<section class="mgrp"><h4>${esc(k)}<span class="count">${g.size}</span></h4>
+    ${meFold([...g.values()].map(li))}</section>`).join("")}</aside>`;
+}
+// 긴 목록 — 앞 8줄 + 나머지는 접힘(펼치면 전부). 쓰기 없음
+const ME_FOLD = 8;
+const meFold = lis => `<ul class="hconnlist">${lis.slice(0, ME_FOLD).join("")}</ul>${lis.length > ME_FOLD ? `<details class="mfold"><summary>나머지 ${lis.length - ME_FOLD}개 보기</summary><ul class="hconnlist">${lis.slice(ME_FOLD).join("")}</ul></details>` : ""}`;
+function meListHtml(tab, rows, sel) {
+  const label = ME_TAB_LABEL[tab], n = rows.length;
+  let body = "";
+  if (!rows.length) body = `<div class="empty">${ME_EMPTY}</div>`;
+  else {
+    let grp = null;
+    body = `<ul class="hrows">${rows.map(r => {
+      const head = tab === "custom" && r.grp !== grp ? `<li class="mgrph">${esc(r.meta)}<span class="count">${meItemsOf(r.grp).length}</span></li>` : "";
+      grp = r.grp;
+      const ax = tab === "axis" ? meAxes().findIndex(a => a.id === r.id) : -1;
+      const n = meN(tab, r.id);
+      return head + `<li><a href="#_me/${tab}/${esc(r.id)}" data-home-row${sel && sel.id === r.id ? ' aria-current="true"' : ""}>
+        <span class="ht">${ax >= 0 ? `<i class="axdot" style="background:${meAxColor(ax)}"></i>` : ""}${r.code ? `<span class="cd">${esc(r.code)}</span> ` : ""}${esc(r.title)}</span>
+        <span class="hk">${[tab === "custom" ? "" : r.meta, n === null ? "" : `연결 ${n}`].filter(Boolean).map(esc).join(" · ")}</span></a></li>`;
+    }).join("")}</ul>`;
+  }
+  return `<section class="hlist mlist" id="home-list" aria-labelledby="me-list-h"><div class="htools"><h3 id="me-list-h">${esc(label)}${ME_LOCKED.has(tab) ? ' <span class="lk" aria-label="기본">🔒</span>' : ""}</h3><span class="count">${n}</span></div>${body}</section>`;
+}
+const meBack = tab => homeMobile() ? `<p class="hback"><button class="secondary" type="button" data-home-back data-to="#_me/${esc(tab)}">목록</button></p>` : "";
+// 가운데 — 고른 데이터. 항목이면 PR① 상세(제목·필드·동작) + 연결 그래프(상한·생략), 사람·출처는 머리 + 연결
+function meCenter(tab, sel) {
+  if (tab === "person") {
+    const p = sel.x, c = meExtra["p:" + p.id];
+    if (!c) meLoadPerson(p.id);
+    const edges = graphEdges("person", p.id);
+    const graph = !c ? LOADING : !c.ok ? `<div class="empty">연결을 불러오지 못했어요. <button class="tertiary" type="button" data-conn-retry="p:${esc(p.id)}">다시 시도</button></div>`
+      : meGraph({k: "person", id: p.id}, edges, c.count - c.acts.length);
+    return `<div class="hkind">사람<span class="chip lens">${esc(ME_LENS.person)}</span></div><h2 class="title">${esc(p.alias)}</h2>
+      <p class="recmeta">${esc(mdhm(p.created))} 추가 · <a href="#_obj/person/${esc(p.id)}">별칭 고치기·삭제</a></p>${graph}`;
+  }
+  if (tab === "source") {
+    const x = sel.x, recs = homeRecords().filter(j => j.source_id === x.id), total = ((S.source_counts || {}).by_source || {})[x.id] || 0;
+    const rs = reflList().filter(r => r.source_id === x.id);
+    const recBox = recs.length ? `${meFold(recs.map(j => `<li><a href="#_me/journal/${esc(j.id)}">${esc(j.title || j.excerpt || "(제목 없음)")}</a><span class="hk">${esc(md(j.created))}</span></li>`))}
+      ${total > recs.length ? `<p class="hint">불러온 글만 보여요. 이 출처의 글은 모두 ${esc(total)}편이에요.</p>` : ""}`
+      : `<div class="empty">${total ? `불러온 글 중엔 이 출처의 글이 없어요(모두 ${esc(total)}편).` : "이 출처의 글이 없어요."}</div>`;
+    const reflBox = rs.length ? meFold(rs.map(r => `<li><a href="#_me/refl/${esc(r.id)}">${esc(firstLine(r.body) || "(내용 없음)")}</a><span class="hk">${esc(REFL_KIND[r.kind] || r.kind)} · ${esc(r.review === "reviewed" ? "확인했어요" : "확인 전")}</span></li>`))
+      : `<div class="empty">아직 없어요.</div>`;
+    return `<div class="hkind">출처 · ${esc(SRC_KIND[x.kind] || x.kind)}</div><h2 class="title">${esc(x.name)}</h2>
+      <p class="recmeta">${x.location ? `${esc(x.location)} · ` : ""}<a href="#_obj/source/${esc(x.id)}">읽고 든 생각 쓰기</a></p>
+      <section class="msec"><h3>내가 쓴 글<span class="count">${esc(total)}</span></h3>${recBox}</section>
+      <section class="msec"><h3>읽고 든 생각<span class="count">${rs.length}</span></h3>${reflBox}</section>
+      <section class="msec" id="me-src-ctx">${LOADING}</section>`;
+  }
+  const r = homeRows().find(x => x.k === "item" && x.id === sel.id);
+  return r ? homeDetailHtml(r, ME_LENS[tab] || "list") : HOME_GONE;
+}
+// 렌즈 그래프 — PR① graphSvg 와 같은 상한(넓은 화면 25노드·40연결 · 1열 12·18)·생략 표시·종류 거르기. 목록 = 오른쪽 묶음
+function meGraph(center, all, hiddenActs) {
+  if (!all.length && !hiddenActs) return `<div class="empty">연결된 데이터가 없어요.</div>`;
+  const [maxN, maxE] = homeMobile() ? GRAPH_CAP.narrow : GRAPH_CAP.wide;
+  const kinds = [...new Set(all.map(e => e.node.kind))];
+  if (homeConnKind && !kinds.includes(homeConnKind)) homeConnKind = "";
+  const pool = homeConnKind ? all.filter(e => e.node.kind === homeConnKind) : all;
+  const nodes = [], seen = new Set(), edges = [];
+  for (const e of pool) {
+    if (!seen.has(e.node.key)) { if (nodes.length >= maxN - 1) continue; seen.add(e.node.key); nodes.push(e.node); }
+    if (edges.length < maxE && seen.has(e.node.key)) edges.push(e);
+  }
+  const hidden = Math.max(0, hiddenActs || 0);
+  const omitN = new Set(all.map(e => e.node.key)).size - nodes.length + hidden, omitE = all.length - edges.length + hidden;
+  const filter = (omitN > 0 || omitE > 0 || homeConnKind) && kinds.length > 1 ? `<div class="hconnf"><label class="sr" for="conn-kind">연결 종류</label><select id="conn-kind"><option value="">전체 종류</option>${kinds.map(k =>
+    `<option value="${k}"${k === homeConnKind ? " selected" : ""}>${esc(graphKindName(k, null))}</option>`).join("")}</select></div>` : "";
+  return graphSvg(graphNode(center.k, center.id), {nodes, edges}) + (omitN > 0 || omitE > 0 ? `<p class="hint">노드 ${omitN}개·연결 ${omitE}개 생략 — 옆 목록에 전부 있어요.</p>` : "") + filter;
+}
+// 항목 렌즈의 가운데 연결 — 축이면 그 축의 활동을 기존 API 로 받아 같이 그린다(PR① 과 같은 경로)
+function meLensConn(r, lens) {
+  const it = r.x, axis = graphIsAxis(it);
+  if (axis && !homeConnExtra[it.id]) graphLoadExtra(it.id);
+  const extra = axis ? homeConnExtra[it.id] : null;
+  const fail = extra && !extra.ok ? `<div class="empty">연결을 불러오지 못했어요. <button class="tertiary" type="button" data-conn-retry="${esc(it.id)}">다시 시도</button></div>` : "";
+  const hidden = extra && extra.ok ? Math.max(0, extra.count - extra.acts.length) : 0;
+  const body = axis && !extra ? LOADING : meGraph({k: "item", id: it.id}, graphEdges("item", it.id), hidden);
+  return `<section class="hconn" aria-labelledby="hconn-h"><div class="sechead"><h3 id="hconn-h">연결</h3><span class="chip lens">${esc(lens)}</span></div>${body}${fail}</section>`;
+}
+function meLensEdges(tab, sel) {
+  if (tab === "person") return graphEdges("person", sel.id);
+  if (tab === "source") return [];
+  return graphEdges("item", sel.id);
+}
+function renderMeV9(tab, a, b) {
+  subnav("");
+  if (a && !b && srcById(a)) { location.replace("#_obj/source/" + a); return; }   // 옛 「나」 홈 출처 고르기 링크
+  if (a === "item" && b) { const it = itemById(b); if (it && it.revision) { location.replace(`#_me/${meTabOfItem(it)}/${encodeURIComponent(b)}`); return; } }
+  const L = meLayout(), mobile = homeMobile();
+  const name = (S.user && S.user.display_name) || "";
+  const head = homeEditing("name") ? `<div class="hhead hhead-edit">${homeEditor()}${msgLine()}</div>`
+    : `<div class="hhead"><h2 title="${esc(name)}">${homeEditable("name", esc(name), "hname")}</h2>${msgLine()}</div>`;
+  if (HOME_URLKIND.includes(a) && b) return meRenderRecord(head, a, b);
+  const t = ME_TABS.includes(a) ? a : L.tabs[0];
+  if (a && !ME_TABS.includes(a)) { location.replace("#_me/" + t); return; }
+  const rows = t === "summary" ? [] : meRows(t);
+  const want = b || "";
+  let sel = t === "summary" || (mobile && !want) ? null : mePick(t, rows, want);   // 1열 첫 진입 = 목록만
+  if (!want && sel) { location.replace(`#_me/${t}/${encodeURIComponent(sel.id)}`); return; }   // 넓은 화면 진입 = 연결 최다 — 주소에 남긴다
+  const axSel = t === "axis" && sel ? sel.id : "";
+  let body;
+  if (t === "summary") body = meSummary();
+  else if (!rows.length) body = `<div class="paper"><div class="empty">${ME_EMPTY}</div></div>`;
+  else {
+    const gone = want && !sel;
+    const showList = !mobile || !want, showDetail = !mobile || !!want;
+    const lens = !!ME_LENS[t];
+    const center = gone ? HOME_GONE : sel ? meCenter(t, sel) : "";
+    const groups = lens && sel ? meGroups(meLensEdges(t, sel), t === "axis" ? "이 축에 묶인 데이터" : t === "person" ? "이 사람과의 관계" : "근거·연결") : "";
+    body = `<div class="melens${lens ? " three" : ""}">${showList ? meListHtml(t, rows, sel) : ""}
+      ${showDetail ? `<section class="paper hdetail mcenter" id="home-detail" aria-live="polite">${meBack(t)}${center}</section>${groups}` : ""}</div>`;
+  }
+  $("view").innerHTML = head + meSubtabs(t) + meAxisBand(axSel) + body;
+  const key = sel ? `#_me/${t}/${sel.id}` : "";
+  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; }
+  if (sel) graphFillLazy();
+  if (sel && t === "source") fill("me-src-ctx", `/api/sources/${encodeURIComponent(sel.id)}/context`, j => sourceCtx(j, sel.id), "이 출처의 활동");
+  if ($("home-list")) $("home-list").scrollTop = homeListTop;
+  homeScrollTo = mobile && !want ? homeListY : null;
+  const hi = $("hedit-input");
+  if (hi && homeEdit && !homeEdit.busy) { hi.focus({preventScroll: true}); const n = hi.value.length; hi.setSelectionRange(n, n); }
+}
+// 옛 상세 — 내가 쓴 글·질문·판단·읽고 든 생각(하위 탭 7 에 없는 종류). 그래프 노드·근거 링크가 여기로 온다
+function meRenderRecord(head, k, id) {
+  const r = homeRows().find(x => x.k === k && x.id === id) || null;
+  const loose = !r && k === "journal";
+  const detail = r ? homeDetailHtml(r) : loose ? LOADING : HOME_GONE;
+  $("view").innerHTML = head + meSubtabs("") + `<section class="paper hdetail msolo" id="home-detail" aria-live="polite">${homeBack()}${detail}</section>`;
+  const key = location.hash;
+  if (key !== homeConnAt) { homeConnKind = ""; homeConnAt = key; }
+  if (r) graphFillLazy();
+  if (r && k === "journal") homeLoadRec(id, false);
+  else if (loose) homeLoadRec(id, true);
+  const hi = $("hedit-input");
+  if (hi && homeEdit && !homeEdit.busy) { hi.focus({preventScroll: true}); const n = hi.value.length; hi.setSelectionRange(n, n); }
+}
+// 요약 — S3 에서 차트 4(히트맵·종류별 막대·기다리는 결정 띠·최근 변경 5). 블록 순서 = layout.blocks.summary
+function meSummary() {
+  return `<div class="mesum" id="me-summary"></div>`;
 }
 // ── /「나」 홈 (PR①) ──
 // 한 출처의 내 기록 · 내 요약 · 내 반응 — 「나」 홈 출처별 탭과 출처 상세가 같이 쓴다
@@ -3298,7 +3519,6 @@ document.addEventListener("keydown", e => {   // Esc = 취소(요청 0)
 });
 window.addEventListener("beforeunload", e => { if (homeDirty()) { e.preventDefault(); e.returnValue = ""; } });   // 새로 고침·닫기
 document.addEventListener("change", e => {   // 「나」 홈 종류 선택 — 읽기만(쓰기 요청 없음)
-  if (e.target.id === "home-kind") homeSetKind(e.target.value);
   if (e.target.id === "conn-kind") { homeConnKind = e.target.value; homeRerender(); const n = $("conn-kind"); if (n) n.focus(); }
 });
 document.addEventListener("change", e => {   // 「나」 홈 출처 찾기 — 목록의 이름과 같으면 그 출처로
@@ -3309,8 +3529,6 @@ document.addEventListener("change", e => {   // 「나」 홈 출처 찾기 — 
 document.addEventListener("click", e => {
   const hr = e.target.closest("a[data-home-row]");   // 「나」 홈 목록 행 — 이동은 링크 그대로, 돌아올 자리만 적어 둔다
   if (hr) { homeFromList = true; homeListY = window.scrollY; homeListTop = $("home-list") ? $("home-list").scrollTop : 0; return; }
-  const hm = e.target.closest("button[data-home-more]");
-  if (hm) { if (!hm.disabled) homeMore(hm); return; }
   const ed = e.target.closest("[data-edit]");
   if (ed && !ed.disabled) { if (homeEdit) { const i = $("hedit-input"); if (i) i.focus(); } else homeEditStart(ed.dataset.edit); return; }
   if (e.target.closest("button[data-edit-cancel]")) { if (homeEdit && !homeEdit.busy) { homeEdit = null; homeRerender(); } return; }   // 취소 = 마지막 저장 값으로(요청 0)
@@ -3318,11 +3536,10 @@ document.addEventListener("click", e => {
   if (ha) { if (!ha.disabled) homeDo(ha); return; }
   if (e.target.closest("button[data-conn-mode]")) { homeConnMode = homeConnMode === "graph" ? "list" : "graph"; homeRerender(); const b = document.querySelector("button[data-conn-mode]"); if (b) b.focus(); return; }
   const cr = e.target.closest("button[data-conn-retry]");
-  if (cr) { delete homeConnExtra[cr.dataset.connRetry]; homeRerender(); return; }
-  const hk = e.target.closest("button[data-home-kind]");
-  if (hk) { homeSetKind(hk.dataset.homeKind); return; }
-  if (e.target.closest("button[data-home-back]")) {
-    if (homeFromList) { homeFromList = false; history.back(); } else location.hash = "#_me";
+  if (cr) { const k = cr.dataset.connRetry; if (k.startsWith("p:")) delete meExtra[k]; else delete homeConnExtra[k]; homeRerender(); return; }
+  const hb = e.target.closest("button[data-home-back]");
+  if (hb) {
+    if (homeFromList) { homeFromList = false; history.back(); } else location.hash = hb.dataset.to || "#_me";
     return;
   }
   const co = e.target.closest("button[data-core]");
