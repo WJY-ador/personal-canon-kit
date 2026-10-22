@@ -110,6 +110,32 @@ def snapshot(c, uid, index=None):
     return {"definitions_version": sha(body), **body}
 
 
+# 대상 후보(메인 판정 2026-10-22, PC B6 발견) — 모델이 실제 ID 로 update·연결할 수 있게 정의 스냅샷 응답에 싣는다. 본문 없음.
+# definitions_version 해시에는 넣지 않는다(후보는 매 조회 최신, candidates_at 시각만). 수신 검증은 여전히 실데이터로(후보 밖 ID = 기존 규칙).
+CAND_PER_OBJECT, CAND_ITEMS_MAX, CAND_PEOPLE_MAX, CAND_SOURCES_MAX, CAND_TITLE_MAX = 200, 500, 200, 200, 80
+
+
+def candidates(c, uid, index):
+    """{items:[{id, object_id, code, title, stage}], people:[{id, alias}], sources:[{id, title}]} — 그 사용자 것만.
+    항목 = 스냅샷 오브젝트(적용·미보관)의 적용·미보관 항목, 오브젝트별 최근 갱신순 ≤ CAND_PER_OBJECT · 전체 ≤ CAND_ITEMS_MAX. 제목 80자 자름."""
+    items = []
+    for oid in index:
+        left = CAND_ITEMS_MAX - len(items)
+        if left <= 0:
+            break
+        items += db._all(c, "SELECT id, object_id, code, title FROM items WHERE user_id=%s AND object_id=%s AND revision > 0 "
+                            "AND archived_at IS NULL ORDER BY updated_at DESC, id LIMIT %s", (uid, oid, min(CAND_PER_OBJECT, left)))
+    out = []
+    for it in items:
+        out.append({"id": it["id"], "object_id": it["object_id"], "code": it["code"], "title": (it["title"] or "")[:CAND_TITLE_MAX],
+                    "stage": stage_get(c, uid, it["id"])})
+    people = [{"id": r["id"], "alias": r["alias"][:CAND_TITLE_MAX]} for r in db._all(
+        c, "SELECT id, alias FROM people WHERE user_id=%s ORDER BY updated DESC, id LIMIT %s", (uid, CAND_PEOPLE_MAX))]
+    sources = [{"id": r["id"], "title": r["name"][:CAND_TITLE_MAX]} for r in db._all(
+        c, "SELECT id, name FROM sources WHERE user_id=%s ORDER BY created DESC, id LIMIT %s", (uid, CAND_SOURCES_MAX))]
+    return {"items": out, "people": people, "sources": sources}
+
+
 # ── 결과 재검증 ─────────────────────────────────────────
 
 def _leak(path, v):

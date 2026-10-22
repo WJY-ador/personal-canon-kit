@@ -8808,7 +8808,8 @@ async def test_pr2b_stack_b2():
                     pr = next(o for o in D["objects"] if o["id"] == "od_principles")
                     assert pr["confirm_required"] and pr["protected_fields"] == ["code", "decision"] and pr["identity"] == [{"scheme": "code", "field": "code"}]
                     assert {x["key"] for x in pr["relations"]} == {"evidence_claims", "evidence_events", "axes"}
-                    assert (await dget(J["id"], "definitions", gen)).json() == D, "재발급 = 같은 값"
+                    nocand = lambda x: {k: v for k, v in x.items() if k not in ("candidates", "candidates_at")}   # noqa: E731
+                    assert nocand((await dget(J["id"], "definitions", gen)).json()) == nocand(D), "재발급 = 같은 값(후보는 매 조회 최신)"
                     with db.tx() as c:
                         assert c.execute("SELECT definitions_version FROM jobs WHERE id=%s", (J["id"],)).fetchone()["definitions_version"] == DV
                     r = await dget(J["id"], "input", gen)
@@ -9488,6 +9489,64 @@ async def test_pr2b_stack_r2():
     print("OK — 28 r2 보강(두 세션 같은 대상 = 뒤 확정 409·쓰기 0·앞 변경 보존 · 만료 정리 지연에도 확정 410·제외 차단·재노출 0) 통과")
 
 
+async def test_pr2b_stack_candidates():
+    """정의 스냅샷의 대상 후보(candidates) — 그 사용자 것만(남 0) · 적용·미보관 항목만(제안 revision 0·보관 제외) · 제목 80자 자름 · stage 포함
+    · 오브젝트별·전체·사람·출처 상한 · definitions_version 해시 밖(항목이 늘어도 해시 같음, 후보는 최신) · candidates_at · 본문 0."""
+    cleanup()
+    with SEED_ON():
+        U = db.user_by_email("tester@example.com")["id"]
+        O = db.user_by_email("other@example.com")["id"]
+    dev = imports.authenticate("Bearer " + imports.device_connect(U, "합성 후보")["token"])
+    ax = _pr2b_axis(U, "AX1", "합성 축 " + "길" * 100)
+    ax2 = _pr2b_axis(U, "AX2", "합성 축 둘")
+    gone = _pr2b_axis(U, "AX3", "합성 보관 축")
+    db.item_decide(U, gone, 1, None, "archive")
+    rev = db.definitions(U, ["od_axes"])[0]["revision"]
+    draft = db.item_propose(U, "od_axes", rev, None, 0, None, "합성 제안만", "본문 CANDBODY", {}, [])["item_id"]
+    other = _pr2b_axis(O, "AX1", "남 축")
+    p1 = db.person_save(U, "합성 사람")["id"]
+    p_o = db.person_save(O, "남 사람")["id"]
+    s1 = db.source_create(U, "other", "합성 출처")["id"]
+    saved = (stack_service.CAND_PER_OBJECT, stack_service.CAND_ITEMS_MAX, stack_service.CAND_PEOPLE_MAX, stack_service.CAND_SOURCES_MAX)
+    try:
+        with _job_switch("CONVERSE_ENABLED"):
+            j = db.job_create(U, "converse", "합성 후보 대화")
+            a = db.job_assign(dev)
+            g = a["lease"]["generation"]
+            db.job_input(dev, j["id"], g)
+            d1 = db.job_definitions(dev, j["id"], g)
+            C = d1["candidates"]
+            assert set(d1) == {"definitions_version", "rule_version", "objects", "content_rules", "candidates", "candidates_at"}
+            assert set(C) == {"items", "people", "sources"} and d1["candidates_at"]
+            ids = {x["id"] for x in C["items"]}
+            assert {ax, ax2} <= ids and gone not in ids and draft not in ids and other not in ids, ids
+            one = next(x for x in C["items"] if x["id"] == ax)
+            assert set(one) == {"id", "object_id", "code", "title", "stage"} and one["code"] == "AX1" and one["object_id"] == "od_axes"
+            assert len(one["title"]) == 80 and one["stage"] == "organized", one
+            assert {x["id"] for x in C["people"]} == {p1} and C["people"][0]["alias"] == "합성 사람"
+            assert {x["id"] for x in C["sources"]} == {s1} and C["sources"][0]["title"] == "합성 출처"
+            assert p_o not in str(C) and "CANDBODY" not in str(d1), "남 데이터·본문 0"
+            new = _pr2b_axis(U, "AX4", "합성 축 넷")   # 항목이 늘어도 해시는 그대로(후보만 최신)
+            d2 = db.job_definitions(dev, j["id"], g)
+            assert d2["definitions_version"] == d1["definitions_version"] and new in {x["id"] for x in d2["candidates"]["items"]}
+            assert {k: v for k, v in d2.items() if k not in ("candidates", "candidates_at")} == \
+                {k: v for k, v in d1.items() if k not in ("candidates", "candidates_at")}
+            stack_service.CAND_PER_OBJECT, stack_service.CAND_ITEMS_MAX, stack_service.CAND_PEOPLE_MAX, stack_service.CAND_SOURCES_MAX = 2, 3, 0, 0
+            C3 = db.job_definitions(dev, j["id"], g)["candidates"]
+            per = {}
+            for x in C3["items"]:
+                per[x["object_id"]] = per.get(x["object_id"], 0) + 1
+            assert len(C3["items"]) <= 3 and all(n <= 2 for n in per.values()) and per.get("od_axes") == 2, per
+            assert [x["id"] for x in C3["items"] if x["object_id"] == "od_axes"] == [new, ax2], "오브젝트별 최근 갱신순"
+            assert C3["people"] == [] and C3["sources"] == []
+            stack_service.CAND_ITEMS_MAX = 1
+            assert len(db.job_definitions(dev, j["id"], g)["candidates"]["items"]) == 1, "전체 상한"
+            db.job_cancel(U, j["id"])
+    finally:
+        stack_service.CAND_PER_OBJECT, stack_service.CAND_ITEMS_MAX, stack_service.CAND_PEOPLE_MAX, stack_service.CAND_SOURCES_MAX = saved
+    print("OK — 28 대상 후보(남 0·적용·미보관만·제목 80자·stage·상한 오브젝트별·전체·사람·출처·최근 갱신순·해시 밖·candidates_at·본문 0) 통과")
+
+
 async def test_pr2b_stack():
     """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리 · B3 확정 트랜잭션·판 이력·stage·인용 · B6 경계·되돌림)."""
     test_pr2b_stack_b1()
@@ -9495,6 +9554,7 @@ async def test_pr2b_stack():
     await test_pr2b_stack_b3()
     await test_pr2b_stack_b6()
     await test_pr2b_stack_r2()
+    await test_pr2b_stack_candidates()
 
 
 def Web_polls_empty():

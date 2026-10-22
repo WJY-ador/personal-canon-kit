@@ -4192,7 +4192,8 @@ def _preview_insert(c, uid, job, sess_id, rv, version, gen, units, changes, bloc
 
 def job_definitions(dev, job_id, gen):
     """GET definitions — 정의 스냅샷. 임대 유효(leased·running·장치·세대·만료 전)일 때만. 최초 발급 때 jobs.definitions_version 에 해시를 고정하고,
-    다시 부르면 지금 해시가 같을 때 같은 응답, 다르면 JOB-DEFS(재정리 요구). 스냅샷 본문은 저장하지 않는다."""
+    다시 부르면 지금 해시가 같을 때 같은 응답, 다르면 JOB-DEFS(재정리 요구). 스냅샷 본문은 저장하지 않는다.
+    + candidates(대상 후보, 해시 밖 — 매 조회 최신)·candidates_at."""
     import stack_service as ss
     jid = _job_uuid(job_id)
     with tx() as c:
@@ -4204,7 +4205,9 @@ def job_definitions(dev, job_id, gen):
             c.execute("UPDATE jobs SET definitions_version=%s WHERE id=%s", (snap["definitions_version"], jid))
         elif j["definitions_version"] != snap["definitions_version"]:
             raise ss.defs_changed()
-    return snap
+        cands = ss.candidates(c, dev["user_id"], {o["id"]: None for o in snap["objects"]})
+        at = now().isoformat()
+    return {**snap, "candidates": cands, "candidates_at": at}
 
 
 def _job_result_stack(dev, jid, body):
