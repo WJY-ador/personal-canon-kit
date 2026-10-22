@@ -164,9 +164,6 @@ async def test_records_api():
     print("OK — /api/records(401·no-store·기본 = state journal·next_before 커서 이어 받기 겹침 0·동률 경계·limit 끝값·틀린 before 400·지운·남의 기록 0·state journal_next_before) 통과")
 
 
-ME_NOTICE_TXT = "연결된 활동과 내가 쓴 글을 정해진 계산 규칙으로 보여 줍니다."   # 서버 activity.NOTICE 미러(test_web_import 가 같은 문장을 본다) — 서버 문구가 바뀔 때 같이
-
-
 def test_static():
     html = (HERE / "app.html").read_text(encoding="utf-8")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
@@ -220,7 +217,8 @@ def test_static():
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
     # S2 스크린샷 판정: 옆 묶음 = 종류별 5 + 「더 N」 1(그 목록만 펼침) · 활동 = 행동 · 날짜(문맥 API 값) + 부제 관계·사람 별칭
     # S6: 글 이름 하나 「내 글」(v9 P1) — 사용자 표시 라벨 자리별. 「내 글 AI 요약」·「내가 쓴 메모」(판단 출처 표시)는 그대로
-    assert "내가 쓴 글" not in js.replace(ME_NOTICE_TXT, "").replace('self_only: "내가 쓴 글만"', ""), "「내가 쓴 글」 0(서버 미러 문구 둘 제외)"
+    assert "내가 쓴 글" not in js.replace('self_only: "내가 쓴 글만"', ""), "「내가 쓴 글」 0(생성 정보 값 self_only 설명 하나 제외 — test_web_import 가 본다)"
+    assert "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다." in js, "ME_NOTICE = 서버 activity.NOTICE 미러"
     for w in ('"기록": "내 글"', 'kind: "내 글"', '"내 글 AI 요약"', '"내가 쓴 메모"', 'r.act', '"today:" + day'):
         assert w in js, w
     for w in ("const ME_SHOW = 5;", "data-me-open=", "meActs[a.id] = a", "a.action_label || actLabel(a.action)", "x.id !== selfPerson"):

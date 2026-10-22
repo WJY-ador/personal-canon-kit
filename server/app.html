@@ -3508,7 +3508,7 @@ function renderRefl(id) {
 // 서버 값은 전부 esc(…) 로만 HTML 에 넣는다. 날짜만 있는 값(YYYY-MM-DD)은 Date 로 바꾸지 않는다(시간대에 따라 하루 밀린다) — dOnly.
 // 성향 점수·친밀도·영향력은 그리지 않는다. 사람별·축별 합계를 전체 활동량으로 쓰지 않는다. 원문은 서버가 가져오지 않는다(PC 링크만).
 // 장치 토큰은 받은 그 화면에서만 그린다 — S·localStorage·coreFlash·주소에 넣지 않고, 다른 화면으로 가면 지운다(hashchange).
-const ME_NOTICE = "연결된 활동과 내가 쓴 글을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 저장 승인 대기에 표시합니다.";
+const ME_NOTICE = "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 저장 승인 대기에 표시합니다.";
 const RAW_LOCAL = "원문을 보관한 PC에서 열 수 있습니다";
 const RAW_PORT_KEY = "crm-raw-port";
 const RAW_PORT_DEFAULT = 8790;   // 로컬 에이전트(agent/) 원문 뷰어 기본 포트와 같다(메인 확정 2026-10-20 — board-dev 8787 을 피함)
