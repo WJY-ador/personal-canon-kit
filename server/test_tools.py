@@ -8208,9 +8208,6 @@ async def test_pr2a_jobs():
     cleanup()
     U = db.user_by_email("tester@example.com")["id"]
     O = db.user_by_email("other@example.com")["id"]
-    d1, d2, do = imports.device_connect(U, "합성 작업 1"), imports.device_connect(U, "합성 작업 2"), imports.device_connect(O, "남 작업")
-    T1, T2, TO = ({"authorization": "Bearer " + d["token"]} for d in (d1, d2, do))
-    D1 = d1["device"]["id"]
     site = main.site
     real = site.dev, site.dev_user
     origin = {"origin": PUBLIC}
@@ -8225,6 +8222,27 @@ async def test_pr2a_jobs():
                                             else h.post(f"/api/device/jobs/{jid}/{op}", headers=tk, **kw))
             new = lambda kind="converse", **kw: h.post("/api/jobs", json={"kind": kind, "text": TXT, **kw}, headers=origin)   # noqa: E731
             with _job_fast():
+                # ── 연결 장치 0 = 접수 거절(409 NO-DEVICE, 작업 행·임시 입력 0) · 연결 해제 장치만 = 0 과 같다 · 스위치 꺼짐이 먼저 ──
+                before = _job_rows(U)
+                with _job_switch():
+                    assert (await new()).json()["code"] == "SWITCH-OFF", "스위치 꺼짐이 장치 검사보다 먼저"
+                with _job_switch("CONVERSE_ENABLED", "ROUTINE_ENABLED"):
+                    for step in ("none", "revoked"):
+                        for kind in ("converse", "routine_ingest"):
+                            r = await new(kind)
+                            assert r.status_code == 409 and r.json()["code"] == "NO-DEVICE", (step, kind, r.text)
+                            assert r.json()["msg"] == "이 기능은 본인 PC에서 본인 Claude 구독으로 실행하며, PC 연결과 에이전트 실행이 필요합니다.", r.text
+                        assert _job_rows(U) == before, ("NO-DEVICE = 작업 행·임시 입력 0 생성", step)
+                        if step == "none":   # 등록만 된(오프라인 — 아직 수신 0) 장치 = 접수(대기). 그 뒤 연결 해제 = 다시 0
+                            gone = imports.device_connect(U, "합성 해제 장치")
+                            r = await new()
+                            assert r.status_code == 201, ("오프라인 장치 = 접수", r.text)
+                            await h.post(f"/api/jobs/{r.json()['id']}/cancel", headers=origin)
+                            imports.device_revoke(U, gone["device"]["id"])
+                            before = _job_rows(U)
+                d1, d2, do = imports.device_connect(U, "합성 작업 1"), imports.device_connect(U, "합성 작업 2"), imports.device_connect(O, "남 작업")
+                T1, T2, TO = ({"authorization": "Bearer " + d["token"]} for d in (d1, d2, do))
+                D1 = d1["device"]["id"]
                 # ── 스위치 꺼짐 ──
                 with _job_switch():
                     r = await new()
@@ -8549,6 +8567,7 @@ def test_pr2b_stack_b1():
     finally:
         drop_schema(name)
     # ── 한도 K3 ──
+    imports.device_connect(U, "합성 b1")   # 접수 = 연결 장치 1 이상(NO-DEVICE). 남(O)은 세션 검사(NOT-FOUND)가 먼저
     TXT = "합성 입력 STACKTEXT — 일반 테이블에 남으면 안 된다"
     with _job_switch("CONVERSE_ENABLED"):
         assert all(v is None for v in imports.JOB_REQUEST_LIMITS.values()) and set(imports.JOB_REQUEST_LIMITS) == set(db.JOB_KINDS)
@@ -9583,8 +9602,8 @@ async def test_serve_devices_status():
                 origin = {"origin": PUBLIC}
                 with _job_switch("CONVERSE_ENABLED"):
                     site.dev, site.dev_user = True, "other@example.com"   # 다른 사용자 임대 먼저 — U 에 영향 0
+                    do = imports.device_connect(O, "남 장치 상태 DSOTHER")   # 접수 = 연결 장치 1 이상(NO-DEVICE) — 장치 먼저
                     jo = (await h.post("/api/jobs", json={"kind": "converse", "text": "합성 DSJOB 남"}, headers=origin)).json()["id"]
-                    do = imports.device_connect(O, "남 장치 상태 DSOTHER")
                     DO, KO = do["device"]["id"], do["token"]
                     secrets_seen.append(KO.rsplit(".", 1)[1])
                     a = (await poll(KO)).json()

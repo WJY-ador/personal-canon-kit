@@ -1681,7 +1681,7 @@ class Web:
     # 폴링 버킷(GET /api/device/jobs · GET /api/jobs/<id>) = imports.POLL_LIMITS · 동시 롱폴 = imports.POLL_CONCURRENT(이 프로세스 메모리).
     # /input·/result·/fail 은 기존 장치 요청 버킷(imports._rate, 분당 10·30). 오류 = {code, msg} + _JOB_HTTP.
     _JOB_HTTP = {"JOB-LEASE": 409, "JOB-VERSION": 409, "JOB-GONE": 410, "SWITCH-OFF": 503, "LIMIT-UNSET": 503, "RATE-LIMIT": 429,
-                 "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413,
+                 "JOB-QUOTA": 429, "JOB-LIMIT": 429, "NOT-FOUND": 404, "PAYLOAD-LIMIT": 413, "NO-DEVICE": 409,
                  # PR ②-b 쌓기 단계·확인 1번
                  "JOB-DEFS": 409, "CONTRACT-INVALID": 400, "PREVIEW-NEEDS-RESTACK": 409, "CONFIRM-STALE": 409, "CONFIRM-CONFLICT": 409,
                  "CONFIRM-REQUEST-MISMATCH": 409, "IMPORT-QUOTA": 429, "QUOTA-GLOBAL": 507}
