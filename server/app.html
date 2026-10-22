@@ -4119,7 +4119,7 @@ async function chatSubmit(body, say) {
   CHAT.busy = "";
   if (!res) return false;
   if (!res.ok) {
-    if (res.code === "NOT-FOUND" && CHAT.sid) { chatReset(); chatLine("대화 세션이 끝났어요. 다시 보내면 새로 시작해요.", true); chatDraw(); return false; }
+    if ((res.code === "NOT-FOUND" || res.status === 410) && CHAT.sid) { chatReset(); chatLine("이 대화는 끝났어요(확정했거나 만료). 다시 보내면 새로 시작해요.", true); chatDraw(); return false; }
     if (res.code === "CONFIRM-STALE" && CHAT.sid) {   // 옛 편집 세대 — 다른 탭이 먼저 다시 정리했다
       chatLine("다른 탭에서 먼저 다시 정리했어요. 최신 결과를 불러올게요.", true);
       if (await chatRestore(CHAT.sid) === "shown") chatLine("다른 탭에서 더 새로 정리했어요 — 최신 결과로 바꿨어요. 확인하고 다시 고치거나 [확정]을 눌러 주세요.", true);
