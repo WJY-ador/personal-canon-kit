@@ -7088,7 +7088,7 @@ async def test_prb_app():
               "실명이 아니어도 돼요. 다른 사람에게 보이지 않고 운영자 화면에도 나오지 않아요.",
               '"/api/nav/accept"', '"/api/me/name"', '"/api/people', '"/api/reflections',
               'id: "_me"', 'id: "_obj"', 'id: "_settings"',
-              "if (navNew()) return [NAVTAB._me, NAVTAB._obj, BASE.map];",   # PR① 탭 3: 나 · 자료 종류 · 지도(「오늘」 없음)
+              "if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];",   # PR ①-b 탭 3: 나 · 오늘 · Setup(B1)
               'location.replace("#_settings/structure")', "function axisChips",
               "출처를 접한 뒤 내가 한 생각만 적어요. 다른 사람의 말·경험·생각을 옮기는 곳이 아니에요.",
               "별칭도 그 사람을 알아볼 수 있으면 개인정보예요.", "삭제 완료"):
