@@ -9318,11 +9318,121 @@ async def test_pr2b_stack_b3():
           " · 원문 바이트 그대로 · 확정 뒤 세션 끝·임시 0·410 · 판 이력 v2 · 인용 규칙 · 기존 경로 stage·lazy 통과")
 
 
+async def test_pr2b_stack_b6():
+    """B6 서버 몫(실패표 r3 서버 행 보강) — 만료 직전 재정리(원래 만료 유지·만료 뒤 수신·확정 410) · conversation·routine 우회 저장 불가
+    (inbox 생성 방법 고정·MCP record_add 인자 없음) · 스위치를 끈 뒤에도 확정 글·세션 조회·취소·만료 정리는 돈다(확정만 503)
+    · 「나」 축 띠 = 항목 + 정리 글(축 연결 axes)."""
+    import inspect
+    import uuid
+    cleanup()
+    with SEED_ON():
+        U = db.user_by_email("tester@example.com")["id"]
+    T1 = {"authorization": "Bearer " + imports.device_connect(U, "합성 B6")["token"]}
+    ax = _pr2b_axis(U, "AX1", "합성 축 하나")
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+
+            async def lease():
+                a = (await h.get("/api/device/jobs", params={"wait": 0}, headers=T1)).json()
+                q = {"lease_generation": a["lease"]["generation"]}
+                await h.get(f"/api/device/jobs/{a['id']}/input", params=q, headers=T1)
+                dv = (await h.get(f"/api/device/jobs/{a['id']}/definitions", params=q, headers=T1)).json()["definitions_version"]
+                return a, dv
+            UN = [{"uid": "u1", "text": "축에 글 하나 남겨요 STACKB6.", "change_ids": ["c1"]}]
+            CH = [{"cid": "c1", "op": "update", "object_id": "od_axes", "target": {"ref_kind": "explicit_id", "value": ax},
+                   "fields": {"keywords": ["B6"]}, "links": [], "depends_on": []}]
+            with _job_fast(), _job_switch("CONVERSE_ENABLED"):
+                before = next(a for a in db.me_stats(U)["axes"] if a["id"] == ax)
+                r = await h.post("/api/jobs", json={"kind": "converse", "text": "합성 B6 대화"}, headers=origin)
+                J = r.json()
+                a, dv = await lease()
+                await h.post(f"/api/device/jobs/{J['id']}/result", headers=T1,
+                             json=_pr2b_body({"id": J["id"]}, a["lease"]["generation"], dv, units=UN, changes=CH))
+                g = (await h.get(f"/api/jobs/{J['id']}")).json()
+                P, RV = g["preview"], g["result"]["result_version"]
+                # ── 만료 직전 재정리: 세션 만료를 2초 뒤로 당긴다 → 재정리 작업 만료 = 세션 만료(연장 없음) ──
+                with db.tx() as c:
+                    _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() + interval '2 seconds' WHERE id=%s", (J["session_id"],))
+                    s_exp = c.execute("SELECT expires_at FROM stack_sessions WHERE id=%s", (J["session_id"],)).fetchone()["expires_at"]
+                r = await h.post("/api/jobs", json={"kind": "converse", "session_id": J["session_id"], "text": "편집 B6",
+                                                    "restack": {"parent_result_version": RV, "edit_generation": 1, "edited_text": "편집 B6"}},
+                                 headers=origin)
+                assert r.status_code == 201, r.text
+                R = r.json()
+                with db.tx() as c:
+                    assert c.execute("SELECT expires_at FROM jobs WHERE id=%s", (R["id"],)).fetchone()["expires_at"] == s_exp, "재정리가 만료를 늘리지 않는다"
+                    assert c.execute("SELECT expires_at FROM stack_sessions WHERE id=%s", (J["session_id"],)).fetchone()["expires_at"] == s_exp
+                a2, dv2 = await lease()
+                with db.tx() as c:   # 서버 시각 경계 — 만료를 지나게 한다
+                    _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() - interval '1 second' WHERE id=%s", (J["session_id"],))
+                    _pr2b_sql(c, "UPDATE jobs SET expires_at = now() - interval '1 second' WHERE id=%s", (R["id"],))
+                r = await h.post(f"/api/device/jobs/{R['id']}/result", headers=T1,
+                                 json=_pr2b_body({"id": R["id"], "edit_generation": 1, "parent_result_version": RV}, a2["lease"]["generation"], dv2,
+                                                 units=UN, changes=CH))
+                assert r.status_code == 410 and r.json()["code"] == "JOB-GONE", ("만료 뒤 수신", r.text)
+                r = await h.post(f"/api/jobs/{J['id']}/confirm", headers=origin,
+                                 json={"request_id": "rq-b6-expired", "preview_id": P["id"], "preview_version": P["preview_version"],
+                                       "preview_sha": P["preview_sha"]})
+                assert r.status_code in (409, 410), ("만료 뒤 확정", r.text)
+                assert r.json()["code"] in ("JOB-GONE", "CONFIRM-STALE"), r.text
+                # ── 새 세션에서 확정 → 축 띠에 정리 글 1 ──
+                r = await h.post("/api/jobs", json={"kind": "converse", "text": "합성 B6 대화 둘"}, headers=origin)
+                J2 = r.json()
+                a, dv = await lease()
+                await h.post(f"/api/device/jobs/{J2['id']}/result", headers=T1,
+                             json=_pr2b_body({"id": J2["id"]}, a["lease"]["generation"], dv, units=UN, changes=CH))
+                P2 = (await h.get(f"/api/jobs/{J2['id']}")).json()["preview"]
+                r = await h.post(f"/api/jobs/{J2['id']}/confirm", headers=origin,
+                                 json={"request_id": "rq-b6-ok-0001", "preview_id": P2["id"], "preview_version": 1, "preview_sha": P2["preview_sha"]})
+                assert r.status_code == 200, r.text
+                srid = r.json()["created"]["records"][-1]
+                after = next(a for a in db.me_stats(U)["axes"] if a["id"] == ax)
+                assert after["records"] == before["records"] + 1, ("축 띠 = 항목 + 정리 글", before, after)
+                # 다음 세션 하나(미확정) — 스위치를 끈 뒤 취소·만료 정리가 도는지
+                r = await h.post("/api/jobs", json={"kind": "converse", "text": "합성 B6 대화 셋"}, headers=origin)
+                J3 = r.json()
+            # ── 스위치 끔: 확정만 503, 조회·취소·정리는 그대로 ──
+            with _job_switch():
+                assert (await h.get(f"/api/stack/sessions/{J2['session_id']}")).json()["confirmed"]
+                assert db.record_get(U, srid)["body"] == "축에 글 하나 남겨요 STACKB6.", "확정 글 조회 유지"
+                r = await h.post(f"/api/jobs/{J3['id']}/confirm", headers=origin, json={})
+                assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF"
+                r = await h.post(f"/api/jobs/{J3['id']}/cancel", headers=origin)
+                assert r.json()["status"] == "cancelled", "꺼져도 취소"
+                with db.tx() as c:
+                    _pr2b_sql(c, "UPDATE stack_sessions SET expires_at = now() - interval '1 second' WHERE id=%s", (J3["session_id"],))
+                db.jobs_purge()
+                with db.tx() as c:
+                    assert c.execute("SELECT terminal_at FROM stack_sessions WHERE id=%s", (J3["session_id"],)).fetchone()["terminal_at"], "꺼져도 만료 정리"
+                    inp, res = db._tmp_names(c)
+                    left = sum(c.execute(f"SELECT count(*) AS n FROM {t} WHERE user_id=%s", (U,)).fetchone()["n"]
+                               for t in (inp, res, db._tmp_previews_name(c), db._tmp_verbatim_name(c)))
+                assert left == 0, "끝난 작업·세션 임시 0"
+    finally:
+        site.dev, site.dev_user = real
+    # ── 우회 저장 불가: conversation·routine 은 확정 트랜잭션만 쓴다 ──
+    for method in ("conversation", "routine", "none"):
+        g = {"method": method, "tool": "claude-code", "model": "m", "input_scope": "x", "inputs": []}
+        _pr2b_err(lambda: imports._generation("self_summary", g), "CONTRACT-INVALID")
+    params = set(inspect.signature(main.record_add).parameters) | set(inspect.signature(db.record_add).parameters)
+    assert not params & {"generation_kind", "generation", "generation_meta"}, params
+    with db.tx() as c:
+        kinds = {r["generation_kind"] for r in c.execute("SELECT generation_kind FROM records WHERE user_id=%s", (U,)).fetchall()}
+    assert kinds <= {"conversation", "human", "unknown"}, kinds
+    print("OK — 28 B6 만료 직전 재정리(만료 고정·만료 뒤 수신 410·확정 거부) · 축 띠 = 항목 + 정리 글 · 스위치 끔(확정만 503·조회·취소·만료 정리 유지·임시 0)"
+          " · conversation·routine 우회 저장 불가(inbox 방법 고정·MCP record_add 인자 없음) 통과")
+
+
 async def test_pr2b_stack():
-    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리 · B3 확정 트랜잭션·판 이력·stage·인용)."""
+    """28절 — ②-b 단계별 시험(B1 스키마·한도·세션 · B2 정의·수신·미리보기·제외·재정리 · B3 확정 트랜잭션·판 이력·stage·인용 · B6 경계·되돌림)."""
     test_pr2b_stack_b1()
     await test_pr2b_stack_b2()
     await test_pr2b_stack_b3()
+    await test_pr2b_stack_b6()
 
 
 def Web_polls_empty():
