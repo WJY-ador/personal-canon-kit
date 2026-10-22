@@ -8782,11 +8782,13 @@ async def test_pr2b_stack_b2():
                     assert st["switches"] == {"converse": False}, st.get("switches")
                 with _job_switch("CONVERSE_ENABLED"):
                     st = (await h.get("/api/state")).json()
-                    assert st["switches"] == {"converse": True}
+                    assert st["switches"] == {"converse": True} and st["stack_session"] is None, st.get("stack_session")
                     r = await h.post("/api/jobs", json={"kind": "converse", "text": TXT, "input_kind": "verbatim"}, headers=origin)
                     assert r.status_code == 201, r.text
                     J = r.json()
                     S = J["session_id"]
+                    ss_ = (await h.get("/api/state")).json()["stack_session"]
+                    assert ss_["id"] == S and set(ss_) == {"id", "expires_at"}, ss_
                     a = (await poll()).json()
                     assert a["id"] == J["id"] and a["edit_generation"] == 0 and a["parent_result_version"] is None and a["definitions_version"] is None
                     gen = a["lease"]["generation"]
@@ -8880,7 +8882,10 @@ async def test_pr2b_stack_b2():
                     await reject(b, "CONTRACT-INVALID", "envelope.contract")
                     b = body()
                     b["envelope"]["edit_generation"] = 1
-                    await reject(b, "CONTRACT-INVALID", "edit_generation")
+                    await reject(b, "JOB-VERSION", status=409)   # 옛 편집 세대 결과
+                    b = body()
+                    b["changes"][0]["fields"]["axes"] = [ax]
+                    await reject(b, "CONTRACT-INVALID", "link_via_fields")   # 연결 칸을 fields 로 우회
                     b = body()
                     b["summary_text"] = "옛 키 섞기"
                     await reject(b, "CONTRACT-INVALID", "keys")

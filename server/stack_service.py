@@ -32,7 +32,7 @@ REF_KINDS = ("source_id", "explicit_id", "inferred", "unresolved")
 IDENTITY_SCHEMES = ("code",)                       # 안정 원천 ID = items.code(오브젝트 안 유일, 적용 뒤 불변)
 BLOCK_CODES = ("judgment_confirm", "missing_required", "unresolved_target", "ambiguous")
 OPEN_BLOCKS = ("missing_required", "unresolved_target", "ambiguous")   # 남아 있으면 [확정] 잠금. judgment_confirm 은 확인 1번 자체가 푼다
-MAX_UNITS, MAX_CHANGES, MAX_BLOCKED, MAX_TEXT, QUESTION_MAX = 40, 60, 60, 4000, 300
+MAX_UNITS, MAX_CHANGES, MAX_BLOCKED, MAX_TEXT, QUESTION_MAX = 40, 60, 60, 4000, 500   # PC agent/stack.py 와 같은 상한
 UNIT_JOIN = "\n\n"                                 # 최종 정리 글 = units[].text 를 순서대로 이 구분자로 합친 것
 TITLE_MAX = 300
 MODEL_META_MAX = 2048                              # model_meta JSON 바이트
@@ -183,7 +183,7 @@ def _check_fields(fields, o, path):
         if f is None:
             raise bad(p, "unknown_field")
         if f["value_type"] == "reference":
-            raise bad(p, "reference_in_fields")
+            raise bad(p, "link_via_fields")   # 연결 칸은 links 로만(근거 유형 필수) — fields 로 우회 금지
         if v is None or v == "" or v == []:
             out[k] = v
             continue
@@ -432,11 +432,9 @@ def check_envelope(env, job):
         raise bad("envelope.result_version", "uuid")
     if not db._is_int(env["input_version"]) or env["input_version"] != job["input_version"]:
         raise CrmError("JOB-VERSION", "입력 버전이 맞지 않아요.", "그 결과는 버리세요.")
-    if not db._is_int(env["edit_generation"]) or env["edit_generation"] != job["edit_generation"]:
-        raise bad("envelope.edit_generation", "mismatch")
     parent = str(job["parent_result_version"]) if job["parent_result_version"] else None
-    if env["parent_result_version"] != parent:
-        raise bad("envelope.parent_result_version", "mismatch")
+    if not db._is_int(env["edit_generation"]) or env["edit_generation"] != job["edit_generation"] or env["parent_result_version"] != parent:
+        raise CrmError("JOB-VERSION", "편집 세대·원 결과가 이 작업과 맞지 않아요.", "그 결과는 버리세요.")   # PC 와 같은 코드(409)
     if job["definitions_version"] is None or env["definitions_version"] != job["definitions_version"]:
         raise defs_changed()
     return rv

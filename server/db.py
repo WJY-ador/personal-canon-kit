@@ -4268,6 +4268,14 @@ def stack_exclude(uid, preview_id, cids):
         return {"preview": _preview_display(c, uid, nrow), "removed": removed}
 
 
+def stack_session_current(uid):
+    """그 사용자의 확정 전·만료 전 가장 늦게 만든 대화 세션 1개 {id, expires_at} 또는 None(/api/state — 새로 고침 복원·두 탭 공유)."""
+    with tx() as c:
+        s = _one(c, "SELECT id, expires_at FROM stack_sessions WHERE user_id=%s AND terminal_at IS NULL AND expires_at > now() "
+                    "ORDER BY created_at DESC, id LIMIT 1", (uid,))
+    return {"id": str(s["id"]), "expires_at": s["expires_at"].isoformat()} if s else None
+
+
 def stack_session_get(uid, session_id):
     """GET 세션 — 새로고침 복원. {session_id, input_kind, expires_at, edit_generation, latest_job, preview(최신|null), confirmed}. 본인만."""
     sid = _job_uuid(session_id, gone=False)
