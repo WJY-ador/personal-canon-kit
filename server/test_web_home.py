@@ -246,10 +246,19 @@ def test_static():
     assert js.count('fetch("/api/me/layout"') == 1, "레이아웃 쓰기 = layFetch 한 곳"
     assert "corePost(" not in setup and "/api/" not in setup.replace("/api/me/layout", ""), "Setup 의 다른 쓰기·API 0"
     assert "if (navNew()) { const to = navReplace(R); if (to) { location.replace(to); return; } }" in js
+    # S5 오늘 — 대기(승인 대기) + 보관됨(ingest_kind=inbox 글 · 활동) · 들어온 날(KST) 머리글 · [삭제] 0 · 동작 = 기존 승인·제외(inboxOne) · 읽기만
+    today = js[js.index("// ── 오늘 (PR ①-b S5)"):js.index("// ── /오늘 ──")]
+    for w in ('getJSON("/api/inbox?state=pending")', 'getJSON("/api/activities?limit=50")', 'r.ingest_kind === "inbox"', 'st: "대기"', 'st: "보관됨"',
+              '"Asia/Seoul"', "class=\"tday\"", "inboxOne", "#_inbox/all", "ME_EMPTY"):
+        assert w in today, w
+    code = "\n".join(l for l in today.splitlines() if not l.lstrip().startswith("//"))
+    assert "삭제" not in code and "corePost(" not in today and "fetch(" not in today, "오늘: [삭제] 0 · 새 쓰기 0(승인·제외는 기존 data-core 경로)"
+    assert 'if (R.tab === "_inbox" && !INBOX_STATE[R.a]) return "#_today/inbox/" + encodeURIComponent(R.a);' in js
+    assert 'hash = navNew() ? "#_today" : "#_inbox";' in js
     for i, (lt, dk) in enumerate(zip(("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"),
                                      ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767")), 1):
         assert f"--ax{i}: {lt};" in html and f"--ax{i}: {dk};" in html, ("축 색", i)
-    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만 · Setup 페이지 6·레이아웃 쓰기 한 곳·version·옛 주소 replace) 통과")
+    print("OK — 홈 정적(빈 상태 문구·옛 링크·쓰기 두 곳·「최근」 0·분기점·연결 그래프 상한·읽기 API·타입 그래프 기본 · v9 탭 3·하위 탭 7·접점 한 곳·축 색·렌즈·추정 0 · 요약 차트 4·버튼 0·서버 값만 · Setup 페이지 6·레이아웃 쓰기 한 곳·version·옛 주소 replace · 오늘 대기/보관됨·날짜 머리글·삭제 0) 통과")
 
 
 async def run():
