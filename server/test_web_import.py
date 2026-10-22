@@ -245,10 +245,10 @@ def test_static():
     assert "sessionStorage" not in js and not re.search(r"coreFlash\s*=\s*\{[^}]*token", js) and not re.search(r"location\.hash[^;\n]*token", js)
     assert "devToken = null; if (S)" in js, "화면을 떠나면 토큰을 지운다(hashchange)"
     # 「나」 홈 설명 문장(r3 T3) · AI 요약 승인 문구는 서버 문장(inbox_get.approve_notice) 그대로
-    assert "연결된 활동과 기록을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 승인 대기에 표시합니다." in js
+    assert "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 저장 승인 대기에 표시합니다." in js
     assert "e.approve_notice" in js and "처음 수집한 날" in js and "날짜 미확인" in js
     # AI 생성 정보 — 계약 열거값은 사람 말로(원값 노출 금지), 모르는 값은 「기타」 + 원값
-    assert 'method: {ai_summary: "AI 요약"' in js and 'input_scope: {self_only: "내가 쓴 글만"}' in js and "기타 <span" in js
+    assert 'method: {ai_summary: "AI 요약"' in js and 'input_scope: {self_only: "내 글만"}' in js and "기타 <span" in js
     # 감사 라벨 — schema.sql admin_audit CHECK 의 모든 action 에 표시 이름
     sql = (HERE / "schema.sql").read_text(encoding="utf-8")
     blk = re.search(r"CREATE TABLE IF NOT EXISTS admin_audit \((.*?)\n\);", sql, re.S).group(1)
@@ -361,7 +361,7 @@ def test_aggregate():
     # 날짜 미확인 — 기간과 무관: A5 A6(처음 수집 T-1) · A13(처음 수집 없음) = 3
     assert g["undated"]["n"] == 3, g["undated"]
     assert {x["observed_on"]: x["n"] for x in g["undated"]["observed"]} == {iso(1): 2, None: 1}, g["undated"]["observed"]
-    assert g["notice"] == "연결된 활동과 기록을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 승인 대기에 표시합니다."
+    assert g["notice"] == "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 저장 승인 대기에 표시합니다."
     g7 = activity.me_aggregate(uid, "7d")   # A1 A2 A9 = 3
     assert g7["total"] == 3 and g7["from"] == iso(6) and [(x["action"], x["n"]) for x in g7["by_action"]] == [("like", 3)], g7
     g90 = activity.me_aggregate(uid, "90d")   # + A3 A4 A11 A12 = 7

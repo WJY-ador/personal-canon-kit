@@ -654,3 +654,13 @@ CREATE TABLE IF NOT EXISTS deletion_contacts (
 );
 CREATE INDEX IF NOT EXISTS ix_deletion_contacts_email ON deletion_contacts (email) WHERE email IS NOT NULL;
 CREATE INDEX IF NOT EXISTS ix_deletion_contacts_subject ON deletion_contacts (auth_subject) WHERE auth_subject IS NOT NULL;
+
+-- PR ①-b 페이지 레이아웃(2026-10-22, 구현계획 §3). 사용자당 한 행 — 「나」 하위 탭 순서·요약 블록 순서. 기본값은 코드(db.DEFAULT_LAYOUT) 한 곳.
+-- 행 없음 = 기본 + version 0. layout NULL = [기본으로 되돌리기] 뒤(기본 + 그 version) — 행을 지우지 않아 버전이 되감기지 않는다(옛 탭의 PUT 이 STALE).
+-- 관리자 API 없음. 계정 삭제는 db.DELETE_TABLES.
+CREATE TABLE IF NOT EXISTS page_layouts (
+  user_id    text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  layout     jsonb CHECK (layout IS NULL OR jsonb_typeof(layout) = 'object'),
+  version    integer NOT NULL CHECK (version > 0),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

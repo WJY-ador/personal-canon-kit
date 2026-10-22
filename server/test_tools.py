@@ -3916,6 +3916,7 @@ async def run():
         await test_bi_aggregate()
         test_bi_migration()
         await test_bi_delete()
+        await test_pr1b_layout_stats()   # PR ①-b — 맨 끝(시작 때 tester·other 를 새로 만든다)
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -4276,7 +4277,7 @@ async def test_r1_flags_off():
         if admin:   # PR B 결정 3: 표시 이름 관문은 관리자도 — 이름·새 탐색·내 구조 설정 메뉴(hidden 이어도 마크업엔 있다)
             menu = r.text[r.text.index('id="acct-menu"'):r.text.index("</details>")]
             assert re.findall(r"<(?:a|button)\b[^>]*>([^<]*)", menu) == ["운영 콘솔", "표시 이름 바꾸기", "새 탐색으로 바꾸기", "내 구조 설정",
-                                                                      "연결 장치", "로그아웃"], menu
+                                                                      "저장 승인 대기", "연결 장치", "로그아웃"], menu   # PR① 저장 승인 대기 = 관리자도(연결 장치와 같은 구간 밖)
             for w in ('id="acct-name"', 'id="acct-nav"', 'id="acct-settings"', '<dialog id="name-dlg"', '<dialog id="nav-dlg"'):
                 assert r.text.count(w) == 1, w
             assert '<dialog id="desk-dlg"' not in r.text
@@ -5599,7 +5600,7 @@ async def test_q5_admin():
             assert svg == svg_of((await get(path)).text), "같은 사용자 두 번 → 같은 SVG"
             assert svg.count('r="42"') == 6, "오브젝트 5(고립 2 포함) + 코어 후보 1 — 같은 크기"
             assert svg.count("stroke-dasharray") == 2 and svg.count(structure_svg.LOCK_TEXT) >= 2, "편입된 표준 2 = 표준 정의 보호"
-            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 직접 추가" in svg, svg[:1500]
+            assert 'aria-label="오브젝트 1 · 축 · 표준 · 표준 정의 보호"' in svg and "오브젝트 3.필드 b — 축 · N:1 · 커스텀" in svg, svg[:1500]
             assert "marker" not in svg and "arrow" not in svg, "화살표 없음"
             assert all(f'id="{structure_svg.node_anchor(i)}"' in t for i in range(5)) and f'id="{structure_svg.core_anchor("candidate")}"' in t
             assert t.count('<td>N:1</td>') == 1 and t.count('<td>N:N</td>') == 3, "카디널리티 표시"
@@ -5625,7 +5626,7 @@ async def test_q5_admin():
         t = leak_free(r, path)
         assert r.status_code == 200 and "동의 — 현재 이름" in t, t[-600:]
         assert f"{M['c']}-L-사용자" in t and f"{M['c']}-F-여럿" in t and f"{M['c']}-OPT" in t, "동의자 현재 label·선택지 label"
-        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 직접 추가"' in svg_of(t), "SVG 에도 동의자 label"
+        assert f'aria-label="오브젝트 3 · {M["c"]}-L-사용자 · 커스텀"' in svg_of(t), "SVG 에도 동의자 label"
         # 철회 → 다음 조회부터 이름 0
         db.optional_consent_set(U["c"], "struct_names", False)
         t = (await get(path)).text
@@ -5733,8 +5734,8 @@ async def test_q45_user():
         fix = html[html.index("const REVIEW_FIX = {"):html.index("};", html.index("const REVIEW_FIX = {"))]
         assert "author_unknown" in fix and "processed" in fix and "external" not in fix and "deleted" not in fix, "정정 안내는 두 사유만"
         assert "record_provenance_set" not in html and "verbatim 으로" not in html, "도구명·「바꾸면 풀린다」 안내 없음"
-        # 목록/그래프 전환(기본 목록) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
-        for w in ('let defsMode = "list";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
+        # 목록/그래프 전환(PR①: 새 탐색 기본 그래프) · 그래프 = 서버 structure_svg 문자열 · 목록 id = structure_svg 앵커 · 해시를 바꾸지 않는 이동 · 토큰
+        for w in ('let defsMode = "graph", defsAt = "";', 'data-dmode="${m}"', '"목록" : "그래프"', "S.structure_svg", 'id="dlist"', 'id="dgraph"',
                   'id="dmo-o${i + 1}"', 'id="dmo-r${i + 1}"', 'id="dmo-core-${esc(x.kind)}"', 'closest(".dmo a")', 'getAttribute("href")',
                   "e.preventDefault(); defsJump(", "scrollIntoView"):
             assert w in html, w
@@ -5857,7 +5858,7 @@ async def test_q45_user():
 # ── 23) PR A 운영 Setup — 왼쪽 메뉴 · Quick Find · Setup Home · Object Manager(서비스 표준 조회) ─────────
 PRA = {k: f"pra{k}@example.com" for k in ("a", "u", "m")}   # a 관리자 · u 일반 사용자 · m 금지 값 표식 사용자
 TEST_EMAILS += tuple(PRA.values())
-PRA_SVG_SHA = "c005852b5f2b51a12557ce4f2205204f15d125e4382836cd9b4bada625b0ad2b"   # 사용자 DMO SVG(contract 예제 × 수신자, PR A 전 바이트)
+PRA_SVG_SHA = "d5b973693f88d324c0fc255191340b753cfbfaafa1dee68d952cdb4be2f18d1c"   # 사용자 DMO SVG(contract 예제 × 수신자) — PR ①-b(2026-10-22) 「내 글」 후 바이트(전: d33ed383… PR① · c005852b… PR A 전)
 PRA_STD_SHA = "c08007a2db55f219d7f5b16b5aa518e2b2081f95e1a3adfee52240d1380d00bf"   # templates/std@1.json 동결
 PRA_OBJECTS = ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "core-me", "core-person", "core-reflection",
                "core-activity", "std-axis", "std-decision", "std-principle")   # PR B: 코어 5 → 8(나·사람·출처 요약/반응) · board 이전 9(활동)
@@ -7087,8 +7088,8 @@ async def test_prb_app():
               "실명이 아니어도 돼요. 다른 사람에게 보이지 않고 운영자 화면에도 나오지 않아요.",
               '"/api/nav/accept"', '"/api/me/name"', '"/api/people', '"/api/reflections',
               'id: "_me"', 'id: "_obj"', 'id: "_settings"',
-              "[NAVTAB._me].concat(mine.length ? mine : [BASE.q, BASE.journal], [NAVTAB._obj, BASE.map])",   # 새 탐색엔 「오늘」 탭 없음
-              'location.replace("#_settings/structure")', "function axisChips",
+              "if (navNew()) return [NAVTAB._me, NAVTAB._today, NAVTAB._setup];",   # PR ①-b 탭 3: 나 · 오늘 · Setup(B1)
+              'if (R.tab === "_settings") return "#_setup/structure";', "function axisChips",
               "출처를 접한 뒤 내가 한 생각만 적어요. 다른 사람의 말·경험·생각을 옮기는 곳이 아니에요.",
               "별칭도 그 사람을 알아볼 수 있으면 개인정보예요.", "삭제 완료"):
         assert w in html, w
@@ -7103,7 +7104,7 @@ async def test_prb_app():
                 assert not (a < i < b), (dlg_id, "구간 안", mark)
     i = html.index('<dialog id="nav-dlg"')
     nav = html[i:html.index("</dialog>", i)]
-    for w in ("「나」 홈", "「오브젝트」", "「내 구조 설정」", "데이터는 바뀌지 않아요", "되돌릴 수 없어요"):
+    for w in ("「나」 홈", "「자료 종류」", "「내 구조 설정」", "데이터는 바뀌지 않아요", "되돌릴 수 없어요"):   # PR① 새 탐색 안내 = 탭 3(나·자료 종류·지도)
         assert w in nav, ("nav 대화창", w)
     menu = html[html.index('id="acct-menu"'):html.index("</details>")]
     for a in ("name", "nav", "settings"):
@@ -8017,6 +8018,255 @@ async def test_bi_delete():
     print("OK — 25e 계정 삭제(장치·활동·관계·대응표·한도·대기·활동 reference 가 있는 계정 → 삭제 CLI 남는 행 0·FK 실패 0 · 토큰 거절"
           " · user_delete 경로) 통과")
 
+
+# ── 26) PR ①-b: 페이지 레이아웃 · 「나」 통계 · 기록 정렬 키 (2026-10-22, 구현계획 §3) ──────────
+# 사용자 = tester@·other@example.com 재사용(TEST_EMAILS 불변). run() 맨 끝에서 돌고 시작 때 두 계정을 새로 만든다.
+
+def _ux_rec(c, uid, rid, created, source_date=None, source_created_at=None, deleted=False):
+    c.execute("INSERT INTO records (id,user_id,title,body,created,author_kind,text_process,received_at,source_date,source_created_at,"
+              "deleted_at) VALUES (%s,%s,%s,%s,%s,'self','verbatim',%s,%s,%s,%s)",
+              (rid, uid, f"합성 {rid}", f"합성 본문 {rid}", created, created, source_date, source_created_at, created if deleted else None))
+
+
+def _ux_link(c, uid, axis, record=None, item=None, obj=None, field="axes"):
+    if record:
+        c.execute("INSERT INTO item_links (user_id, source_record_id, field_key, target_item_id) VALUES (%s,%s,'axes',%s)",
+                  (uid, record, axis))
+    else:
+        c.execute("INSERT INTO item_links (user_id, source_item_id, source_object_id, field_key, target_item_id) VALUES (%s,%s,%s,%s,%s)",
+                  (uid, item, obj, field, axis))
+
+
+def _ux_obj(uid, key, kind, fields=()):
+    p = db.definition_propose(uid, None, 0, {"key": key, "label": key, "semantic_kind": kind, "fields": list(fields)})
+    db.definition_apply(uid, p["object_id"], p["proposal_id"], 0)
+    return p["object_id"]
+
+
+def _ux_item(uid, oid, code, title):
+    ev = db.item_propose(uid, oid, 1, None, 0, code, title, "", {}, [])
+    return db.item_decide(uid, ev["item_id"], 0, ev["proposal_id"], "apply")["id"]
+
+
+async def test_pr1b_layout_stats():
+    """레이아웃: GET 기본+0 · PUT v0→1·STALE 409·연속·INVALID 400 9가지·PAYLOAD-LIMIT·401·Origin 403 · 사용자 격리 · DELETE 복원(버전 되감기 없음 → 옛 탭 STALE)
+    · 행 없을 때 DELETE 쓰기 0 · 기본 상수 불변 · 계정 삭제. 통계: 71편(> journal 50) 전체 범위 · 축별 고유 합(두 축 글 각 1·중복 링크·지운 기록·보관 항목·자기 자신 제외)
+    · 활동은 축 건수 밖 · 히트맵 91칸 월~일·source_date·source_created_at(KST)·날짜 없는 기록·창 밖 제외·활동 occurred_on · kinds·waiting · 남 0
+    · 쓰기 0(분류 역할 이관 INSERT 없음) · 웹 = db. 정렬: COALESCE(source_date, kst(source_created_at), kst(created)) DESC → created → id
+    · KST 고정(세션 UTC 여도) · journal 3열 · /api/records 커서 꼴 created|id 유지·이어 받기 겹침 0·기준 행을 지워도 이어짐."""
+    import datetime as dt
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    site = main.site
+    real = site.dev, site.dev_user
+    origin = {"origin": PUBLIC}
+    D0 = db.DEFAULT_LAYOUT
+    snap = json.dumps(D0, sort_keys=True)
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            # ── 레이아웃 ──
+            site.dev, site.dev_user = False, ""
+            assert (await h.get("/api/me/layout")).status_code == 401
+            assert (await h.put("/api/me/layout", json={"layout": D0, "version": 0}, headers=origin)).status_code == 401
+            assert (await h.delete("/api/me/layout", headers=origin)).status_code == 401
+            assert (await h.get("/api/me/stats")).status_code == 401
+            site.dev, site.dev_user = True, "tester@example.com"
+            r = await h.get("/api/me/layout")
+            assert r.status_code == 200 and r.headers.get("cache-control") == "no-store" and r.json() == {"layout": D0, "version": 0}
+            r.json()["layout"]["tabs"].reverse()
+            lay = {"v": 1, "tabs": ["person", "summary", "principle", "decision", "axis", "custom", "source"],
+                   "blocks": {"summary": ["recent", "heatmap", "kinds", "waiting"]}}
+            assert (await h.put("/api/me/layout", json={"layout": lay, "version": 0}, headers={"origin": "https://evil.example"})).status_code == 403
+            assert (await h.delete("/api/me/layout", headers={"origin": "https://evil.example"})).status_code == 403
+            r = await h.put("/api/me/layout", json={"layout": lay, "version": 0}, headers=origin)
+            assert r.status_code == 200 and r.json() == {"layout": lay, "version": 1}, r.text
+            assert (await h.get("/api/me/layout")).json() == {"layout": lay, "version": 1}
+            r = await h.put("/api/me/layout", json={"layout": D0, "version": 0}, headers=origin)
+            assert r.status_code == 409 and r.json()["code"] == "LAYOUT-STALE", r.text
+            lay2 = {**lay, "blocks": {"summary": ["heatmap", "kinds"]}}   # 블록 일부만도 허용(알려진 이름·중복 없음)
+            assert (await h.put("/api/me/layout", json={"layout": lay2, "version": 1}, headers=origin)).json()["version"] == 2
+            r = await h.put("/api/me/layout", json={"layout": lay, "version": 1}, headers=origin)
+            assert r.status_code == 409 and r.json()["code"] == "LAYOUT-STALE", "옛 버전(두 탭) = STALE"
+            t7 = D0["tabs"]
+            bad = [{**lay, "tabs": t7[:6]}, {**lay, "tabs": t7[:6] + [t7[0]]}, {**lay, "tabs": t7 + ["inbox"]},
+                   {**lay, "tabs": t7[:6] + ["inbox"]}, {**lay, "blocks": {"summary": ["heatmap", "pie"]}},
+                   {**lay, "blocks": {"summary": ["heatmap", "heatmap"]}}, {**lay, "blocks": {"today": ["heatmap"]}},
+                   {**lay, "extra": 1}, {**lay, "v": 2}, {**lay, "blocks": []}, {"v": 1, "tabs": t7}]
+            for b in bad:
+                r = await h.put("/api/me/layout", json={"layout": b, "version": 2}, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "LAYOUT-INVALID", (b, r.text)
+            for body in ({"layout": "x", "version": 2}, {"layout": lay, "version": "2"}, {"layout": lay}, {"layout": lay, "version": True}):
+                r = await h.put("/api/me/layout", json=body, headers=origin)
+                assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID", (body, r.text)
+            r = await h.put("/api/me/layout", json={"layout": {**lay, "pad": "가" * 2000}, "version": 2}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "PAYLOAD-LIMIT", r.text
+            r = await h.put("/api/me/layout", json={"layout": lay, "version": -1}, headers=origin)
+            assert r.status_code == 400 and r.json()["code"] == "ARG-INVALID"
+            assert (await h.get("/api/me/layout")).json() == {"layout": lay2, "version": 2}, "거절은 저장하지 않는다"
+            # 격리 — 남은 기본 + 0, 남의 저장이 내 행을 안 바꾼다
+            site.dev_user = "other@example.com"
+            assert (await h.get("/api/me/layout")).json() == {"layout": D0, "version": 0}
+            r = await h.delete("/api/me/layout", headers=origin)
+            assert r.status_code == 200 and r.json() == {"layout": D0, "version": 0}
+            with db.tx() as c:
+                assert c.execute("SELECT count(*) AS n FROM page_layouts WHERE user_id=%s", (O,)).fetchone()["n"] == 0, "행 없을 때 복원 = 쓰기 0"
+            assert (await h.put("/api/me/layout", json={"layout": lay, "version": 0}, headers=origin)).json()["version"] == 1
+            site.dev_user = "tester@example.com"
+            assert (await h.get("/api/me/layout")).json() == {"layout": lay2, "version": 2}
+            # 복원 — 기본 + version 3(행 유지). 복원 전 버전(2)으로 PUT 하면 STALE, 3 이면 저장
+            r = await h.delete("/api/me/layout", headers=origin)
+            assert r.status_code == 200 and r.json() == {"layout": D0, "version": 3}, r.text
+            assert (await h.get("/api/me/layout")).json() == {"layout": D0, "version": 3}
+            r = await h.put("/api/me/layout", json={"layout": lay, "version": 2}, headers=origin)
+            assert r.status_code == 409 and r.json()["code"] == "LAYOUT-STALE", "복원 뒤 옛 탭 = STALE(버전 되감기 없음)"
+            assert (await h.put("/api/me/layout", json={"layout": lay, "version": 3}, headers=origin)).json() == {"layout": lay, "version": 4}
+            assert json.dumps(db.DEFAULT_LAYOUT, sort_keys=True) == snap, "기본 상수 불변(응답 사본을 바꿔도)"
+            expect("LAYOUT-INVALID", db.layout_check, None)
+            assert db.layout_check(D0) == D0
+
+            # ── 통계·정렬 데이터 ──
+            AXO, (X0, X1, X2) = _bi_axes(U, 3)
+            p = db.definition_propose(U, AXO, 1, {"key": "axes", "label": "축", "semantic_kind": "collection", "fields": [
+                {"key": "rel", "label": "관련 축", "value_type": "reference", "target_kind": "item", "target_object_id": AXO, "multiple": True}]})
+            db.definition_apply(U, AXO, p["proposal_id"], 1)
+            PO = _ux_obj(U, "principles", "principle", [{"key": "axes", "label": "관심 축", "value_type": "reference", "target_kind": "item",
+                                                          "target_object_id": AXO, "multiple": True}])
+            EO, CO = _ux_obj(U, "decision_events", "event"), _ux_obj(U, "notes_ux", "collection")
+            PI1, PI2, PI3 = (_ux_item(U, PO, f"PR-{i}", f"합성 기준 {i}") for i in range(3))
+            db.item_decide(U, PI2, 1, None, "confirm")
+            db.item_decide(U, PI3, 1, None, "archive")
+            _ux_item(U, EO, "EV-0", "합성 결정 0"), _ux_item(U, EO, "EV-1", "합성 결정 1"), _ux_item(U, CO, "NT-0", "합성 메모")
+            with db.tx() as c:
+                T = c.execute(f"SELECT {activity._TODAY} AS d").fetchone()["d"]
+            now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+            tag = secrets.token_hex(3)
+            rid = [f"r_ux{tag}{i:03d}" for i in range(72)]
+            utc = dt.timezone.utc
+            with db.tx() as c:
+                for i in range(72):
+                    sd = sca = None
+                    created = now - dt.timedelta(minutes=i)
+                    if i < 20:
+                        sd = T - dt.timedelta(days=i % 5)
+                    elif i < 30:
+                        sca = dt.datetime.combine(T - dt.timedelta(days=7), dt.time(20, 0), utc)   # KST = T-6 05:00
+                    elif i < 35:
+                        sd = T - dt.timedelta(days=200)   # 창 밖
+                    elif i == 35:
+                        created = dt.datetime.combine(T - dt.timedelta(days=1), dt.time(15, 30), utc)   # UTC 어제 · KST 오늘 00:30
+                    if i == 71:
+                        sd = T
+                    _ux_rec(c, U, rid[i], created, sd, sca, deleted=(i == 71))
+                for i in range(60):
+                    _ux_link(c, U, X0, record=rid[i])
+                for i in range(10):
+                    _ux_link(c, U, X1, record=rid[i])   # 한 글 두 축 = 각 축 1
+                _ux_link(c, U, X0, record=rid[0])   # 중복 링크 = 1
+                _ux_link(c, U, X0, record=rid[71])   # 지운 기록 = 0
+                for it in (PI1, PI1, PI2, PI3):   # PI1 중복 · PI3 보관 = 0
+                    _ux_link(c, U, X0, item=it, obj=PO)
+                _ux_link(c, U, X0, item=X0, obj=AXO, field="rel")   # 자기 자신 = 0
+                _ux_link(c, U, X0, item=X1, obj=AXO, field="rel")   # 다른 축 항목 = 1
+                b0 = "합성 본문 " + rid[0]
+                for cid, rr, dec in ((f"c_ux{tag}a", rid[0], "pending"), (f"c_ux{tag}b", rid[71], "pending"), (f"c_ux{tag}c", rid[1], "confirmed")):
+                    c.execute("INSERT INTO candidates (id,user_id,record_id,text,quote,quote_start,quote_end,origin,decision) "
+                              "VALUES (%s,%s,%s,'합성 후보',%s,0,2,'ai',%s)", (cid, U, rr, b0[:2] if rr == rid[0] else ("합성 본문 " + rr)[:2], dec))
+            # 활동 — 축 X0 에 붙어도 축 건수 밖. 히트맵은 occurred_on 만
+            c1 = imports.device_connect(U, "합성 UX")
+            tok, Dv = c1["token"], c1["device"]["id"]
+            imports.device_policy_set(U, Dv, {"actions": ["like"], "transform_versions": ["board-likes/1"], "axes": [X0]}, 1)
+            with _bi_switch("IMPORTS_ENABLED", "ACTIVITY_IMPORTS_ENABLED"), _bi_fast():
+                for occ, axes in ((T, [X0]), (T, []), (T - dt.timedelta(days=1), []), (None, [X0])):
+                    rr = await _bi_post(tok, _bi_act(Dv, policy_revision=2, occurred_on=occ.isoformat() if occ else None, axes=axes))
+                    assert rr.status_code == 201, rr.text
+
+            # ── 통계 ──
+            s = db.me_stats(U)
+            assert set(s) == {"axes", "heatmap", "kinds", "waiting"}
+            assert [(x["id"], x["code"]) for x in s["axes"]] == [(X0, "AX-0"), (X1, "AX-1"), (X2, "AX-2")], s["axes"]
+            ax = {x["id"]: (x["items"], x["records"], x["readings"], x["n"]) for x in s["axes"]}
+            assert ax == {X0: (3, 60, 0, 63), X1: (0, 10, 0, 10), X2: (0, 0, 0, 0)}, ax
+            assert all(set(x) == {"id", "code", "title", "items", "records", "readings", "n"} for x in s["axes"])
+            hm = s["heatmap"]
+            cells = hm["cells"]
+            to, frm = dt.date.fromisoformat(hm["to"]), dt.date.fromisoformat(hm["from"])
+            assert len(cells) == 91 and to.isoweekday() == 7 and frm.isoweekday() == 1 and (to - frm).days == 90 and frm <= T <= to
+            assert [x["d"] for x in cells] == [(frm + dt.timedelta(days=i)).isoformat() for i in range(91)]
+            got = {x["d"]: (x["records"], x["activities"]) for x in cells if x["records"] or x["activities"]}
+            want = {(T - dt.timedelta(days=k)).isoformat(): (4, 0) for k in range(5)}
+            want[(T - dt.timedelta(days=6)).isoformat()] = (10, 0)
+            want[T.isoformat()] = (4, 2)
+            want[(T - dt.timedelta(days=1)).isoformat()] = (4, 1)
+            assert got == want, (got, want)
+            assert all(x["records"] == 0 and x["activities"] == 0 for x in cells if dt.date.fromisoformat(x["d"]) > T), "미래 칸 0"
+            with db.tx() as c:
+                n_src = c.execute("SELECT count(*) AS n FROM sources WHERE user_id=%s", (U,)).fetchone()["n"]
+                n_ppl = c.execute("SELECT count(*) AS n FROM people WHERE user_id=%s", (U,)).fetchone()["n"]
+            assert s["kinds"] == {"principle": 2, "decision": 2, "axis": 3, "custom": 1, "records": 71, "readings": 0,
+                                  "people": n_ppl, "sources": n_src}, s["kinds"]
+            assert s["waiting"] == {"candidates_pending": 1, "principles_pending": 1, "inbox_pending": imports.inbox_count(U)}, s["waiting"]
+            st = (await h.get("/api/state")).json()
+            assert len(st["journal"]) == 50 and s["kinds"]["records"] == 71 and ax[X0][1] == 60, "통계 = 전체 범위(journal 50 과 무관)"
+            r = await h.get("/api/me/stats")
+            assert r.status_code == 200 and r.headers.get("cache-control") == "no-store" and r.json() == json.loads(json.dumps(s)), "웹 = db"
+            # 남 0 · 쓰기 0(축 오브젝트는 있으나 분류 역할 행이 없는 사용자 — 이관 INSERT 를 하지 않는다)
+            so = db.me_stats(O)
+            assert so["axes"] == [] and not any(so["kinds"].values()) and not any(so["waiting"].values())
+            assert not any(x["records"] or x["activities"] for x in so["heatmap"]["cells"])
+            OAX = _ux_obj(O, "axes", "collection")
+            OX = _ux_item(O, OAX, "AX-0", "남의 축")
+            assert [x["id"] for x in db.me_stats(O)["axes"]] == [OX] and db.me_stats(O)["kinds"]["axis"] == 1
+            with db.tx() as c:
+                assert c.execute("SELECT count(*) AS n FROM user_roles WHERE user_id=%s", (O,)).fetchone()["n"] == 0, "통계는 역할 행을 안 쓴다"
+            site.dev_user = "other@example.com"
+            assert [x["id"] for x in (await h.get("/api/me/stats")).json()["axes"]] == [OX]
+            site.dev_user = "tester@example.com"
+
+            # ── 정렬 키 ──
+            with db.tx() as c:
+                rows = c.execute("SELECT id, created, source_date, source_created_at FROM records WHERE user_id=%s AND deleted_at IS NULL",
+                                 (U,)).fetchall()
+            kst = dt.timezone(dt.timedelta(hours=9))
+            sk = lambda r: (r["source_date"] or (r["source_created_at"].astimezone(kst).date() if r["source_created_at"] else None)   # noqa: E731
+                            or r["created"].astimezone(kst).date(), r["created"], r["id"])
+            order = [r["id"] for r in sorted(rows, key=sk, reverse=True)]
+            assert [x["id"] for x in st["journal"]] == order[:50], "journal = 정렬 키 순 50"
+            assert all({"source_date", "ingest_kind", "generation_kind"} <= set(x) for x in st["journal"])
+            j = {x["id"]: x for x in st["journal"]}
+            assert j[rid[0]]["source_date"] == T.isoformat() and j[rid[0]]["ingest_kind"] == "interactive" and j[rid[0]]["generation_kind"] == "unknown"
+            with db.tx() as c:   # KST 고정 — 세션 시간대가 UTC 여도 UTC 어제 15:30 = KST 오늘
+                c.execute("SET LOCAL TimeZone = 'UTC'")
+                assert c.execute(f"SELECT {db.RECORD_SORT} AS d FROM records WHERE id=%s", (rid[35],)).fetchone()["d"] == T
+                assert c.execute(f"SELECT {db.RECORD_SORT} AS d FROM records WHERE id=%s", (rid[20],)).fetchone()["d"] == T - dt.timedelta(days=6)
+            seen, nxt, pages = [], None, 0
+            while True:
+                q = {"limit": 20, **({"before": nxt} if nxt else {})}
+                pg = (await h.get("/api/records", params=q)).json()
+                seen += [x["id"] for x in pg["records"]]
+                pages += 1
+                if not pg["next_before"]:
+                    break
+                last = pg["records"][-1]
+                assert pg["next_before"] == f"{last['created']}|{last['id']}", "커서 꼴 created|id 유지(PR① 계약)"
+                nxt = pg["next_before"]
+            assert seen == order and len(set(seen)) == 71 and pages == 4, "이어 받기 = 정렬 키 순 전체, 겹침·누락 0"
+            assert db.records(U, 71) == db.records(U, 71, None, None) and [x["id"] for x in db.records(U, 71)] == order
+            # 기준 행(1쪽 마지막)을 지워도 2쪽이 그대로 — 지운 행도 남아 정렬 날짜를 복원한다
+            p1 = (await h.get("/api/records", params={"limit": 20})).json()
+            with db.tx() as c:
+                c.execute("UPDATE records SET deleted_at=now() WHERE user_id=%s AND id=%s", (U, p1["records"][-1]["id"]))
+            p2 = (await h.get("/api/records", params={"limit": 20, "before": p1["next_before"]})).json()
+            assert [x["id"] for x in p2["records"]] == order[20:40]
+            # 없는 id 커서 = kst(created) 로 대체(PR① 시험 133 과 같은 꼴) · 남의 id 커서도 남의 행을 읽지 않는다
+            assert (await h.get("/api/records", params={"before": "2000-01-01T00:00:00+00:00|r_zzz"})).json() == {"records": [], "next_before": None}
+        # 계정 삭제가 레이아웃 행도 지운다
+        db.user_delete(O)
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM page_layouts WHERE user_id=%s", (O,)).fetchone()["n"] == 0
+    finally:
+        site.dev, site.dev_user = real
+    print("OK — PR ①-b 레이아웃(GET·PUT·DELETE·STALE·INVALID·격리·복원) · 통계(축 고유 합·히트맵 91칸·kinds·waiting·쓰기 0) · 정렬 키(KST·커서 유지) 통과")
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
 

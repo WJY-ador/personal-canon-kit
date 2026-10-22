@@ -1033,14 +1033,37 @@ def record_provenance_set(uid, rid, author_kind, text_process, reason, by="user"
         return _record_in(c, uid, rid)
 
 
-def records(uid, limit=50):
+# PR ①-b 정렬 키(2026-10-22 S0 판정 D1·D2) — 원본 날짜 우선, 없으면 받은 날. 날짜는 전부 KST.
+# source_date(날짜만 확인된 원본) → source_created_at(원본 시각, source_date 와 배타) → created. 히트맵은 created 대체를 쓰지 않는다(_RECORD_DAY).
+_KST_DATE = "(({}) AT TIME ZONE 'Asia/Seoul')::date"
+_RECORD_DAY = f"COALESCE(source_date, {_KST_DATE.format('source_created_at')})"          # 원본 날짜(없으면 NULL) — 히트맵
+RECORD_SORT = f"COALESCE(source_date, {_KST_DATE.format('source_created_at')}, {_KST_DATE.format('created')})"   # 목록 정렬 날짜
+
+
+def records(uid, limit=50, before=None, before_id=None):
+    """정렬 = RECORD_SORT DESC, created DESC, id DESC(동률은 id 로 고정). before(datetime)+before_id = 그 행보다 뒤 순서인 기록만
+    (PR① 홈 「더 보기」 keyset 커서 — 동률 블록이 페이지 경계에 걸쳐도 겹침·누락 없음). 커서 꼴은 PR① 그대로 created|id 다:
+    정렬 날짜는 before_id 행(soft delete 라 지운 행도 남는다)에서 서버가 복원하고, 그 행이 없으면 kst(before) 로 본다.
+    before_id 없이 before 만 = (정렬 날짜, created) < (kst(before), before)."""
     out = []
+    key = f"({RECORD_SORT}, created, id)"
+    if before is None:
+        cond, args = "", ()
+    elif before_id is None:
+        cond, args = f" AND ({RECORD_SORT}, created) < ((%s::timestamptz AT TIME ZONE 'Asia/Seoul')::date, %s)", (before, before)
+    else:
+        cond = (f" AND {key} < (COALESCE((SELECT {RECORD_SORT} FROM records WHERE user_id=%s AND id=%s), "
+                "(%s::timestamptz AT TIME ZONE 'Asia/Seoul')::date), %s, %s)")
+        args = (uid, before_id, before, before, before_id)
     with tx() as c:
-        rows = _all(c, "SELECT id,title,body,source,source_id,question_id,author_kind,text_process,notes,created FROM records "
-                       "WHERE user_id=%s AND deleted_at IS NULL ORDER BY created DESC LIMIT %s", (uid, limit))
+        rows = _all(c, "SELECT id,title,body,source,source_id,question_id,author_kind,text_process,notes,created,"
+                       "source_date,ingest_kind,generation_kind FROM records "
+                       "WHERE user_id=%s AND deleted_at IS NULL" + cond + f" ORDER BY {RECORD_SORT} DESC, created DESC, id DESC LIMIT %s",
+                       (uid, *args, limit))
     for r in rows:
         d = _iso(r)
         d["excerpt"] = _excerpt(d.pop("body"))
+        d["source_date"] = r["source_date"].isoformat() if r["source_date"] else None   # PR ①-b D3 — 날짜만(YYYY-MM-DD)
         out.append(d)
     return out
 
@@ -2940,7 +2963,7 @@ DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. �
 # 지울 테이블 = schema.sql 에서 user_id 열을 가진 테이블 − deletion_contacts. 순서 = 보호 Lookup(NO ACTION·RESTRICT) 자식부터.
 # tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
 # board 이전(2026-10-20): 관계(activity_links) → 접수 대응표(import_entries) → 업무 자료(activities) → 한도·입력원(import_counters·import_streams).
-DELETE_TABLES = ("item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
+DELETE_TABLES = ("page_layouts", "item_links", "activity_links", "import_entries", "activities", "import_counters", "import_streams",
                  "item_history", "items", "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
                  "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
                  "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
@@ -3238,6 +3261,155 @@ def me_home(uid):
         }
     return {"display_name": u["display_name"], "nav": "new" if u["nav_accepted_at"] else "old", "counts": counts}
 
+
+
+# ── PR ①-b 페이지 레이아웃 · 「나」 통계 (2026-10-22, 구현계획 §3) ──
+# 레이아웃 = 사용자당 page_layouts 한 행. 기본값은 여기 한 곳. 탭 7 은 순서만 바뀐다(빼기·더하기 없음). 블록은 알려진 이름만·중복 없음.
+DEFAULT_LAYOUT = {"v": 1, "tabs": ["summary", "principle", "decision", "axis", "custom", "person", "source"],
+                  "blocks": {"summary": ["heatmap", "kinds", "waiting", "recent"]}}
+LAYOUT_BLOCKS = {"summary": ("heatmap", "kinds", "waiting", "recent")}   # 블록 자리 → 알려진 블록 이름
+LAYOUT_MAX_BYTES = 4096   # 웹 PUT 본문 layout 의 JSON 상한(web 이 json_limits 로 먼저 본다)
+
+
+def _layout_invalid(why):
+    return CrmError("LAYOUT-INVALID", f"레이아웃 모양이 맞지 않아요: {why}", "화면을 새로 고친 뒤 다시 옮겨 보세요.")
+
+
+def layout_check(layout):
+    """허용 모양만 통과 — {"v": 1, "tabs": 기본 탭 7 의 순열, "blocks": {자리: 알려진 블록 이름 목록(중복 없음)}}. 다른 키 금지.
+    통과하면 정규화한 사본(같은 모양)을 돌려준다. 아니면 LAYOUT-INVALID."""
+    if not isinstance(layout, dict) or set(layout) != {"v", "tabs", "blocks"}:
+        raise _layout_invalid("키는 v·tabs·blocks 셋이에요")
+    if layout["v"] != 1 or isinstance(layout["v"], bool):
+        raise _layout_invalid("v 는 1 이에요")
+    tabs = layout["tabs"]
+    want = DEFAULT_LAYOUT["tabs"]
+    if not isinstance(tabs, list) or not all(isinstance(t, str) for t in tabs) or len(tabs) != len(want) or set(tabs) != set(want):
+        raise _layout_invalid(f"tabs 는 {', '.join(want)} 일곱 개를 한 번씩")
+    blocks = layout["blocks"]
+    if not isinstance(blocks, dict) or not set(blocks) <= set(LAYOUT_BLOCKS):
+        raise _layout_invalid(f"blocks 자리는 {', '.join(LAYOUT_BLOCKS)} 만")
+    for slot, names in blocks.items():
+        known = LAYOUT_BLOCKS[slot]
+        if not isinstance(names, list) or not all(isinstance(n, str) and n in known for n in names) or len(set(names)) != len(names):
+            raise _layout_invalid(f"blocks.{slot} 는 {', '.join(known)} 중에서 중복 없이")
+    return {"v": 1, "tabs": list(tabs), "blocks": {k: list(v) for k, v in blocks.items()}}
+
+
+def _default_layout():
+    return json.loads(json.dumps(DEFAULT_LAYOUT))   # 깊은 사본 — 상수를 호출자가 못 바꾼다
+
+
+def layout_get(uid):
+    """{layout, version} — 행 없음 = 기본 + 0 · layout NULL(복원 뒤) = 기본 + 그 version."""
+    with tx() as c:
+        r = _one(c, "SELECT layout, version FROM page_layouts WHERE user_id=%s", (uid,))
+    if not r:
+        return {"layout": _default_layout(), "version": 0}
+    return {"layout": r["layout"] if r["layout"] is not None else _default_layout(), "version": r["version"]}
+
+
+def _layout_stale(cur):
+    return CrmError("LAYOUT-STALE", f"다른 화면에서 레이아웃이 먼저 바뀌었어요 (지금 버전 {cur}).", "화면을 새로 고친 뒤 다시 옮겨 보세요.")
+
+
+def layout_set(uid, layout, version):
+    """PUT — version = 화면이 마지막으로 받은 값. 맞으면 저장하고 +1, 다르면 LAYOUT-STALE. 반환 {layout, version}."""
+    lay = layout_check(layout)
+    if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+        raise CrmError("ARG-INVALID", "version 은 0 이상의 정수예요.")
+    with tx() as c:
+        _user_lock(c, uid)
+        if version == 0:
+            r = _one(c, "INSERT INTO page_layouts (user_id, layout, version) VALUES (%s, %s, 1) ON CONFLICT (user_id) DO NOTHING "
+                        "RETURNING version", (uid, Jsonb(lay)))
+        else:
+            r = _one(c, "UPDATE page_layouts SET layout=%s, version=version+1, updated_at=now() WHERE user_id=%s AND version=%s "
+                        "RETURNING version", (Jsonb(lay), uid, version))
+        if not r:
+            cur = _one(c, "SELECT version FROM page_layouts WHERE user_id=%s", (uid,))
+            raise _layout_stale(cur["version"] if cur else 0)
+    return {"layout": lay, "version": r["version"]}
+
+
+def layout_reset(uid):
+    """DELETE — 기본으로 되돌리기. 행이 있으면 layout NULL + version +1(행을 지우지 않는다 — 버전이 되감기면 옛 탭의 PUT 이 통과한다).
+    행이 없으면 아무것도 안 한다(기본 + 0). 반환 {layout(기본), version}."""
+    with tx() as c:
+        _user_lock(c, uid)
+        r = _one(c, "UPDATE page_layouts SET layout=NULL, version=version+1, updated_at=now() WHERE user_id=%s RETURNING version", (uid,))
+    return {"layout": _default_layout(), "version": r["version"] if r else 0}
+
+
+HEATMAP_WEEKS = 13
+
+
+def _axis_object(c, uid):
+    """분류 역할 오브젝트 id 또는 None — 읽기만(_classify_target 의 이관 INSERT 를 하지 않고 같은 규칙을 읽기로 적용)."""
+    r = _one(c, "SELECT object_id FROM user_roles WHERE user_id=%s AND role='classify'", (uid,))
+    if r:
+        return r["object_id"]
+    r = _one(c, "SELECT id FROM object_defs WHERE user_id=%s AND key='axes' AND revision > 0 AND archived_at IS NULL", (uid,))
+    return r["id"] if r else None
+
+
+def me_stats(uid):
+    """「나」 통계 — 전체 범위(페이징 무관), 읽기만. 반환
+    {"axes": [{id, code, title, items, records, readings, n}],   # 축 = 분류 역할 오브젝트의 적용·미보관 항목, 코드 순(→ 만든 순 → id)
+     "heatmap": {"from", "to", "cells": [{d, records, activities}] × 91},   # 월요일 시작 13주, to = 이번 주 일요일(KST), 미래 칸 0
+     "kinds": {principle, decision, axis, custom, records, readings, people, sources},
+     "waiting": {candidates_pending, principles_pending, inbox_pending}}
+    축 건수 = 그 축에 **직접** 연결된 고유 항목(자기 자신 제외·적용·미보관) + 고유 기록(record_attach axes, 지운 기록 제외) + 읽기 자료(②-d 전 0).
+    한 글이 두 축에 붙으면 각 축에서 1. 활동은 축 건수에 넣지 않는다.
+    히트맵 날짜 = 기록 COALESCE(source_date, kst(source_created_at)) · 활동 occurred_on(현재 판·active). 둘 다 없는 기록은 빠진다(created 대체 없음).
+    kinds: principle·decision = semantic_kind principle·event 의 적용·미보관 항목 전체 · axis = 분류 역할 오브젝트 항목 ·
+    custom = 그 밖의 적용·미보관 항목 · records = 지우지 않은 기록 · readings = 0(②-d 전) · people·sources = 행 수."""
+    import activity, imports   # 둘 다 db 를 가져다 쓴다 — 모듈 맨 위에서 가져오면 순환
+    with tx() as c:
+        ax_obj = _axis_object(c, uid)
+        live = ("SELECT i.id, i.object_id, o.semantic_kind FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                "WHERE i.user_id=%(uid)s AND i.revision > 0 AND i.archived_at IS NULL")
+        a = {"uid": uid, "ax": ax_obj}
+        axes = [] if ax_obj is None else [dict(r) for r in _all(c, f"""
+            WITH live AS ({live})
+            SELECT x.id, x.code, x.title,
+              (SELECT count(DISTINCT l.source_item_id) FROM item_links l JOIN live s ON s.id=l.source_item_id
+                WHERE l.user_id=x.user_id AND l.target_item_id=x.id AND l.source_item_id <> x.id) AS items,
+              (SELECT count(DISTINCT l.source_record_id) FROM item_links l JOIN records r ON r.user_id=l.user_id AND r.id=l.source_record_id
+                WHERE l.user_id=x.user_id AND l.target_item_id=x.id AND l.field_key='axes' AND r.deleted_at IS NULL) AS records
+            FROM items x WHERE x.user_id=%(uid)s AND x.object_id=%(ax)s AND x.revision > 0 AND x.archived_at IS NULL
+            ORDER BY x.code NULLS LAST, x.created_at, x.id""", a)]
+        for x in axes:
+            x["readings"] = 0
+            x["n"] = x["items"] + x["records"] + x["readings"]
+        to = _one(c, f"SELECT ({activity._TODAY} - extract(isodow FROM {activity._TODAY})::int + 7) AS d")["d"]   # 이번 주 일요일
+        frm = to - _dt.timedelta(days=HEATMAP_WEEKS * 7 - 1)
+        b = {"uid": uid, "frm": frm, "to": to}
+        rec = {r["d"]: r["n"] for r in _all(c, f"SELECT {_RECORD_DAY} AS d, count(*) AS n FROM records WHERE user_id=%(uid)s "
+                                               f"AND deleted_at IS NULL AND {_RECORD_DAY} BETWEEN %(frm)s AND %(to)s GROUP BY 1", b)}
+        act = {r["d"]: r["n"] for r in _all(c, f"SELECT occurred_on AS d, count(DISTINCT id) AS n FROM ({activity._CUR} AND a.state='active') cur "
+                                               "WHERE occurred_on BETWEEN %(frm)s AND %(to)s GROUP BY 1", b)}
+        cells = []
+        for i in range(HEATMAP_WEEKS * 7):
+            d = frm + _dt.timedelta(days=i)
+            cells.append({"d": d.isoformat(), "records": rec.get(d, 0), "activities": act.get(d, 0)})
+        k = _one(c, f"""WITH live AS ({live}) SELECT
+            (SELECT count(*) FROM live WHERE semantic_kind='principle' AND object_id IS DISTINCT FROM %(ax)s) AS principle,
+            (SELECT count(*) FROM live WHERE semantic_kind='event' AND object_id IS DISTINCT FROM %(ax)s) AS decision,
+            (SELECT count(*) FROM live WHERE object_id = %(ax)s) AS axis,
+            (SELECT count(*) FROM live WHERE semantic_kind NOT IN ('principle','event') AND object_id IS DISTINCT FROM %(ax)s) AS custom,
+            (SELECT count(*) FROM records WHERE user_id=%(uid)s AND deleted_at IS NULL) AS records,
+            (SELECT count(*) FROM people WHERE user_id=%(uid)s) AS people,
+            (SELECT count(*) FROM sources WHERE user_id=%(uid)s) AS sources,
+            (SELECT count(*) FROM candidates cd JOIN records r ON r.user_id=cd.user_id AND r.id=cd.record_id AND r.deleted_at IS NULL
+              WHERE cd.user_id=%(uid)s AND cd.decision='pending') AS candidates_pending,
+            (SELECT count(*) FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id WHERE i.user_id=%(uid)s
+              AND o.semantic_kind='principle' AND i.revision > 0 AND i.archived_at IS NULL AND i.decision='pending') AS principles_pending""", a)
+    kinds = {"principle": k["principle"], "decision": k["decision"], "axis": k["axis"], "custom": k["custom"],
+             "records": k["records"], "readings": 0, "people": k["people"], "sources": k["sources"]}
+    waiting = {"candidates_pending": k["candidates_pending"], "principles_pending": k["principles_pending"],
+               "inbox_pending": imports.inbox_count(uid)}
+    return {"axes": axes, "heatmap": {"from": frm.isoformat(), "to": to.isoformat(), "cells": cells}, "kinds": kinds, "waiting": waiting}
 
 # ── 사람 (별칭 이름표만) ──
 
