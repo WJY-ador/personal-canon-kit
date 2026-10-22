@@ -28,7 +28,15 @@
   다른 임대가 살아 있으면 앞 실행이 끝날 때까지 기다린다(임대 안에서). 못 기다리면 입력도 부르지 않는다.
   CLI 종료 불명확(시간 초과)이면 실패를 보내지 않고 임대 행을 남긴다 — 서버 임대 만료(needs_check)까지 같은 세션 잠금.
 - `attempts`(일별, 작업당 CLI 시작 1) 와 실제 CLI 재시도 `cli_retries`(일별)를 따로 센다.
-상주 진입점(cli.py `serve` 연결)은 J4 후속. 여기는 `Worker.poll_once()`·`Worker.run_forever()` 호출 함수만 낸다.
+상주 실행(③-0.1, `serve_jobs` — cli.py `serve --jobs`):
+- 시작 = 홈 파일 잠금(`jobs`, OS 잠금 — 프로세스가 죽으면 OS 가 푼다) → 장치 인증(GET /api/imports/device).
+  잠금 충돌·인증 실패 = CLI 를 부르지 않고 끝(비정상 exit). 통신 실패 = 지수 대기 뒤 다시.
+- 첫 SIGTERM·SIGINT = 새 폴·새 작업 시작 중단. 실행 중 작업은 최대 GRACE_SEC 동안 완료·결과 전송을 기다린다.
+  넘기거나 두 번째 신호 = 자식 CLI 프로세스 그룹을 끊고(종료 확인) 워커를 끝낸다.
+- 끊긴 실행 = 완료 불명확(CliInterrupted): /fail 을 보내지 않는다 — 서버 임대 만료가 needs_check 로 남긴다(재실행 없음).
+  converse 는 임대 행을 남겨 같은 세션 다음 실행이 서버 임대 만료까지 기다린다(UnclearEnd 와 같은 꼴).
+- 재시작은 resume 근거가 아니다 — resume 은 같은 session_ref 의 세션 맵(작업 계약)으로만 정한다.
+- 결과는 메모리에서만 같은 바이트로 다시 보낸다(디스크 0). 로그 = 코드·ID·소요 시간만(_log_line 이 거른다).
 """
 from __future__ import annotations
 
@@ -36,6 +44,7 @@ import http.client
 import json
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -73,6 +82,10 @@ MIN_RUN_SEC = 60.0             # 기다린 뒤 임대 안에 남아야 할 최�
 DEFS_PATH_SUFFIX = "definitions"
 MAX_SESSIONS = 500
 ATTEMPT_DAYS_KEPT = 7
+GRACE_SEC = 30.0               # 첫 종료 신호 뒤 실행 중 작업 완료·전송 대기
+KILL_WAIT_SEC = 5.0            # 자식 그룹 SIGTERM 뒤 SIGKILL 까지
+# 정상 폴 최대 주기 = 롱폴 30초 + 소켓 여유 15초(Client.timeout). 서버 장치 오프라인 기준 = max(180초, 이 값×3).
+MAX_POLL_PERIOD_SEC = WAIT_SEC + 15
 
 _JOB_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _REF_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
@@ -108,6 +121,10 @@ class JobFail(Exception):
 
 class NetworkError(Exception):
     pass
+
+
+class CliInterrupted(Exception):
+    """종료 신호로 자식 CLI 를 끊었다 — 완료 불명확. 실패(/fail)로 보내지 않는다."""
 
 
 # ── PC 일반 저장(본문 0) ──────────────────────────────────
@@ -444,6 +461,95 @@ def fake_adapter(mode: str = "ok", **kw) -> ClaudeAdapter:
     return ClaudeAdapter(fake_cli(), fake=True, extra_env=env, **kw)
 
 
+class GroupRunner:
+    """exec_runner — 자식 CLI 를 새 프로세스 그룹(POSIX 새 세션)으로 띄운다. 터미널 Ctrl+C 가 자식에 바로 가지 않고,
+    kill() 이 손자까지 함께 끊는다. kill() 뒤엔 새 실행을 시작하지 않는다(CliInterrupted)."""
+
+    def __init__(self, kill_wait: float = KILL_WAIT_SEC):
+        self.kill_wait = float(kill_wait)
+        self._lock = threading.Lock()
+        self._proc = None
+        self._cut = None
+        self.closed = False
+        self.confirmed = None          # 마지막 kill 의 그룹 종료 확인(True·False) — 끊은 게 없으면 None
+
+    def __call__(self, argv, *, stdin_bytes, env, cwd, timeout):
+        import subprocess
+        kw = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if osutil.IS_WINDOWS
+              else {"start_new_session": True})
+        with self._lock:
+            if self.closed:
+                raise CliInterrupted()
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    env=env, cwd=cwd, **kw)
+            self._proc = proc
+        try:
+            try:
+                out, err = proc.communicate(stdin_bytes, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                self._terminate(proc)
+                proc.communicate()
+                if self._cut is proc:
+                    raise CliInterrupted() from None
+                raise
+        finally:
+            with self._lock:
+                self._proc = None
+        if self._cut is proc:
+            raise CliInterrupted()
+        return proc.returncode, out, err
+
+    def kill(self) -> bool:
+        """새 실행을 막고, 돌고 있는 자식 그룹을 끊는다. 반환 = 끊은 자식이 있었는지(종료 확인은 confirmed)."""
+        with self._lock:
+            self.closed = True
+            proc = self._proc
+            if proc is None or proc.poll() is not None:
+                return False
+            self._cut = proc
+        self.confirmed = self._terminate(proc)
+        return True
+
+    def _terminate(self, proc) -> bool:
+        """그룹 SIGTERM → 대기 → 그룹 SIGKILL → 그룹이 빌 때까지 확인. 반환 = 종료 확인."""
+        import subprocess
+        if osutil.IS_WINDOWS:
+            proc.kill()
+            try:
+                proc.wait(timeout=self.kill_wait)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
+        pgid = proc.pid                                  # start_new_session → 그룹 ID = 자식 pid
+        _killpg(pgid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=self.kill_wait)
+        except subprocess.TimeoutExpired:
+            pass
+        _killpg(pgid, signal.SIGKILL)                    # 남은 손자까지
+        try:
+            proc.wait(timeout=self.kill_wait)
+        except subprocess.TimeoutExpired:
+            return False
+        end = time.monotonic() + self.kill_wait
+        while time.monotonic() < end:
+            if not _killpg(pgid, 0):
+                return True
+            time.sleep(0.02)
+        return False
+
+
+def _killpg(pgid: int, sig) -> bool:
+    """그룹에 신호. 반환 = 그룹이 아직 있었는지."""
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 # ── 워커 ──────────────────────────────────────────────────
 
 def _check_input(text) -> bool:
@@ -514,8 +620,13 @@ class Worker:
     def __init__(self, client: Client, adapter: ClaudeAdapter, state: MemoryState, *,
                  monotonic=time.monotonic, sleep=time.sleep, today=osutil.kst_today, wall=time.time,
                  min_interval: float = MIN_POLL_INTERVAL, result_retries: int = RESULT_RETRIES,
-                 session_wait_step: float = SESSION_WAIT_STEP):
+                 session_wait_step: float = SESSION_WAIT_STEP, stopping: threading.Event | None = None,
+                 abort: threading.Event | None = None):
         self.client, self.adapter, self.state = client, adapter, state
+        self.stopping = stopping or threading.Event()   # 첫 종료 신호 — 새 폴·새 작업 시작 안 함
+        self.abort = abort or threading.Event()         # 유예 끝·두 번째 신호 — 대기·재전송도 그만
+        self._job_lock = threading.Lock()
+        self.current_job = None
         self.monotonic, self.sleep, self.today, self.wall = monotonic, sleep, today, wall
         self.session_wait_step = float(session_wait_step)
         self._keep_lease = False
@@ -556,10 +667,14 @@ class Worker:
         """폴링 1번 + (받았으면) 작업 1개 처리. 반환 {"outcome": …} — 코드만, 본문 없음."""
         if self.halted:
             return {"outcome": "halted", "scope": self.halted}
+        if self.stopping.is_set():
+            return {"outcome": "stopped"}
         if not self._busy.acquire(blocking=False):
             return {"outcome": "busy"}
         try:
             self._pace()
+            if self.stopping.is_set():
+                return {"outcome": "stopped"}
             try:
                 status, headers, payload = self.client.poll()
             except NetworkError:
@@ -582,7 +697,16 @@ class Worker:
             if job is None:
                 return {"outcome": "bad-job"}
             job["deadline"] = self.monotonic() + LEASE_SEC
-            return self._process(job)
+            with self._job_lock:
+                if self.stopping.is_set():
+                    # 종료 신호 뒤 도착한 작업 — 입력을 부르지 않는다(시작 0). 서버 임대 만료가 needs_check 로 남긴다
+                    return {"job_id": job["id"], "kind": job["kind"], "outcome": "stopped-before-input"}
+                self.current_job = job["id"]
+            try:
+                return self._process(job)
+            finally:
+                with self._job_lock:
+                    self.current_job = None
         finally:
             self._busy.release()
 
@@ -610,7 +734,7 @@ class Worker:
             now = self.wall()
             if self.state.session_acquire(job["id"], job["generation"], ref, now + LEASE_SEC, now):
                 return True
-            if self.monotonic() + self.session_wait_step > budget_end:
+            if self.stopping.is_set() or self.monotonic() + self.session_wait_step > budget_end:
                 return False
             self.sleep(self.session_wait_step)
 
@@ -621,7 +745,7 @@ class Worker:
             status, _h, payload = self.client.input(jid, gen)
             while status == 429:                            # 요청 속도 한도 — 서버가 처리 전 거절, 임대 안에서만 다시
                 sec = _retry_after(_h)
-                if self.monotonic() + sec >= job["deadline"] - MIN_RUN_SEC:
+                if self.abort.is_set() or self.monotonic() + sec >= job["deadline"] - MIN_RUN_SEC:
                     return dict(base, outcome="input-error", status=status, code=_code(payload))
                 self.sleep(sec)
                 status, _h, payload = self.client.input(jid, gen)
@@ -653,6 +777,8 @@ class Worker:
         self.state.attempt_bump(self.today())         # CLI 시작 직전 = 시도 1
         try:
             res = self.adapter.run(job["kind"], text, resume)
+        except CliInterrupted:
+            return dict(base, outcome="interrupted")      # 완료 불명확 — 실패 전송 없음, 서버 임대 만료(needs_check)
         except JobFail as e:
             return dict(base, **self._send_fail(jid, gen, e.reason_code, job["deadline"]))
         finally:
@@ -690,6 +816,9 @@ class Worker:
         except stack.UnclearEnd:
             self._keep_lease = True                   # 같은 세션 잠금 유지 — 서버 임대 만료(needs_check)까지
             return dict(base, outcome="unclear-end")
+        except CliInterrupted:
+            self._keep_lease = True                   # 종료 신호로 끊김 — 위와 같다(실패 전송 없음)
+            return dict(base, outcome="interrupted")
         except JobFail as e:
             out = dict(base, **self._send_fail(jid, gen, e.reason_code, job["deadline"]))
             out["contract"] = getattr(e, "detail", e.reason_code)
@@ -734,6 +863,8 @@ class Worker:
         429 = Retry-After 를 지키되 그 뒤가 임대 만료(deadline) 이후면 중단. (status, payload) 또는 None(끝내 실패)."""
         tries = 0
         while True:
+            if self.abort.is_set():
+                return None                            # 유예 끝 — 같은 바이트 재전송도 그만(임대 만료 needs_check)
             try:
                 status, headers, payload = send()
             except NetworkError:
@@ -814,3 +945,122 @@ class Worker:
         finally:
             if lock is not None:
                 lock.release()
+
+
+# ── 상주 실행(serve) ──────────────────────────────────────
+
+_LOG_KEYS = ("event", "job_id", "kind", "outcome", "status", "code", "reason_code", "retry_in", "cli_attempts",
+             "duration_ms", "rule", "contract", "stopped", "error", "scope", "killed", "confirmed", "duplicate")
+_LOG_VAL_RE = re.compile(r"^[A-Za-z0-9_.:-]{0,128}$")
+
+
+def _log_line(rec: dict) -> str:
+    """허용 키·짧은 코드 값만 남긴 JSON 한 줄. 본문·예외 메시지·URL 이 섞일 자리가 없다(꼴이 다르면 '?')."""
+    out = {}
+    for k in _LOG_KEYS:
+        if k not in rec:
+            continue
+        v = rec[k]
+        if v is None or isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = round(v, 3) if isinstance(v, float) else v
+        elif isinstance(v, str) and _LOG_VAL_RE.match(v):
+            out[k] = v
+        else:
+            out[k] = "?"
+    return json.dumps(out, sort_keys=True)
+
+
+def serve_jobs(*, lock_path: str, authenticate, make_worker, runner: GroupRunner, log, grace: float = GRACE_SEC,
+               stopping: threading.Event | None = None, abort: threading.Event | None = None,
+               install_signals: bool = True, kill_join: float = KILL_WAIT_SEC * 3,
+               backoff_base: float = POLL_BACKOFF_BASE, backoff_max: float = POLL_BACKOFF_MAX,
+               monotonic=time.monotonic) -> dict:
+    """상주 실행. authenticate() → "ok"·"auth"·"network"·"error". make_worker(stopping, abort) → Worker(어댑터는 runner 사용).
+    log(str) = 한 줄 출력. 반환 {stopped, iterations, outcomes, killed} — stopped: signal·auth-halted·already-running·
+    auth·error·worker-exit. 신호 처리기는 메인 스레드에서만 설치한다(시험은 install_signals=False 로 이벤트를 직접)."""
+    stopping = stopping or threading.Event()
+    abort = abort or threading.Event()
+    emit = lambda **kw: log(_log_line(kw))   # noqa: E731
+    lock = osutil.FileLock(lock_path)
+    try:
+        lock.acquire()
+    except osutil.LockBusy:
+        emit(event="start", stopped="already-running")
+        return {"stopped": "already-running", "iterations": 0, "outcomes": {}, "killed": False}
+    old = {}
+    try:
+        if install_signals:
+            def on_signal(signum, _frame):
+                (abort if stopping.is_set() else stopping).set()
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                old[sig] = signal.signal(sig, on_signal)
+        # 1) 장치 인증 — 통신 실패는 지수 대기 뒤 다시(종료 신호면 그만)
+        fails = 0
+        while True:
+            if stopping.is_set():
+                emit(event="start", stopped="signal")
+                return {"stopped": "signal", "iterations": 0, "outcomes": {}, "killed": False}
+            try:
+                r = authenticate()
+            except Exception as e:   # noqa: BLE001 — 메시지는 찍지 않는다
+                emit(event="auth", outcome="error", error=type(e).__name__)
+                r = "error"
+            if r == "ok":
+                emit(event="auth", outcome="ok")
+                break
+            if r in ("auth", "error"):
+                emit(event="start", stopped=r)
+                return {"stopped": r, "iterations": 0, "outcomes": {}, "killed": False}
+            fails += 1
+            wait = min(backoff_base * (2 ** min(fails - 1, 10)), backoff_max)
+            emit(event="auth", outcome="network", retry_in=wait)
+            stopping.wait(wait)
+        # 2) 워커 스레드 — 메인 스레드는 신호·유예만 본다
+        worker = make_worker(stopping, abort)
+        counts = {}
+        box = {"n": 0}
+
+        def loop():
+            while not stopping.is_set() and not worker.halted:
+                t0 = monotonic()
+                try:
+                    out = worker.poll_once()
+                except Exception as e:   # noqa: BLE001 — 클래스 이름만
+                    out = {"outcome": "error", "error": type(e).__name__}
+                    stopping.wait(backoff_base)
+                box["n"] += 1
+                counts[out["outcome"]] = counts.get(out["outcome"], 0) + 1
+                if "job_id" in out:
+                    out["duration_ms"] = int((monotonic() - t0) * 1000)
+                if out["outcome"] not in ("idle", "stopped"):
+                    emit(event="poll", **out)
+
+        th = threading.Thread(target=loop, name="jobs-worker", daemon=True)
+        th.start()
+        while th.is_alive() and not stopping.is_set():
+            th.join(0.2)
+        killed = False
+        if th.is_alive():
+            with worker._job_lock:
+                in_job = worker.current_job is not None
+            emit(event="stopping", outcome="grace" if in_job else "idle")
+            if in_job:
+                end = monotonic() + float(grace)
+                while th.is_alive() and not abort.is_set() and monotonic() < end:
+                    th.join(0.1)
+                if th.is_alive():
+                    abort.set()
+                    killed = runner.kill()
+                    emit(event="kill", killed=killed, confirmed=runner.confirmed)
+                    th.join(kill_join)
+            # 작업이 없으면 롱폴을 기다리지 않는다 — 데몬 스레드는 프로세스와 함께 끝난다(끊긴 연결엔 서버가 할당하지 않음)
+        runner.closed = True
+        stopped = (worker.halted + "-halted") if worker.halted else ("signal" if stopping.is_set() else "worker-exit")
+        emit(event="stop", stopped=stopped)
+        return {"stopped": stopped, "iterations": box["n"], "outcomes": dict(counts), "killed": killed}
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
+        lock.release()

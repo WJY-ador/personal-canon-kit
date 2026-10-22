@@ -236,6 +236,10 @@
       "required": false
     },
     {
+      "path": "agent/tests/test_serve.py",
+      "required": false
+    },
+    {
       "path": "agent/tests/test_shared_vectors.py",
       "required": false
     },

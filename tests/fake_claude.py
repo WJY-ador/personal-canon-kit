@@ -96,11 +96,29 @@ if os.environ.get("FAKE_JOB") == "1":
     # agent/jobs.py 시험용 분기(가산만 — 아래 기존 [기록 원문] 경로는 그대로).
     # FAKE_MODE: ok · garbage(JSON 아님) · shape(바깥 꼴 틀림) · inner(result 안 꼴 틀림) · login(로그인 오류, exit 1)
     #            · exit(exit 2) · slow(FAKE_SLEEP 초 잠듦 뒤 ok) · is_error(is_error true)
+    #            · hang(손자 프로세스를 띄우고 FAKE_SLEEP 초 잠듦 뒤 ok — serve 종료 시험. FAKE_PID_FILE 에 자기·손자 pid,
+    #              FAKE_IGNORE_TERM=1 이면 자기·손자 모두 SIGTERM 무시 → SIGKILL 단계 확인)
     # --resume <id> 가 argv 에 있으면 그 id 를 session_id 로 되돌린다(실 CLI 와 같은 꼴). 없으면 FAKE_SESSION 또는 고정값.
     mode = os.environ.get("FAKE_MODE", "ok")
     argv = sys.argv[1:]
     resumed = argv[argv.index("--resume") + 1] if "--resume" in argv and argv.index("--resume") + 1 < len(argv) else None
     sid = resumed or os.environ.get("FAKE_SESSION", "fake-session-0001")
+    if mode == "hang":
+        import signal
+        import subprocess
+        ign = os.environ.get("FAKE_IGNORE_TERM") == "1"
+        code = ("import signal,time\n" + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ign else "")
+                + "time.sleep(600)\n")
+        gc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if ign:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        pid_file = os.environ.get("FAKE_PID_FILE")
+        if pid_file:
+            with open(pid_file + ".tmp", "w") as f:
+                f.write("%d %d" % (os.getpid(), gc.pid))
+            os.replace(pid_file + ".tmp", pid_file)
+        time.sleep(float(os.environ.get("FAKE_SLEEP", "600")))
+        mode = "ok"
     if mode == "slow":
         time.sleep(float(os.environ.get("FAKE_SLEEP", "5")))
         mode = "ok"
