@@ -23,23 +23,32 @@ TOKEN_B = "imp_is_6b6b6b6b6b6b6b6b6b6b6b6b.tok_Synth02." + "T" * 43
 SECRET_TEXT = "합성 원문 — 서버 일반 요청에 나오면 안 되는 문장 SYNTH-INPUT-7731"
 LEASE_SEC = 300
 EXPIRE_SEC = 24 * 3600
-DEFS_V = "defs-v1"
-DEFAULT_DEFS = {
+DEFS_V = "3f" + "a" * 62                 # sha256 hex 꼴
+DEFAULT_DEFS = {                     # 서버 B2 확정 꼴(정의 스냅샷 §3-2 + 서버 계약 확정본 4)
     "definitions_version": DEFS_V, "rule_version": 1,
     "objects": [
         {"id": "obj-judgment", "key": "judgment", "origin": "core", "label": "판단", "kind": "judgment",
          "fields": [{"key": "text", "type": "text", "required": True, "max": 2000},
-                    {"key": "status", "type": "enum", "required": False, "enum": ["open", "closed"]}],
-         "relations": [{"key": "axes", "target_object": "obj-axis", "cardinality": "many"}],
-         "identity": [{"scheme": "board", "field": "board_id"}],
-         "protected_fields": ["board_id"], "stage_values": ["draft", "organized", "confirmed"],
+                    {"key": "status", "type": "enum", "required": False, "enum": ["open", "closed"]},
+                    {"key": "code", "type": "text", "required": False},
+                    {"key": "decision", "type": "enum", "required": False, "enum": ["pending", "confirmed"]},
+                    {"key": "axes", "type": "reference", "required": False, "target_kind": "classify",
+                     "target_object": "obj-axis", "multiple": True},
+                    {"key": "people", "type": "reference", "required": False, "target_kind": "person",
+                     "multiple": True}],
+         "relations": [{"key": "axes", "target_kind": "classify", "target_object": "obj-axis", "cardinality": "many"},
+                       {"key": "people", "target_kind": "person", "target_object": None, "cardinality": "many"}],
+         "identity": [{"scheme": "code", "field": "code"}],
+         "protected_fields": ["code", "decision"], "stage_values": ["draft", "organized", "confirmed"],
          "confirm_required": True},
         {"id": "obj-axis", "key": "axis", "origin": "core", "label": "축", "kind": "classify",
          "fields": [{"key": "name", "type": "text", "required": True}],
-         "relations": [], "identity": [], "protected_fields": [], "stage_values": ["draft", "organized"],
-         "confirm_required": False},
+         "relations": [], "identity": [{"scheme": "code", "field": "code"}], "protected_fields": [],
+         "stage_values": ["draft", "organized", "confirmed"], "confirm_required": False},
     ],
-    "content_rules": ["타인의 말은 옮기지 않는다"],
+    "content_rules": ["타인의 실명·핸들·이메일·URL·로컬 경로·소속·정확한 날짜 조합을 쓰지 않는다",
+                      "타인의 말은 업무 방식·주장·일반화한 문제/개선안으로만 옮긴다",
+                      "일반화할 수 없는 타인 정보는 넣지 않는다(빈 칸으로 둔다)"],
 }
 
 

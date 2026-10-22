@@ -44,7 +44,7 @@ def _stack_body(prompt, smode):
     fields = {f["key"]: (f["enum"][0] if f.get("enum") else "가짜 값") for f in obj["fields"] if f.get("required")}
     text = _section(prompt, "INPUT") or _section(prompt, "EDITED TEXT") or ""
     first = text.splitlines()[0][:40] if text else ""
-    ch = {"cid": "c1", "op": "create", "object_id": obj["object_id"], "target": None, "fields": fields,
+    ch = {"cid": "c1", "op": "create", "object_id": obj["object_id"], "target": {"ref_kind": "none"}, "fields": fields,
           "links": [], "depends_on": []}
     body = {"units": [{"uid": "u1", "text": "정리: " + first, "change_ids": ["c1"]}], "changes": [ch], "blocked": []}
     if smode == "contract-bad":
@@ -68,8 +68,9 @@ def _stack_body(prompt, smode):
         uid = prev[0]["uid"] if prev else "u1"
         body["units"] = [{"uid": uid, "text": "재정리: " + first, "change_ids": ["c1"]}]
     elif smode == "cycle":
-        body["changes"].append({"cid": "c2", "op": "create", "object_id": obj["object_id"], "target": None,
+        body["changes"].append({"cid": "c2", "op": "create", "object_id": obj["object_id"], "target": {"ref_kind": "none"},
                                 "fields": fields, "depends_on": ["c1"]})
+        body["units"][0]["change_ids"].append("c2")
         body["changes"][0]["depends_on"] = ["c2"]
     elif smode == "oversize":
         body["units"][0]["text"] = "가" * 4001

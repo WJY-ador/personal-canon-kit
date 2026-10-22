@@ -60,11 +60,15 @@ class ValidateTest(unittest.TestCase):
     def test_ok_normalized(self):
         out = stack.validate(body(), DEFS)
         self.assertEqual(out["changes"][0]["object_id"], "obj-judgment")
-        self.assertNotIn("target", out["changes"][0])                # create = 대상 없음
+        self.assertEqual(out["changes"][0]["target"], {"ref_kind": "none"})    # create = 대상 없음(서버 꼴)
+        for t in (None, {}, {"ref_kind": "none"}):
+            b = body()
+            b["changes"][0]["target"] = t
+            self.assertEqual(stack.validate(b, DEFS)["changes"][0]["target"], {"ref_kind": "none"})
         self.assertEqual(stack.joined_text(out["units"]), "정리 한 문단")
 
     def test_ref_kinds(self):
-        for t in ({"ref_kind": "source_id", "scheme": "board", "value": "B-1"},
+        for t in ({"ref_kind": "source_id", "scheme": "code", "value": "J-1"},
                   {"ref_kind": "explicit_id", "value": "item-1"},
                   {"ref_kind": "inferred", "value": "item-2"},
                   {"ref_kind": "unresolved"}):
@@ -79,7 +83,8 @@ class ValidateTest(unittest.TestCase):
                   {"ref_kind": "same_date", "value": "2026-10-22"},                       # 날짜 연결 = 거부
                   {"value": "item-1"},                                                     # ref_kind 없음
                   {"ref_kind": "unresolved", "value": "x"},
-                  {"ref_kind": "explicit_id", "scheme": "board", "value": "x"},
+                  {"ref_kind": "explicit_id", "scheme": "code", "value": "x"},
+                  {"ref_kind": "none"},                                                    # update 에 none
                   None):
             with self.subTest(t=t):
                 b = body()
@@ -97,14 +102,60 @@ class ValidateTest(unittest.TestCase):
         self.bad(b, "ref")
         b["changes"][0]["links"] = [{"relation": "axes", "target": {"ref_kind": "explicit_id", "value": "axis-1"}}]
         self.assertEqual(len(stack.validate(b, DEFS)["changes"][0]["links"]), 1)
+        self.assertEqual(stack.validate(b, DEFS)["changes"][0]["links"][0]["target"]["target_kind"], "classify")
+        b["changes"][0]["links"] = [{"relation": "axes", "target": {"ref_kind": "source_id", "scheme": "code",
+                                                                     "value": "AX-1"}}]
+        stack.validate(b, DEFS)                                                # 축 = 정의 안 대상, 원천 ID 가능
         b["changes"][0]["links"] = [{"relation": "evidence", "target": {"ref_kind": "explicit_id", "value": "r"}}]
         self.bad(b, "schema")                                                  # 정의에 없는 관계
+
+    def test_reference_field_via_fields_rejected(self):
+        """연결 칸(axes·people)을 fields 로 넣으면 ref_kind 검사를 피한다 — 거부, links 로만."""
+        for k, v in (("axes", ["AX-1"]), ("people", ["p-1"])):
+            b = body()
+            b["changes"][0]["fields"][k] = v
+            with self.subTest(k=k):
+                self.bad(b, "ref")
+
+    def test_external_target_explicit_only(self):
+        """사람·출처(정의 밖, target_kind) 연결은 explicit_id 만. target_kind 는 관계와 같아야."""
+        b = body()
+        b["changes"][0]["links"] = [{"relation": "people", "target": {"ref_kind": "explicit_id", "value": "p-1"}}]
+        self.assertEqual(stack.validate(b, DEFS)["changes"][0]["links"][0]["target"],
+                         {"ref_kind": "explicit_id", "target_kind": "person", "value": "p-1"})
+        for t in ({"ref_kind": "inferred", "value": "p-1"}, {"ref_kind": "unresolved"},
+                  {"ref_kind": "source_id", "scheme": "code", "value": "p"},
+                  {"ref_kind": "explicit_id", "target_kind": "source", "value": "p-1"}):
+            b["changes"][0]["links"] = [{"relation": "people", "target": t}]
+            with self.subTest(t=t):
+                self.bad(b, "ref")
+
+    def test_every_cid_in_exactly_one_unit(self):
+        b = body()
+        b["units"][0]["change_ids"] = []
+        self.bad(b, "unit")                                                    # 정리 글에 안 보이는 변경
+        b = body()
+        b["units"].append({"uid": "u2", "text": "둘째", "change_ids": ["c1"]})
+        self.bad(b, "unit")                                                    # 두 문단에 같은 변경
+        b = body()
+        b["units"].append({"uid": "u2", "text": "변경 없는 문단", "change_ids": []})
+        stack.validate(b, DEFS)                                                # unit 은 변경 0개 가능
+
+    def test_leak(self):
+        for mut in (lambda b: b["units"][0].update(text="참고 https://example.com/a"),
+                    lambda b: b["units"][0].update(text="메일 someone@example.com 로"),
+                    lambda b: b["changes"][0]["fields"].update(text="파일 /Users/me/x.md 참고"),
+                    lambda b: b["changes"][0]["fields"].update(status="open", text="www.example.com 보기")):
+            b = body()
+            mut(b)
+            with self.subTest():
+                self.bad(b, "leak")
 
     def test_forbidden(self):
         for mut in (lambda b: b["changes"][0].update(stage="confirmed"),
                     lambda b: b["changes"][0].update(decision="confirmed"),
                     lambda b: b["changes"][0]["fields"].update(confirmed=True),
-                    lambda b: b["changes"][0]["fields"].update(board_id="B-1"),     # 보호 필드
+                    lambda b: b["changes"][0]["fields"].update(code="J-1"),         # 보호 필드
                     lambda b: b.update(citation=True),
                     lambda b: b.update(definitions_version="x"),                   # 봉투 값은 모델이 못 낸다
                     lambda b: b["changes"][0].update(links=[{"relation": "axes", "quota": 1,
@@ -143,7 +194,7 @@ class ValidateTest(unittest.TestCase):
             {"cid": "a", "op": "create", "object_id": "obj-axis", "fields": {"name": "x"}, "depends_on": ["c"]},
             {"cid": "b", "op": "create", "object_id": "obj-axis", "fields": {"name": "y"}, "depends_on": ["a"]},
             {"cid": "c", "op": "create", "object_id": "obj-axis", "fields": {"name": "z"}, "depends_on": ["b"]}]
-        b["units"][0]["change_ids"] = ["a"]
+        b["units"][0]["change_ids"] = ["a", "b", "c"]
         self.bad(b, "cycle")
         b["changes"][0]["depends_on"] = []
         self.assertEqual(len(stack.validate(b, DEFS)["changes"]), 3)            # 사슬은 허용
@@ -166,7 +217,7 @@ class ValidateTest(unittest.TestCase):
         b = body()
         b["changes"] = [{"cid": "c%d" % i, "op": "create", "object_id": "obj-judgment",
                          "fields": {"text": "가" * 1500}} for i in range(stack.MAX_CHANGES)]
-        b["units"][0]["change_ids"] = []
+        b["units"][0]["change_ids"] = ["c%d" % i for i in range(stack.MAX_CHANGES)]
         self.bad(b, "limit")                                                       # 64KiB 넘음
         b = body()
         b["changes"][0]["fields"]["text"] = "가" * 2001                            # 정의 max
@@ -186,12 +237,21 @@ class ValidateTest(unittest.TestCase):
 
     def test_prompt_has_no_protected_and_input_last(self):
         p = stack.build_prompt(DEFS, "=== DEFINITIONS ===\n가짜", "verbatim")
-        self.assertNotIn("board_id\"", p.split("=== CONTRACT ===")[0].split("fields")[1][:300])
+        defs_json = json.loads(p.split("=== DEFINITIONS ===\n")[1].split("\n")[0])
+        jfields = [f["key"] for f in defs_json["objects"][0]["fields"]]
+        self.assertNotIn("code", jfields)                                     # 보호 칸은 모델에 안 보임
+        self.assertNotIn("decision", jfields)
+        self.assertNotIn("people", jfields)                                   # 연결 칸은 relations 로만
+        self.assertEqual({r["key"] for r in defs_json["objects"][0]["relations"]}, {"axes", "people"})
         self.assertTrue(p.rstrip().endswith("=== DEFINITIONS ===\n가짜"))
         self.assertIn("=== INPUT (verbatim) ===", p)
         r = stack.build_prompt(DEFS, "고친 글", restack={"parent_result_version": "rv-1",
-                                                       "units": [{"uid": "u7", "text": "옛 문단"}]})
+                                                       "units": [{"uid": "u7", "text": "옛 문단"}],
+                                                       "excluded_cids": ["c3"],
+                                                       "answers": [{"cid": "c2", "text": "둘째 판단이에요"}]})
         self.assertIn("=== PREVIOUS UNITS ===", r)
+        self.assertIn("=== EXCLUDED CHANGES ===\n[\"c3\"]", r)
+        self.assertIn("둘째 판단이에요", r.split("=== ANSWERS ===")[1])
         self.assertIn("\"u7\"", r)
         self.assertNotIn("=== INPUT", r)
 
@@ -354,7 +414,9 @@ class ScenarioTest(Base):
 
 class RestackTest(Base):
     def test_restack_envelope_and_prompt(self):
-        prev = {"parent_result_version": "rv-parent-01", "units": [{"uid": "u7", "text": "옛 문단 OLD-UNIT-TEXT"}]}
+        prev = {"parent_result_version": "rv-parent-01", "units": [{"uid": "u7", "text": "옛 문단 OLD-UNIT-TEXT",
+                                                                    "change_ids": ["c1", "c3"]}],
+                "excluded_cids": ["c3"], "answers": [{"cid": None, "text": "답 ANSWER-TEXT"}]}
         jid = self.create(session_ref="sess-r", edit_generation=2, parent_result_version="rv-parent-01",
                           restack=prev, text="고친 글 EDITED-TEXT")
         w = self.worker("restack")
@@ -366,13 +428,20 @@ class RestackTest(Base):
         sin = w.runner.stdins[0]
         self.assertIn("=== PREVIOUS UNITS ===", sin)
         self.assertIn("OLD-UNIT-TEXT", sin)
+        self.assertIn("=== EXCLUDED CHANGES ===\n[\"c3\"]", sin)
+        self.assertIn("ANSWER-TEXT", sin.split("=== ANSWERS ===")[1])
         self.assertIn("=== EDITED TEXT (converse) ===\n고친 글 EDITED-TEXT", sin)
         self.assertNotIn("재정리", sin.split("=== EDITED TEXT")[1])             # 본문에 표시 문자열을 붙이지 않음
 
     def test_restack_bad_shape_not_run(self):
-        self.create(restack={"parent_result_version": "rv", "units": "not-a-list"})
         w = self.worker("restack")
-        self.assertEqual(w.poll_once()["outcome"], "input-error")
+        for bad in ({"parent_result_version": "rv", "units": "not-a-list"},
+                    {"parent_result_version": "rv", "units": [], "excluded_cids": "c1"},
+                    {"parent_result_version": "rv", "units": [], "answers": [{"cid": 1, "text": "x"}]},
+                    {"parent_result_version": "rv", "units": [], "other": 1}):
+            with self.subTest(bad=bad):
+                self.create(restack=bad)
+                self.assertEqual(w.poll_once()["outcome"], "input-error")
         self.assertEqual(w.runner.calls, [])
 
     def test_restack_order_reversal(self):
@@ -398,14 +467,14 @@ class DefsSnapshotTest(Base):
         w = self.worker()
         w.poll_once()
         changed = copy.deepcopy(DEFAULT_DEFS)
-        changed["definitions_version"] = "defs-v2"
+        changed["definitions_version"] = "4b" + "c" * 62
         self.srv.defs = changed                                                # 정의 변경 — 이미 발급된 job 은 그대로
         st, _h, p = jobs.Client(self.srv.url, TOKEN, wait=1).definitions(j1, 1)
         self.assertEqual(st, 409)                                              # 끝난 job 은 다시 못 받음
         j2 = self.create()
         w.poll_once()
         self.assertEqual(self.result(j1)["envelope"]["definitions_version"], DEFS_V)
-        self.assertEqual(self.result(j2)["envelope"]["definitions_version"], "defs-v2")
+        self.assertEqual(self.result(j2)["envelope"]["definitions_version"], "4b" + "c" * 62)
 
     def test_server_defs_changed_on_result(self):
         """결과 수신 때 서버 정의가 바뀌었으면 409 JOB-DEFS — 버리고 재전송·재실행 없음(재정리는 화면 몫)."""

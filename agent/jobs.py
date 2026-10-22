@@ -482,19 +482,32 @@ def _job_shape(p) -> dict | None:
 
 
 def _restack_shape(r):
-    """재정리 입력(서버가 준 원 결과 units) — 꼴이 틀리면 None."""
-    if not isinstance(r, dict) or set(r) - {"parent_result_version", "units"}:
+    """재정리 입력(서버가 준 원 결과 units·뺄 변경·막힘 답) — 꼴이 틀리면 None."""
+    if not isinstance(r, dict) or set(r) - {"parent_result_version", "units", "excluded_cids", "answers"}:
         return None
     prv, units = r.get("parent_result_version"), r.get("units")
+    exc, ans = r.get("excluded_cids", []), r.get("answers", [])
     if not (isinstance(prv, str) and _REF_RE.match(prv)) or not isinstance(units, list) \
-            or len(units) > stack.MAX_UNITS:
+            or len(units) > stack.MAX_UNITS or not isinstance(exc, list) or not isinstance(ans, list) \
+            or len(exc) > stack.MAX_CHANGES or len(ans) > stack.MAX_CHANGES:
         return None
     out = []
     for u in units:
         if not isinstance(u, dict) or not isinstance(u.get("uid"), str) or not isinstance(u.get("text"), str):
             return None
-        out.append({"uid": u["uid"], "text": u["text"]})
-    return {"parent_result_version": prv, "units": out}
+        ids = u.get("change_ids", [])
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            return None
+        out.append({"uid": u["uid"], "text": u["text"], "change_ids": list(ids)})
+    if not all(isinstance(c, str) and _REF_RE.match(c) for c in exc):
+        return None
+    answers = []
+    for a in ans:
+        if not isinstance(a, dict) or set(a) - {"cid", "text"} or not isinstance(a.get("text"), str) \
+                or not (a.get("cid") is None or isinstance(a.get("cid"), str)):
+            return None
+        answers.append({"cid": a.get("cid"), "text": a["text"]})
+    return {"parent_result_version": prv, "units": out, "excluded_cids": list(exc), "answers": answers}
 
 
 class Worker:
