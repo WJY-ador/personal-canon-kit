@@ -942,7 +942,7 @@ const recCache = {};
 // PR① 새 탐색 표시 용어(호스팅 웹 · 가이드 09·10 과 같은 말). 옛 탐색(nav=old) 화면 문자열은 그대로 — 같은 함수를 쓰는 자리만 TX 로 가른다.
 // NT = 라벨 한 덩이를 통째로 바꾼다(부분 치환 없음 — 사용자 본문·식별자·「활동 기록」 같은 일반 문장은 건드리지 않는다)
 const TX = (n, o) => navNew() ? n : o;
-const NEWTERM = {"기록": "내가 쓴 글", "후보": "검토할 판단", "내 판단": "확정한 판단", "검토 대기": "확인 전", "검토 완료": "확인했어요",
+const NEWTERM = {"기록": "내 글", "후보": "검토할 판단", "내 판단": "확정한 판단", "검토 대기": "확인 전", "검토 완료": "확인했어요",
   "출처 요약/반응": "읽고 든 생각", "요약/반응": "읽고 든 생각", "승인 대기": "저장 승인 대기", "오브젝트": "자료 종류",
   "사용자 정의": "커스텀", "선택 템플릿": "커스텀", "직접 추가": "커스텀"};
 const NT = w => (navNew() && NEWTERM[w]) || w;
@@ -1243,9 +1243,9 @@ function renderToday(tab) {
     const nl = nextLine(tab, "");
     if (nl) left += `<h2 class="sh">다음 할 일</h2>${nl}`;
   }
-  const recs = !ok("journal") ? partFail(S.read.journal.error, TX("내가 쓴 글 목록", "기록 목록"))
+  const recs = !ok("journal") ? partFail(S.read.journal.error, TX("내 글 목록", "기록 목록"))
     : js.length ? `<div class="recbox"><ul class="recs">${js.slice(0, 8).map(j => recRow(j.id, readerAt && readerAt.id === j.id)).join("")}</ul></div>`
-    : `<div class="empty">${TX("아직 내가 쓴 글이 없어요.", "아직 기록이 없어요.")}</div>`;
+    : `<div class="empty">${TX("아직 내 글이 없어요.", "아직 기록이 없어요.")}</div>`;
   $("view").innerHTML = `<div class="board"><div class="tleft">${left}</div><aside class="rside" aria-label="${TX("최근 글과 원문", "최근 기록과 원문")}">
     <h2 class="sh">${TX("최근 글", "최근 기록")} <span class="speclabel">${js.length}</span></h2>${recs}
     <div class="readerbox"><h2 class="sh">원문</h2><div class="reader" id="reader" aria-live="polite"><p class="empty">${TX("근거나 글을 누르면 원문이 여기 떠요.", "근거나 기록을 누르면 원문이 여기 떠요.")}</p></div></div></aside></div>`;
@@ -1287,7 +1287,7 @@ function renderQuestionTab(tab, sel) {
 const FILTERS = [["confirmed", "내 판단"], ["pending", "아직 안 정함"], ["excluded", "남기지 않음"], ["all", "전부"]];
 const STCHIP = {confirmed: ["st-mine", "내 판단"], pending: ["st-wait", "아직 안 정함"], excluded: ["st-off", "남기지 않음"]};
 const NOCARD_NEW = {confirmed: "아직 확정한 판단이 없어요. 검토할 판단을 원문과 대조해 남기면 여기에 쌓여요.",
-  pending: "정할 문장이 남아 있지 않아요.", excluded: "남기지 않은 문장이 없어요.", all: "아직 뽑힌 문장이 없어요. 내가 쓴 글에서 판단을 뽑으면 여기에 떠요."};
+  pending: "정할 문장이 남아 있지 않아요.", excluded: "남기지 않은 문장이 없어요.", all: "아직 뽑힌 문장이 없어요. 내 글에서 판단을 뽑으면 여기에 떠요."};
 const NOCARD = {confirmed: "아직 내 판단이 없어요. 아직 안 정한 문장을 원문과 대조해 남기면 여기에 쌓여요.",
   pending: "정할 문장이 남아 있지 않아요.", excluded: "남기지 않은 문장이 없어요.",
   all: "아직 뽑힌 문장이 없어요. 기록에서 후보를 뽑으면 여기에 떠요."};
@@ -1762,7 +1762,7 @@ async function itemAct(tab, it, act) {
 // ── 지도 — 칸반(들어오는 것 · 내 손 대기 · 쌓이는 재료) ─────
 function renderMap(tab) {
   if (!ok("candidates") || !ok("journal")) {
-    $("view").innerHTML = partFail((ok("candidates") ? S.read.journal : S.read.candidates).error, ok("candidates") ? TX("내가 쓴 글 목록", "기록 목록") : "문장 목록");
+    $("view").innerHTML = partFail((ok("candidates") ? S.read.journal : S.read.candidates).error, ok("candidates") ? TX("내 글 목록", "기록 목록") : "문장 목록");
     return;
   }
   const cs = S.candidates || [], js = S.journal || [];
@@ -1793,9 +1793,9 @@ function renderMap(tab) {
 
 function firstRun(tab, bl) {
   const n = (S.journal || []).length;
-  return `<div class="first"><h2>최근에 겪은 일을 한 편 적어볼까요?</h2><p>질문은 나중에 정해도 돼요.${n ? TX(` 지금 내가 쓴 글이 ${n}편 있어요.`, ` 지금 기록이 ${n}편 있어요.`) : ""}</p>
+  return `<div class="first"><h2>최근에 겪은 일을 한 편 적어볼까요?</h2><p>질문은 나중에 정해도 돼요.${n ? TX(` 지금 내 글이 ${n}편 있어요.`, ` 지금 기록이 ${n}편 있어요.`) : ""}</p>
     <ol class="steps"><li><b>${LBL("record")}</b>겪은 일을 내 말로 적어요.</li>
-    <li class="cand"><b>${LBL("candidate")}</b>${TX("내가 쓴 글에서 판단이 될 만한 문장을 뽑아요. 아직 확정한 판단은 아니에요.", "기록에서 판단이 될 만한 문장을 뽑아요. 아직 내 판단은 아니에요.")}</li>
+    <li class="cand"><b>${LBL("candidate")}</b>${TX("내 글에서 판단이 될 만한 문장을 뽑아요. 아직 확정한 판단은 아니에요.", "기록에서 판단이 될 만한 문장을 뽑아요. 아직 내 판단은 아니에요.")}</li>
     <li class="mine"><b>${LBL("mine")}</b>원문과 대조해 내가 남긴 문장만 쌓여요.</li></ol>
     ${sayLine("기록 남기자")}</div>
     ${bl.has("status") ? runStatus() : ""}`;
@@ -1825,7 +1825,7 @@ function sheetSections(tab, q) {
     ${wait.length ? `<div class="cards">${wait.map(c => `<div class="card cand"><p class="sent">${esc(c.text)}</p>
       <div class="labels">${origin(c)}${decision(c)}</div></div>`).join("")}</div>
       <div class="cta"><p class="hint">${TX("남기기 전까진 확정한 판단이 아니에요.", "남기기 전까진 내 판단이 아니에요.")}</p><a class="btn primary" href="#${esc(tab.id)}/review/${esc(q.id)}/${esc(wait[0].id)}">원문과 대조하기 · ${wait.length}개</a></div>`
-      : `<div class="empty">${cs.length ? "정할 문장이 남아 있지 않아요." : TX("아직 이 질문에 뽑힌 문장이 없어요. 내가 쓴 글에서 판단을 뽑으면 여기에 떠요.", "아직 이 질문에 뽑힌 문장이 없어요. 기록에서 후보를 뽑으면 여기에 떠요.")}</div>`}</section>`;
+      : `<div class="empty">${cs.length ? "정할 문장이 남아 있지 않아요." : TX("아직 이 질문에 뽑힌 문장이 없어요. 내 글에서 판단을 뽑으면 여기에 떠요.", "아직 이 질문에 뽑힌 문장이 없어요. 기록에서 후보를 뽑으면 여기에 떠요.")}</div>`}</section>`;
   if (off.length) h += `<details class="fold"><summary>남기지 않은 문장 보기 · ${off.length}개</summary><div class="cards">${off.map(c =>
       `<div class="card cand"><p class="sent">${esc(c.text)}</p><div class="labels">${origin(c)}${decision(c)}</div>${evLine(c)}</div>`).join("")}</div></details>`;
   const recs = [...new Set(cs.map(c => c.record_id))];
@@ -1835,10 +1835,10 @@ function sheetSections(tab, q) {
 }
 
 function recentRecords() {
-  if (!ok("journal")) return `<section class="sec">${partFail(S.read.journal.error, TX("내가 쓴 글 목록", "기록 목록"))}</section>`;
+  if (!ok("journal")) return `<section class="sec">${partFail(S.read.journal.error, TX("내 글 목록", "기록 목록"))}</section>`;
   const js = (S.journal || []).slice(0, 8);
   return `<section class="sec"><h3>${TX("최근 글", "최근 기록")}<span class="count">${(S.journal || []).length}</span></h3>
-    ${js.length ? `<ul class="recs">${js.map(j => recRow(j.id, false)).join("")}</ul>` : `<div class="empty">${TX("아직 내가 쓴 글이 없어요.", "아직 기록이 없어요.")}</div>`}</section>`;
+    ${js.length ? `<ul class="recs">${js.map(j => recRow(j.id, false)).join("")}</ul>` : `<div class="empty">${TX("아직 내 글이 없어요.", "아직 기록이 없어요.")}</div>`}</section>`;
 }
 
 function runStatus() { return ""; }
@@ -1851,7 +1851,7 @@ function renderRecordTab(tab, sel) {
   const js = all.filter(srcMatch);
   const j = js.find(x => x.id === sel) || js[0];
   let body, side = "";
-  if (!ok("journal")) body = partFail(S.read.journal.error, TX("내가 쓴 글 목록", "기록 목록"));
+  if (!ok("journal")) body = partFail(S.read.journal.error, TX("내 글 목록", "기록 목록"));
   else if (!all.length) body = firstRun(tab, bl);
   else if (!j) body = `${filt}<div class="empty">${TX("불러온 글 중에 이 출처에서 온 글이 없어요.", "최근 기록 중에 이 출처에서 온 기록이 없어요.")}</div>`;
   else {
@@ -2350,7 +2350,7 @@ async function coreAct(b) {
     if (!window.confirm("이 장치 연결을 해제할까요? 토큰을 바로 쓸 수 없게 되고 되살릴 수 없어요(새로 연결해야 해요). 이미 받은 활동·글은 남아요.")) return;
     url = `/api/devices/${encodeURIComponent(id)}/revoke`; body = {}; done = "연결을 해제했어요.";
   } else if (act === "inbox-approve") {
-    url = `/api/inbox/${encodeURIComponent(id)}/approve`; body = {}; done = "승인했어요. 내가 쓴 글로 저장했어요."; hash = navNew() ? "#_today" : "#_inbox";
+    url = `/api/inbox/${encodeURIComponent(id)}/approve`; body = {}; done = "승인했어요. 내 글로 저장했어요."; hash = navNew() ? "#_today" : "#_inbox";
   } else if (act === "inbox-exclude") {
     if (!window.confirm("이 글을 제외할까요? 대기 본문이 지워지고 되돌릴 수 없어요.")) return;
     url = `/api/inbox/${encodeURIComponent(id)}/exclude`; body = {}; done = "제외했어요. 대기 본문을 지웠어요."; hash = navNew() ? "#_today" : "#_inbox";
@@ -2404,7 +2404,7 @@ const firstLine = s => (String(s || "").split("\n").find(l => l.trim()) || "").t
 // 행 = {k: 주소 종류, f: 종류 선택 키, id, title, kind(표시 이름), at(만든 시각), x(원래 객체)}
 function homeRows() {
   const out = [];
-  if (ok("journal")) for (const r of homeRecords()) out.push({k: "journal", f: "journal", id: r.id, title: r.title || r.excerpt || "(제목 없음)", kind: "내가 쓴 글", at: r.created, x: r});
+  if (ok("journal")) for (const r of homeRecords()) out.push({k: "journal", f: "journal", id: r.id, title: r.title || r.excerpt || "(제목 없음)", kind: "내 글", at: r.created, x: r});
   if (ok("questions")) for (const q of S.questions || []) out.push({k: "q", f: "q", id: q.id, title: q.text, kind: "질문", at: q.created, x: q});
   if (ok("candidates")) for (const c of S.candidates || []) {
     if (c.status === "pending") out.push({k: "cand", f: "pend", id: c.id, title: c.text, kind: "검토할 판단", at: c.created, x: c});
@@ -2534,7 +2534,7 @@ function homeDetailHtml(r, lens) {   // lens = 「나」 렌즈 이름(그래프
   const head = (kind, title, meta) => `<div class="hkind">${esc(kind)}</div><h2 class="title">${title}</h2>${meta ? `<p class="recmeta">${esc(meta)}</p>` : ""}`;
   if (r.k === "journal") {
     const q = x.question_id ? qById(x.question_id) : null;
-    return head("내가 쓴 글", esc(r.title), [when, srcText(x), q ? `질문 「${q.text}」` : ""].filter(Boolean).join(" · ")) +
+    return head("내 글", esc(r.title), [when, srcText(x), q ? `질문 「${q.text}」` : ""].filter(Boolean).join(" · ")) +
       `<div id="home-body">${LOADING}</div>` + homeConnHtml(r);
   }
   if (r.k === "q") return head("질문", esc(x.text), when) + homeConnHtml(r);
@@ -2563,7 +2563,7 @@ const homeConnExtra = {};   // 축 항목 id → {ok, acts, count} — /api/axes
 function graphKindName(kind, x) {
   if (kind === "cand") return x ? {pending: "검토할 판단", confirmed: "확정한 판단", excluded: "남기지 않은 판단"}[x.status] || "판단" : "판단";
   if (kind === "item") return x ? objLabel(x.object_id) : "항목";
-  return {journal: "내가 쓴 글", q: "질문", refl: "읽고 든 생각", person: "사람", source: "출처", activity: "활동"}[kind] || kind;
+  return {journal: "내 글", q: "질문", refl: "읽고 든 생각", person: "사람", source: "출처", activity: "활동"}[kind] || kind;
 }
 function graphFind(kind, id) {
   if (kind === "journal") return homeRecords().find(r => r.id === id) || null;
@@ -2751,7 +2751,7 @@ async function homeLoadRec(id, whole) {
   if (seq !== renderSeq) return;
   if (!r.ok) { if (whole && $("home-detail")) $("home-detail").innerHTML = HOME_GONE; else if ($("home-body")) $("home-body").innerHTML = partFail({code: r.code, msg: r.msg}, "이 글"); return; }
   if (whole && $("home-detail")) {   // 목록에 아직 없는 기록 — 받은 값으로 머리까지 그린다
-    $("home-detail").innerHTML = homeBack() + `<div class="hkind">내가 쓴 글</div><h2 class="title">${esc(r.title)}</h2>
+    $("home-detail").innerHTML = homeBack() + `<div class="hkind">내 글</div><h2 class="title">${esc(r.title)}</h2>
       <p class="recmeta">${esc([mdhm(r.meta.created), srcLine(id, r.meta.source)].join(" · "))}</p><div id="home-body"></div>${homeConnHtml({k: "journal", id, x: null})}`;
     graphFillLazy();
   }
@@ -2946,7 +2946,7 @@ function meCenter(tab, sel) {
       : `<div class="empty">아직 없어요.</div>`;
     return `<div class="hkind">출처 · ${esc(SRC_KIND[x.kind] || x.kind)}</div><h2 class="title">${esc(x.name)}</h2>
       <p class="recmeta">${x.location ? `${esc(x.location)} · ` : ""}<a href="#_obj/source/${esc(x.id)}">읽고 든 생각 쓰기</a></p>
-      <section class="msec"><h3>내가 쓴 글<span class="count">${esc(total)}</span></h3>${recBox}</section>
+      <section class="msec"><h3>내 글<span class="count">${esc(total)}</span></h3>${recBox}</section>
       <section class="msec"><h3>읽고 든 생각<span class="count">${rs.length}</span></h3>${reflBox}</section>
       <section class="msec" id="me-src-ctx">${LOADING}</section>`;
   }
@@ -3024,7 +3024,7 @@ function renderMeV9(tab, a, b) {
   const hi = $("hedit-input");
   if (hi && homeEdit && !homeEdit.busy) { hi.focus({preventScroll: true}); const n = hi.value.length; hi.setSelectionRange(n, n); }
 }
-// 옛 상세 — 내가 쓴 글·질문·판단·읽고 든 생각(하위 탭 7 에 없는 종류). 그래프 노드·근거 링크가 여기로 온다
+// 옛 상세 — 내 글·질문·판단·읽고 든 생각(하위 탭 7 에 없는 종류). 그래프 노드·근거 링크가 여기로 온다
 function meRenderRecord(head, k, id) {
   const r = homeRows().find(x => x.k === k && x.id === id) || null;
   const loose = !r && k === "journal";
@@ -3042,7 +3042,7 @@ function meRenderRecord(head, k, id) {
 // 숫자는 서버 /api/me/stats 그대로(전체 범위) — 화면에서 다시 세지 않는다. 최근 변경 5 만 S(바뀐 시각)에서.
 // 색: 히트맵 = 주색 한 색 농도 5단(0 = 빈 칸) · 막대 = 주색 한 색(계열 1 — 범례 없음, 제목이 이름) · 기다리는 결정 = 3 칸 + 칸마다 글자 범례(색만으로 구분하지 않음).
 const ME_KINDS = [["principle", "기준", "#_me/principle"], ["decision", "결정", "#_me/decision"], ["axis", "축", "#_me/axis"], ["custom", "커스텀", "#_me/custom"],
-  ["records", "내가 쓴 글", ""], ["readings", "읽기 자료", ""], ["people", "사람", "#_me/person"], ["sources", "출처", "#_me/source"]];
+  ["records", "내 글", ""], ["readings", "읽기 자료", ""], ["people", "사람", "#_me/person"], ["sources", "출처", "#_me/source"]];
 const ME_KIND_LOCK = new Set(["principle", "decision", "axis", "people", "sources"]);
 const ME_WAIT = [["candidates_pending", "검토할 판단", "#structure/cand/pending", "mw1"], ["principles_pending", "확정 전 기준", "#_me/principle", "mw2"],
   ["inbox_pending", "저장 승인 대기", "#_today", "mw3"]];
@@ -3084,11 +3084,11 @@ function meWaiting(st) {
   const legend = `<ul class="mwlegend">${ME_WAIT.map(([key, label, href, cls]) => `<li class="${w[key] ? "" : "zero"}"><i class="${cls}"></i><a href="${href}">${esc(label)}</a><b>${esc(w[key] || 0)}</b></li>`).join("")}</ul>`;
   return meBlk("full", "기다리는 결정", esc(tot), (tot ? band : `<p class="hint">기다리는 결정이 없어요.</p>`) + legend);
 }
-// 최근 변경 5 — 항목(고친 시각)·내가 쓴 글(받은 시각)·읽고 든 생각(고친 시각). 불러온 범위(S) 안에서
+// 최근 변경 5 — 항목(고친 시각)·내 글(받은 시각)·읽고 든 생각(고친 시각). 불러온 범위(S) 안에서
 function meRecent() {
   const xs = [];
   for (const it of S.items || []) if (it.revision) xs.push({at: it.updated_at || it.created_at, kind: objLabel(it.object_id), title: (it.code ? it.code + " " : "") + (it.title || "(제목 없음)"), href: `#_me/${meTabOfItem(it)}/${it.id}`});
-  for (const r of homeRecords()) xs.push({at: r.created, kind: "내가 쓴 글", title: r.title || r.excerpt || "(제목 없음)", href: `#_me/journal/${r.id}`});
+  for (const r of homeRecords()) xs.push({at: r.created, kind: "내 글", title: r.title || r.excerpt || "(제목 없음)", href: `#_me/journal/${r.id}`});
   for (const x of reflList()) xs.push({at: x.updated || x.created, kind: "읽고 든 생각", title: firstLine(x.body) || "(내용 없음)", href: `#_me/refl/${x.id}`});
   const top = xs.map((x, i) => [x, i]).sort((a, b) => homeTime(b[0].at) - homeTime(a[0].at) || a[1] - b[1]).slice(0, 5).map(p => p[0]);
   const body = top.length ? `<ul class="hrows mrecent">${top.map(x => `<li><a href="${esc(x.href)}"><span class="ht"><span class="chip">${esc(x.kind)}</span> ${esc(x.title)}</span><span class="hk">${esc(mdhm(x.at))}</span></a></li>`).join("")}</ul>`
@@ -3305,22 +3305,27 @@ function todayRows() {
   for (const e of (TODAY.pend && TODAY.pend.entries) || []) out.push({at: e.received_at, st: "대기", kind: INBOX_KIND[e.kind] || e.kind, ai: e.kind === "self_summary",
     title: inboxTitle(e), href: `#_today/inbox/${e.id}`, key: "inbox:" + e.id,
     meta: [e.device ? e.device.label : "", `${mdhm(e.received_at)} 받음`, e.expires_at ? `${md(e.expires_at)} 만료 예정` : "", e.execution === "unattended" ? "무인 실행" : ""]});
-  for (const r of homeRecords()) if (r.ingest_kind === "inbox") out.push({at: r.created, st: "보관됨", kind: "내가 쓴 글", ai: false,   // 글 종류는 한 이름(v9 P1) — generation_kind 는 표시 안 함
+  for (const r of homeRecords()) if (r.ingest_kind === "inbox") out.push({at: r.created, st: "보관됨", kind: "내 글", ai: false,   // 글 종류는 한 이름(v9 P1) — generation_kind 는 표시 안 함
     title: r.title || r.excerpt || "(제목 없음)", href: `#_me/journal/${r.id}`, key: "rec:" + r.id, meta: [`${mdhm(r.created)} 저장`, r.source_date ? `원래 쓴 날 ${dOnly(r.source_date)}` : ""]});
   for (const a of (TODAY.acts && TODAY.acts.activities) || []) out.push({at: a.received_at, st: "보관됨", kind: a.action_label || actLabel(a.action),
-    title: a.source ? a.source.name : "활동", href: `#_obj/activity/${a.id}`, key: "act:" + a.id,
+    title: a.source ? a.source.name : "활동", href: `#_obj/activity/${a.id}`, key: "act:" + a.id, act: true,
     meta: [a.occurred_on ? `행동한 날 ${dOnly(a.occurred_on)}` : "행동한 날 미확인", (a.people || []).map(p => p.alias).join(", ")]});
   return out.map((x, i) => [x, i]).sort((p, q) => homeTime(q[0].at) - homeTime(p[0].at) || p[1] - q[1]).map(p => Object.assign(p[0], {day: kstDay(p[0].at)}));
 }
+// 날짜 머리글당 활동은 5줄 + 「더 N」(그 날 활동만 펼침) — 대기·저장된 글은 전부
 function todayListHtml(rows, selKey) {
   if (!rows.length) return `<div class="empty">${ME_EMPTY}</div>`;
-  let day = "", h = "";
-  for (const r of rows) {
-    if (r.day !== day) { day = r.day; h += (h ? "</ul>" : "") + `<h3 class="tday">${esc(day === meToday() ? `오늘 · ${dOnly(day)}` : dOnly(day) || "날짜 미확인")}</h3><ul class="hrows">`; }
-    h += `<li><a href="${esc(r.href)}" data-home-row${r.key === selKey ? ' aria-current="true"' : ""}><span class="ht"><span class="chip tst ${r.st === "대기" ? "wait" : "kept"}">${esc(r.st)}</span>
+  const days = [];
+  for (const r of rows) { if (!days.length || days[days.length - 1].day !== r.day) days.push({day: r.day, rows: []}); days[days.length - 1].rows.push(r); }
+  return days.map(({day, rows: rs}) => {
+    const key = "today:" + day, acts = rs.filter(r => r.act), open = meOpen.has(key) || acts.length <= ME_SHOW;
+    const hide = new Set(open ? [] : acts.slice(ME_SHOW).map(r => r.key));
+    return `<h3 class="tday">${esc(day === meToday() ? `오늘 · ${dOnly(day)}` : dOnly(day) || "날짜 미확인")}</h3><ul class="hrows" data-me-list="${esc(key)}">${rs.filter(r => !hide.has(r.key)).map(r => todayRowHtml(r, selKey)).join("")}</ul>${open ? "" : `<button class="tertiary mmore" type="button" data-me-open="${esc(key)}">더 ${hide.size}</button>`}`;
+  }).join("");
+}
+function todayRowHtml(r, selKey) {
+  return `<li><a href="${esc(r.href)}" data-home-row${r.key === selKey ? ' aria-current="true"' : ""}><span class="ht"><span class="chip tst ${r.st === "대기" ? "wait" : "kept"}">${esc(r.st)}</span>
       <span class="chip${r.ai ? " o-ai" : ""}">${esc(r.kind)}</span> ${esc(r.title)}</span><span class="hk">${r.meta.filter(Boolean).map(esc).join(" · ")}</span></a></li>`;
-  }
-  return h + "</ul>";
 }
 function renderToday2(a, b) {
   subnav("");
@@ -3350,11 +3355,11 @@ function srcPanel(sid) {
   const total = ((S.source_counts || {}).by_source || {})[sid] || 0;
   const rs = reflList().filter(x => x.source_id === sid);
   const sum = rs.filter(x => x.kind === "summary"), rea = rs.filter(x => x.kind === "reaction");
-  const recBox = !ok("journal") ? partFail(S.read.journal.error, "내가 쓴 글 목록")
+  const recBox = !ok("journal") ? partFail(S.read.journal.error, "내 글 목록")
     : recs.length ? `<div class="recbox"><ul class="recs">${recs.map(j => recRow(j.id, false)).join("")}</ul></div>${total > recs.length ? `<p class="hint">불러온 글만 보여요. 이 출처의 글은 모두 ${total}편이에요.</p>` : ""}`
     : `<div class="empty">${total ? `불러온 글 중엔 이 출처의 글이 없어요(모두 ${total}편).` : "이 출처의 글이 없어요."}</div>`;
   return `<div class="mecols">
-    <section><h2 class="sh">내가 쓴 글 <span class="speclabel">${total}</span></h2>${recBox}</section>
+    <section><h2 class="sh">내 글 <span class="speclabel">${total}</span></h2>${recBox}</section>
     <section><h2 class="sh">${REFL_KIND.summary} <span class="speclabel">${sum.length}</span></h2>${sum.length ? `<div class="cards">${sum.map(x => reflCard(x, true)).join("")}</div>` : `<div class="empty">아직 없어요.</div>`}</section>
     <section><h2 class="sh">${REFL_KIND.reaction} <span class="speclabel">${rea.length}</span></h2>${rea.length ? `<div class="cards">${rea.map(x => reflCard(x, true)).join("")}</div>` : `<div class="empty">아직 없어요.</div>`}</section></div>`;
 }
@@ -3385,7 +3390,7 @@ function renderObjects(tab, a, b, c) {
   const core = [
     ["나", "users", "#_me", "1"],
     [LABELS.question, "questions", `#${qTabId()}`, (S.questions || []).length],
-    ["내가 쓴 글", "records", `#${recTabId()}`, recTotal || (S.journal || []).length],
+    ["내 글", "records", `#${recTabId()}`, recTotal || (S.journal || []).length],
     ["검토할 판단", "candidates", "#structure/cand/pending", (S.candidates || []).filter(c => c.status === "pending").length],
     ["출처", "sources", "#_obj/source", meCount("sources")],
     ["사람", "people", "#_obj/person", meCount("people")],
@@ -3400,10 +3405,10 @@ function renderObjects(tab, a, b, c) {
   const std = st.filter(o => o.origin === "standard"), mine = st.filter(o => o.origin !== "standard");
   const grp = (title, cards, empty) => `<section class="objgrp"><h3>${esc(title)}<span class="count">${cards.length}</span></h3>
     ${cards.length ? `<div class="objgrid">${cards.join("")}</div>` : `<div class="empty">${esc(empty)}</div>`}</section>`;
+  // 사용자 화면 구분 = 「기본 🔒 / 커스텀」 2단(v9 B3) — 코어·표준은 한 묶음 「기본 🔒」. 코어·표준 구분은 내 구조 설정(그래프·목록)에만
   $("view").innerHTML = `<div class="paper">${msgLine()}<h2 class="title">자료 종류</h2>
-    ${grp("코어", core.map(x => card(x[0], x[1], x[2], x[3], "core")), "")}
+    ${grp("기본 🔒", core.map(x => card(x[0], x[1], x[2], x[3], "")).concat(std.map(o => card(o.label, o.key, `#structure/${o.id}`, `항목 ${nItems(o.id)}`, ""))), "")}
     ${navNew() && userTabs().length ? grp("내 탭", userTabs().map(t => card(t.label, t.view === "record" ? "글 탭" : "질문 탭", `#${t.id}`, "열기", "")), "") : ""}
-    ${grp("표준", std.map(defCard), "아직 편입한 표준 정의가 없어요.")}
     ${grp("커스텀", mine.map(defCard), "아직 내가 만든 자료 종류가 없어요.")}</div>`;
 }
 const crumbs = (...xs) => `<nav class="crumbs" aria-label="위치">${xs.map(([h, l]) => h ? `<a href="${esc(h)}">${esc(l)}</a>` : `<span>${esc(l)}</span>`).join("<span>›</span>")}</nav>`;
@@ -3507,7 +3512,7 @@ const ME_NOTICE = "연결된 활동과 내가 쓴 글을 정해진 계산 규칙
 const RAW_LOCAL = "원문을 보관한 PC에서 열 수 있습니다";
 const RAW_PORT_KEY = "crm-raw-port";
 const RAW_PORT_DEFAULT = 8790;   // 로컬 에이전트(agent/) 원문 뷰어 기본 포트와 같다(메인 확정 2026-10-20 — board-dev 8787 을 피함)
-const SELF_NOTE = "승인하면 이 글을 내가 쓴 글로 저장해요. 글에 다른 사람의 실명·연락처·발언·고객사 정보가 있으면 그대로 서버에 저장돼요 — 승인 전에 내용을 확인해 주세요.";
+const SELF_NOTE = "승인하면 이 글을 내 글로 저장해요. 글에 다른 사람의 실명·연락처·발언·고객사 정보가 있으면 그대로 서버에 저장돼요 — 승인 전에 내용을 확인해 주세요.";
 const LOADING = `<p class="hint">불러오는 중이에요…</p>`;
 const PERIODS = [["7d", "최근 7일"], ["30d", "최근 30일"], ["90d", "최근 90일"], ["all", "전체"]];
 const ROLE_LABEL = {author: "글쓴이", counterparty: "상대", participant: "참여자"};
@@ -3747,7 +3752,7 @@ function renderAxis(id) {
     return `<div class="eyebrow">축</div><h2 class="title">${esc((j.axis || {}).title || "(제목 없음)")}</h2>
       <h2 class="sh">활동 <span class="speclabel">${esc(j.activity_count)}</span></h2>${actRows(xs, "이 축의 활동이 없어요.")}
       ${j.activity_count > xs.length ? `<p class="hint">최근 ${xs.length}건만 보여요. <a href="#_obj/activity/list/axis=${esc(encodeURIComponent(id))}">모두 보기</a></p>` : ""}
-      <h2 class="sh">내가 쓴 글 <span class="speclabel">${esc((j.records || []).length)}</span></h2>${recLinks(j.records || [], "이 축에 붙은 글이 없어요.")}
+      <h2 class="sh">내 글 <span class="speclabel">${esc((j.records || []).length)}</span></h2>${recLinks(j.records || [], "이 축에 붙은 글이 없어요.")}
       <h2 class="sh">이 축을 가리키는 판단·기준 <span class="speclabel">${esc((j.items || []).length)}</span></h2>${itemLinks(j.items || [], "없어요.")}`;
   }, "축");
 }

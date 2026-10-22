@@ -164,6 +164,9 @@ async def test_records_api():
     print("OK — /api/records(401·no-store·기본 = state journal·next_before 커서 이어 받기 겹침 0·동률 경계·limit 끝값·틀린 before 400·지운·남의 기록 0·state journal_next_before) 통과")
 
 
+ME_NOTICE_TXT = "연결된 활동과 내가 쓴 글을 정해진 계산 규칙으로 보여 줍니다."   # 서버 activity.NOTICE 미러(test_web_import 가 같은 문장을 본다) — 서버 문구가 바뀔 때 같이
+
+
 def test_static():
     html = (HERE / "app.html").read_text(encoding="utf-8")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
@@ -171,7 +174,7 @@ def test_static():
     home = js[js.index("// ── 「나」 상세 (PR①)"):js.index("// ── /「나」 홈 (PR①)")]
     # 빈 상태 문구(r1 T2) · 상세 종류 이름 · 옛 링크
     for w in ("아직 표시할 데이터가 없어요. 데이터가 들어오면 여기서 볼 수 있어요.", "이 데이터를 열 수 없어요.",
-              '"내가 쓴 글"', '"질문"', '"검토할 판단"', '"확정한 판단"', '"읽고 든 생각"',
+              '"내 글"', '"질문"', '"검토할 판단"', '"확정한 판단"', '"읽고 든 생각"',
               'location.replace("#_obj/source/"', "(max-width: 767px)"):
         assert w in home, w
     # S5: 홈 쓰기는 두 곳(저장 homeSave · 동작 버튼 homeDo)에서만 기존 엔드포인트로 — 그 밖(선택·입력·포커스 이탈·취소·전환)은 요청 0.
@@ -216,6 +219,10 @@ def test_static():
     assert not re.search(r"가정|hyp|추천 연결", v9), "추정 연결·가정 연결 표시 0(B21)"
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
     # S2 스크린샷 판정: 옆 묶음 = 종류별 5 + 「더 N」 1(그 목록만 펼침) · 활동 = 행동 · 날짜(문맥 API 값) + 부제 관계·사람 별칭
+    # S6: 글 이름 하나 「내 글」(v9 P1) — 사용자 표시 라벨 자리별. 「내 글 AI 요약」·「내가 쓴 메모」(판단 출처 표시)는 그대로
+    assert "내가 쓴 글" not in js.replace(ME_NOTICE_TXT, "").replace('self_only: "내가 쓴 글만"', ""), "「내가 쓴 글」 0(서버 미러 문구 둘 제외)"
+    for w in ('"기록": "내 글"', 'kind: "내 글"', '"내 글 AI 요약"', '"내가 쓴 메모"', 'r.act', '"today:" + day'):
+        assert w in js, w
     for w in ("const ME_SHOW = 5;", "data-me-open=", "meActs[a.id] = a", "a.action_label || actLabel(a.action)", "x.id !== selfPerson"):
         assert w in js, w
     assert "<details" not in v9, "접힘(details) 대신 「더 N」 버튼"
