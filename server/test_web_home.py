@@ -300,7 +300,11 @@ def test_static_chat():
     inp = chat[chat.index('document.addEventListener("input"'):chat.index('document.addEventListener("focusout"')]
     assert "if (!CHAT.dirty) { CHAT.dirty = true;" in inp and "stackApi" not in inp and "chatRestack" not in inp, "입력 = 잠금만"
     assert 'if (to && to.closest && to.closest("#chat-units")) return;' in chat and "if (CHAT.dirty && !CHAT.busy) chatRestack();" in chat
-    assert "restack: Object.assign({parent_result_version: CHAT.rv, edit_generation: CHAT.gen, edited_text: text}, extra || {})" in chat
+    assert "{parent_result_version: CHAT.rv, edit_generation: CHAT.gen + 1, edited_text: text}" in chat and \
+        '{kind: "converse", session_id: CHAT.sid, text, restack: rs}' in chat, "재정리 = 구조(원 결과·편집 세대·고친 글, text = edited_text)"
+    assert "excluded_cids: off" in chat and "chatRestack({answers})" in chat and 'const CHAT_UNIT_JOIN = "\\n\\n";' in chat, \
+        "뺀 변경·막힘 답은 재정리 구조로(자유 턴 아님) · 정리 글 결합 = PC 와 같은 구분"
+    assert "if (CHAT.polling === jid) return;" in chat, "같은 작업 롱폴 겹침 0"
     assert "if (jid !== CHAT.want || CHAT.dirty) return false;" in chat and "if (CHAT.want !== jid || !res) return;" in chat, "최신 작업 결과만 · 고치는 중 도착 = 버림"
     assert 'res.code === "PREVIEW-NEEDS-RESTACK"' in chat and 'res.code === "CONFIRM-STALE"' in chat
     # 원문으로 저장 = 세션 첫 입력만 · 8,000자 카운터(코드포인트) · 기억 = 세션 ID 만(본문 0) · 확정 뒤 load()(상태 + meSync)

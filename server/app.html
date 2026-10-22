@@ -3943,7 +3943,7 @@ function navOpen() {
 const CHAT_MAX = 8000;   // 서버 JOB_TEXT_MAX_CP 와 같은 기준(코드포인트)
 const CHAT_WAIT = ["queued", "leased", "running"];
 const CHAT = {booted: false, open: false, sid: "", kind: "", jid: "", want: "", rv: "", gen: 0, exp: "", preview: null, ready: false,
-              dirty: false, busy: "", line: "", bad: false, reqId: "", reqFor: "", turns: [], drawn: ""};
+              dirty: false, busy: "", line: "", bad: false, reqId: "", reqFor: "", turns: [], drawn: "", polling: ""};
 const chatOn = () => !!(S && S.switches && S.switches.converse);
 const chatCp = s => [...String(s || "")].length;
 const chatSleep = ms => new Promise(r => setTimeout(r, ms));
@@ -4028,7 +4028,6 @@ const chatChanges = p => p.changes || [];
 const chatIncluded = p => { const off = chatOff(p); return chatChanges(p).filter(c => !off.has(c.cid)); };
 const chatBlocking = p => { const off = chatOff(p); return (p.blocked || []).filter(b => !b.cid || !off.has(b.cid)); };
 const chatInferred = p => new Set(chatChanges(p).filter(c => c.ref_kind === "inferred").map(c => c.cid));
-const chatText = p => (p.units || []).map(u => u.text).join("\n");
 function chatCardHtml(p) {
   const inf = chatInferred(p), off = chatOff(p), blk = chatBlocking(p);
   const units = (p.units || []).map(u => {
@@ -4076,6 +4075,11 @@ function chatShow(p, jid) {
 }
 async function chatWait(jid, say) {
   CHAT.want = jid; CHAT.ready = false;
+  if (CHAT.polling === jid) return;   // 같은 작업을 이미 기다리는 중 — 롱폴을 겹치지 않는다(사용자당 동시 2)
+  CHAT.polling = jid;
+  try { await chatPoll(jid, say); } finally { if (CHAT.polling === jid) CHAT.polling = ""; }
+}
+async function chatPoll(jid, say) {
   chatLine(say || "정리하고 있어요…");
   chatLock();
   for (;;) {
@@ -4128,22 +4132,25 @@ async function chatSend() {
   else body.input_kind = $("chat-verbatim").checked ? "verbatim" : "converse";
   if (await chatSubmit(body)) { CHAT.turns.push(text); t.value = ""; chatDraw(); }
 }
-const chatEdited = () => [...document.querySelectorAll("#chat-units textarea[data-uid]")].map(x => x.value).join("\n");
-// 재정리 — 원 결과 참조 · 편집 세대 · 고친 글을 구조로 보낸다(본문에 표식을 붙여 동작을 가르지 않는다). 입력 종류(원문으로 저장)는 첫 입력 그대로
+const CHAT_UNIT_JOIN = "\n\n";   // 정리 글 = units.text 를 이 구분으로 결합(PC stack/1 과 같은 값)
+const chatEdited = () => [...document.querySelectorAll("#chat-units textarea[data-uid]")].map(x => x.value).join(CHAT_UNIT_JOIN);
+// 재정리 — 원 결과 참조 · 편집 세대 · 고친 글 · 뺀 변경 · 막힘 답을 구조로 보낸다(text = edited_text, 본문에 표식을 붙여 동작을 가르지 않는다).
+// 입력 종류(원문으로 저장)는 첫 입력 그대로 — 다시 보내지 않는다
 async function chatRestack(extra) {
   const text = chatEdited();
   if (!text.trim()) { chatLine("정리 글이 비었어요. 내용을 적어 주세요.", true); return; }
-  CHAT.gen += 1; CHAT.dirty = false;
-  await chatSubmit({kind: "converse", session_id: CHAT.sid, text,
-                    restack: Object.assign({parent_result_version: CHAT.rv, edit_generation: CHAT.gen, edited_text: text}, extra || {})}, "다시 정리하고 있어요…");
-}
-// 막힌 질문의 답 = 같은 세션의 다음 턴(질문을 붙여 보낸다)
-async function chatAnswer(inp) {
-  const a = inp.value.trim();
-  if (!a || CHAT.busy || CHAT.dirty) return;
-  const text = `${inp.dataset.q} → ${a}`;
   if (chatCp(text) > CHAT_MAX) { chatLine(CHAT_ERR["PAYLOAD-LIMIT"], true); return; }
-  if (await chatSubmit({kind: "converse", session_id: CHAT.sid, text})) CHAT.turns.push(text);
+  const off = CHAT.preview ? [...chatOff(CHAT.preview)] : [];
+  const rs = Object.assign({parent_result_version: CHAT.rv, edit_generation: CHAT.gen + 1, edited_text: text}, off.length ? {excluded_cids: off} : {}, extra || {});
+  CHAT.gen += 1; CHAT.dirty = false;
+  await chatSubmit({kind: "converse", session_id: CHAT.sid, text, restack: rs}, "다시 정리하고 있어요…");
+}
+// 막힌 질문의 답 = 재정리(answers). 적어 둔 답을 모두 함께 보낸다
+function chatAnswer() {
+  if (CHAT.busy || CHAT.dirty || !CHAT.preview) return;
+  const answers = [...document.querySelectorAll("#chat-card input[data-bq]")].filter(x => x.value.trim())
+    .map(x => ({cid: x.dataset.bq || null, text: x.value.trim()}));
+  if (answers.length) chatRestack({answers});
 }
 // 예외 제외 — 끈 변경(과 거기 기대는 변경·같은 문단)을 서버가 빼고 새 미리보기를 준다. 기계적으로 못 빼면 재정리
 async function chatExclude(box) {
@@ -4238,7 +4245,7 @@ document.addEventListener("focusout", e => {
 });
 document.addEventListener("change", e => { if (e.target.matches && e.target.matches("#chat-card input[data-cid]")) chatExclude(e.target); });
 document.addEventListener("keydown", e => {
-  if (e.target.matches && e.target.matches("#chat-card input[data-bq]") && e.key === "Enter" && !e.isComposing) { e.preventDefault(); chatAnswer(e.target); return; }
+  if (e.target.matches && e.target.matches("#chat-card input[data-bq]") && e.key === "Enter" && !e.isComposing) { e.preventDefault(); chatAnswer(); return; }
   if (e.target.id === "chat-in" && e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); chatSend(); return; }
   if (e.key === "Escape" && CHAT.open && e.target.closest && e.target.closest("#chat") && !CHAT.dirty) { CHAT.open = false; chatShowOpen(); }
 });
