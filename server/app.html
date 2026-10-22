@@ -3520,7 +3520,7 @@ const INBOX_KIND = {self_text: "내 글", self_summary: "내 글 AI 요약"};
 const INBOX_STATE = {pending: "대기", applied: "승인함", excluded: "제외함", expired: "만료", all: "전체"};
 const GEN_LABEL = {method: "만든 방법", tool: "도구", model: "모델", input_scope: "입력 범위", inputs: "입력 수"};
 // 생성 정보 값 → 사람 말(계약 canon-inbox/1 의 열거값). 모르는 값은 「기타」 + 원값 작게. 도구·모델은 장치가 신고한 코드 그대로
-const GEN_VALUE = {method: {ai_summary: "AI 요약", none: "없음(직접 씀)"}, input_scope: {self_only: "내가 쓴 글만"}};
+const GEN_VALUE = {method: {ai_summary: "AI 요약", none: "없음(직접 씀)"}, input_scope: {self_only: "내 글만"}};
 function genVal(k, v) {
   if (k === "inputs") return `${esc(Array.isArray(v) ? v.length : v)}편`;
   if (k === "tool" || k === "model") return `<code>${esc(v)}</code>`;

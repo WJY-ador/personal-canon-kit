@@ -217,7 +217,7 @@ def test_static():
     assert "meStatsFromS" not in js, "통계 규칙은 서버 한 곳(S2 판정 ③ — 폴백 제거)"
     # S2 스크린샷 판정: 옆 묶음 = 종류별 5 + 「더 N」 1(그 목록만 펼침) · 활동 = 행동 · 날짜(문맥 API 값) + 부제 관계·사람 별칭
     # S6: 글 이름 하나 「내 글」(v9 P1) — 사용자 표시 라벨 자리별. 「내 글 AI 요약」·「내가 쓴 메모」(판단 출처 표시)는 그대로
-    assert "내가 쓴 글" not in js.replace('self_only: "내가 쓴 글만"', ""), "「내가 쓴 글」 0(생성 정보 값 self_only 설명 하나 제외 — test_web_import 가 본다)"
+    assert "내가 쓴 글" not in js and 'input_scope: {self_only: "내 글만"}' in js, "「내가 쓴 글」 0 — 생성 정보 입력 범위도 「내 글만」"
     assert "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다." in js, "ME_NOTICE = 서버 activity.NOTICE 미러"
     for w in ('"기록": "내 글"', 'kind: "내 글"', '"내 글 AI 요약"', '"내가 쓴 메모"', 'r.act', '"today:" + day'):
         assert w in js, w
