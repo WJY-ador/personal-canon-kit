@@ -195,6 +195,19 @@ DATABASE_URL=… .venv/bin/python migrate_cli.py close  <명세.json> --user <ui
 
 운영 DB 전체 복원·배치 전체 삭제·옛 기록 출처 일괄 변경을 정상 되돌림 수단으로 쓰지 않는다. 자료가 생긴 뒤 옛 코드로 돌아갈 때는 신규 데이터와 옛 코드의 호환을 먼저 확인한다.
 
+## 운영 — 작업 전달 (PR ②-a)
+
+서버 = 작업 요청·할당·상태·값 수신. 실행은 PC(`agent/jobs.py`, 구독 `claude -p`). 서버 모델 호출 0. 세션(`session_id`) = 여러 실행을 묶는 불투명 ID, 작업 = PC 실행 1번. CLI 세션 ID 는 PC 에만.
+
+- **저장**: `jobs`(본문 열 없음 — 상태·임대 세대·만료·`attempts`·`reason_code` 코드만). 입력·결과(미확정 내용 전체) = **임시 보관** — public 이면 별도 스키마 `tmp`(`tmp.job_inputs`·`tmp.job_results`, FK → `jobs` ON DELETE CASCADE), `db._init_tmp` 가 서버 시작 때 만든다. 시험 임시 스키마(`CRM_TEST_SCHEMA`)에선 같은 스키마 안 `tmp_job_*`(DROP SCHEMA 가 함께 지운다). 운영 백업은 `pg_dump -n public` 이라 `tmp` 가 빠진다 — 복원 시험(2026-10-22, `crm_test_jobs`): 복원 DB 에 `tmp` 0·입력 문자열 0, `jobs` 행만 남고 그 작업은 `JOB-GONE`.
+- **상태**: queued →(장치 폴) leased →(입력 조회) running →(결과) result_ready →(②-b 확정) confirmed · running →(실패) failed · 임대 5분 만료 → needs_check(재실행 없음) · 접수 24시간(서버 시각, 연장 없음) → expired · 웹 취소 → cancelled. 끝난 작업·만료 작업의 임시 본문은 다음 장치 폴·웹 접수·상태 확인(전역 정리) 또는 `purge_once`(매일) 중 빠른 쪽에서 지운다. 만료 판정(읽기·수신 거절)은 그 자리에서 서버 시각으로. 종료 표식(본문 없는 `jobs` 행)은 30일(`db.JOB_MARKER_DAYS`) 뒤 삭제.
+- **장치 경로**(Bearer 장치 토큰만 — 웹 쿠키·MCP 토큰 아님, 장치 권한에 확정 없음): `GET /api/device/jobs?wait=0..30` → 200 `{id,kind,session_ref,input_ref,input_version,definitions_version,lease:{generation,expires_at}}` · 204 · 429. 같은 세션에 leased·running 이 있으면 그 세션 다음 작업은 주지 않는다(직렬화). `GET /api/device/jobs/<id>/input?lease_generation=N` → `{text, input_version}`(성공마다 leased→running·`attempts` +1) · `POST …/result` `{lease_generation,input_version,result_version,summary_text,changes,blocked,text_map,model_meta}`(같은 `result_version` 재전송 = 200 `{duplicate:true}`, 본문 64KiB) · `POST …/fail` `{lease_generation, reason_code}`(코드 7종: output-not-json·output-shape·result-shape·timeout·cli-exit·login·input-too-large, 원문 없음). 409 `JOB-LEASE`(세대·장치·임대 만료)·`JOB-VERSION` · 410 `JOB-GONE`(없음·남 사용자·만료·취소) · 503 `SWITCH-OFF`.
+- **웹 경로**(세션 + Origin): `POST /api/jobs` `{kind, text, session_id?}` → 201 `{id, session_id}`(text 8,000 코드포인트·32KiB 각각, `PAYLOAD-LIMIT`) · `GET /api/jobs/<id>?wait=0..30`(본인만, result_ready 면 `result`) · `POST /api/jobs/<id>/cancel`(멱등, 스위치 무관) · `POST /api/jobs/<id>/confirm` = ②-b 전 503 `SWITCH-OFF`.
+- **스위치**(`envnames.SWITCHES`, 기본 꺼짐 — 운영 env 는 원작자 확인 뒤): `CRM_CONVERSE_ENABLED`(converse) · `CRM_ROUTINE_ENABLED`(routine_ingest). 접수·할당·결과 수신·확정 4곳에서 본다. 꺼져도 만료·정리·취소는 돈다. `summarize_reading` 은 ②-d 전 스위치가 없어 늘 꺼짐.
+- **한도**(`imports.py`, LIMITS 옆): 접수 하루(KST) `JOB_REQUEST_LIMITS` — converse 60·routine 10 = **K3 가안**(원작자 결정 전), 값이 없으면 `LIMIT-UNSET`(접수 거절) · 넘으면 429 `JOB-QUOTA` + `resume_at` · 살아 있는 작업 사용자당 20(`JOBS_OPEN_MAX`, 429 `JOB-LIMIT`). 폴링은 별도 버킷 `POLL_LIMITS` — 장치 분당 4·사용자 분당 12(장치 폴 + 웹 상태 확인 합산), 동시 롱폴 장치 1·사용자 웹 2(`POLL_CONCURRENT`, 서버 프로세스 메모리), 429 에 `Retry-After`. `/input`·`/result`·`/fail` 은 기존 장치 요청 버킷(장치 분당 10·사용자 30). PC 시도 수는 `jobs.attempts` 에 남고 시도 한도는 PC 가 센다.
+- **계정 삭제**: `db.DELETE_TABLES` 에 `jobs`(입력원 앞) + 임시 보관 명시 삭제(`user_delete`·삭제 CLI ③ 앞). 임시 보관은 schema.sql 밖이라 정적 목록 대조에 들어가지 않는다.
+- **로컬 시험 서버**(J3): `DATABASE_URL=postgresql://localhost/crm_test_jobs CRM_DEV=1 CRM_DEV_USER=<합성@example.com> CRM_CONVERSE_ENABLED=1 PORT=8807 .venv/bin/python main.py` — 스위치는 그 프로세스 env 에만. 장치 토큰 = `imports.device_connect(uid, 라벨)["token"]`(시험 DB). 웹 쓰기 Origin = `http://127.0.0.1:8800`(DEV 허용 목록).
+
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
   **MCP 와 같은 `AuthKitVerifier`·`user_id_for`** 로 검증·연결한다 → 웹 사용자 = MCP 사용자(같은 sub).
