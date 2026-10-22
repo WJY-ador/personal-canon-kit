@@ -5858,7 +5858,7 @@ async def test_q45_user():
 # ── 23) PR A 운영 Setup — 왼쪽 메뉴 · Quick Find · Setup Home · Object Manager(서비스 표준 조회) ─────────
 PRA = {k: f"pra{k}@example.com" for k in ("a", "u", "m")}   # a 관리자 · u 일반 사용자 · m 금지 값 표식 사용자
 TEST_EMAILS += tuple(PRA.values())
-PRA_SVG_SHA = "d33ed3831561dfbb72d21aba7a8fa7313c44542b4efbc72d4f5a11c6d732edf0"   # 사용자 DMO SVG(contract 예제 × 수신자) — PR①(2026-10-21) 표시 글자 교체 후 바이트(전: c005852b…, PR A 전 바이트)
+PRA_SVG_SHA = "d5b973693f88d324c0fc255191340b753cfbfaafa1dee68d952cdb4be2f18d1c"   # 사용자 DMO SVG(contract 예제 × 수신자) — PR ①-b(2026-10-22) 「내 글」 후 바이트(전: d33ed383… PR① · c005852b… PR A 전)
 PRA_STD_SHA = "c08007a2db55f219d7f5b16b5aa518e2b2081f95e1a3adfee52240d1380d00bf"   # templates/std@1.json 동결
 PRA_OBJECTS = ("core-question", "core-record", "core-candidate", "core-ticket", "core-source", "core-me", "core-person", "core-reflection",
                "core-activity", "std-axis", "std-decision", "std-principle")   # PR B: 코어 5 → 8(나·사람·출처 요약/반응) · board 이전 9(활동)
