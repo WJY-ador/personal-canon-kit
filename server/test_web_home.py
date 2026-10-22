@@ -363,7 +363,7 @@ def test_chat_devices():
 const T = "{T}";
 const set = (sw, ds, sess = true) => {{ S = {{switches: {{converse: sw}}, stack_session: sess ? {{id: "s-old"}} : null}}; if (ds !== undefined) S.devices_status = ds; }};
 const look = () => {{ CHAT.booted = false; CHAT.open = true; CHAT.sid = ""; chatSync();
-  return {{nav: chatNavHtml(), dev: chatDevText(), q: chatQueuedLine(), open: CHAT.open, booted: CHAT.booted, hidden: $("chat").hidden, ctx: $("chat-ctx").textContent, form: $("chat-form").hidden, sid: CHAT.sid}}; }};
+  return {{nav: chatNavHtml(), dev: chatDevText(), q: chatQueuedLine(), open: CHAT.open, booted: CHAT.booted, hidden: $("chat").hidden, ctx: $("chat-ctx").textContent, form: $("chat-form").hidden, sid: CHAT.sid, nm: $("chat-note-m").hidden, nmt: $("chat-note-m").textContent}}; }};
 const L = {leak};
 out.seen = mdhm(T);
 set(true, Object.assign({{state: "none", last_seen_at: null, threshold_seconds: 180}}, L), false); out.none = look();
@@ -380,6 +380,10 @@ set(false); out.off.absent = look();
     n = o["none"]
     assert n["nav"] == f'<span class="chatnote" role="note">{NODEV}</span>', n["nav"]
     assert "<a" not in n["nav"] and "<button" not in n["nav"] and "data-chat-toggle" not in n["nav"], "장치 없음 = 죽은 버튼 0"
+    assert n["nm"] is False and n["nmt"] == NODEV, "좁은 화면 = 탭 줄 아래 안내 한 줄(같은 문구)"
+    for k in ("recent", "offline", "absent"):
+        assert o[k]["nm"] is True and o[k]["nmt"] == "", (k, "장치 있음·필드 없음 = 아래 안내 0")
+    assert all(x["nm"] is True for x in o["off"].values()), "스위치 꺼짐 = 아래 안내 0"
     assert n["sid"] == "" and n["form"] is True, "이어 받을 세션 없음 = 열 세션 0 · 서랍이 이미 열려 있었어도 입력 칸 대신 안내(확정만 남은 세션은 test_chat_nodev_session)"
     # 최근 연결 — 버튼(현행 그대로) + 서랍 머리글 「최근 연결」 · 「실행 가능」 0
     r = o["recent"]
@@ -436,7 +440,8 @@ $("chat-in").value = "새 말"; await chatSend();
 await chatRestack(); await chatRestack({{answers: [{{cid: null, text: "답"}}]}});
 out.sends = sends; out.line = CHAT.line; out.dirty = CHAT.dirty;
 await chatExclude({{dataset: {{cid: "c2"}}, checked: false}}); out.excl = excl; out.card = $("chat-cardbox").innerHTML;
-await chatConfirm(); out.sent = sent; out.after = {{line: CHAT.line, sid: CHAT.sid, nav: chatNavHtml()}};
+await chatConfirm(); S.stack_session = null;   // 확정 뒤 load() 가 받아 온 상태(세션 없음)
+out.sent = sent; out.after = {{line: CHAT.line, sid: CHAT.sid, nav: chatNavHtml()}};
 """)
     b = o["boot"]
     assert b["open"] is True and b["sid"] == "s1" and b["restore"] == 1 and b["hidden"] is False, ("확정 전 세션은 장치 없어도 이어 받는다", b)
@@ -453,6 +458,38 @@ await chatConfirm(); out.sent = sent; out.after = {{line: CHAT.line, sid: CHAT.s
     html = (HERE / "app.html").read_text(encoding="utf-8")
     assert ".chat .ccomp[hidden] { display: none; }" in html, "입력 칸 숨김이 display:flex 에 덮이지 않게"
     print("OK — 장치 없음 + 확정 전 세션(이어 받기·입력 칸 대신 안내·재정리 칸 잠금·작업 접수 0·끄기·확정 됨·확정 뒤 안내) 통과")
+
+
+def test_chat_restore_offline():
+    """PR #27 화면 수정 — (2) 새로 고침 복원 때 기다리는 작업이 있으면 오프라인 = 첫 롱폴 전에 바로 PC 연결 대기 문구, 최근 연결 = 기존 「정리하고 있어요…」.
+    (1) 좁은 화면(≤700, 탭 줄 가로 스크롤) 장치 없음 안내 = 탭 줄 아래 한 줄 · (3) 휴대폰 서랍 머리글 = 말줄임 대신 줄바꿈(만료 시각 보임)."""
+    T = "2026-10-22T05:03:00+00:00"
+    o = chat_run(f"""
+const T = "{T}";
+stackApi.poll = () => new Promise(() => {{}});   // 롱폴이 돌아오기 전 — 복원 직후 문구만 본다
+const go = async (st, status) => {{
+  S = {{switches: {{converse: true}}, stack_session: {{id: "s9"}}, devices_status: {{state: st, last_seen_at: T, threshold_seconds: 180}}}};
+  chatReset(); CHAT.polling = ""; CHAT.sid = "s9";
+  stackApi.session = async () => ({{ok: true, j: {{session_id: "s9", input_kind: "converse", expires_at: "2099-01-01T00:00:00+00:00", edit_generation: 0,
+    latest_job: {{id: "j-" + st + status, status}}, preview: null, confirmed: false}}}});
+  const r = await chatRestore("s9");
+  return {{r, line: CHAT.line, want: CHAT.want}};
+}};
+out.seen = mdhm(T);
+out.off_q = await go("offline", "queued"); out.off_run = await go("offline", "running"); out.rec_q = await go("recent", "queued");
+""")
+    off = f"PC 연결을 기다리고 있어요(마지막 연결 {o['seen']}). 연결되지 않으면 작업이 취소되거나 대화가 만료될 수 있어요."
+    for k in ("off_q", "off_run"):
+        assert o[k]["r"] == "wait" and o[k]["line"] == off, (k, o[k])
+    assert o["rec_q"]["r"] == "wait" and o["rec_q"]["line"] == "정리하고 있어요…", ("최근 연결 = 지금 그대로", o["rec_q"])
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    # (1) 탭 줄(≤700 = overflow-x·nowrap) 안 안내는 숨기고 탭 줄 아래 한 줄로 — 같은 분기점 · 탭 스크롤 규칙 그대로. 화면 확인은 릴리스 스크린샷(390)
+    assert "nav.tabs .wrap { overflow-x: auto; white-space: nowrap;" in html, "탭 스크롤 동작 유지"
+    assert "@media (max-width: 700px) { nav.tabs .chatnote { display: none; } }" in html and "@media (min-width: 701px) { .chatnote-m { display: none; } }" in html
+    assert '<nav class="tabs" id="nav" aria-label="내 탭"></nav>\n<p class="wrap chatnote-m" id="chat-note-m" role="note" hidden></p>' in html, "탭 줄 바로 아래"
+    # (3) 휴대폰 서랍 머리글 줄바꿈
+    assert "@media (max-width: 767px) { .chat .chead .ctx { white-space: normal; overflow: visible;" in html
+    print("OK — 복원 즉시 오프라인 대기 문구(대기·실행 중) · 최근 연결 = 기존 · 좁은 화면 안내 아래 한 줄 · 머리글 줄바꿈 통과")
 
 
 def test_chat_excluded():
@@ -649,6 +686,7 @@ async def run():
         test_static_chat()
         test_chat_devices()
         test_chat_nodev_session()
+        test_chat_restore_offline()
         test_chat_excluded()
         test_static_moved()
         await test_records_api()

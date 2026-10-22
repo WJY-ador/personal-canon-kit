@@ -829,7 +829,11 @@ ol.dnd .grip { color: var(--muted); font-size: 1rem; padding: .2rem .25rem; touc
 .tab.chatbtn.on { color: var(--ai); border-color: var(--ai); }
 /* 장치 없음(③-0.2) — 「대화」 버튼 자리에 안내 1줄(버튼 아님). 좁은 화면은 탭 줄 안에서 줄바꿈 */
 .chatnote { margin-left: auto; align-self: center; max-width: 60%; padding: 0 .3rem .3rem; font-size: .72rem; line-height: 1.4; color: var(--muted); text-align: right; }
-@media (max-width: 767px) { .chatnote { white-space: normal; flex: 1 0 14rem; max-width: none; } }
+.chatnote-m { margin: 0; padding-top: .35rem; padding-bottom: .35rem; font-size: .72rem; line-height: 1.4; color: var(--muted); }
+.chatnote-m[hidden] { display: none; }
+/* 좁은 화면(탭 줄 = 가로 스크롤·nowrap, 700 이하)은 탭 줄 안 안내가 잘린다 — 탭 줄 아래 한 줄(#chat-note-m)로 내린다. 탭 스크롤은 그대로 */
+@media (min-width: 701px) { .chatnote-m { display: none; } }
+@media (max-width: 700px) { nav.tabs .chatnote { display: none; } }
 .chat { position: fixed; top: 0; right: 0; bottom: 0; width: 380px; z-index: 30; background: var(--card); border-left: 1px solid var(--line);
   display: flex; flex-direction: column; min-width: 0; }
 .chat[hidden] { display: none; }
@@ -837,6 +841,7 @@ body.chat-open { padding-right: 380px; }
 .chat .chead { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem .5rem; border-bottom: 1px solid var(--line); }
 .chat .chead h3 { margin: 0; font-size: .9rem; }
 .chat .chead .ctx { flex: 1; min-width: 0; font-size: .72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 767px) { .chat .chead .ctx { white-space: normal; overflow: visible; line-height: 1.35; } }   /* 휴대폰 = 말줄임 대신 줄바꿈(만료 시각이 보이게) */
 .chat .cbody { flex: 1; overflow-y: auto; padding: .7rem .9rem; display: flex; flex-direction: column; gap: .6rem; }
 .chat .cturns { display: flex; flex-direction: column; gap: .6rem; }
 .chat .cempty { color: var(--muted); font-size: .8rem; margin: 0; }
@@ -907,6 +912,7 @@ body.chat-open { padding-right: 380px; }
     </div></details><button class="refresh" id="reload" title="불러온 시각이 아래에 있어요">새로 고침</button><a class="refresh setup-gear" id="setup-link" href="/admin/setup" hidden title="관리 Setup" aria-label="관리 Setup">⚙</a><button type="button" class="refresh theme-toggle" data-theme-toggle hidden aria-pressed="false" aria-label="어두운 화면">☾</button></div>
 </div></header>
 <nav class="tabs" id="nav" aria-label="내 탭"></nav>
+<p class="wrap chatnote-m" id="chat-note-m" role="note" hidden></p>
 <nav class="subtabs" id="subnav" hidden></nav>
 <div class="wrap bands" id="bands"></div>
 <main id="view" class="wrap"></main>
@@ -4010,8 +4016,14 @@ function chatReset() {
 // 탭 줄 오른쪽 「대화」 — render() 가 탭 줄을 그릴 때 붙인다. 스위치가 꺼져 있으면 버튼·서랍 모두 없다
 function chatNavHtml() {
   if (!chatOn() || !navNew()) return "";
-  if (chatNoDev() && !CHAT.sid) return `<span class="chatnote" role="note">${esc(CHAT_NODEV)}</span>`;   // 장치 없음 = 새 대화 버튼 대신 안내(죽은 버튼 0)
+  if (chatNoDev() && !chatSid()) return `<span class="chatnote" role="note">${esc(CHAT_NODEV)}</span>`;   // 장치 없음 = 새 대화 버튼 대신 안내(죽은 버튼 0)
   return `<a href="#" class="tab chatbtn${CHAT.open ? " on" : ""}" data-chat-toggle role="button" aria-pressed="${CHAT.open}" aria-controls="chat">대화</a>`;
+}
+const chatSid = () => CHAT.sid || (S && S.stack_session && String(S.stack_session.id || "")) || "";   // 이어 받을 세션(첫 그리기 땐 아직 CHAT.sid 전)
+// 장치 없음 안내 — 좁은 화면용 탭 줄 아래 한 줄. 넓은 화면은 탭 줄 안(chatNavHtml) — CSS 가 폭에 따라 한쪽만 보인다
+function chatNoteSync() {
+  const n = $("chat-note-m"), show = chatOn() && navNew() && chatNoDev() && !chatSid();
+  n.hidden = !show; n.textContent = show ? CHAT_NODEV : "";
 }
 function chatSync() {
   const on = chatOn() && navNew();   // 장치 없음이어도 확정만 남은 세션은 이어 받는다(확정은 서버 작업 — PC 불필요). 새 작업 접수만 막는다
@@ -4021,6 +4033,7 @@ function chatSync() {
     const sid = S.stack_session && S.stack_session.id;   // 확인을 기다리는 대화가 있으면 서랍을 열어 이어 받는다
     if (sid) { CHAT.sid = String(sid); CHAT.open = true; chatRestore(CHAT.sid); }
   }
+  chatNoteSync();
   chatShowOpen();
 }
 function chatShowOpen() {
@@ -4263,7 +4276,11 @@ async function chatRestore(sid) {
   CHAT.gen = Math.max(CHAT.gen, Number(s.edit_generation) || 0);
   const lj = s.latest_job || {};
   CHAT.dirty = false; CHAT.preview = null; CHAT.ready = false;
-  if (lj.id && CHAT_WAIT.includes(lj.status)) { CHAT.preview = s.preview || null; chatDraw(); chatWait(lj.id); return "wait"; }
+  if (lj.id && CHAT_WAIT.includes(lj.status)) {   // 오프라인이면 첫 롱폴을 기다리지 않고 바로 PC 연결 대기 문구(최근 연결 = 기존 문구)
+    CHAT.preview = s.preview || null; chatDraw();
+    const d = chatDev();
+    chatWait(lj.id, d && d.state === "offline" ? chatQueuedLine() : undefined); return "wait";
+  }
   CHAT.want = lj.id || "";
   if (s.preview && lj.status === "result_ready") {   // 원 결과 버전은 작업 응답에만 있다 — 그 작업을 한 번 읽어 미리보기와 같이 그린다
     const r = await stackApi.poll(lj.id);
