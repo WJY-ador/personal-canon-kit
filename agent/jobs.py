@@ -619,6 +619,12 @@ class Worker:
         base = {"job_id": jid, "kind": job["kind"]}
         try:
             status, _h, payload = self.client.input(jid, gen)
+            while status == 429:                            # 요청 속도 한도 — 서버가 처리 전 거절, 임대 안에서만 다시
+                sec = _retry_after(_h)
+                if self.monotonic() + sec >= job["deadline"] - MIN_RUN_SEC:
+                    return dict(base, outcome="input-error", status=status, code=_code(payload))
+                self.sleep(sec)
+                status, _h, payload = self.client.input(jid, gen)
         except NetworkError:
             return dict(base, outcome="input-network")      # 실행 안 함. 임대 만료 → 서버 needs_check
         code = _code(payload)
@@ -693,25 +699,18 @@ class Worker:
             sjob = text = None   # noqa: F841
         if job["session_ref"] and res.get("session_id"):
             self.state.session_set(job["session_ref"], res["session_id"])   # CLI 세션 ID 는 PC 에만
-        out = dict(base, **self._send_result(jid, res["data"], job["deadline"]))
+        out = dict(base, **self._send_result(jid, res["data"], job["deadline"], gen))
         out["cli_attempts"] = res["cli_attempts"]
         return out
 
     def _fetch_defs(self, job: dict, base: dict):
         """정의 스냅샷 1회(네트워크·5xx 면 한 번 더). 폴 응답 definitions_version 이 있으면 같은 값만 받는다."""
         jid, gen = job["id"], job["generation"]
-        r = None
-        for _ in range(2):
-            try:
-                r = self.client.definitions(jid, gen)
-            except NetworkError:
-                r = None
-                continue
-            if r[0] < 500:
-                break
+        r = self._retrying(lambda: self.client.definitions(jid, gen), job["deadline"] - MIN_RUN_SEC,
+                           retries=1)                    # 끊김·5xx = 한 번 더 · 429 = Retry-After(임대 안)
         if r is None:
             return dict(base, outcome="defs-network")
-        status, _h, payload = r
+        status, payload = r
         code = _code(payload)
         if status == 410:
             return dict(base, outcome="gone", code=code)
@@ -730,7 +729,7 @@ class Worker:
             return dict(base, outcome="defs-mismatch")
         return defs
 
-    def _retrying(self, send, deadline: float):
+    def _retrying(self, send, deadline: float, retries: int | None = None):
         """같은 요청(같은 바이트)을 다시 보낸다. 네트워크·5xx = 지수 대기로 result_retries 번까지.
         429 = Retry-After 를 지키되 그 뒤가 임대 만료(deadline) 이후면 중단. (status, payload) 또는 None(끝내 실패)."""
         tries = 0
@@ -747,13 +746,13 @@ class Worker:
                 continue
             if status is None or status >= 500:
                 tries += 1
-                if tries > self.result_retries:
+                if tries > (self.result_retries if retries is None else retries):
                     return None
                 self.sleep(RESULT_RETRY_BASE * (2 ** (tries - 1)))
                 continue
             return status, payload
 
-    def _send_result(self, jid: str, data: bytes, deadline: float) -> dict:
+    def _send_result(self, jid: str, data: bytes, deadline: float, gen: int | None = None) -> dict:
         r = self._retrying(lambda: self.client.result_bytes(jid, data), deadline)
         if r is None:
             return {"outcome": "result-undelivered"}
@@ -769,6 +768,14 @@ class Worker:
         if status == 409:
             label = {"JOB-VERSION": "version-mismatch", "JOB-DEFS": "defs-changed"}.get(code, "lease-lost")
             return {"outcome": label, "code": code}
+        if status == 400 and code == "CONTRACT-INVALID" and gen is not None:
+            # 서버 재검증 거절(예: 없는 대상 target_not_found) — 실패로 바로 끝낸다(임대 만료 needs_check 를 기다리지 않음).
+            # msg = "<경로>: <규칙>"(값 없음) — 규칙 이름만 남긴다.
+            msg = payload.get("msg") if isinstance(payload.get("msg"), str) else ""
+            rule = msg.rsplit(": ", 1)[-1] if ": " in msg else ""
+            out = self._send_fail(jid, gen, "result-shape", deadline)
+            return dict(out, outcome="server-contract", rule=rule if re.match(r"^[a-z_]{1,64}$", rule) else "",
+                        fail_status=out.get("status"))
         return {"outcome": "result-rejected", "status": status, "code": code}
 
     def _send_fail(self, jid: str, gen: int, reason_code: str, deadline: float) -> dict:

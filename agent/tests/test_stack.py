@@ -14,6 +14,7 @@ import time
 import unittest
 
 from agent import jobs, stack
+from agent.tests import test_jobs as _tj
 from agent.tests.helpers import TOKEN, TempHome
 from agent.tests.test_jobs import (DEFAULT_DEFS, DEFS_V, LEASE_SEC, SECRET_TEXT, TOKEN_B, CountingRunner,
                                    StubJobsServer, VClock)
@@ -129,6 +130,15 @@ class ValidateTest(unittest.TestCase):
             b["changes"][0]["links"] = [{"relation": "people", "target": t}]
             with self.subTest(t=t):
                 self.bad(b, "ref")
+
+    def test_duplicate_target(self):
+        b = body()
+        b["changes"] = [{"cid": c, "op": "update", "object_id": "obj-judgment",
+                         "target": {"ref_kind": "explicit_id", "value": "item-1"}, "fields": {}} for c in ("c1", "c2")]
+        b["units"][0]["change_ids"] = ["c1", "c2"]
+        self.bad(b, "duplicate")
+        b["changes"][1]["target"] = {"ref_kind": "unresolved"}
+        stack.validate(b, DEFS)                                                # 미해결은 대상 비교 안 함
 
     def test_every_cid_in_exactly_one_unit(self):
         b = body()
@@ -412,6 +422,39 @@ class ScenarioTest(Base):
         self.assertEqual(w.runner.calls, [])
 
 
+class ServerReplyTest(Base):
+    def test_server_contract_reject_sends_fail(self):
+        """서버 재검증 400 CONTRACT-INVALID(없는 대상 등) — 바로 /fail result-shape(재실행 없음), 규칙 이름만 남김."""
+        jid = self.create()
+        self.srv.route_script[("result", jid)] = [(400, {"code": "CONTRACT-INVALID",
+                                                         "msg": "changes[1].target: target_not_found"}, None)]
+        w = self.worker()
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out["rule"], out["reason_code"]), ("server-contract", "target_not_found",
+                                                                             "result-shape"))
+        self.assertEqual(self.srv.status(jid), "failed")
+        self.assertEqual(len(w.runner.calls), 1)
+
+    def test_rate_limited_defs_and_input_wait(self):
+        """장치 분당 한도 429 — 입력·정의 조회는 Retry-After 를 지켜 임대 안에서 다시(처리 전 거절이라 안전)."""
+        jid = self.create()
+        rl = (429, {"code": "RATE-LIMIT"}, {"Retry-After": "30"})
+        self.srv.route_script[("input", jid)] = [rl]
+        self.srv.route_script[("definitions", jid)] = [rl]
+        w = self.worker()
+        t0 = w.clock.now()
+        self.assertEqual(w.poll_once()["outcome"], "result-sent")
+        self.assertGreaterEqual(w.clock.now() - t0, 60)
+        self.assertEqual((len(self.srv.requests("input")), len(self.srv.requests("definitions"))), (2, 2))
+
+    def test_rate_limited_input_beyond_lease_gives_up(self):
+        jid = self.create()
+        self.srv.route_script[("input", jid)] = [(429, {"code": "RATE-LIMIT"}, {"Retry-After": "250"})]
+        w = self.worker()
+        self.assertEqual(w.poll_once()["outcome"], "input-error")
+        self.assertEqual(w.runner.calls, [])
+
+
 class RestackTest(Base):
     def test_restack_envelope_and_prompt(self):
         prev = {"parent_result_version": "rv-parent-01", "units": [{"uid": "u7", "text": "옛 문단 OLD-UNIT-TEXT",
@@ -633,6 +676,153 @@ class StateFileTest(Base):
             self.assertNotIn(s.encode("utf-8"), data, s)
         self.assertEqual(set(json.loads(data)), {"v", "sessions", "attempts", "cli_retries", "leases"})
 
+
+
+# ── B6 실 API 판(opt-in) — test_jobs.LiveApiTest 와 같은 환경변수·같은 규칙(로컬·crm_test_* 만) ──
+
+@unittest.skipUnless(_tj._live_ok(), "B6 실 API — JOBS_LIVE_* 없음(로컬·crm_test_* 전용)")
+class LiveStackTest(_tj.LiveBase):
+    """서버 B2 실 수신 재검증으로 PC stack/1 경로. 모델 = fake(FAKE_STACK). 판정은 API, psql 은 상태 읽기·시각 당기기만."""
+
+    def start(self, text=SECRET_TEXT, session_id=None, input_kind=None, restack=None):
+        b = {"kind": "converse", "text": text}
+        if session_id:
+            b["session_id"] = session_id
+        if input_kind:
+            b["input_kind"] = input_kind
+        if restack:
+            b["restack"] = restack
+        st, p = self.web("POST", "/api/jobs", b)
+        self.assertEqual(st, 201, p)
+        return p["id"], p["session_id"]
+
+    def sworker(self, smode="ok", **kw):
+        env = {"FAKE_STACK": smode}
+        env.update(kw.pop("env", {}))
+        runner = kw.pop("runner", None) or StdinRunner(kw.pop("hook", None))
+        return self.worker(kw.pop("mode", "ok"), runner=runner, extra_env=env, **kw)
+
+    def job(self, jid):
+        st, p = self.web("GET", "/api/jobs/%s?wait=0" % jid)
+        self.assertEqual(st, 200, p)
+        return p
+
+    def sent_result(self, w):
+        posts = [json.loads(d) for m, p, d in w.sent if p.endswith("/result")]
+        return posts[-1] if posts else None
+
+    def test_a_ok_preview_and_defs_fixed(self):
+        holder = {}
+
+        def again():                                                   # 실행 중 정의 재조회 = 같은 값
+            st, _h, p = holder["w"].client.definitions(holder["jid"], holder["gen"])
+            holder["again"] = (st, p.get("definitions_version"))
+        jid, sid = self.start()
+        holder["jid"] = jid
+        w = self.sworker(hook=again)
+        holder["w"] = w
+        orig = w.client.input
+
+        def inp(j, g):
+            holder["gen"] = g
+            return orig(j, g)
+        w.client.input = inp
+        out = w.poll_once()
+        self.assertEqual(out["outcome"], "result-sent", out)
+        env = self.sent_result(w)["envelope"]
+        dv = self.sql("SELECT definitions_version FROM jobs WHERE id='%s'" % jid)
+        self.assertEqual(env["definitions_version"], dv)
+        self.assertEqual(len(dv), 64)
+        self.assertEqual(holder["again"], (200, dv))
+        p = self.job(jid)
+        self.assertEqual(p["status"], "result_ready")
+        self.assertTrue(p["preview"]["units"][0]["text"].startswith("정리: "))
+        self.assertNotIn("fake-session", json.dumps(p))
+        self.assert_no_secret(w)
+
+    def test_b_blocked_accepted_inferred_unknown_rejected(self):
+        jid, _ = self.start()
+        out = self.sworker("blocked").poll_once()
+        self.assertEqual(out["outcome"], "result-sent", out)
+        prev = self.job(jid)["preview"]
+        self.assertTrue(prev["changes"])
+        self.assertTrue(prev["blocked"])
+        # 없는 항목을 추정 대상으로 = 서버 재검증 거절 → PC 가 바로 실패로 끝냄
+        jid, _ = self.start()
+        out = self.sworker("inferred").poll_once()
+        self.assertEqual((out["outcome"], out["rule"]), ("server-contract", "target_not_found"), out)
+        self.assertEqual(self.row(jid), ("failed", 1, "result-shape"))
+
+    def test_c_contract_bad_fail_after_retry(self):
+        jid, _ = self.start()
+        w = self.sworker("forbidden-field")
+        out = w.poll_once()
+        self.assertEqual((out["outcome"], out["reason_code"], out["cli_attempts"]), ("failed", "result-shape", 2))
+        self.assertEqual(self.row(jid), ("failed", 1, "result-shape"))   # 서버 attempts = 입력 조회 1
+        self.assertIsNone(self.sent_result(w))
+
+    def test_d_restack_round_trip(self):
+        jid, sid = self.start(text="합성 첫 입력 FIRST-LINE")
+        w = self.sworker()
+        self.assertEqual(w.poll_once()["outcome"], "result-sent")
+        rv = self.sent_result(w)["envelope"]["result_version"]
+        prev = self.job(jid)["preview"]
+        edited = "고친 글 EDITED-LINE"
+        j2, sid2 = self.start(text=edited, session_id=sid, restack={
+            "parent_result_version": rv, "edit_generation": 1, "edited_text": edited,
+            "excluded_cids": [], "answers": [{"cid": None, "text": "합성 답"}]})
+        self.assertEqual(sid2, sid)
+        w2 = self.sworker("restack", state=w.state)
+        out = w2.poll_once()
+        self.assertEqual(out["outcome"], "result-sent", out)
+        env = self.sent_result(w2)["envelope"]
+        self.assertEqual((env["edit_generation"], env["parent_result_version"]), (1, rv))
+        sin = w2.runner.stdins[0]
+        self.assertIn("=== PREVIOUS UNITS ===", sin)
+        self.assertIn(prev["units"][0]["text"], sin)
+        self.assertIn("합성 답", sin.split("=== ANSWERS ===")[1])
+        self.assertEqual(w2.runner.calls[0][-2:], ["--resume", "fake-session-0001"])   # 같은 세션 이어감
+        self.assertTrue(self.job(j2)["preview"]["units"][0]["text"].startswith("재정리: "))
+
+    @unittest.skipUnless(_tj.LIVE_TOKEN_B, "장치 B 토큰 없음")
+    def test_e_same_session_serialized_two_devices(self):
+        """같은 홈 상태를 쓰는 두 워커(장치 A·B) — 서버는 같은 세션 실행 중엔 할당하지 않고, 앞 CLI 가 끝난 뒤
+        두 번째 작업이 그 세션 ID 로 resume."""
+        state = jobs.MemoryState()
+        started = threading.Event()
+
+        def slow():
+            started.set()
+            time.sleep(2.0)
+        j1, sid = self.start()
+        wa = self.sworker(runner=StdinRunner(slow), state=state, session_wait_step=0.1)
+        outs = {}
+        ta = threading.Thread(target=lambda: outs.setdefault("a", wa.poll_once()))
+        ta.start()
+        self.assertTrue(started.wait(60))
+        j2, _ = self.start(session_id=sid)
+        wb = self.sworker(token=_tj.LIVE_TOKEN_B, state=state, session_wait_step=0.1)
+        outs["b0"] = wb.poll_once()                                    # 서버도 같은 세션 실행 중이면 할당 안 함
+        ta.join(90)
+        outs["b"] = wb.poll_once()
+        self.assertEqual(outs["b0"]["outcome"], "idle", outs)
+        self.assertEqual(outs["a"]["outcome"], "result-sent", outs)     # 늦은 옛 결과도 200(저장만)
+        self.assertEqual(outs["b"]["outcome"], "result-sent", outs)
+        self.assertEqual(wb.runner.calls[0][-2:], ["--resume", "fake-session-0001"])
+        self.assertGreaterEqual(wb.runner.spans[0][0], wa.runner.spans[0][1])
+        self.assertEqual(self.job(j2)["status"], "result_ready")
+        self.assertEqual(state.leases(), {})
+
+    def test_f_unclear_end_needs_check(self):
+        jid, sid = self.start()
+        w = self.sworker(mode="slow", env={"FAKE_SLEEP": "5"}, timeout=0.5)
+        out = w.poll_once()
+        self.assertEqual(out["outcome"], "unclear-end", out)
+        self.assertEqual([1 for m, p, d in w.sent if p.endswith("/fail") or p.endswith("/result")], [])
+        self.assertEqual(self.row(jid)[0], "running")
+        self.assertEqual(w.state.leases()[jid]["session_ref"], sid)     # 같은 세션 잠금 유지
+        self.past(jid, "lease_expires_at")
+        self.assertEqual(self.job(jid)["status"], "needs_check")
 
 if __name__ == "__main__":
     unittest.main()

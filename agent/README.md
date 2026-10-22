@@ -162,6 +162,7 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 - **검증**(통과해야만 전송): 문단(units) ≤ 40 · 변경(changes) ≤ 60 · 정리 글 ≤ 4,000자 · 요청 전체 ≤ 64KiB · ID 중복 없음 · 의존(depends_on)은 있는 변경만, 순환 없음 · 정의에 있는 칸·관계만 · 대상·연결 근거는 `source_id`(정의의 원천 ID 체계)·`explicit_id`·`inferred`·`unresolved` 넷 중 하나(근거 없는 연결·날짜·출처·비슷한 문장 연결 = 거부) · 확정·판단·stage·인용·한도·보호 칸 같은 서버 관리값 = 거부 · 모든 변경은 정확히 한 문단에 속함(정리 글에 안 보이는 변경 금지) · 연결 칸(사람·출처·축 등)은 `fields` 가 아니라 `links` 로만, 사람·출처 연결은 `explicit_id` 만 · 정리 글·칸 값에 URL·이메일·로컬 경로 금지(서버와 같은 규칙). 근거 유형은 권한이 아닙니다 — 서버가 다시 검사하고, 추정은 확인 카드에, 미해결은 막힘으로 갑니다.
 - **보내는 꼴**: `{lease_generation, envelope:{contract:"stack/1", job_id, input_version, definitions_version, result_version, edit_generation, parent_result_version}, units, changes, blocked, model_meta}`. 봉투는 PC 가 만들고 모델은 만들지 않습니다.
 - **다시 돌리기**: 출력이 JSON 이 아니거나 계약을 어기면 CLI 를 **한 번만** 다시 돌립니다(같은 `--resume`). 임대가 1분+여유 이상 남았을 때만. 그래도 안 되면 `result-shape`(또는 `output-not-json`) 로 끝냅니다. 로그인·CLI 종료 오류는 다시 돌리지 않습니다. 작업당 시도(`attempts`)와 실제 재실행(`cli_retries`)은 따로 셉니다.
+- **서버 응답**: 입력·정의 조회가 요청 속도 한도(429)에 걸리면 임대 안에서 `Retry-After` 를 지켜 다시 받습니다(서버가 처리 전에 거절하므로 안전). 서버가 결과를 다시 검사해 거절하면(400 `CONTRACT-INVALID` — 예: 없는 항목을 대상으로) 모델을 다시 돌리지 않고 바로 `result-shape` 실패로 끝냅니다(5분 기다려 「확인 필요」가 되지 않게). 서버가 409(정의 바뀜 `JOB-DEFS`·버전·임대)를 주면 버립니다.
 - **같은 대화 한 번에 하나**: 같은 대화(session_ref)의 CLI 는 동시에 돌지 않습니다. 앞 실행이 남아 있으면 이 작업 임대 안(최소 1분 실행 시간을 남기고)에서 기다리고, 못 기다리면 입력도 받지 않고 넘깁니다(서버가 임대 만료 뒤 「확인 필요」로 남김).
 - **끝났는지 모를 때**(CLI 시간 초과): 실패를 보내지 않고 그 대화를 임대 만료(5분)까지 잠가 둡니다 — 서버는 「확인 필요」로 남기고, 같은 대화가 겹쳐 이어지지 않습니다.
 

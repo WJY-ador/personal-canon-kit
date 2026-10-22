@@ -58,7 +58,7 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*\n(.*)\n\s*```\s*$", re.S)
 
 
 class ContractError(Exception):
-    """모델 출력이 stack/1 을 어김. code = schema|forbidden|limit|ref|cycle|unit|leak (본문 없음)."""
+    """모델 출력이 stack/1 을 어김. code = schema|forbidden|limit|ref|cycle|unit|leak|duplicate (본문 없음)."""
 
     def __init__(self, code: str):
         self.code = code
@@ -385,6 +385,15 @@ def validate(body: dict, defs: Definitions) -> dict:
             raise ContractError("schema")
         out_changes.append({"cid": cid, "op": ch["op"], "object_id": obj["id"], "target": target,
                             "fields": dict(fields), "links": out_links, "depends_on": list(deps)})
+
+    seen_targets = set()
+    for c in out_changes:                           # 한 결과에서 같은 항목을 두 변경이 고치면 거부(서버 duplicate_target)
+        t = c["target"]
+        if c["op"] == "update" and "value" in t:
+            key = (c["object_id"], t["ref_kind"], t.get("scheme"), t["value"])
+            if key in seen_targets:
+                raise ContractError("duplicate")
+            seen_targets.add(key)
 
     known = set(cids)
     graph = {c["cid"]: c["depends_on"] for c in out_changes}

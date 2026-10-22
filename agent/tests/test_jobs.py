@@ -883,9 +883,8 @@ def _live_ok() -> bool:
         and "/crm_test_" in LIVE_DB
 
 
-@unittest.skipUnless(_live_ok(), "J3 실 API 재시험 — JOBS_LIVE_* 없음(로컬·crm_test_* 전용)")
-class LiveApiTest(unittest.TestCase):
-    """같은 실패표 행을 실 서버(J2)로. 모델 = fake. 연결 끊김은 PC 쪽에서 주입(서버는 그대로)."""
+class LiveBase(unittest.TestCase):
+    """실 API 공용 도우미(시험 없음) — LiveApiTest·test_stack.LiveStackTest 가 쓴다."""
 
     @classmethod
     def setUpClass(cls):
@@ -904,8 +903,8 @@ class LiveApiTest(unittest.TestCase):
         return r.stdout.strip()
 
     def setUp(self):
-        # 앞 시험이 남긴 살아 있는 작업을 API 로 취소(다음 시험에 끼어들지 않게)
-        ids = self.sql("SELECT id FROM jobs WHERE user_id='%s' AND status IN ('queued','leased','running')" % self.uid)
+        # 앞 시험이 남긴 살아 있는 작업(결과 대기 포함 — 진행 중 상한 20)을 API 로 취소(다음 시험에 끼어들지 않게)
+        ids = self.sql("SELECT id FROM jobs WHERE user_id='%s' AND status IN ('queued','leased','running','result_ready')" % self.uid)
         for jid in filter(None, ids.splitlines()):
             self.web("POST", "/api/jobs/%s/cancel" % jobs._job_id(jid), {})
 
@@ -943,7 +942,7 @@ class LiveApiTest(unittest.TestCase):
         self.sql("UPDATE jobs SET %s = now() - interval '1 second' WHERE id='%s'" % (col, jobs._job_id(jid)))
 
     def worker(self, mode="ok", token=LIVE_TOKEN, hook=None, wait=2, **kw):
-        runner = CountingRunner(hook)
+        runner = kw.pop("runner", None) or CountingRunner(hook)
         client = jobs.Client(LIVE_URL, token, wait=wait)
         sent = []
         orig_send, orig_poll = client._send, client.poll
@@ -961,14 +960,31 @@ class LiveApiTest(unittest.TestCase):
                 _live_last[token] = time.monotonic()
             return orig_poll()
         client._send, client.poll = send, poll
-        w = jobs.Worker(client, jobs.fake_adapter(mode, exec_runner=runner), jobs.MemoryState(), min_interval=0, **kw)
+        extra_env = kw.pop("extra_env", None)
+        state = kw.pop("state", None) or jobs.MemoryState()
+        adapter_kw = {k: kw.pop(k) for k in ("timeout",) if k in kw}
+        w = jobs.Worker(client, jobs.fake_adapter(mode, exec_runner=runner,
+                                                  extra_env=extra_env, **adapter_kw),
+                        state, min_interval=0, **kw)
         w.runner, w.sent = runner, sent
         return w
+
+    def assert_one_result_bytes(self, w):
+        """결과 전송 = 한 결과(같은 바이트). 분당 한도 429 면 같은 바이트 재전송이 끼어들 수 있다."""
+        posts = [d for m, p, d in w.sent if p.endswith("/result")]
+        self.assertGreaterEqual(len(posts), 1)
+        self.assertEqual(len(set(posts)), 1)
 
     def assert_no_secret(self, w):
         for _m, _p, data in w.sent:
             self.assertNotIn(SECRET_TEXT.encode("utf-8"), data or b"")
             self.assertNotIn("SYNTH-INPUT-7731", _p)
+
+
+
+@unittest.skipUnless(_live_ok(), "J3 실 API 재시험 — JOBS_LIVE_* 없음(로컬·crm_test_* 전용)")
+class LiveApiTest(LiveBase):
+    """같은 실패표 행을 실 서버(J2)로. 모델 = fake. 연결 끊김은 PC 쪽에서 주입(서버는 그대로)."""
 
     def test_a_happy(self):
         jid = self.create()
@@ -1090,7 +1106,7 @@ class LiveApiTest(unittest.TestCase):
         holder["jid"] = jid = self.create()
         out = w.poll_once()
         self.assertEqual((out["outcome"], out.get("code")), ("gone", "JOB-GONE"))
-        self.assertEqual(len([1 for m, p, d in w.sent if p.endswith("/result")]), 1)
+        self.assert_one_result_bytes(w)
         self.assertEqual([1 for m, p, d in w.sent if p.endswith("/fail")], [])
         self.assertEqual(self.row(jid)[0], "cancelled")
 
@@ -1100,7 +1116,7 @@ class LiveApiTest(unittest.TestCase):
         holder["jid"] = jid = self.create()
         out = w.poll_once()
         self.assertEqual((out["outcome"], out.get("code")), ("lease-lost", "JOB-LEASE"))
-        self.assertEqual(len([1 for m, p, d in w.sent if p.endswith("/result")]), 1)
+        self.assert_one_result_bytes(w)
         self.assertIsNone(self.sql("SELECT 1 FROM tmp.job_results WHERE job_id='%s'" % jid) or None)   # 늦은 결과 미저장
         st, p = self.web("GET", "/api/jobs/%s?wait=0" % jid)     # 상태 조회가 정리(sweep)를 부른다 — 그 뒤 needs_check
         self.assertEqual((st, p.get("status")), (200, "needs_check"))
