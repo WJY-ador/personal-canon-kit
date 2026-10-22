@@ -248,7 +248,7 @@ def test_static():
     assert "연결된 활동과 내 글을 정해진 계산 규칙으로 보여 줍니다. 활동량을 성격이나 능력으로 해석하지 않습니다. AI가 작성한 설명은 저장 승인 대기에 표시합니다." in js
     assert "e.approve_notice" in js and "처음 수집한 날" in js and "날짜 미확인" in js
     # AI 생성 정보 — 계약 열거값은 사람 말로(원값 노출 금지), 모르는 값은 「기타」 + 원값
-    assert 'method: {ai_summary: "AI 요약"' in js and 'input_scope: {self_only: "내가 쓴 글만"}' in js and "기타 <span" in js
+    assert 'method: {ai_summary: "AI 요약"' in js and 'input_scope: {self_only: "내 글만"}' in js and "기타 <span" in js
     # 감사 라벨 — schema.sql admin_audit CHECK 의 모든 action 에 표시 이름
     sql = (HERE / "schema.sql").read_text(encoding="utf-8")
     blk = re.search(r"CREATE TABLE IF NOT EXISTS admin_audit \((.*?)\n\);", sql, re.S).group(1)
