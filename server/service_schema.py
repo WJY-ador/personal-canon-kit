@@ -39,11 +39,13 @@ CORE_FIELDS = {
                 "received_at": "받은 때", "source_created_at": "원본 시각", "source_date": "원본 날짜", "ingest_kind": "들어온 경로",
                 "generation_kind": "생성 경위", "generation_meta": "생성 정보(장치 신고)", "import_batch_id": "이전 배치",
                 # 휴지통 PR-1 — 업무 상태와 별개인 휴지통 상태 열(본문 아님). 화면 「복원 가능 기한」과 같은 말
-                "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동"},
+                "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동",
+                # 글 수정(2026-10-23) — 판·변경 번호·본문 해시
+                "content_version": "내용 판", "change_no": "변경 번호", "content_at": "지금 판이 된 때", "body_sha": "본문 해시"},
     "candidates": {"id": "ID", "record_id": "근거 기록", "question_id": "질문", "text": "판단 문장", "quote": "인용",
                    "quote_start": "인용 시작 위치", "quote_end": "인용 끝 위치", "origin": "누가 뽑았나", "decision": "결정 상태",
                    "edited_by_user": "사용자 수정 여부", "created": "만든 때", "updated": "고친 때", "revision": "변경 번호",
-                   "wording_by": "문장 작성 주체", "wording_approved": "문장 승인"},
+                   "wording_by": "문장 작성 주체", "wording_approved": "문장 승인", "record_version": "근거 기록 판"},
     "tickets": {"id": "ID", "kind": "종류", "text": "문의 글", "via": "경로", "page": "화면", "tool": "도구", "ua_family": "브라우저",
                 "status": "상태", "created": "접수", "updated": "갱신", "closed_at": "종결", "reply": "공개 답변", "reply_at": "답변 시각",
                 "public_updated": "공개 갱신"},

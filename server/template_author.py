@@ -7,9 +7,11 @@
 순서: 관계 대상이 먼저 적용돼야 해서 축 → 결정 → 기준 → 숙제 → 발행 → 접근 방식.
 라벨: 아래 LABELS 한 곳에서 바꾼다(정의 데이터라 적용 뒤에도 definition_propose 로 label 만 바꿀 수 있다).
 근거: notes/raw/2026-10-18_schema-round2-astra.md §3, notes/2026-10-18_2단계-정의층-구현계획.md §A·§F.
-계보: 적용 직후 db.template_slot_mark 로 object_defs·field_defs.template_slot 에 `author@1:<key>`·`author@1:<key>.<field>` 를 단다.
-동결: v1 = templates/author@1.json(frozen_doc() 덤프). TEMPLATE·LABELS 를 바꾸면 시험이 깨진다 — 바꾸려면
+계보: 적용 직후 db.template_slot_mark 로 object_defs·field_defs.template_slot 에 `author@N:<key>`·`author@N:<key>.<field>` 를 단다(N = TEMPLATE_VERSION).
+동결: vN = templates/author@N.json(frozen_doc() 덤프). TEMPLATE·LABELS 를 바꾸면 시험이 깨진다 — 바꾸려면
       TEMPLATE_VERSION 을 올리고 새 판 파일을 만든다(옛 판 파일은 지우지 않는다).
+      v2(2026-10-23 글 수정): 기준 register 칸 라벨 「레지스터」 → 「적용 영역」(값 그대로). author@1 로 시드한 기존 정의는
+      db._migrate_edit 가 1회 이관한다(라벨만).
 """
 import json
 import os
@@ -20,7 +22,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 TEMPLATE_KEY = "author"
-TEMPLATE_VERSION = 1
+TEMPLATE_VERSION = 2
 TEMPLATE_NAME = f"{TEMPLATE_KEY}@{TEMPLATE_VERSION}"
 FROZEN_PATH = HERE / "templates" / f"{TEMPLATE_NAME}.json"
 
@@ -58,7 +60,7 @@ TEMPLATE = [
     {"id": "od_principles", "key": "principles", "label": LABELS["principles"], "semantic_kind": "principle",
      "policy": {"promotion": {"confirmed_claims_min": 2, "claim_field": "evidence_claims", "distinct_events_min": 2,
                               "event_field": "evidence_events", "event_claim_field": "claims"}},
-     "fields": [_f("register", "레지스터", "select", required=True,
+     "fields": [_f("register", "적용 영역", "select", required=True,
                    options=[{"value": "customer", "label": "고객 업무"}, {"value": "work", "label": "일하는 방식"}]),
                 _f("maturity", "완성도", "select",
                    options=[{"value": "seed", "label": "🌱"}, {"value": "growing", "label": "🌿"}, {"value": "mature", "label": "🌳"}]),

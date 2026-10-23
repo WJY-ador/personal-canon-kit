@@ -1091,17 +1091,24 @@ def test_template_slot(A):
     import template_author as ta
     # 동결 파일 = 지금 TEMPLATE (바뀌면 TEMPLATE_VERSION 을 올리고 새 판 파일을 만든다)
     frozen = json.loads(ta.FROZEN_PATH.read_text(encoding="utf-8"))
-    assert (ta.TEMPLATE_KEY, ta.TEMPLATE_VERSION, ta.TEMPLATE_NAME, db.BACKFILL_TEMPLATE) == ("author", 1, "author@1", "author@1")
-    assert frozen == ta.frozen_doc() == db.template_frozen(db.BACKFILL_TEMPLATE), "TEMPLATE 이 동결 author@1 과 다르다"
-    want_obj = {d["id"]: f"author@1:{d['key']}" for d in frozen["objects"]}
-    want_fld = {(d["id"], f["key"]): f"author@1:{d['key']}.{f['key']}" for d in frozen["objects"] for f in d["fields"]}
+    assert (ta.TEMPLATE_KEY, ta.TEMPLATE_VERSION, ta.TEMPLATE_NAME, db.BACKFILL_TEMPLATE) == ("author", 2, "author@2", "author@1")
+    assert frozen == ta.frozen_doc() == db.template_frozen(ta.TEMPLATE_NAME), "TEMPLATE 이 동결 author@2 와 다르다"
+    # 글 수정(2026-10-23) v2 = v1 에서 기준 register 칸 라벨만 「레지스터」 → 「적용 영역」(값·필드 key 그대로 — 백필 6/25 대상 같다)
+    v1 = db.template_frozen(db.BACKFILL_TEMPLATE)
+    reg = lambda doc: next(f for d in doc["objects"] if d["key"] == "principles" for f in d["fields"] if f["key"] == "register")   # noqa: E731
+    assert (reg(v1)["label"], reg(frozen)["label"]) == ("레지스터", "적용 영역") and reg(v1)["options"] == reg(frozen)["options"]
+    reg(v1)["label"] = "적용 영역"
+    assert {**v1, "template_version": 2} == frozen, "author@2 = author@1 + register 라벨만"
+    T = ta.TEMPLATE_NAME
+    want_obj = {d["id"]: f"{T}:{d['key']}" for d in frozen["objects"]}
+    want_fld = {(d["id"], f["key"]): f"{T}:{d['key']}.{f['key']}" for d in frozen["objects"] for f in d["fields"]}
     assert (len(want_obj), len(want_fld)) == (6, 25), (len(want_obj), len(want_fld))
 
     # (1) 시드(test_definitions 가 A 에 적용) → 템플릿 6/25 만 채워지고 A 의 다른 정의는 NULL
     objs, flds = _slots(A)
     assert {k: v for k, v in objs.items() if v} == want_obj, objs
     assert {k: v for k, v in flds.items() if v} == want_fld, flds
-    assert objs["od_principles"] == "author@1:principles" and flds[("od_principles", "register")] == "author@1:principles.register"
+    assert objs["od_principles"] == f"{T}:principles" and flds[("od_principles", "register")] == f"{T}:principles.register"
     assert len(objs) > 6 and len(flds) > 25, "A 에는 템플릿 밖 정의도 있다(시험 재료)"
 
     # (2) 시드 전용: apply 의 ON CONFLICT … DO UPDATE SET·UPDATE 에 template_slot 없음, MCP·웹 경로는 표시 함수를 안 부른다
@@ -1116,13 +1123,13 @@ def test_template_slot(A):
     p = db.definition_propose(A, "od_axes", rev, {**base, "label": "관심축", "fields": [note]})
     db.definition_apply(A, "od_axes", p["proposal_id"], rev)
     objs, flds = _slots(A)
-    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert objs["od_axes"] == f"{T}:axes" and flds[("od_axes", "keywords")] == f"{T}:axes.keywords", (objs, flds)
     assert flds[("od_axes", "note")] is None, "사용자가 더한 필드는 NULL"
     p = db.definition_propose(A, "od_axes", rev + 1, {**base, "label": "축",
                                                       "fields": [{"key": "keywords", "label": "검색어", "value_type": "text_list"}, note]})
     db.definition_apply(A, "od_axes", p["proposal_id"], rev + 1)
     objs, flds = _slots(A)
-    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert objs["od_axes"] == f"{T}:axes" and flds[("od_axes", "keywords")] == f"{T}:axes.keywords", (objs, flds)
     assert flds[("od_axes", "note")] is None and {k: v for k, v in objs.items() if v} == want_obj
 
     # (4) 다른 사용자가 propose/apply 로 템플릿과 같은 key(id 는 자동) · 같은 id(key 는 다름)를 만들어도 NULL
@@ -1161,7 +1168,8 @@ def test_template_slot(A):
             c.commit()
             db.init_schema(c)
             c.commit()
-            assert (_slots(u1, c), _slots(u2, c)) == seeded, "백필 ≠ 시드 표시"
+            old = lambda m: {k: v and v.replace(T + ":", db.BACKFILL_TEMPLATE + ":") for k, v in m.items()}   # noqa: E731 — 백필 = 열 전 시드 판(author@1)
+            assert (_slots(u1, c), _slots(u2, c)) == ((old(seeded[0][0]), old(seeded[0][1])), seeded[1]), "백필 ≠ 시드 표시(판 이름만 다름)"
             assert not any(seeded[1][0].values()) and not any(seeded[1][1].values()), "같은 key·다른 id 사용자 정의는 NULL"
             with c.transaction():
                 assert db._backfill_template_slots(c) == (0, 0), "두 번째 백필이 뭔가 바꿨다"
@@ -3253,7 +3261,7 @@ async def test_optional_consent():
             c.commit()
             db.init_schema(c)
             assert c.execute("SELECT count(*) AS n FROM usage_daily").fetchone()["n"] == 2, "표식이 있으면 지우지 않는다"
-            assert [r["key"] for r in c.execute("SELECT key FROM schema_marks").fetchall()] == [db.USAGE_RESET_MARK]
+            assert {r["key"] for r in c.execute("SELECT key FROM schema_marks").fetchall()} == {db.USAGE_RESET_MARK, db.REGISTER_LABEL_MARK}   # 글 수정: 라벨 이관 표식
             c.execute("DELETE FROM schema_marks")   # 표식 없는 옛 DB
             c.commit()
             db.init_schema(c)
@@ -9138,6 +9146,12 @@ async def test_pr2b_stack_b3():
                 assert len(vers) == 1 and vers[0]["version_no"] == 1 and vers[0]["prev_version_id"] is None and pr["current_version_id"] == vers[0]["id"]
                 assert vers[0]["fields"]["title"] == "합성 기준 A" and vers[0]["links"] == [{"field_key": "axes", "target_kind": "item", "target_id": ax}]
                 assert R["versions"] == [{"item_id": i_pr, "version_no": 1}]
+                with db.tx() as c:   # 글 수정 — 확인 1번으로 생긴 판 = 판 증거(본문 해시 = 그 판) → 「확인한 최신 판」
+                    pe = c.execute("SELECT version_no,body_sha,kind,confirm_event_id FROM content_confirms WHERE target_kind='item' AND target_id=%s",
+                                   (i_pr,)).fetchall()
+                assert [(x["version_no"], x["body_sha"], x["kind"], str(x["confirm_event_id"])) for x in pe] == \
+                    [(1, pr["body_sha"], "stack_confirm", R["confirm_event_id"])], pe
+                assert db.item_get(U, i_pr)["confirmed_latest"] is True and db.item_get(U, i_ev)["confirmed_latest"] is False
                 assert pr_links == {("axes", ax)} and ev["data"] == {"happened_on": "2026-10-21"} and ev["decision"] is None
                 assert axr["data"]["keywords"] == ["합성", "쌓기"] and axr["revision"] == 2
                 assert links == {("attach_to", i_pr), ("attach_to", i_ev), ("axes", ax)}, links
