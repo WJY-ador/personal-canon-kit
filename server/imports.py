@@ -450,19 +450,18 @@ def switches() -> dict:
             "board_migration": switch_on("BOARD_MIGRATION_ENABLED")}
 
 
-def _classify_items(c, uid, ids):
-    """ids 가 전부 이 사용자 분류 역할 오브젝트의 살아 있는 항목인지. 아니면 그 첫 id 를 돌려준다(전부 맞으면 None)."""
+def _axes_split(c, uid, ids):
+    """ids → (분류 항목 아님 첫 id 또는 None, 휴지통 축 id 집합). 분류 역할 오브젝트의 적용·미보관 항목이면 분류 항목이고,
+    그중 휴지통(trashed_at)인 것은 따로 돌려준다 — 「없는 id」 와 「삭제한 축」 을 구별한다(휴지통 PR-1, r4 §7)."""
     if not ids:
-        return None
+        return None, set()
     oid = db._classify_target(c, uid)
     if not oid:
-        return ids[0]
-    ok = {r["id"] for r in _all(c, "SELECT id FROM items WHERE user_id=%s AND object_id=%s AND id = ANY(%s) AND revision > 0 "
-                                   "AND archived_at IS NULL", (uid, oid, list(ids)))}
-    for i in ids:
-        if i not in ok:
-            return i
-    return None
+        return ids[0], set()
+    rows = {r["id"]: r["live"] for r in _all(c, "SELECT id, trashed_at IS NULL AS live FROM items WHERE user_id=%s AND object_id=%s "
+                                               "AND id = ANY(%s) AND revision > 0 AND archived_at IS NULL", (uid, oid, list(ids)))}
+    bad = next((i for i in ids if i not in rows), None)
+    return bad, {i for i, live in rows.items() if not live}
 
 
 def _norm_policy(c, uid, policy):
@@ -476,8 +475,11 @@ def _norm_policy(c, uid, policy):
     if (not isinstance(axes, list) or len(axes) > MAX_AXES_PER_ACTIVITY
             or any(not isinstance(a, str) or not _ITEM_ID_RE.match(a) for a in axes) or len(set(axes)) != len(axes)):
         raise CrmError("ARG-INVALID", "axes 는 분류 항목 id 목록(최대 10)이에요.")
-    if _classify_items(c, uid, axes):
+    bad, trashed = _axes_split(c, uid, axes)
+    if bad:
         raise CrmError("ARG-INVALID", "axes 에 분류(축) 항목이 아닌 id 가 있어요.", "definitions_get 으로 분류 오브젝트의 항목을 확인하세요.")
+    if trashed:   # 휴지통 축을 정책에 새로 넣지 않는다 — 축 이동(core)과 같은 사용자 잠금 안이라 경합하지 않는다
+        raise CrmError("ARG-INVALID", "axes 에 휴지통에 있는 축이 있어요.", "축을 복원하거나 정책에서 빼세요.")
     return {"actions": list(acts), "transform_versions": list(tvs), "axes": list(axes)}
 
 
@@ -648,6 +650,65 @@ def _resp(e, duplicate):
             "received_at": _j(e["received_at"]), "expires_at": _j(e["expires_at"])}
 
 
+# ── 휴지통 PR-1: 원천 차단 (r4 §3·D11) ─────────────────────
+# 원천 = (사용자, 입력원, original_id) 의 모든 판. 그 결과(활동 판 또는 승인한 기록)가 휴지통이면 "trash", 영구 삭제 뒤(접수 행이
+# state=deleted 로 남고 대상이 없음)면 "purged". 삭제된 원천의 재전송은 같은 해시 noop·같은 개정 재전송보다 먼저 막는다 —
+# 응답 = 200 + state "deleted" + source_deleted, 대상 ID 없음(활성 ID 로 오인 금지). 활동·관계·한도는 만들지 않는다.
+# 새 개정이면 대응표에 state=deleted 접수 행 1줄만 남긴다(최신 판 교체 — 복원 뒤 PC 의 다음 개정이 판 체인으로 이어진다).
+# PC 는 내용(해시)이 같으면 다시 보내지 않으므로, 복원해도 차단 중 보낸 변경분은 돌아오지 않는다(r4 §3).
+DELETED_STATE = "deleted"
+SOURCE_DELETED = ("trash", "purged")
+
+
+def _source_deleted(c, uid, stream_id, original_id):
+    """원천 삭제 상태 — None | "trash" | "purged". 쿼리 1번(대응표 UNIQUE 앞부분 인덱스).
+    trash = 현재 판(is_current_applied)의 결과가 휴지통 — 활동은 모든 판이 함께 옮겨지고, 승인한 기록은 승인마다 새 기록이라
+    옛 판의 기록만 휴지통이면 원천은 살아 있다(현재 결과까지 막지 않는다). purged = 대상 없는 state=deleted 행만 남음(현재 판도 없다)."""
+    r = _one(c, "SELECT bool_or(e.is_current_applied AND (a.trashed_at IS NOT NULL OR rec.trashed_at IS NOT NULL "
+                "OR it.trashed_at IS NOT NULL)) AS trash, "
+                "bool_or(e.state='deleted') AS gone, "
+                "bool_or(num_nonnulls(e.target_activity_id, e.target_record_id, e.target_item_id, e.target_object_id) > 0) AS has_target "
+                "FROM import_entries e LEFT JOIN activities a ON a.user_id=e.user_id AND a.id=e.target_activity_id "
+                "LEFT JOIN records rec ON rec.user_id=e.user_id AND rec.id=e.target_record_id "
+                "LEFT JOIN items it ON it.user_id=e.user_id AND it.id=e.target_item_id "
+                "WHERE e.user_id=%s AND e.stream_id=%s AND e.original_id=%s", (uid, stream_id, original_id))
+    if r and r["trash"]:
+        return "trash"
+    if r and r["gone"] and not r["has_target"]:
+        return "purged"
+    return None
+
+
+def _target_trashed(c, uid, e):
+    """접수 행 e 의 결과(기록·항목·활동)가 휴지통인가 — 같은 개정 재전송 때만(쿼리 1번)."""
+    tk, tid = _target(e)
+    if tk not in ("record", "item", "activity"):
+        return False
+    t = {"record": "records", "item": "items", "activity": "activities"}[tk]
+    return bool(_one(c, f"SELECT 1 FROM {t} WHERE user_id=%s AND id=%s AND trashed_at IS NOT NULL", (uid, tid)))
+
+
+def _deleted_resp(e, gone, duplicate):
+    """삭제된 원천 응답 — 대상 종류·ID 는 항상 null. e = 이 전송의 접수 행(없으면 None)."""
+    return {"import_id": e["id"] if e else None, "state": DELETED_STATE, "target_kind": None, "target_id": None, "duplicate": duplicate,
+            "received_at": _j(e["received_at"]) if e else None, "expires_at": None, "source_deleted": gone}
+
+
+def _receive_deleted(c, dev, req, same, gone, req_sha, proj_sha):
+    """삭제된 원천에 온 전송 — 같은 개정 재전송이면 그 행으로(duplicate), 판 체인이 맞는 새 개정이면 state=deleted 접수 행 1줄.
+    체인이 어긋나면 행 없이 응답만(import_id null). 활동·사람·관계·한도 0."""
+    uid = dev["user_id"]
+    if same:
+        return _deleted_resp(same, gone, True)
+    latest = _one(c, f"SELECT {_ENTRY_COLS} FROM import_entries WHERE user_id=%s AND stream_id=%s AND original_id=%s "
+                     "AND is_latest_received FOR UPDATE", (uid, dev["id"], req["original_id"]))
+    e = None
+    if latest is not None and req["previous_revision"] == latest["source_revision"] and latest["kind"] == req["kind"]:
+        c.execute("UPDATE import_entries SET is_latest_received=false WHERE user_id=%s AND id=%s", (uid, latest["id"]))
+        e = _insert_entry(c, dev, req, latest, req_sha, proj_sha, DELETED_STATE, False)
+    return _deleted_resp(e, gone, False)
+
+
 def _source_for(c, uid, provider):
     """활동 일반 출처 — (사용자, 제공자) 하나. 이름은 서버가 정한 일반 이름(사용자가 같은 이름 출처를 이미 쓰면 뒤에 번호)."""
     r = _one(c, "SELECT id FROM sources WHERE user_id=%s AND activity_provider=%s", (uid, provider))
@@ -665,13 +726,16 @@ def _source_for(c, uid, provider):
 
 def _people_for(c, uid, ns, people):
     """[{hmac, role}] → [(person_id, role)]. 없는 사람은 별칭 「사람-NNNN」 으로 만든다(사람 일일 한도 — 넘으면 RATE-LIMIT, 전체 취소).
-    HMAC 이 다르면 다른 사람으로 둔다(동일인 병합 없음). HMAC 없는 기존 사람과 맞추지 않는다."""
+    HMAC 이 다르면 다른 사람으로 둔다(동일인 병합 없음). HMAC 없는 기존 사람과 맞추지 않는다.
+    휴지통 PR-1(r4 §7): 휴지통 사람·영구 삭제 표식(trashed_at 있음)도 같은 HMAC 으로 찾는다 — 「없음」 으로 보지 않으니 새 사람(UNIQUE 위반·
+    「사람-NNNN」 재생성)을 만들지 않는다. 그 사람과의 연결만 빼고 돌려준다(활동은 독립 결과라 저장된다)."""
     if not people:
         return []
     want = {x["hmac"] for x in people}
-    have = {bytes(r["identity_hmac"]).hex(): r["id"] for r in _all(
-        c, "SELECT id, identity_hmac FROM people WHERE user_id=%s AND hmac_namespace=%s AND identity_hmac = ANY(%s)",
-        (uid, ns, [bytes.fromhex(h) for h in want]))}
+    rows = _all(c, "SELECT id, identity_hmac, trashed_at IS NULL AS live FROM people WHERE user_id=%s AND hmac_namespace=%s "
+                   "AND identity_hmac = ANY(%s)", (uid, ns, [bytes.fromhex(h) for h in want]))
+    have = {bytes(r["identity_hmac"]).hex(): r["id"] for r in rows}
+    gone = {bytes(r["identity_hmac"]).hex() for r in rows if not r["live"]}
     new = sorted(want - set(have))
     if new:
         try:
@@ -686,7 +750,7 @@ def _people_for(c, uid, ns, people):
             c.execute("INSERT INTO people (user_id,id,alias,hmac_namespace,identity_hmac) VALUES (%s,%s,%s,%s,%s)",
                       (uid, pid, f"{ALIAS_PREFIX}{n + i:04d}", ns, bytes.fromhex(h)))
             have[h] = pid
-    return [(have[x["hmac"]], x["role"]) for x in people]
+    return [(have[x["hmac"]], x["role"]) for x in people if x["hmac"] not in gone]
 
 
 _INSERT_ENTRY = ("INSERT INTO import_entries (user_id,id,stream_id,original_id,source_revision,previous_entry_id,kind,request_sha256,"
@@ -715,7 +779,8 @@ def _apply_activity(c, dev, req, latest, current, req_sha, proj_sha, nbytes):
         c.execute("UPDATE import_entries SET is_current_applied=false WHERE user_id=%s AND id=%s", (uid, current["id"]))
     if current and bytes(current["projection_sha256"]) == proj_sha:
         return _insert_entry(c, dev, req, latest, req_sha, proj_sha, "noop", True, activity_id=current["target_activity_id"])
-    if _classify_items(c, uid, req.get("axes", [])):
+    bad, gone_axes = _axes_split(c, uid, req.get("axes", []))
+    if bad:
         raise CrmError("POLICY-DENIED", "axes 에 분류(축) 항목이 아닌 id 가 있어요.")
     src = _source_for(c, uid, req["provider"])
     links = _people_for(c, uid, dev["hmac_namespace"], req.get("people", []))
@@ -726,7 +791,7 @@ def _apply_activity(c, dev, req, latest, current, req_sha, proj_sha, nbytes):
     for pid, role in links:
         c.execute("INSERT INTO activity_links (user_id,id,activity_id,person_id,relation) VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                   (uid, db.new_id("al"), aid, pid, role))
-    for ax in req.get("axes", []):
+    for ax in [a for a in req.get("axes", []) if a not in gone_axes]:   # 휴지통 축 = 그 연결만 뺀다(활동을 영구 격리시키지 않는다)
         c.execute("INSERT INTO activity_links (user_id,id,activity_id,axis_item_id,relation) VALUES (%s,%s,%s,%s,'axis') "
                   "ON CONFLICT DO NOTHING", (uid, db.new_id("al"), aid, ax))
     return _insert_entry(c, dev, req, latest, req_sha, proj_sha, "applied", True, activity_id=aid)
@@ -735,11 +800,19 @@ def _apply_activity(c, dev, req, latest, current, req_sha, proj_sha, nbytes):
 def _receive_self(c, dev, req, latest, current, req_sha, proj_sha):
     uid = dev["user_id"]
     payload = _pending_payload(req)
+    if req["kind"] == "self_text" and req.get("activity_ref"):
+        # 휴지통 PR-1 — 삭제한 활동을 가리켜도 내 글(독립 결과)은 받는다(의존 단위: ref 연결만 뺀다, PC 격리 0).
+        # 휴지통 활동 = ref 그대로(승인 전에 복원될 수 있다 — 연결은 승인 때 살아 있는 활동에만, inbox_approve)
+        # · 영구 삭제한 활동(대응표 deleted_target_id 표식) = ref 를 빼고 받는다 · 남의·없는 ID = 지금처럼 REF-NOT-FOUND
+        r = _one(c, "SELECT EXISTS (SELECT 1 FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL) AS kept, "
+                    "EXISTS (SELECT 1 FROM import_entries WHERE user_id=%s AND deleted_target_id=%s) AS purged",
+                 (uid, req["activity_ref"], uid, req["activity_ref"]))
+        if not r["kept"] and not r["purged"]:
+            raise CrmError("REF-NOT-FOUND", "activity_ref 가 가리키는 활동이 없어요.")
+        if not r["kept"]:
+            payload["activity_ref"] = None
     pbytes = len(jcs(payload))
     _quota(c, dev, "self", pbytes)
-    if req["kind"] == "self_text" and req.get("activity_ref"):
-        if not _one(c, "SELECT 1 FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, req["activity_ref"])):
-            raise CrmError("REF-NOT-FOUND", "activity_ref 가 가리키는 활동이 없어요.")
     if latest:
         c.execute("UPDATE import_entries SET is_latest_received=false WHERE user_id=%s AND id=%s", (uid, latest["id"]))
     # 같은 원본의 옛 대기 개정은 승인할 수 없다 — 제외(superseded)로 닫고 본문을 지운다. 이미 승인한 판은 그대로
@@ -761,6 +834,8 @@ def submit(authorization: str, idempotency_key_header: str, raw: bytes) -> tuple
     반환 (HTTP 상태, 본문). 신규 201 · 같은 요청 200:
       {"import_id", "state": applied|noop|pending, "target_kind": "activity"|"record"|None, "target_id", "duplicate": bool,
        "received_at", "expires_at"}
+    삭제된 원천(휴지통·영구 삭제)이면 200 + _deleted_resp 꼴({..., "state": "deleted", "target_kind": None, "target_id": None,
+      "source_deleted": "trash"|"purged"}) — 새 4xx 없음.
     실패는 CrmError — main.py 가 http_status(code) 와 {"code", "msg"} 로 바꾼다(본문·값을 되돌려 주지 않는다)."""
     if not switch_on("IMPORTS_ENABLED"):
         raise _off("IMPORTS-OFF", "가져오기")
@@ -807,6 +882,13 @@ def submit(authorization: str, idempotency_key_header: str, raw: bytes) -> tuple
             raise CrmError("POLICY-STALE", "장치 허용 규칙이 바뀌었어요.")
         same = _one(c, f"SELECT {_ENTRY_COLS} FROM import_entries WHERE user_id=%s AND stream_id=%s AND original_id=%s "
                        "AND source_revision=%s", (uid, dev["id"], req["original_id"], req["revision"]))
+        gone = _source_deleted(c, uid, dev["id"], req["original_id"])   # 휴지통 PR-1 — 같은 개정·noop 판정보다 먼저
+        if not gone and same and _target_trashed(c, uid, same):   # 옛 판 재전송인데 그 판의 결과만 휴지통 — 대상 ID 를 주지 않는다
+            gone = "trash"
+        if gone:
+            out = _receive_deleted(c, dev, req, same, gone, req_sha, proj_sha)
+            c.execute("UPDATE import_streams SET last_used_at=now() WHERE user_id=%s AND id=%s", (uid, dev["id"]))
+            return 200, out
         if same:
             if bytes(same["request_sha256"]) != req_sha:
                 raise CrmError("IDEMPOTENCY-CONFLICT", "같은 개정 ID 로 다른 내용을 보냈어요.", "새 개정 ID 로 보내세요.")
@@ -856,8 +938,11 @@ def entry_status(authorization: str, import_id: str) -> dict:
     with tx() as c:
         e = _one(c, f"SELECT {_ENTRY_COLS} FROM import_entries WHERE user_id=%s AND stream_id=%s AND id=%s",
                  (dev["user_id"], dev["id"], str(import_id or "")))
+        gone = e and _source_deleted(c, dev["user_id"], dev["id"], e["original_id"])
     if not e:
         raise _nf("그 접수")
+    if gone or e["state"] == DELETED_STATE:   # 삭제된 원천의 접수 행은 대상 ID 를 돌려주지 않는다
+        return _deleted_resp(e, gone, True)   # source_deleted null = 차단됐던 전송인데 원천은 그 뒤 복원됐다
     return _resp(e, True)
 
 
@@ -871,7 +956,7 @@ INBOX_STATES = ("pending", "applied", "noop", "excluded", "expired", "all")
 _INBOX_SQL = ("SELECT e.id,e.kind,e.state,e.payload,e.payload_bytes,e.expires_at,e.received_at AS created,e.received_at,e.resolved_at,"
               "e.resolved_by,e.is_latest_received,e.target_record_id,e.execution,(e.expires_at > now()) AS alive,s.id AS device_id,"
               "s.label AS device_label FROM import_entries e JOIN import_streams s ON s.user_id=e.user_id AND s.id=e.stream_id "
-              "WHERE e.user_id=%s AND e.kind IN ('self_text','self_summary')")
+              "WHERE e.user_id=%s AND e.kind IN ('self_text','self_summary') AND e.state <> 'deleted'")   # 휴지통 PR-1: 원천 차단 행은 목록·상세에 없다
 
 
 def _inbox_out(r, body=False):
@@ -968,7 +1053,7 @@ def inbox_approve(uid: str, import_id: str) -> dict:
                   (rid, uid, title, body, RECORD_SOURCE_TEXT, ak, tp, Jsonb(hist), gk, Jsonb(gm),
                    _dt.datetime.fromisoformat(sca.replace("Z", "+00:00")) if sca else None, _d(p.get("source_date"))))
         ref = p.get("activity_ref")
-        if ref and _one(c, "SELECT 1 FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, ref)):
+        if ref and _one(c, "SELECT 1 FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL AND trashed_at IS NULL", (uid, ref)):
             c.execute("INSERT INTO activity_links (user_id,id,activity_id,linked_record_id,relation) VALUES (%s,%s,%s,%s,'reaction') "
                       "ON CONFLICT DO NOTHING", (uid, db.new_id("al"), ref, rid))
         c.execute("UPDATE import_entries SET is_current_applied=false WHERE user_id=%s AND stream_id=%s AND original_id=%s "
@@ -1245,9 +1330,9 @@ def _mig_item(c, uid, stream_id, row, current, sca, sdate, batch_id):
     item_id, base = None, 0
     if current:
         item_id = current["target_item_id"]
-        it = _one(c, "SELECT revision, archived_at, object_id FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
+        it = _one(c, "SELECT revision, archived_at, trashed_at, object_id FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, item_id))
         exp = row.get("expected_target_revision")
-        if (not it or it["archived_at"] is not None or it["object_id"] != oid or it["revision"] != current["target_item_revision"]
+        if (not it or it["archived_at"] is not None or it["trashed_at"] is not None or it["object_id"] != oid or it["revision"] != current["target_item_revision"]
                 or (exp is not None and exp != it["revision"])):
             raise CrmError("TARGET-REVISION-CONFLICT", "서버 항목이 마지막 이전 뒤에 바뀌었거나 보관됐어요.", "서버 쪽 변경을 확인한 뒤 명세를 다시 만드세요.")
         base = it["revision"]

@@ -1,9 +1,11 @@
-"""활동 · 관계 · 「나」 집계 · 사람/출처/축 문맥 (board 이전, 2026-10-20). 읽기 전용 모듈 — 쓰기는 imports.py 가 한다.
+"""활동 · 관계 · 「나」 집계 · 사람/출처/축 문맥 (board 이전, 2026-10-20). 읽기 전용 모듈 — 쓰기는 imports.py 가 한다
+(예외: 끝 절 「휴지통 PR-1」 의 활동 원천 전이·물리 정리 — db.trash_* 와 main 정리 회차가 부른다).
 
 정본: r3 T3(집계 규칙·화면 배치·MCP 읽기). 웹(#_me·#_obj/activity·사람·출처·축 상세)과 MCP 읽기 도구가 같은 함수를 쓴다.
 사람 HMAC·원 URL·PC 경로는 내보내지 않는다. 사람은 id·별칭만, 원문은 raw_id(불투명)만.
 
-집계 대상 = 현재 판(import_entries.is_current_applied) · state=active · deleted_at IS NULL · occurred_on 이 기간 안.
+집계 대상 = 현재 판(import_entries.is_current_applied) · state=active · deleted_at IS NULL · 휴지통 아님 · occurred_on 이 기간 안.
+휴지통(PR-1): 휴지통 원천의 판은 목록·상세·집계·문맥 전부에서 빠진다. 휴지통 사람·축·기록은 연결만 빠지고 활동은 남는다.
 기간 = KST 오늘 포함 최근 N일(7d·30d·90d) 또는 all. occurred_on NULL = 「날짜 미확인」(기간 집계 밖, 따로 센다 — observed_on 분포 곁들임).
 성향 점수·친밀도·영향력·역량 점수는 만들지 않는다. 주제가 없는 자료에서 키워드를 뽑지 않는다.
 """
@@ -15,6 +17,14 @@ import json
 
 import db
 from db import CrmError, _all, _one, tx
+
+
+def _live(alias, table):
+    """휴지통 PR-1 — 일반 이용 대상 SQL 조각. trashed_at NULL = 일반(휴지통·만료·영구 삭제 요청·사람 표식은 모두 trashed_at 이 있다).
+    table 은 읽는 사람을 위한 표시(5종 같은 열 — db.TRASH_TABLES)."""
+    assert table in db.TRASH_TABLES, table
+    return f"{alias}.trashed_at IS NULL"
+
 
 PERIODS = {"7d": 7, "30d": 30, "90d": 90, "all": None}
 DEFAULT_PERIOD = "30d"
@@ -30,7 +40,8 @@ NOTICE = ("연결된 활동과 내 글을 정해진 계산 규칙으로 보여 �
           "AI가 작성한 설명은 저장 승인 대기에 표시합니다.")
 
 # 현재 판 활동 — 원본마다 현재 접수 행 하나(ux_import_current)가 가리키는 판. noop 개정이 같은 판을 가리켜도 한 번
-_CUR = ("SELECT a.* FROM activities a WHERE a.user_id=%(uid)s AND a.deleted_at IS NULL AND EXISTS ("
+# 휴지통 PR-1: 휴지통 원천의 판(모든 판이 같은 삭제 사건)은 빠진다. 영구 삭제분은 정리가 is_current_applied 를 내려 빠진다
+_CUR = ("SELECT a.* FROM activities a WHERE a.user_id=%(uid)s AND a.deleted_at IS NULL AND " + _live("a", "activities") + " AND EXISTS ("
         "SELECT 1 FROM import_entries e WHERE e.user_id=a.user_id AND e.target_activity_id=a.id AND e.is_current_applied "
         "AND e.kind='activity')")
 _TODAY = "(now() AT TIME ZONE 'Asia/Seoul')::date"
@@ -69,11 +80,14 @@ def _decorate(c, uid, rows):
     srcs = {r["id"]: r for r in _all(c, "SELECT id,name,activity_provider FROM sources WHERE user_id=%s AND id = ANY(%s)",
                                        (uid, list({r["source_id"] for r in rows})))}
     people, axes, memos = {}, {}, {}
+    # 휴지통 끝점(사람·축·메모 기록)은 JOIN 에서 떨어뜨려 그 연결만 뺀다 — 활동은 독립 결과라 남는다(r4 §2·§7). 쿼리 수 그대로
     for r in _all(c, "SELECT l.activity_id,l.relation,l.person_id,p.alias,l.axis_item_id,i.title,l.linked_record_id "
-                     "FROM activity_links l LEFT JOIN people p ON p.user_id=l.user_id AND p.id=l.person_id "
-                     "LEFT JOIN items i ON i.user_id=l.user_id AND i.id=l.axis_item_id "
-                     "LEFT JOIN records rec ON rec.user_id=l.user_id AND rec.id=l.linked_record_id "
-                     "WHERE l.user_id=%s AND l.activity_id = ANY(%s) AND (l.linked_record_id IS NULL OR rec.deleted_at IS NULL) "
+                     "FROM activity_links l LEFT JOIN people p ON p.user_id=l.user_id AND p.id=l.person_id AND " + _live("p", "people") + " "
+                     "LEFT JOIN items i ON i.user_id=l.user_id AND i.id=l.axis_item_id AND " + _live("i", "items") + " "
+                     "LEFT JOIN records rec ON rec.user_id=l.user_id AND rec.id=l.linked_record_id AND " + _live("rec", "records") + " "
+                     "WHERE l.user_id=%s AND l.activity_id = ANY(%s) AND (l.person_id IS NULL OR p.id IS NOT NULL) "
+                     "AND (l.axis_item_id IS NULL OR i.id IS NOT NULL) "
+                     "AND (l.linked_record_id IS NULL OR (rec.id IS NOT NULL AND rec.deleted_at IS NULL)) "
                      "ORDER BY l.created_at, l.id", (uid, ids)):
         if r["person_id"]:
             people.setdefault(r["activity_id"], []).append({"id": r["person_id"], "alias": r["alias"], "role": r["relation"]})
@@ -116,14 +130,17 @@ def me_aggregate(uid: str, period: str = DEFAULT_PERIOD) -> dict:
         by_axis = [{"item_id": r["item_id"], "title": r["title"], "n": r["n"]} for r in _all(
             c, base + "SELECT l.axis_item_id AS item_id, i.title, count(DISTINCT per.id) AS n FROM per "
                       "JOIN activity_links l ON l.user_id=per.user_id AND l.activity_id=per.id AND l.relation='axis' "
-                      "JOIN items i ON i.user_id=l.user_id AND i.id=l.axis_item_id "
+                      "JOIN items i ON i.user_id=l.user_id AND i.id=l.axis_item_id AND " + _live("i", "items") + " "
                       "GROUP BY l.axis_item_id, i.title ORDER BY n DESC, l.axis_item_id", a)]
+        # 휴지통 축만 달린 활동 = 미분류(축별 합 + 미분류 = 전체 셈이 유지된다)
         unclassified = _one(c, base + "SELECT count(DISTINCT id) AS n FROM per WHERE NOT EXISTS (SELECT 1 FROM activity_links l "
+                                      "JOIN items i ON i.user_id=l.user_id AND i.id=l.axis_item_id AND " + _live("i", "items") + " "
                                       "WHERE l.user_id=per.user_id AND l.activity_id=per.id AND l.relation='axis')", a)["n"]
         top = [{"person_id": r["person_id"], "alias": r["alias"], "n": r["n"]} for r in _all(
             c, base + "SELECT l.person_id, p.alias, count(DISTINCT per.id) AS n FROM per "
                       "JOIN activity_links l ON l.user_id=per.user_id AND l.activity_id=per.id AND l.relation = ANY(%(roles)s) "
-                      "JOIN people p ON p.user_id=l.user_id AND p.id=l.person_id WHERE per.action = ANY(%(acts)s) "
+                      "JOIN people p ON p.user_id=l.user_id AND p.id=l.person_id AND " + _live("p", "people") + " "
+                      "WHERE per.action = ANY(%(acts)s) "
                       "GROUP BY l.person_id, p.alias ORDER BY n DESC, l.person_id LIMIT %(top)s",
             {**a, "roles": list(REACT_ROLES), "acts": list(REACT_ACTIONS), "top": TOP_PEOPLE})]
         by_source = [{"source_id": r["source_id"], "name": r["name"], "provider": r["provider"], "n": r["n"]} for r in _all(
@@ -147,12 +164,14 @@ def _grounds(c, uid):
     기록은 지우지 않은 것, 활동은 가리킨 판(지우지 않은 것). 순환해도 2단계에서 멈춘다."""
     ps = _all(c, "SELECT i.id, i.title FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
                  "WHERE i.user_id=%s AND o.semantic_kind='principle' AND i.decision='confirmed' AND i.revision > 0 "
-                 "AND i.archived_at IS NULL ORDER BY i.updated_at DESC, i.id LIMIT %s", (uid, GROUNDS_MAX))
+                 "AND i.archived_at IS NULL AND " + _live("i", "items") + " ORDER BY i.updated_at DESC, i.id LIMIT %s", (uid, GROUNDS_MAX))
     if not ps:
         return []
     ids = [p["id"] for p in ps]
-    hop = ("SELECT l.source_item_id AS src, l.target_item_id, COALESCE(l.target_record_id, cd.record_id) AS rec, l.target_activity_id AS act "
+    # 휴지통 항목은 2단계로 건너가지 않는다(대상 항목 JOIN). 기록·활동 휴지통은 아래 live_r·live_a 가 거른다(후보 → 부모 기록)
+    hop = ("SELECT l.source_item_id AS src, ti.id AS target_item_id, COALESCE(l.target_record_id, cd.record_id) AS rec, l.target_activity_id AS act "
            "FROM item_links l LEFT JOIN candidates cd ON cd.user_id=l.user_id AND cd.id=l.target_candidate_id "
+           "LEFT JOIN items ti ON ti.user_id=l.user_id AND ti.id=l.target_item_id AND " + _live("ti", "items") + " "
            "WHERE l.user_id=%s AND l.source_item_id = ANY(%s)")
     first = _all(c, hop, (uid, ids))
     mids = {r["target_item_id"] for r in first if r["target_item_id"]}
@@ -169,9 +188,11 @@ def _grounds(c, uid):
                 acts[r["src"]].add(x["act"])
     all_r = {x for s in recs.values() for x in s}
     all_a = {x for s in acts.values() for x in s}
-    live_r = {r["id"] for r in _all(c, "SELECT id FROM records WHERE user_id=%s AND id = ANY(%s) AND deleted_at IS NULL",
+    live_r = {r["id"] for r in _all(c, "SELECT id FROM records r WHERE user_id=%s AND id = ANY(%s) AND deleted_at IS NULL AND "
+                                       + _live("r", "records"),
                                     (uid, list(all_r)))} if all_r else set()
-    live_a = {r["id"] for r in _all(c, "SELECT id FROM activities WHERE user_id=%s AND id = ANY(%s) AND deleted_at IS NULL",
+    live_a = {r["id"] for r in _all(c, "SELECT id FROM activities a WHERE user_id=%s AND id = ANY(%s) AND deleted_at IS NULL AND "
+                                       + _live("a", "activities"),
                                     (uid, list(all_a)))} if all_a else set()
     return [{"item_id": p["id"], "title": p["title"], "records": len(recs[p["id"]] & live_r), "activities": len(acts[p["id"]] & live_a)}
             for p in ps]
@@ -218,10 +239,11 @@ def activity_list(uid: str, action: str = "", person_id: str = "", source_id: st
         a["source_id"] = str(source_id)
     if dated:
         sql += " AND occurred_on IS NOT NULL" if dated == "yes" else " AND occurred_on IS NULL"
-    for col, val, rel in (("person_id", person_id, None), ("axis_item_id", axis_item_id, "axis")):
+    # 휴지통 사람·축으로 거르면 빈 목록(그 id 로 활동 수를 셀 수 없게 — 끝점 JOIN 하나)
+    for col, val, tbl in (("person_id", person_id, "people"), ("axis_item_id", axis_item_id, "items")):
         if val:
-            sql += (f" AND EXISTS (SELECT 1 FROM activity_links l WHERE l.user_id=cur.user_id AND l.activity_id=cur.id "
-                    f"AND l.{col}=%({col})s)")
+            sql += (f" AND EXISTS (SELECT 1 FROM activity_links l JOIN {tbl} t ON t.user_id=l.user_id AND t.id=l.{col} "
+                    f"AND {_live('t', tbl)} WHERE l.user_id=cur.user_id AND l.activity_id=cur.id AND l.{col}=%({col})s)")
             a[col] = str(val)
     with tx() as c:
         rows = _all(c, sql + f" ORDER BY {ORDER} LIMIT %(lim)s OFFSET %(off)s", {**a, "lim": limit + 1, "off": after})
@@ -236,7 +258,9 @@ def activity_get(uid: str, activity_id: str) -> dict:
     """활동 하나(특정 판 — 옛 판 ID 도 열린다) + {"current": bool, "current_id", "versions": [{id, received_at, state, current}],
     "memos": [{record_id, title, created}](승인된 메모·반응 기록), "raw": {"raw_id", "local_only": true}}. 없으면 NOT-FOUND."""
     with tx() as c:
-        r = _one(c, "SELECT * FROM activities WHERE user_id=%s AND id=%s AND deleted_at IS NULL", (uid, str(activity_id or "")))
+        # 휴지통 원천의 판(옛 판 직접 ID 포함) = 없는 활동(일반 경로는 휴지통 상태를 드러내지 않는다 — 휴지통 화면만)
+        r = _one(c, "SELECT * FROM activities a WHERE user_id=%s AND id=%s AND deleted_at IS NULL AND " + _live("a", "activities"),
+                 (uid, str(activity_id or "")))
         if not r:
             raise _nf("그 활동")
         d = _decorate(c, uid, [r])[0]
@@ -253,7 +277,7 @@ def activity_get(uid: str, activity_id: str) -> dict:
                     cur_id = v["id"]
         memos = [{"record_id": m["id"], "title": m["title"], "created": _j(m["created"])} for m in _all(
             c, "SELECT rec.id, rec.title, rec.created FROM activity_links l JOIN records rec ON rec.user_id=l.user_id "
-               "AND rec.id=l.linked_record_id WHERE l.user_id=%s AND l.activity_id=%s AND rec.deleted_at IS NULL "
+               "AND rec.id=l.linked_record_id WHERE l.user_id=%s AND l.activity_id=%s AND rec.deleted_at IS NULL AND " + _live("rec", "records") + " "
                "ORDER BY rec.created, rec.id", (uid, r["id"]))]
     d.update({"current": cur_id == r["id"], "current_id": cur_id, "versions": versions, "memos": memos,
               "raw": {"raw_id": r["raw_id"], "local_only": True}})
@@ -269,8 +293,8 @@ def person_context(uid: str, person_id: str) -> dict:
     "old_revision_links": n(옛 판 활동 연결 — 사람 삭제를 막는다),
     "records": [{id, title, created}], "items": [{id, object_id, title, field_key}]}. 남의 id = 없는 id = NOT-FOUND."""
     with tx() as c:
-        p = _one(c, "SELECT id, alias, revision, identity_hmac IS NOT NULL AS linked FROM people WHERE user_id=%s AND id=%s",
-                 (uid, str(person_id or "")))
+        p = _one(c, "SELECT id, alias, revision, identity_hmac IS NOT NULL AS linked FROM people p WHERE user_id=%s AND id=%s AND "
+                    + _live("p", "people"), (uid, str(person_id or "")))   # 휴지통·표식 사람 = 없는 사람
         if not p:
             raise _nf("그 사람")
         a = {"uid": uid, "pid": p["id"]}
@@ -279,15 +303,17 @@ def person_context(uid: str, person_id: str) -> dict:
         n = _one(c, f"SELECT count(*) AS n FROM ({_CUR}) cur WHERE {has}", a)["n"]
         # 옛 판(현재 판이 아닌 활동)에 걸린 연결 — 집계·목록엔 안 나오지만 사람 삭제를 막는다(FK). 화면이 그 사실을 보이게
         old = _one(c, f"SELECT count(DISTINCT l.activity_id) AS n FROM activity_links l JOIN activities a ON a.user_id=l.user_id "
-                      f"AND a.id=l.activity_id WHERE l.user_id=%(uid)s AND l.person_id=%(pid)s "
-                      f"AND a.id NOT IN (SELECT id FROM ({_CUR}) cur)", a)["n"]
+                      f"AND a.id=l.activity_id AND {_live('a', 'activities')} WHERE l.user_id=%(uid)s AND l.person_id=%(pid)s "
+                      f"AND a.id NOT IN (SELECT id FROM ({_CUR}) cur)", a)["n"]   # 휴지통 원천의 판은 세지 않는다
         recs = [{"id": r["id"], "title": r["title"], "created": _j(r["created"])} for r in _all(
             c, "SELECT DISTINCT rec.id, rec.title, rec.created FROM activity_links l JOIN records rec ON rec.user_id=l.user_id "
-               "AND rec.id=l.record_id WHERE l.user_id=%s AND l.person_id=%s AND rec.deleted_at IS NULL ORDER BY rec.created DESC, rec.id",
+               "AND rec.id=l.record_id WHERE l.user_id=%s AND l.person_id=%s AND rec.deleted_at IS NULL AND " + _live("rec", "records") + " "
+               "ORDER BY rec.created DESC, rec.id",
             (uid, p["id"]))]
         items = [dict(r) for r in _all(
             c, "SELECT i.id, i.object_id, i.title, l.field_key FROM item_links l JOIN items i ON i.user_id=l.user_id "
-               "AND i.id=l.source_item_id WHERE l.user_id=%s AND l.target_person_id=%s ORDER BY i.updated_at DESC, i.id",
+               "AND i.id=l.source_item_id WHERE l.user_id=%s AND l.target_person_id=%s AND " + _live("i", "items") + " "
+               "ORDER BY i.updated_at DESC, i.id",
             (uid, p["id"]))]
         acts = _decorate(c, uid, rows)
     return {"person": {"id": p["id"], "alias": p["alias"], "revision": p["revision"], "linked": p["linked"]},
@@ -315,7 +341,8 @@ def axis_context(uid: str, item_id: str) -> dict:
     "records": [{id, title}](record_attach axes), "items": [{id, object_id, title, field_key}](이 축을 가리키는 판단·기준 등)}."""
     with tx() as c:
         oid = db._classify_target(c, uid)
-        ax = oid and _one(c, "SELECT id, title FROM items WHERE user_id=%s AND id=%s AND object_id=%s AND revision > 0",
+        ax = oid and _one(c, "SELECT id, title FROM items i WHERE user_id=%s AND id=%s AND object_id=%s AND revision > 0 AND "
+                             + _live("i", "items"),
                           (uid, str(item_id or ""), oid))
         if not ax:
             raise _nf("그 축")
@@ -325,11 +352,12 @@ def axis_context(uid: str, item_id: str) -> dict:
         n = _one(c, f"SELECT count(*) AS n FROM ({_CUR}) cur WHERE {has}", a)["n"]
         recs = [{"id": r["id"], "title": r["title"]} for r in _all(
             c, "SELECT rec.id, rec.title FROM item_links l JOIN records rec ON rec.user_id=l.user_id AND rec.id=l.source_record_id "
-               "WHERE l.user_id=%s AND l.field_key='axes' AND l.target_item_id=%s AND rec.deleted_at IS NULL ORDER BY rec.created DESC, rec.id",
+               "WHERE l.user_id=%s AND l.field_key='axes' AND l.target_item_id=%s AND rec.deleted_at IS NULL AND " + _live("rec", "records") + " "
+               "ORDER BY rec.created DESC, rec.id",
             (uid, ax["id"]))]
         items = [dict(r) for r in _all(
             c, "SELECT i.id, i.object_id, i.title, l.field_key FROM item_links l JOIN items i ON i.user_id=l.user_id "
-               "AND i.id=l.source_item_id WHERE l.user_id=%s AND l.target_item_id=%s AND i.archived_at IS NULL "
+               "AND i.id=l.source_item_id WHERE l.user_id=%s AND l.target_item_id=%s AND i.archived_at IS NULL AND " + _live("i", "items") + " "
                "ORDER BY i.updated_at DESC, i.id", (uid, ax["id"]))]
         acts = _decorate(c, uid, rows)
     return {"axis": dict(ax), "activity_count": n, "activities": acts, "records": recs, "items": items}
@@ -344,3 +372,116 @@ def state_part(uid: str) -> dict:
         n = _one(c, "SELECT count(*) AS n FROM import_streams WHERE user_id=%s AND channel='device' AND revoked_at IS NULL", (uid,))["n"]
     return {"activity": me_aggregate(uid, DEFAULT_PERIOD), "inbox": {"pending": imports.inbox_count(uid)},
             "devices": {"active": n, "max": imports.MAX_DEVICES}}
+
+
+# ── 휴지통 PR-1: 활동 원천 전이·물리 정리 (r4 §3·§8) ─────────────────
+# db.trash_move·trash_restore·trash_purge(kind="activity") 가 사용자 잠금을 잡은 트랜잭션 안에서 trash_op 를 부른다. main 의 정리 회차는
+# db.trash_purge_due 보다 먼저 trash_purge_due(여기)를 부른다. 이 절만 쓰기다(원천 단위라 판 목록·대응표를 아는 이 모듈에 둔다).
+# 삭제 단위 = 원천(사용자·입력원·original_id)의 모든 판 — 같은 trashed_at·purge_at(삭제 사건 하나, 판별 기한 없음). 옛 판 ID 로 불러도 원천 전체.
+# 수신 차단은 imports._source_deleted 가 이 열과 대응표(state=deleted)로 판정한다.
+
+def _source_rows(c, uid, activity_id):
+    """활동 ID(어느 판이든) → 같은 원천 모든 판(잠금, now 포함). 없거나 남의 것·지운 판(deleted_at) = NOT-FOUND."""
+    e = _one(c, "SELECT stream_id, original_id FROM import_entries WHERE user_id=%s AND target_activity_id=%s AND kind='activity' LIMIT 1",
+             (uid, activity_id))
+    if not e:
+        raise _nf("그 활동")
+    rows = _all(c, f"SELECT id, trashed_at, purge_at, deleted_at, {db._TNOW} AS now FROM activities WHERE user_id=%(uid)s AND id IN "
+                   "(SELECT target_activity_id FROM import_entries WHERE user_id=%(uid)s AND stream_id=%(s)s AND original_id=%(o)s "
+                   "AND target_activity_id IS NOT NULL) ORDER BY received_at, id FOR UPDATE",
+                {"now": db.TRASH_CLOCK, "uid": uid, "s": e["stream_id"], "o": e["original_id"]})
+    if not any(r["id"] == activity_id and r["deleted_at"] is None for r in rows):
+        raise _nf("그 활동")
+    return rows
+
+
+def trash_op(c, uid, op, activity_id):
+    """op ∈ move·restore·purge — db._trash_do 와 같은 반환 꼴(kind="activity", id = 부른 판 ID). 호출자가 users 행을 잠갔다.
+    move: 이미 휴지통이면 그 사건 그대로(기한 연장 0, changed False) · restore: 기한 전만(TRASH-EXPIRED·NOT-IN-TRASH)
+    · purge: 기한 전이면 purge_at=지금, 이미 복원 불가면 같은 결과. 차단 중 받은 판을 복원이 다시 모으지 않는다(PC 는 같은 해시를 다시 안 보낸다)."""
+    rows = _source_rows(c, uid, activity_id)
+    ids = [r["id"] for r in rows]
+    trashed = [r for r in rows if r["trashed_at"] is not None]
+    restorable = bool(trashed) and all(db._trash_restorable(r) for r in trashed)
+    if op == "move":
+        if trashed:   # 중복 삭제 = 기존 결과(원천의 판은 늘 함께 옮겨진다)
+            r = trashed[0]
+            return {"kind": "activity", "id": activity_id, "trashed_at": _j(r["trashed_at"]), "purge_at": _j(r["purge_at"]),
+                    "changed": False, "restorable": restorable}
+        db._trash_rows(c, uid, "activities", ids, "move")
+        n = _one(c, "SELECT trashed_at, purge_at FROM activities WHERE user_id=%s AND id=%s", (uid, activity_id))
+        return {"kind": "activity", "id": activity_id, "trashed_at": _j(n["trashed_at"]), "purge_at": _j(n["purge_at"]),
+                "changed": True, "restorable": True}
+    if not trashed:
+        raise db._not_in_trash()
+    if not restorable:
+        if op == "purge":   # 이미 복원 불가(기한 지남·요청함) — 같은 결과
+            return {"kind": "activity", "id": activity_id, "purge_requested": True, "changed": False}
+        raise db._trash_expired()
+    db._trash_rows(c, uid, "activities", ids, op)
+    if op == "restore":
+        return {"kind": "activity", "id": activity_id, "restored": True, "changed": True}
+    return {"kind": "activity", "id": activity_id, "purge_requested": True, "changed": True}
+
+
+def _purge_source(c, uid, stream_id, original_id):
+    """원천 하나 물리 제거 — 모든 판이 정리 대상(db._TRASH_DUE)일 때만(아니면 False, 손대지 않음). NO ACTION 참조 순서:
+    activity_links(활동 출발 — 사람·축·메모) → item_links.target_activity_id → import_entries(state=deleted · target NULL · 현재 판 해제 —
+    원천 차단 표식으로 계정 존속 기간 남는다) → activities. 사람·항목·기록 같은 상대는 지우지 않는다."""
+    vers = _all(c, f"SELECT id, ({db._TRASH_DUE}) AS due FROM activities WHERE user_id=%(uid)s AND id IN "
+                   "(SELECT target_activity_id FROM import_entries WHERE user_id=%(uid)s AND stream_id=%(s)s AND original_id=%(o)s "
+                   "AND target_activity_id IS NOT NULL) FOR UPDATE",   # 판 일부만 지우지 않게 전부 잠근다(대기는 statement_timeout 안)
+                {"now": db.TRASH_CLOCK, "uid": uid, "s": stream_id, "o": original_id})
+    if not vers or not all(v["due"] for v in vers):   # 그사이 복원·다른 회차가 잡음·판 일부만 대상 — 다음 회차
+        return False
+    ids = [v["id"] for v in vers]
+    c.execute("DELETE FROM activity_links WHERE user_id=%s AND activity_id = ANY(%s)", (uid, ids))
+    c.execute("DELETE FROM item_links WHERE user_id=%s AND target_activity_id = ANY(%s)", (uid, ids))
+    # deleted_target_id = 지운 판 ID 표식(본문 아님) — 그 활동을 가리키는 늦은 내 글(activity_ref)을 「남의·없는 ID」 와 구별한다
+    c.execute("UPDATE import_entries SET state='deleted', deleted_target_id=target_activity_id, target_activity_id=NULL, "
+              "is_current_applied=false WHERE user_id=%s AND target_activity_id = ANY(%s)", (uid, ids))
+    c.execute("DELETE FROM activities WHERE user_id=%s AND id = ANY(%s)", (uid, ids))
+    return True
+
+
+def trash_purge_due(seconds=None, limit=None) -> dict:
+    """활동 원천 물리 정리 한 회차 — {"activities": 지운 원천 수, "failed": 실패 수, "left": 상한으로 남겼나}. 예외를 밖으로 내지 않는다.
+    대상 = 판이 db._TRASH_DUE(기한 지남 · 오늘(KST) 옮긴 것 제외)인 원천. 원천 하나 = 트랜잭션 하나 + statement_timeout.
+    실패·건너뛴 원천은 이 회차에서 다시 집지 않고 다음 회차에 다시(완료로 기록하지 않는다). 상한 = db.TRASH_PURGE_SECONDS·TRASH_PURGE_LIMIT."""
+    import time
+    deadline = time.monotonic() + (db.TRASH_PURGE_SECONDS if seconds is None else seconds)
+    left = db.TRASH_PURGE_LIMIT if limit is None else limit
+    done, failed, seen, stop = 0, 0, set(), False
+    while not stop:
+        if left <= 0 or time.monotonic() >= deadline:
+            stop = True
+            break
+        try:   # 판 열(trashed_at·purge_at)은 activities 에만 있어 db._TRASH_DUE 를 그대로 쓴다
+            with tx() as c:
+                c.execute(f"SET LOCAL statement_timeout = '{db.TRASH_STMT_TIMEOUT}'")
+                keys = [(r["user_id"], r["stream_id"], r["original_id"]) for r in _all(
+                    c, f"SELECT e.user_id, e.stream_id, e.original_id, min(a.purge_at) AS p FROM activities a JOIN import_entries e "
+                       f"ON e.user_id=a.user_id AND e.target_activity_id=a.id WHERE {db._TRASH_DUE} "
+                       "GROUP BY 1, 2, 3 ORDER BY p LIMIT %(n)s", {"now": db.TRASH_CLOCK, "n": min(db.TRASH_BATCH, left) + len(seen)})]
+        except Exception as e:
+            print(f"[trash] 활동 정리 대상 조회 실패 — 다음 회차: {type(e).__name__}", flush=True)
+            break
+        keys = [k for k in keys if k not in seen]
+        if not keys:
+            break
+        for k in keys:
+            if left <= 0 or time.monotonic() >= deadline:
+                stop = True
+                break
+            left -= 1
+            seen.add(k)
+            try:
+                with tx() as c:
+                    c.execute(f"SET LOCAL statement_timeout = '{db.TRASH_STMT_TIMEOUT}'")
+                    db._purge_fault("activities", k[2])
+                    if _purge_source(c, *k):
+                        done += 1
+            except Exception as e:
+                failed += 1
+                print(f"[trash] 활동 원천 하나 정리 실패 — 다음 회차에 다시: {type(e).__name__}", flush=True)
+    return {"activities": done, "failed": failed, "left": stop}

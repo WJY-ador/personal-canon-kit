@@ -41,7 +41,9 @@ _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _BUILTIN = ({"key": "title", "type": "text", "required": True, "enum": None, "max": TITLE_MAX, "builtin": True},
             {"key": "body", "type": "text", "required": False, "enum": None, "max": db.JOB_TEXT_MAX_CP, "builtin": True})
 _BLOCK_QUESTIONS = {"missing_required": "꼭 필요한 칸이 비어 있어요: {f}. 알려 주시면 채워 둘게요.",
-                    "unresolved_target": "어느 항목을 말하는지 못 찾았어요. 항목 이름을 알려 주세요."}
+                    "unresolved_target": "어느 항목을 말하는지 못 찾았어요. 항목 이름을 알려 주세요.",
+                    # 휴지통 PR-1 — 코드는 unresolved_target(stack/1 열거 공유) 그대로, 문구로 「없음」 과 구별한다. 새로 만들지 않고 빼게 안내
+                    "deleted_target": "가리킨 대상이 휴지통에 있거나 영구 삭제됐어요. 이 변경은 빼 주세요(새로 만들지 않아요)."}
 
 ENVELOPE_KEYS = frozenset({"contract", "job_id", "input_version", "definitions_version", "result_version", "edit_generation",
                            "parent_result_version"})
@@ -119,18 +121,19 @@ def candidates(c, uid, index):
     """{items:[{id, object_id, code, title, stage}], people:[{id, alias}], sources:[{id, title}]} — 그 사용자 것만.
     항목 = 스냅샷 오브젝트(적용·미보관)의 적용·미보관 항목, 오브젝트별 최근 갱신순 ≤ CAND_PER_OBJECT · 전체 ≤ CAND_ITEMS_MAX. 제목 80자 자름."""
     items = []
-    for oid in index:
+    for oid in index:   # 휴지통 PR-1 — 휴지통 항목·사람(표식 포함)은 후보에 싣지 않는다(쿼리 수 그대로, WHERE 만)
         left = CAND_ITEMS_MAX - len(items)
         if left <= 0:
             break
         items += db._all(c, "SELECT id, object_id, code, title FROM items WHERE user_id=%s AND object_id=%s AND revision > 0 "
-                            "AND archived_at IS NULL ORDER BY updated_at DESC, id LIMIT %s", (uid, oid, min(CAND_PER_OBJECT, left)))
+                            "AND archived_at IS NULL AND trashed_at IS NULL ORDER BY updated_at DESC, id LIMIT %s",
+                         (uid, oid, min(CAND_PER_OBJECT, left)))
     out = []
     for it in items:
         out.append({"id": it["id"], "object_id": it["object_id"], "code": it["code"], "title": (it["title"] or "")[:CAND_TITLE_MAX],
                     "stage": stage_get(c, uid, it["id"])})
     people = [{"id": r["id"], "alias": r["alias"][:CAND_TITLE_MAX]} for r in db._all(
-        c, "SELECT id, alias FROM people WHERE user_id=%s ORDER BY updated DESC, id LIMIT %s", (uid, CAND_PEOPLE_MAX))]
+        c, "SELECT id, alias FROM people WHERE user_id=%s AND trashed_at IS NULL ORDER BY updated DESC, id LIMIT %s", (uid, CAND_PEOPLE_MAX))]
     sources = [{"id": r["id"], "title": r["name"][:CAND_TITLE_MAX]} for r in db._all(
         c, "SELECT id, name FROM sources WHERE user_id=%s ORDER BY created DESC, id LIMIT %s", (uid, CAND_SOURCES_MAX))]
     return {"items": out, "people": people, "sources": sources}
@@ -180,13 +183,37 @@ def _keys(d, allowed, path, required=None):
 
 
 def _item_live(c, uid, item_id):
-    return db._one(c, "SELECT id,object_id,revision,title,data,decision FROM items WHERE user_id=%s AND id=%s AND revision > 0 "
-                      "AND archived_at IS NULL", (uid, item_id))
+    """적용·미보관·휴지통 아닌 항목 또는 None."""
+    r = _item_any(c, uid, item_id)
+    return r if r and not r["gone"] else None
+
+
+def _item_any(c, uid, item_id):
+    """적용·미보관 항목(휴지통 포함) — 행에 gone(휴지통·영구 삭제 요청) 표시. 휴지통 대상을 「없음」 으로 보지 않게(r2 R5 · r4 §7)."""
+    return db._one(c, "SELECT id,object_id,revision,title,data,decision,trashed_at IS NOT NULL AS gone FROM items WHERE user_id=%s "
+                      "AND id=%s AND revision > 0 AND archived_at IS NULL", (uid, item_id))
 
 
 def _by_code(c, uid, oid, code):
-    return db._one(c, "SELECT id,object_id,revision,title,data,decision FROM items WHERE user_id=%s AND object_id=%s AND code=%s "
-                      "AND revision > 0 AND archived_at IS NULL", (uid, oid, code))
+    """안정 원천 ID(code) → 항목(휴지통 포함, gone 표시). code 는 적용 뒤 불변·오브젝트 안 유일이라 휴지통 항목도 같은 code 를 쥔다."""
+    return db._one(c, "SELECT id,object_id,revision,title,data,decision,trashed_at IS NOT NULL AS gone FROM items WHERE user_id=%s "
+                      "AND object_id=%s AND code=%s AND revision > 0 AND archived_at IS NULL", (uid, oid, code))
+
+
+_GONE_SQL = {   # 연결 대상이 휴지통(사람은 영구 삭제 표식 포함)인가 — 후보는 부모 기록을 따른다(r4 D3)
+    "item": "SELECT 1 FROM items WHERE user_id=%s AND id=%s AND trashed_at IS NOT NULL",
+    "record": "SELECT 1 FROM records WHERE user_id=%s AND id=%s AND trashed_at IS NOT NULL",
+    "candidate": "SELECT 1 FROM candidates cd JOIN records r ON r.user_id=cd.user_id AND r.id=cd.record_id WHERE cd.user_id=%s AND cd.id=%s "
+                 "AND r.trashed_at IS NOT NULL",
+    "person": "SELECT 1 FROM people WHERE user_id=%s AND id=%s AND trashed_at IS NOT NULL",
+    "activity": "SELECT 1 FROM activities WHERE user_id=%s AND id=%s AND trashed_at IS NOT NULL",
+}
+
+
+def _gone(c, uid, kind, tid):
+    """대상이 이 사용자의 휴지통 행이면 True(없는 대상·출처 = False). 수신·확정 검증 경로 전용(일반 조회 아님)."""
+    q = _GONE_SQL.get(kind)
+    return bool(q and isinstance(tid, str) and db._one(c, q, (uid, tid)))
 
 
 def _check_fields(fields, o, path):
@@ -227,30 +254,35 @@ def _check_fields(fields, o, path):
 
 
 def _target(c, uid, op, oid, t, path):
-    """대상 참조 → (item_id|None, ref_kind, inferred, item_row|None). update 만 대상이 있다."""
+    """대상 참조 → (item_id|None, ref_kind, inferred, item_row|None, gone). update 만 대상이 있다.
+    gone = 휴지통 항목을 가리켰다 — 대상 미해결(막힘)로 두되 「없음」 과 구별한다(같은 대상을 새로 만들지 않게 — 빼라고 안내)."""
     if op == "create":
         if t not in (None, {}, {"ref_kind": "none"}):
             raise bad(path, "create_has_target")
-        return None, "none", False, None
+        return None, "none", False, None, False
     if not isinstance(t, dict) or t.get("ref_kind") not in REF_KINDS:
         raise bad(path, "ref_kind")
     rk = t["ref_kind"]
     if rk == "unresolved":
         _keys(t, {"ref_kind"}, path)
-        return None, rk, False, None
+        return None, rk, False, None, False
     if rk == "source_id":
         _keys(t, {"ref_kind", "scheme", "value"}, path)
         if t["scheme"] not in IDENTITY_SCHEMES or not isinstance(t["value"], str) or not t["value"].strip():
             raise bad(path, "scheme")
         row = _by_code(c, uid, oid, t["value"])
-        return (row["id"], rk, False, row) if row else (None, "unresolved", False, None)   # 해석 실패 = 대상 미해결로 강등
+        if row and row["gone"]:
+            return None, "unresolved", False, None, True
+        return (row["id"], rk, False, row, False) if row else (None, "unresolved", False, None, False)   # 해석 실패 = 대상 미해결로 강등
     _keys(t, {"ref_kind", "value"}, path)
-    row = _item_live(c, uid, t["value"]) if isinstance(t["value"], str) else None
+    row = _item_any(c, uid, t["value"]) if isinstance(t["value"], str) else None
+    if row and row["object_id"] == oid and row["gone"]:   # 휴지통 항목 = 거부도 「없음」 도 아닌 삭제 대상(막힘)
+        return None, "unresolved", False, None, True
     if not row or row["object_id"] != oid:
         if rk == "inferred":   # 모델 추정은 틀릴 수 있다 — 없거나 남의 항목 = 대상 미해결(막힘), 거부 아님
-            return None, "unresolved", False, None
+            return None, "unresolved", False, None, False
         raise bad(path, "target_not_found")   # explicit_id 의 허위·남의·다른 오브젝트·보관된 항목 ID
-    return row["id"], rk, rk == "inferred", row
+    return row["id"], rk, rk == "inferred", row, False
 
 
 def _link(c, uid, o, ln, path):
@@ -269,6 +301,7 @@ def _link(c, uid, o, ln, path):
     if "target_kind" in t and t["target_kind"] != kind:
         raise bad(f"{path}.target", "target_kind")
     base = {"relation": f["key"], "target_kind": kind, "ref_kind": rk, "inferred": rk == "inferred", "target_id": None}
+    # 휴지통 PR-1 — 휴지통 대상과 새 관계를 만들지 않는다(r3 S3 4번). 거부(계약 위반)도 「없음」 도 아닌 삭제 대상 표시(_gone)로 막힘
     if rk == "unresolved":
         _keys(t, {"ref_kind", "target_kind"}, f"{path}.target", {"ref_kind"})
         return base
@@ -277,11 +310,15 @@ def _link(c, uid, o, ln, path):
         if kind != "item" or t["scheme"] not in IDENTITY_SCHEMES or not isinstance(t["value"], str):
             raise bad(f"{path}.target", "scheme")
         row = _by_code(c, uid, f["target_object_id"], t["value"])
+        if row and row["gone"]:
+            return {**base, "ref_kind": "unresolved", "_gone": True}
         if not row:
             return {**base, "ref_kind": "unresolved"}
         return {**base, "target_id": row["id"]}
     _keys(t, {"ref_kind", "target_kind", "value"}, f"{path}.target", {"ref_kind", "value"})
     tid = t["value"] if isinstance(t["value"], str) else ""
+    if _gone(c, uid, kind, tid):
+        return {**base, "ref_kind": "unresolved", "inferred": False, "_gone": True}
     got = db._resolve_target(c, uid, kind, tid)
     if not got or (kind == "item" and got["object_id"] != f["target_object_id"]):
         if rk == "inferred":   # 추정 연결이 없는·남의 대상 = 미해결 연결(막힘)
@@ -345,12 +382,13 @@ def validate_result(c, uid, job, body, index):
         if o is None:
             raise bad(f"{p}.object_id", "object_not_found")
         fields = _check_fields(ch["fields"], o, f"{p}.fields")
-        item_id, rk, inferred, row = _target(c, uid, ch["op"], ch["object_id"], ch.get("target"), f"{p}.target")
+        item_id, rk, inferred, row, gone = _target(c, uid, ch["op"], ch["object_id"], ch.get("target"), f"{p}.target")
         if ch["op"] == "create" and "title" not in fields:
             pass   # 필수 칸 미충족 → 아래 막힘(missing_required)
         links, seen = [], set()
         for j, ln in enumerate(_list(ch["links"], f"{p}.links", MAX_CHANGES)):
             got = _link(c, uid, o, ln, f"{p}.links[{j}]")
+            gone = gone or bool(got.pop("_gone", False))
             k = (got["relation"], got["target_kind"], got["target_id"])
             if got["target_id"] and k in seen:
                 continue
@@ -360,7 +398,8 @@ def validate_result(c, uid, job, body, index):
         for d in deps:
             _rid(d, f"{p}.depends_on")
         changes.append({"cid": cid, "op": ch["op"], "object_id": ch["object_id"], "item_id": item_id, "ref_kind": rk,
-                        "inferred": inferred, "fields": fields, "links": links, "depends_on": list(dict.fromkeys(deps)), "_row": row})
+                        "inferred": inferred, "fields": fields, "links": links, "depends_on": list(dict.fromkeys(deps)), "_row": row,
+                        "_gone": gone})
     for ch in changes:
         for d in ch["depends_on"]:
             if d not in cids or d == ch["cid"]:
@@ -420,6 +459,8 @@ def validate_result(c, uid, job, body, index):
     for ch in changes:
         o = index[ch["object_id"]]
         row = ch.pop("_row")
+        if ch.pop("_gone"):   # 휴지통 대상 — 같은 코드(stack/1 공유), 삭제 대상 문구. 「없음」 문구는 붙이지 않는다
+            add_block(ch["cid"], "unresolved_target", _BLOCK_QUESTIONS["deleted_target"])
         if ch["op"] == "update" and not ch["item_id"]:
             add_block(ch["cid"], "unresolved_target", _BLOCK_QUESTIONS["unresolved_target"])
         if any(ln["target_id"] is None for ln in ch["links"]):
@@ -716,12 +757,12 @@ def confirm(uid, job_id, body):
         rows = {}
         for key in sorted(k for k in tv if k.startswith("item:")):
             iid = key[5:]
-            r = db._one(c, f"SELECT {db._ITEM_COLS} FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, iid))
-            if not r or r["revision"] != tv[key] or r["archived_at"] is not None or r["revision"] == 0:
+            r = db._one(c, f"SELECT {db._ITEM_COLS}, trashed_at FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, iid))
+            if not r or r["revision"] != tv[key] or r["archived_at"] is not None or r["revision"] == 0 or r["trashed_at"] is not None:
                 raise _conflict("고칠 항목이 그사이 바뀌었거나 보관·삭제됐어요.")
             rows[iid] = r
         for key in (k for k in tv if k.startswith("person:")):
-            r = db._one(c, "SELECT revision FROM people WHERE user_id=%s AND id=%s", (uid, key[7:]))
+            r = db._one(c, "SELECT revision FROM people WHERE user_id=%s AND id=%s AND trashed_at IS NULL", (uid, key[7:]))
             if not r or r["revision"] != tv[key]:
                 raise _conflict("연결할 사람이 그사이 바뀌었거나 지워졌어요.")
         # ⑤ 남은 변경 재검사 → 적용 계획
@@ -730,6 +771,8 @@ def confirm(uid, job_id, body):
             o = index.get(ch["object_id"])
             if o is None or any(ln["target_id"] is None for ln in ch["links"]):
                 raise _conflict("적용할 수 없는 변경이 남아 있어요.")
+            if any(_gone(c, uid, ln["target_kind"], ln["target_id"]) for ln in ch["links"]):   # 미리보기 뒤 휴지통으로 간 연결 대상
+                raise _conflict("연결 대상이 그사이 삭제됐어요.")
             add = [{"field_key": ln["relation"], "target_kind": ln["target_kind"], "target_id": ln["target_id"]} for ln in ch["links"]]
             vals = {k: v for k, v in ch["fields"].items() if k not in ("title", "body")}
             if ch["op"] == "create":
