@@ -84,7 +84,13 @@ CREATE TABLE IF NOT EXISTS records (
   generation_kind    text NOT NULL DEFAULT 'unknown',
   generation_meta    jsonb NOT NULL DEFAULT '{}', -- 연결 장치가 신고한 도구·모델·입력 참조(검증된 사실 아님). 토큰·프롬프트·경로 없음
   import_batch_id    text,                        -- 처음 만든 이전 배치(FK 아님 — 대응은 import_entries)
+  -- 휴지통(2026-10-23 PR-1). 업무 상태와 별개 — deleted_at·archived_at 을 쓰지 않는다. 옛 DB 는 db._migrate_trash 가 열·CHECK·인덱스를 더한다.
+  -- trashed_at NULL = 일반 이용 · purge_at = 복원 기한(이동 시각 + 168h, 수동 영구 삭제 = 요청 시각) · last_trashed_at = 마지막 이동 시각(복원해도 남는다 — 그 전에 시작한 작업은 무효)
+  trashed_at         timestamptz,
+  purge_at           timestamptz,
+  last_trashed_at    timestamptz,
   UNIQUE (user_id, id),
+  CONSTRAINT ck_records_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
   CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),   -- 같은 사용자 출처만
   FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id),  -- Lookup
   CONSTRAINT ck_records_author_kind CHECK (author_kind IN ('self','external','unknown')),
@@ -102,7 +108,7 @@ CREATE INDEX IF NOT EXISTS ix_records_user ON records (user_id, created DESC) WH
 CREATE TABLE IF NOT EXISTS people (
   user_id  text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id       text NOT NULL,                         -- p_...
-  alias    text NOT NULL CHECK (char_length(alias) BETWEEN 1 AND 80 AND alias = btrim(alias)),
+  alias    text CHECK (char_length(alias) BETWEEN 1 AND 80 AND alias = btrim(alias)),   -- NULL = 영구 삭제 표식(purged_at). 옛 DB 는 _migrate_trash 가 NOT NULL 을 푼다
   revision integer NOT NULL DEFAULT 0,
   created  timestamptz NOT NULL DEFAULT now(),
   updated  timestamptz NOT NULL DEFAULT now(),
@@ -110,7 +116,14 @@ CREATE TABLE IF NOT EXISTS people (
   -- (user_id, hmac_namespace, identity_hmac) 부분 UNIQUE 는 init_schema 가 만든다(옛 DB 에선 이 파일이 열보다 먼저 돈다)
   hmac_namespace text,
   identity_hmac  bytea,
+  -- 휴지통(PR-1) — records 와 같은 뜻
+  trashed_at      timestamptz,
+  purge_at        timestamptz,
+  last_trashed_at timestamptz,
+  purged_at       timestamptz,                   -- 영구 삭제 완료 = 별칭·관계 없는 표식(HMAC 만 — 같은 사람 재생성 방지). 일반 사람으로 반환하지 않는다
   PRIMARY KEY (user_id, id),                      -- 별칭 중복 허용
+  CONSTRAINT ck_people_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
+  CONSTRAINT ck_people_purged CHECK ((alias IS NULL) = (purged_at IS NOT NULL) AND (purged_at IS NULL OR trashed_at IS NOT NULL)),
   CONSTRAINT ck_people_identity CHECK ((hmac_namespace IS NULL AND identity_hmac IS NULL)
                                        OR (hmac_namespace IS NOT NULL AND identity_hmac IS NOT NULL AND octet_length(identity_hmac) = 32))
 );
@@ -129,8 +142,13 @@ CREATE TABLE IF NOT EXISTS source_reflections (
   reviewed_at       timestamptz,
   created           timestamptz NOT NULL DEFAULT now(),
   updated           timestamptz NOT NULL DEFAULT now(),
+  -- 휴지통(PR-1) — records 와 같은 뜻
+  trashed_at        timestamptz,
+  purge_at          timestamptz,
+  last_trashed_at   timestamptz,
   PRIMARY KEY (user_id, id),
   FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),
+  CONSTRAINT ck_source_reflections_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
   CHECK ((review = 'reviewed') = (reviewed_at IS NOT NULL AND reviewed_revision IS NOT NULL))
 );
 CREATE INDEX IF NOT EXISTS ix_reflections_source ON source_reflections (user_id, source_id);
@@ -281,7 +299,12 @@ CREATE TABLE IF NOT EXISTS items (
   -- PR ②-b 판 이력: 지금 판(item_versions.id). NULL = 판 이력 없음(확인 1번으로 확정한 적 없음). FK 없음(서버 검사) — 삭제 순서가 items 보다 판이 먼저.
   -- 옛 DB 는 db._init_schema 가 더한다
   current_version_id  text,
+  -- 휴지통(PR-1) — records 와 같은 뜻
+  trashed_at          timestamptz,
+  purge_at            timestamptz,
+  last_trashed_at     timestamptz,
   PRIMARY KEY (user_id, id),
+  CONSTRAINT ck_items_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
   UNIQUE (user_id, id, object_id),                  -- item_links 복합 FK 대상
   CONSTRAINT ck_items_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
   CONSTRAINT ck_items_generation_kind CHECK (generation_kind IN ('unknown','human','ai','mixed','conversation','routine')),
@@ -343,9 +366,14 @@ CREATE TABLE IF NOT EXISTS activities (
   raw_id       text NOT NULL CHECK (raw_id ~ '^[0-9a-f]{48}$'),   -- PC 원문을 찾는 난수 ID. 실체·경로·URL 에서 유도하지 않는다
   received_at  timestamptz NOT NULL DEFAULT now(),
   deleted_at   timestamptz,
+  -- 휴지통(PR-1) — records 와 같은 뜻
+  trashed_at   timestamptz,
+  purge_at     timestamptz,
+  last_trashed_at timestamptz,
   PRIMARY KEY (user_id, id),
   FOREIGN KEY (user_id, stream_id) REFERENCES import_streams(user_id, id),
-  FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id)
+  FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),
+  CONSTRAINT ck_activities_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL))
 );
 
 CREATE TABLE IF NOT EXISTS item_links (
@@ -428,7 +456,7 @@ CREATE TABLE IF NOT EXISTS import_entries (
                                                      'migration_object','migration_item','migration_record')),
   request_sha256       bytea NOT NULL CHECK (octet_length(request_sha256) = 32),
   projection_sha256    bytea NOT NULL CHECK (octet_length(projection_sha256) = 32),
-  state                text NOT NULL CHECK (state IN ('pending','applied','noop','excluded','expired')),
+  state                text NOT NULL CHECK (state IN ('pending','applied','noop','excluded','expired','deleted')),   -- deleted = 대상 영구 삭제(휴지통) 뒤 표식 — target 없음. 옛 DB 는 _migrate_trash 가 넓힌다
   is_latest_received   boolean NOT NULL DEFAULT true,
   is_current_applied   boolean NOT NULL DEFAULT false,
   payload              jsonb,
@@ -442,6 +470,7 @@ CREATE TABLE IF NOT EXISTS import_entries (
   target_record_id     text,
   target_activity_id   text,
   target_item_revision integer CHECK (target_item_revision >= 0),
+  deleted_target_id    text,                        -- 휴지통 PR-1: state=deleted 행만 — 영구 삭제 직전 target_* 값(불투명 ID 표식, FK 없음, 본문 아님). 옛 DB 는 _migrate_trash
   batch_id             text,
   manifest_sha256      bytea,
   transform_version    text NOT NULL,

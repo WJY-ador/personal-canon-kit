@@ -887,7 +887,8 @@ UV_INTEGRITY = {"REF-DANGLING": "없는 대상 참조", "REF-MISMATCH": "대상 
 UV_WHY = {"target_def": "관계 정의의 대상 오브젝트가 없다(보관됨)", "target": "대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다",
           "kind": "실제 도착 종류가 정의와 다르다", "object": "도착 항목의 오브젝트가 정의의 대상과 다르다",
           "candidate": "근거 기록이 지워진 후보", "no_def": "정의 밖 연결 — 보관된 필드·오브젝트에서 출발",
-          "any_item": "대상 오브젝트를 정하지 않은 항목 필드 — 오브젝트 일치를 볼 수 없다"}
+          "any_item": "대상 오브젝트를 정하지 않은 항목 필드 — 오브젝트 일치를 볼 수 없다",
+          "trashed": "휴지통 대상(복원 가능 — 끊긴 근거 아님)"}   # 휴지통 PR-1 — admin_db.link_stats 가 검사 밖으로 분류
 UV_LOCK = f'<span class="tag lock">{_esc(structure_svg.LOCK_TEXT)}</span>'
 
 
@@ -1301,7 +1302,8 @@ class Web:
         st["structure_svg"] = structure_svg.render(st["structure"])   # 같은 응답의 DMO 그래프(서버 결정적 배치) — 목록과 같은 순번 앵커. /app 전용
         st["user"] = {"email": me["email"], "struct_names": flags["struct_names"], "desk_hidden": flags["desk_hidden"],   # /app 계정 메뉴용 — MCP state_get 에는 넣지 않는다
                       "display_name": home["display_name"], "nav": home["nav"]}   # PR B: 표시 이름(null = 이름 입력 화면) · 새 탐색 new|old
-        st["switches"] = {"converse": db.job_switch_on("converse")}   # PR ②-b — 「대화」 버튼 표시(켜짐일 때만). /app 전용, MCP state_get 에는 넣지 않는다
+        st["switches"] = {"converse": db.job_switch_on("converse"),   # PR ②-b — 「대화」 버튼 표시(켜짐일 때만). /app 전용, MCP state_get 에는 넣지 않는다
+                          "trash": db.trash_on()}                     # 휴지통 PR-1 — 새 [삭제]·Setup 휴지통 표시(켜짐일 때만). 꺼짐 = 기존 버튼 그대로
         st["stack_session"] = await run_in_threadpool(db.stack_session_current, uid)   # ②-b 새로 고침 복원·두 탭 공유 — {id, expires_at} | null
         st["devices_status"] = devst   # ③-0.2 장치 상태 {state: none|recent|offline, last_seen_at, threshold_seconds} — 본인만, /app 전용(활동 부분과 독립)
         st["me"] = {"counts": home["counts"]}   # PR B 「나」 홈 개수(판단·기준·결정·사람·출처·요약/반응) — 본인만, /app 전용
@@ -1568,6 +1570,69 @@ class Web:
         rid = request.path_params["rid"]
         return await self._core_write(request, "source_reflection_delete", {"expected_revision": ((int,), True)},
                                       lambda uid, b: db.source_reflection_delete(uid, rid, b["expected_revision"]))
+
+    # ── 휴지통 (2026-10-23 PR-1) — 세션 401 → Origin 403(POST) → JSON 모양 400 → db.write_gate(quota=False — 400MB 초과에도 삭제·복원)
+    # → db.trash_*. 스위치 꺼짐 = 503 SWITCH-OFF · NOT-FOUND 404 · NAME-REQUIRED 403 · 그 밖 400. 대상 사용자 = 세션 uid 뿐.
+    _TRASH_HTTP = {"SWITCH-OFF": 503, "NOT-FOUND": 404, contract.NAME_REQUIRED: 403}
+    _TRASH_OPS = {"move": ("trash_move", db.trash_move), "restore": ("trash_restore", db.trash_restore),
+                  "purge": ("trash_purge", db.trash_purge)}
+
+    def _trash_err(self, e) -> JSONResponse:
+        return JSONResponse({"code": e.code, "msg": e.message, "action": e.action}, status_code=self._TRASH_HTTP.get(e.code, 400))
+
+    async def api_trash(self, request):
+        """GET ?kind=&cursor=&limit= — 휴지통 목록(복원 기한 전만, 최근 이동 순). 본문 없음 — 상세는 /api/trash/{kind}/{id}."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        kind, cursor = request.query_params.get("kind", ""), request.query_params.get("cursor", "")
+        limit = self._qint(request, "limit", db.PAGE_DEFAULT, 1, db.PAGE_MAX)
+        try:
+            out = await run_in_threadpool(db.trash_list, uid, kind, cursor, limit)
+        except db.CrmError as e:
+            return self._trash_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_trash_one(self, request):
+        """GET /api/trash/{kind}/{id} — 휴지통 전용 상세(본문 포함). 기한 지남 = 400 TRASH-EXPIRED, 휴지통 아님·남의 것 = 404."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        try:
+            out = await run_in_threadpool(db.trash_get, uid, request.path_params["kind"], request.path_params["tid"])
+        except db.CrmError as e:
+            return self._trash_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    async def api_trash_op(self, request):
+        """POST /api/trash/{move|restore|purge} {kind, id, expected_revision?} — 이동([삭제]) · 복원 · 영구 삭제 요청.
+        expected_revision = item·person·reflection 의 지금 revision(이동 때 필수), record·activity 는 보내지 않는다."""
+        uid, err = await self._need(request)
+        if err:
+            return err
+        if not self.same_origin(request):
+            return JSONResponse({"code": "ORIGIN", "msg": "다른 사이트에서 온 요청이에요."}, status_code=403)
+        op = self._TRASH_OPS.get(request.path_params["op"])
+        if op is None:
+            return JSONResponse({"code": "NOT-FOUND", "msg": "없는 경로예요."}, status_code=404)
+        try:
+            body = await request.json()
+            assert isinstance(body, dict) and isinstance(body.get("kind"), str) and isinstance(body.get("id"), str)
+            rev = body.get("expected_revision")
+            assert rev is None or _is_int(rev)
+        except Exception:
+            return JSONResponse({"code": "ARG-INVALID", "msg": "JSON 본문(kind·id 문자열, expected_revision 정수 또는 생략)이 필요해요."},
+                                status_code=400)
+        name, call = op
+
+        def write():
+            db.write_gate(name, {"kind": body["kind"], "id": body["id"]}, uid, quota=False)
+            return call(uid, body["kind"], body["id"], rev)
+        try:
+            out = await run_in_threadpool(write)
+        except db.CrmError as e:
+            return self._trash_err(e)
+        return JSONResponse(out, headers={"cache-control": "no-store"})
 
     # ── board 이전 (2026-10-20, 구현계획 §2-11 D7 · r3 T2·T3) — 연결 장치(#_devices) · 승인 대기(#_inbox) · 「나」 집계·활동/사람/출처/축 상세 ──
     # 쓰기 = _core_write(세션 401 → Origin 403 → JSON 모양 400 → db.write_gate(표시 이름 관문 · 전역 크기) → imports). 페이로드 상한은 main.BodyLimit(/api/*).
@@ -2568,6 +2633,9 @@ class Web:
             Route("/api/me/aggregate", u("web:me_aggregate", self.api_me_aggregate)),
             Route("/api/me/layout", u("web:me_layout", self.api_me_layout), methods=["GET", "PUT", "DELETE"]),   # PR ①-b 쓰기 예외(이 라우트만)
             Route("/api/me/stats", u("web:me_stats", self.api_me_stats)),   # PR ①-b — 읽기만
+            Route("/api/trash", u("web:trash", self.api_trash)),   # 휴지통 PR-1 — 목록 · 상세 · 이동/복원/영구 삭제(경로 순서: 쓰기 먼저)
+            Route("/api/trash/{op}", u("web:trash_op", self.api_trash_op), methods=["POST"]),
+            Route("/api/trash/{kind}/{tid}", u("web:trash_get", self.api_trash_one)),
             # PR ②-a 작업 전달 — 장치(Bearer 장치 토큰) 2 · 웹(세션) 3
             Route("/api/device/jobs", self.api_device_jobs),
             Route("/api/device/jobs/{jid}/{op}", self.api_device_job, methods=["GET", "POST"]),

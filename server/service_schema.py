@@ -37,7 +37,9 @@ CORE_FIELDS = {
                 "provenance_history": "작성 판정 이력", "source_id": "출처",
                 # board 이전(2026-10-20) — 들어온 경로·원본 날짜·생성 경위(연결 장치 신고)
                 "received_at": "받은 때", "source_created_at": "원본 시각", "source_date": "원본 날짜", "ingest_kind": "들어온 경로",
-                "generation_kind": "생성 경위", "generation_meta": "생성 정보(장치 신고)", "import_batch_id": "이전 배치"},
+                "generation_kind": "생성 경위", "generation_meta": "생성 정보(장치 신고)", "import_batch_id": "이전 배치",
+                # 휴지통 PR-1 — 업무 상태와 별개인 휴지통 상태 열(본문 아님). 화면 「복원 가능 기한」과 같은 말
+                "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동"},
     "candidates": {"id": "ID", "record_id": "근거 기록", "question_id": "질문", "text": "판단 문장", "quote": "인용",
                    "quote_start": "인용 시작 위치", "quote_end": "인용 끝 위치", "origin": "누가 뽑았나", "decision": "결정 상태",
                    "edited_by_user": "사용자 수정 여부", "created": "만든 때", "updated": "고친 때", "revision": "변경 번호",
@@ -49,11 +51,11 @@ CORE_FIELDS = {
                 "activity_provider": "활동 제공자 종류"},   # board 이전 — 연결 장치 활동의 일반 출처
     "users": {"display_name": "표시 이름", "status": "상태", "nav_accepted_at": "새 탐색 수락", "created": "만든 때"},
     "activities": {"id": "ID", "source_id": "출처", "action": "행동", "state": "상태", "occurred_on": "행동 날짜",
-                   "observed_on": "처음 수집한 날", "raw_id": "원문 ID", "received_at": "받은 때", "deleted_at": "지운 때"},
+                   "observed_on": "처음 수집한 날", "raw_id": "원문 ID", "received_at": "받은 때", "deleted_at": "지운 때", "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동"},
     "people": {"id": "ID", "alias": "별칭", "revision": "변경 번호", "created": "만든 때", "updated": "고친 때",
-               "hmac_namespace": "식별자 키 공간", "identity_hmac": "식별자(HMAC)"},   # board 이전 — 키·원본 대응표는 PC 에만
+               "hmac_namespace": "식별자 키 공간", "identity_hmac": "식별자(HMAC)", "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동", "purged_at": "영구 삭제한 때"},   # board 이전 — 키·원본 대응표는 PC 에만
     "source_reflections": {"id": "ID", "source_id": "출처", "kind": "유형", "body": "본문", "review": "검토 상태", "revision": "변경 번호",
-                           "reviewed_revision": "검토한 변경 번호", "reviewed_at": "검토 시각", "created": "만든 때", "updated": "고친 때"},
+                           "reviewed_revision": "검토한 변경 번호", "reviewed_at": "검토 시각", "created": "만든 때", "updated": "고친 때", "trashed_at": "휴지통에 넣은 때", "purge_at": "복원 가능 기한", "last_trashed_at": "마지막 휴지통 이동"},
 }
 SQL_TYPES = {"text": "글", "timestamptz": "시각", "integer": "정수", "boolean": "예/아니오", "jsonb": "구조 자료", "date": "날짜",
              "bytea": "이진 값"}
