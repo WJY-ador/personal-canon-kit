@@ -148,6 +148,9 @@ PRB_TOOLS = {"display_name_set", "me_get", "person_list", "person_get", "person_
              "record_provenance_set", "definition_archive", "definition_restore"}   # R5 결함(PR B 범위 추가) 3
 # board 이전(25절) MCP 읽기 7 — 쓰기 없음(승인·제외는 웹에서만)
 BI_TOOLS = {"activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get"}
+# 휴지통 PR-1(30절) MCP 4 — 목록(읽기) + 이동·복원·영구 삭제 요청(쓰기, 전역 크기 관문 면제)
+TRASH_TOOLS = {"trash_list", "trash_move", "trash_restore", "trash_purge"}
+TRASH_WRITES = TRASH_TOOLS - {"trash_list"}
 BI = {k: f"bi-{k}@example.com" for k in ("a", "b", "agg", "adm", "del", "mig")}   # 25절: a 장치·수신 · b 남 · agg 집계 · adm 삭제 실행 · del 삭제 대상 · mig 이전
 # 처리방침 머리글(`vN · 날짜`) — PR B 부터 v5. 날짜는 문서가 정본이라 파일에서 읽는다(시험이 날짜를 따로 들지 않는다)
 PRIVACY_VERSION = "v7"   # board 이전(2026-10-20) v6 → PR ②-b(2026-10-22) v7
@@ -981,7 +984,7 @@ async def test_definition_tools():
         base = {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose", "candidate_decide",
                 "candidate_list", "profile_set"}
         legacy = base | new | {"help_get", "feedback_send", "ticket_list_mine", "ticket_get_mine"}   # 기존 15개 + help_get + feedback_send(desk-0) + 내 문의 읽기 2(P3)
-        assert len(legacy) == 19 and legacy <= tools and tools - legacy == PRB_TOOLS | BI_TOOLS, tools   # PR B 코어 도구는 24절, board 이전 읽기 7은 25절이 본다
+        assert len(legacy) == 19 and legacy <= tools and tools - legacy == PRB_TOOLS | BI_TOOLS | TRASH_TOOLS, tools   # PR B 코어 도구는 24절, board 이전 읽기 7은 25절, 휴지통 4는 30절이 본다
         assert val(await c.call_tool("definitions_get", {"object_ids": None, "include_archived": False})) == []
         p = val(await c.call_tool("definition_propose", {"object_id": None, "expected_revision": 0, "definition_json": json.dumps(
             {"key": "notes", "label": "메모", "semantic_kind": "principle", "fields": []})}))
@@ -1565,8 +1568,9 @@ async def test_limits():
     assert names - set(db.WRITE_LIMITS) == {"state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get",
                                             "ticket_list_mine", "ticket_get_mine",
                                             "me_get", "person_list", "person_get", "source_list", "source_get",   # PR B 읽기
-                                            "source_reflection_list", "source_reflection_get"} | BI_TOOLS, names
-    assert len(names) == 19 + len(PRB_TOOLS) + len(BI_TOOLS) and db.QUOTA_EXEMPT == {"feedback_send"} <= set(db.WRITE_LIMITS), (len(names), db.QUOTA_EXEMPT)
+                                            "source_reflection_list", "source_reflection_get", "trash_list"} | BI_TOOLS, names
+    assert len(names) == 19 + len(PRB_TOOLS) + len(BI_TOOLS) + len(TRASH_TOOLS) \
+        and db.QUOTA_EXEMPT == {"feedback_send"} | TRASH_WRITES <= set(db.WRITE_LIMITS), (len(names), db.QUOTA_EXEMPT)
 
     def nrec():
         return len(db.records(uid, limit=1000))
@@ -2922,7 +2926,8 @@ ADB_STATE_KEYS = ("userview.counts", "userview.links")
 ADB_STATE_COLS = {"id", "user_id", "created", "kind", "state", "version", "std_key", "record_id", "object_id", "revision", "archived_at",
                   "deleted_at", "source_item_id", "source_object_id", "source_record_id", "field_key", "target_item_id", "target_record_id",
                   "target_candidate_id", "target_person_id", "target_source_id", "target_activity_id",   # 뒤 넷 = board 이전 대상 종류 판정(ID 열)
-                  "activity_provider"}   # board 이전 — 출처 수에서 활동 출처를 빼는 종류 열(값을 내보내지 않는다)
+                  "activity_provider",   # board 이전 — 출처 수에서 활동 출처를 빼는 종류 열(값을 내보내지 않는다)
+                  "trashed_at", "purged_at"}   # 휴지통 PR-1 — 무결성 집계에서 휴지통·사람 표식을 가르는 상태 열(값을 내보내지 않는다)
 ADB_TEXT_COLS = re.compile(r"(?<!::)\b(text|admin_note)\b", re.I)
 ADB_NAME_COLS = re.compile(r"\b(label|options)\b", re.I)
 ADB_TEXT_KEYS = ("tickets.detail",)   # text·admin_note 를 읽는 유일한 조회(P5 에서 /app 문의함 이행 키를 뺐다)
@@ -3722,7 +3727,8 @@ async def test_admin_screens():
                                                "users", "people", "source_reflections", "activities"], "PR B 코어 8 + board 이전 활동"
         assert {f["name"] for f in core8[5]["fields"]} == {"display_name", "status", "nav_accepted_at", "created"}, "「나」 = users 의 네 열만"
         assert {f["name"] for f in core8[6]["fields"]} == {"id", "alias", "revision", "created", "updated", "hmac_namespace",
-                                                           "identity_hmac"}, "사람 = 별칭 이름표 + 장치 식별자(HMAC, board 이전)"
+                                                           "identity_hmac", "trashed_at", "purge_at", "last_trashed_at", "purged_at"}, \
+            "사람 = 별칭 이름표 + 장치 식별자(HMAC, board 이전) + 휴지통 상태(PR-1, 개인정보 열 아님)"
         r = await get("/admin/schema/objects/core-ticket")
         d = clean(r, "/admin/schema/objects/core-ticket")
         assert "<h1>문의</h1>" in d and "문의 변경 이력(오브젝트 아님)" in d and "공개 답변" in d, "문의 오브젝트·이력 관계"
@@ -3831,6 +3837,13 @@ async def run():
     db.init_schema()   # 서버 시작과 같은 멱등 마이그레이션 — 시험 DB 가 직전 코드의 스키마여도 새 열·admin_audit 를 깐다(cleanup 이 쓴다)
     cleanup()
     try:
+        only = [x.strip() for x in (envnames.env("TEST_ONLY") or "").split(",") if x.strip()]
+        if only:   # 개발 중 절 하나만(CRM_TEST_ONLY=test_trash_core 등). CI·커밋 전 전체 시험은 이 env 없이
+            for name in only:
+                r = globals()[name]()
+                if asyncio.iscoroutine(r):
+                    await r
+            return
         test_migration()
         test_core_pr1()
         await test_verifier()
@@ -3889,6 +3902,11 @@ async def run():
         await test_pr2a_jobs()   # PR ②-a — 맨 끝(시작 때 tester·other 를 새로 만든다)
         await test_pr2b_stack()   # PR ②-b 28절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
         await test_serve_devices_status()   # ③-0.2 29절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
+        test_trash_schema()   # 휴지통 PR-1 30절 — 맨 끝(시작 때 tester·other 를 새로 만든다)
+        test_trash_off()
+        test_trash_core()
+        test_trash_purge()
+        await test_trash_web_mcp()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -6163,6 +6181,10 @@ PRB_WRITE_ARGS = {
     "source_reflection_delete": {"reflection_id": "sr_x", "expected_revision": 0},
     "record_provenance_set": {"record_id": "r_x", "author_kind": "external", "text_process": "verbatim", "reason": "남의 글"},
     "definition_archive": {"object_id": "od_x"}, "definition_restore": {"object_id": "od_x"},
+    # 휴지통 PR-1(30절) — 이름 관문은 스위치·대상 검사보다 먼저
+    "trash_move": {"kind": "record", "target_id": "r_x", "expected_revision": None},
+    "trash_restore": {"kind": "record", "target_id": "r_x", "expected_revision": None},
+    "trash_purge": {"kind": "record", "target_id": "r_x", "expected_revision": None},
 }
 PRB_ALLOWED_ARGS = {
     "state_get": {}, "question_list": {}, "candidate_list": {}, "record_get": {"record_id": "r_x"},
@@ -6173,6 +6195,7 @@ PRB_ALLOWED_ARGS = {
     # board 이전 읽기 7(25절) — 이름 없이도 된다
     "activity_list": {}, "activity_get": {"activity_id": "a_xxxxxx"}, "person_context_get": {"person_id": "p_x"},
     "source_context_get": {"source_id": "s_x"}, "me_aggregate_get": {}, "inbox_list": {}, "inbox_get": {"import_id": "ie_x"},
+    "trash_list": {},   # 휴지통 PR-1 목록 — 이름 없이도(스위치 꺼짐이면 SWITCH-OFF)
     "display_name_set": {"display_name": "  이름 PRBNAME  "},   # 마지막에 부른다(관문 통과 뒤 쓰기 확인)
 }
 
@@ -6285,7 +6308,7 @@ async def test_prb_gate():
         assert main.WRITE_TOOLS | main.ALLOWED_TOOLS == names and not main.WRITE_TOOLS & main.ALLOWED_TOOLS, names ^ (main.WRITE_TOOLS | main.ALLOWED_TOOLS)
         assert main.WRITE_TOOLS == set(db.WRITE_LIMITS) - db.NAME_EXEMPT and db.NAME_EXEMPT == {"feedback_send", "display_name_set"}
         assert set(PRB_WRITE_ARGS) == main.WRITE_TOOLS and set(PRB_ALLOWED_ARGS) == main.ALLOWED_TOOLS, "시험 인자 표 = 분류"
-        assert names - PRB_TOOLS - BI_TOOLS == {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose",
+        assert names - PRB_TOOLS - BI_TOOLS - TRASH_TOOLS == {"state_get", "question_add", "question_list", "record_add", "record_get", "candidates_propose",
                                      "candidate_decide", "candidate_list", "profile_set", "definitions_get", "definition_propose",
                                      "definition_apply", "item_propose", "item_decide", "record_attach", "help_get", "feedback_send",
                                      "ticket_list_mine", "ticket_get_mine"}, "기존 19개 이름 그대로"
@@ -6398,7 +6421,8 @@ async def test_prb_core():
         with db.tx() as c:
             assert {r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() "
                                                         "AND table_name='people'").fetchall()} == {"user_id", "id", "alias", "revision", "created", "updated",
-                                                                                                    "hmac_namespace", "identity_hmac"}   # 뒤 둘 = board 이전(실명·URL·소속 열 없음)
+                                                                                                    "hmac_namespace", "identity_hmac",   # board 이전(실명·URL·소속 열 없음)
+                                                                                                    "trashed_at", "purge_at", "last_trashed_at", "purged_at"}   # 휴지통 PR-1 상태 열
         e1 = expect("NOT-FOUND", db.person_get, B, p["id"])
         e2 = expect("NOT-FOUND", db.person_get, B, "p_none")
         assert (e1.message, e1.action) == (e2.message, e2.action), "남의 id = 없는 id"
@@ -8678,10 +8702,10 @@ async def test_pr2b_stack_b2():
             with _job_fast():
                 with _job_switch():
                     st = (await h.get("/api/state")).json()
-                    assert st["switches"] == {"converse": False}, st.get("switches")
+                    assert st["switches"] == {"converse": False, "trash": False}, st.get("switches")   # trash = 휴지통 PR-1(30절)
                 with _job_switch("CONVERSE_ENABLED"):
                     st = (await h.get("/api/state")).json()
-                    assert st["switches"] == {"converse": True} and st["stack_session"] is None, st.get("stack_session")
+                    assert st["switches"] == {"converse": True, "trash": False} and st["stack_session"] is None, st.get("stack_session")
                     r = await h.post("/api/jobs", json={"kind": "converse", "text": TXT, "input_kind": "verbatim"}, headers=origin)
                     assert r.status_code == 201, r.text
                     J = r.json()
@@ -9659,6 +9683,530 @@ async def test_serve_devices_status():
 
 def Web_polls_empty():
     return not {k: v for k, v in main.site._polls.items() if v}
+
+# ── 30) 휴지통 PR-1 서버 핵심 — 스키마 · 상태 전이 · 일반 이용 차단 · 물리 정리 · MCP·웹 · 스위치 꺼짐 회귀 (2026-10-23, 구현계획 §4 · r4) ─────────
+# 사용자 = tester@·other@example.com 재사용(TEST_EMAILS 불변). run() 맨 끝에서 돌고 시작 때 두 계정을 새로 만든다.
+# 활동 원천(activity.trash_op·trash_purge_due)·수신 차단은 trash-flow 의 test_trash_flow.py 가 본다 — 여기는 db 쪽 4종 + 공통 꼴.
+
+@contextmanager
+def _trash_switch(on=True):
+    saved = os.environ.pop("CRM_TRASH_ENABLED", None)
+    if on:
+        os.environ["CRM_TRASH_ENABLED"] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop("CRM_TRASH_ENABLED", None)
+        if saved is not None:
+            os.environ["CRM_TRASH_ENABLED"] = saved
+
+
+@contextmanager
+def _trash_clock(at):
+    saved = db.TRASH_CLOCK
+    db.TRASH_CLOCK = at
+    try:
+        yield
+    finally:
+        db.TRASH_CLOCK = saved
+
+
+def _trash_row(t, i):
+    with db.tx() as c:
+        return c.execute(f"SELECT * FROM {t} WHERE id=%s", (i,)).fetchone()
+
+
+def _trash_age(t, i, days=1):
+    """물리 정리 시험 — 옮긴 시각을 어제 이전으로(오늘 옮긴 행은 일일 한도 셈 보존 때문에 다음 날 정리)·기한도 지난 것으로."""
+    _sql(f"UPDATE {t} SET trashed_at = trashed_at - make_interval(days => %s), last_trashed_at = last_trashed_at - make_interval(days => %s), "
+         "purge_at = now() - interval '1 second' WHERE id=%s", (days, days, i))
+
+
+def test_trash_schema():
+    """30a — 5종 휴지통 열·CHECK·부분 인덱스 · 사람 별칭 NULL 허용 + 표식 CHECK · 접수 deleted 상태 · init_schema 2회 멱등 ·
+    새 사용자 표 없음(DELETE_TABLES 정적 대조는 24절이 그대로 본다) · 옛 DB(열 없음)에서 _migrate_trash 가 같은 모양."""
+    db.init_schema()
+    db.init_schema()
+    with db.tx() as c:
+        for t in db.TRASH_TABLES:
+            cols = {r["column_name"] for r in c.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() "
+                                                         "AND table_name=%s", (t,)).fetchall()}
+            assert {"trashed_at", "purge_at", "last_trashed_at"} <= cols, (t, cols)
+            assert db._has_constraint(c, t, f"ck_{t}_trash"), t
+            for ix in (f"ix_{t}_purge", f"ix_{t}_trash"):
+                d = c.execute("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=%s", (ix,)).fetchone()
+                assert d and "trashed_at IS NOT NULL" in d["indexdef"].split(" WHERE ", 1)[1], (ix, d)
+        assert c.execute("SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='people' "
+                         "AND column_name='alias'").fetchone()["is_nullable"] == "YES"
+        assert db._has_constraint(c, "people", "ck_people_purged")
+        d = c.execute("SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conname='import_entries_state_check' "
+                      "AND conrelid='import_entries'::regclass").fetchone()["d"]
+        assert all(f"'{v}'" in d for v in db.IMPORT_STATES), d
+        for ix in ("ix_links_target_record", "ix_activity_links_activity", "ix_activity_links_record", "ix_import_target_record",
+                   "ix_import_target_item", "ix_import_deleted_target"):
+            assert c.execute("SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname=%s", (ix,)).fetchone(), ix
+    assert db.DELETE_TABLES and "trash" not in " ".join(db.DELETE_TABLES), "새 사용자 표 없음 — 표식은 기존 행·열"
+    assert "TRASH_ENABLED" in envnames.SWITCHES and not db.trash_on(), "기본 꺼짐"
+    # 옛 DB 재현 — 임시 스키마에 열 없는 5표 + 접수 표를 만들고 _migrate_trash 2회 = 같은 모양
+    name = f"trash_old_{secrets.token_hex(3)}"
+    with db.pool().connection() as c:
+        try:
+            with c.transaction():
+                c.execute(f"CREATE SCHEMA {name}")
+                c.execute(f"SET LOCAL search_path TO {name}")
+                for t in ("records", "items", "source_reflections", "activities"):
+                    c.execute(f"CREATE TABLE {t} (user_id text, id text, deleted_at timestamptz)")
+                c.execute("CREATE TABLE people (user_id text, id text, alias text NOT NULL, identity_hmac bytea)")
+                c.execute("CREATE TABLE item_links (user_id text, target_record_id text)")
+                c.execute("CREATE TABLE activity_links (user_id text, activity_id text, record_id text)")
+                c.execute("CREATE TABLE import_entries (user_id text, target_record_id text, target_item_id text, "
+                          "state text NOT NULL CHECK (state IN ('pending','applied','noop','excluded','expired')))")
+                c.execute(f"INSERT INTO people VALUES ('u','p','옛 사람', NULL)")
+                db._migrate_trash(c)
+                db._migrate_trash(c)
+                assert db._has_col(c, "people", "purged_at") and db._has_constraint(c, "records", "ck_records_trash")
+                assert db._has_col(c, "import_entries", "deleted_target_id")
+                c.execute("INSERT INTO import_entries (state) VALUES ('deleted')")   # 넓힌 CHECK
+                assert c.execute("SELECT alias FROM people").fetchone()["alias"] == "옛 사람", "기존 행 그대로"
+                raise RuntimeError("rollback")
+        except RuntimeError:
+            pass
+    print("OK — 30a 휴지통 스키마(5종 열·CHECK·부분 인덱스 · 사람 표식 · 접수 deleted · init 2회 · 옛 DB 이전 2회 멱등 · 새 표 0)")
+
+
+def _trash_seed(U):
+    """U 의 재료 — 기준 오브젝트(evidence_claims 자동) · 기록 2(후보 하나씩) · 기준 P(후보 근거 2) · 사람 2(HMAC 하나) · 출처·생각.
+    표식 문자열(TRASHMK*)로 일반 경로 응답에 휴지통 본문이 실리는지 본다."""
+    rp = db.definition_propose(U, None, 0, {"key": "principles", "label": "기준", "semantic_kind": "principle", "fields": []})
+    PR = db.definition_apply(U, rp["object_id"], rp["proposal_id"], 0)["id"]
+    r1 = db.record_add(U, "TRASHMK-T1 휴지통 글", "TRASHMK-B1 첫 근거 문장이다. 나머지 글.")
+    r2 = db.record_add(U, "보통 글", "둘째 근거 문장이다. 나머지.")
+    (c1,), _ = db.candidates_propose(U, r1["id"], "", [{"text": "TRASHMK-C1 판단", "quote": "TRASHMK-B1 첫 근거 문장이다"}], "ai")
+    (c2,), _ = db.candidates_propose(U, r2["id"], "", [{"text": "둘째 판단", "quote": "둘째 근거 문장이다"}], "ai")
+    db.candidate_decide(U, c1, "confirm")
+    db.candidate_decide(U, c2, "confirm")
+    ip = db.item_propose(U, PR, 1, None, 0, "P-1", "TRASHMK-P 기준 제목", "기준 본문", {},
+                         [{"field_key": "evidence_claims", "target_kind": "candidate", "target_id": c1},
+                          {"field_key": "evidence_claims", "target_kind": "candidate", "target_id": c2}])
+    P = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")
+    p_plain = db.person_save(U, "TRASHMK-사람 별칭")["id"]
+    p_h = db.new_id("p")
+    _sql("INSERT INTO people (user_id,id,alias,hmac_namespace,identity_hmac) VALUES (%s,%s,'HMAC 사람','hn_trash',%s)",
+         (U, p_h, secrets.token_bytes(32)))
+    _sql("INSERT INTO activity_links (user_id,id,record_id,person_id,relation) VALUES (%s,%s,%s,%s,'author')",
+         (U, db.new_id("al"), r2["id"], p_plain))
+    s = db.source_create(U, "url", "합성 출처", "https://example.com/trash")["id"]
+    refl = db.source_reflection_save(U, s, "summary", "TRASHMK-R 읽고 든 생각 본문")
+    return {"PR": PR, "r1": r1["id"], "r2": r2["id"], "c1": c1, "c2": c2, "P": P["id"], "p_plain": p_plain, "p_h": p_h, "s": s,
+            "refl": refl["id"]}
+
+
+def _trash_general(U):
+    """일반 이용 경로 한 벌(db) — 응답 JSON 하나로 묶는다. 휴지통 본문·제목·인용·별칭 표식이 없어야 한다."""
+    out = {"state": db.state(U), "home": db.me_home(U), "stats": db.me_stats(U), "people": db.people_all(U),
+           "person_list": db.person_list(U), "refl": db.reflections_all(U), "refl_list": db.source_reflection_list(U),
+           "sources": db.source_counts(U)}
+    for it in out["state"]["items"]:
+        out.setdefault("item_get", []).append(db.item_get(U, it["id"]))
+    return json.dumps(out, ensure_ascii=False, default=str)
+
+
+def test_trash_off():
+    """30b — 스위치 꺼짐 회귀: 휴지통 진입 = SWITCH-OFF(db) · 기존 사람 삭제(연결 있으면 PERSON-IN-USE, 없으면 행 삭제) · 생각 즉시 삭제
+    · 기준 남기지 않기·되돌리기 그대로(revision +1) · 일반 이용은 같다."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    with _trash_switch(False):
+        S = _trash_seed(U)
+        for fn, a in ((db.trash_move, ("record", S["r1"])), (db.trash_restore, ("record", S["r1"])), (db.trash_purge, ("record", S["r1"])),
+                      (db.trash_list, ()), (db.trash_get, ("record", S["r1"]))):
+            expect("SWITCH-OFF", fn, U, *a)
+        assert _trash_row("records", S["r1"])["trashed_at"] is None, "꺼짐 = 데이터 불변"
+        expect("PERSON-IN-USE", db.person_delete, U, S["p_plain"], 0)
+        p3 = db.person_save(U, "지울 사람")["id"]
+        assert db.person_delete(U, p3, 0) == {"id": p3, "deleted": True} and _trash_row("people", p3) is None, "옛 즉시 삭제"
+        assert db.source_reflection_delete(U, S["refl"], 0) == {"id": S["refl"], "deleted": True} and _trash_row("source_reflections", S["refl"]) is None
+        P = db.item_get(U, S["P"])
+        x = db.item_decide(U, S["P"], P["revision"], None, "exclude")
+        assert x["decision"] == "excluded" and x["revision"] == P["revision"] + 1
+        y = db.item_decide(U, S["P"], x["revision"], None, "pending")
+        assert y["decision"] == "pending" and y["revision"] == P["revision"] + 2
+    print("OK — 30b 스위치 꺼짐 회귀(SWITCH-OFF 5 · 데이터 불변 · PERSON-IN-USE · 즉시 삭제 · 남기지 않기·되돌리기 그대로)")
+
+
+def test_trash_core():
+    """30c — 내 글·항목·사람·생각: 이동(소유자·revision·연결 있어도)·중복 무연장·일반 이용 차단 전 경로(목록·상세·직접 ID·관계·집계·state)
+    ·직접 쓰기 IN-TRASH · 휴지통 목록·상세(본인만) · 복원(같은 ID·업무 상태·관계 다시 보임) · 관계 부활 방지 · 168h 경계(서버 시각 주입)
+    · 재삭제 새 기한 · 수동 영구 삭제(즉시 복원 불가·요청≠제거) · 복원/영구 삭제 경합 하나만 · item_decide exclude·pending ACTION-RETIRED
+    · 축 AXIS-IN-POLICY · 400MB 넘어도 이동 · last_trashed_at 남음 · 한도 셈 유지."""
+    import concurrent.futures
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    with _trash_switch(True):
+        S = _trash_seed(U)
+        before = _trash_general(U)
+        assert "TRASHMK-T1" in before and "TRASHMK-C1" in before and "TRASHMK-사람" in before and "TRASHMK-R" in before, "재료 확인"
+        home0 = db.me_home(U)["counts"]
+        # ── 남의 것 = 없는 것(이동·복원·영구 삭제·상세) ──
+        for fn in (db.trash_move, db.trash_restore, db.trash_purge, db.trash_get):
+            expect("NOT-FOUND", fn, O, "record", S["r1"])
+        expect("ARG-INVALID", db.trash_move, U, "nope", "x")
+        expect("ARG-INVALID", db.trash_move, U, "record", S["r1"], 3)   # record 는 revision 없음
+        expect("ARG-INVALID", db.trash_move, U, "person", S["p_plain"])   # person 은 revision 필수
+        expect("CONFLICT", db.trash_move, U, "person", S["p_plain"], 9)
+        assert _trash_row("people", S["p_plain"])["trashed_at"] is None, "거절 = 불변"
+        # ── 이동: 기록 · 사람(연결 있어도) · 생각 ──
+        m = db.trash_move(U, "record", S["r1"])
+        r = _trash_row("records", S["r1"])
+        assert m["changed"] and m["restorable"] and r["purge_at"] - r["trashed_at"] == db._dt.timedelta(hours=168), (m, r)
+        assert r["last_trashed_at"] == r["trashed_at"]
+        m2 = db.trash_move(U, "record", S["r1"])
+        assert not m2["changed"] and m2["purge_at"] == m["purge_at"], "중복 삭제 = 기존 결과(기한 연장 0)"
+        rp = db.person_get(U, S["p_plain"])["revision"]
+        pm = db.trash_move(U, "person", S["p_plain"], rp)
+        assert pm["changed"] and _trash_row("people", S["p_plain"])["revision"] == rp, "revision 그대로"
+        assert db.trash_move(U, "reflection", S["refl"], 0)["changed"]
+        # ── 일반 이용 차단(전 경로) — 표식 문자열이 응답에 없다. 독립 대상(다른 글·기준 P·기록-사람 연결의 기록)은 그대로 ──
+        after = _trash_general(U)
+        for mk in ("TRASHMK-T1", "TRASHMK-B1", "TRASHMK-C1", "TRASHMK-사람", "TRASHMK-R"):
+            assert mk not in after, mk
+        assert "TRASHMK-P" in after and "둘째 판단" in after, "독립 대상 유지"
+        expect("RECORD-MISSING", db.record_get, U, S["r1"])
+        expect("ARG-INVALID", db.candidate_get, U, S["c1"])
+        expect("NOT-FOUND", db.person_get, U, S["p_plain"])
+        expect("NOT-FOUND", db.source_reflection_get, U, S["refl"])
+        assert S["c1"] not in {x["id"] for x in db.candidates(U)}
+        P = db.item_get(U, S["P"])
+        assert [ln["target_id"] for ln in P["links"]] == [S["c2"]] and {t["target_id"] for t in P["targets"]} == {S["c2"]}, P["links"]
+        assert P["promotion"]["linked_claims"] == 1 and P["promotion"]["confirmed_claims"] == 1, P["promotion"]
+        h = db.me_home(U)["counts"]
+        assert (h["claims"], h["people"], h["reflections"]) == (home0["claims"] - 1, home0["people"] - 1, home0["reflections"] - 1), (h, home0)
+        k = db.me_stats(U)["kinds"]
+        assert k["records"] == 1 and k["people"] == 1, k
+        assert db.source_get(U, S["s"])["counts"]["summaries"] == 0
+        with db.tx() as c:
+            assert db._resolve_target(c, U, "record", S["r1"]) is None and db._resolve_target(c, U, "candidate", S["c1"]) is None
+            assert db._resolve_target(c, U, "person", S["p_plain"]) is None
+        # 직접 쓰기 = IN-TRASH(데이터 불변)
+        expect("IN-TRASH", db.record_attach, U, S["r1"], use_at="x")
+        expect("IN-TRASH", db.candidates_propose, U, S["r1"], "", [{"text": "t", "quote": "나머지 글"}], "ai")
+        expect("IN-TRASH", db.record_provenance_set, U, S["r1"], "unknown", "unknown", "사유")
+        crev = _trash_row("candidates", S["c1"])["revision"]
+        expect("IN-TRASH", db.candidate_decide, U, S["c1"], "exclude")
+        assert _trash_row("candidates", S["c1"])["revision"] == crev
+        expect("IN-TRASH", db.person_save, U, "새 별칭", S["p_plain"], rp)
+        expect("IN-TRASH", db.source_reflection_save, U, S["s"], "summary", "고침", S["refl"], 0)
+        expect("IN-TRASH", db.source_reflection_review, U, S["refl"], 0, True)
+        expect("LINK-INVALID", db.item_propose, U, S["PR"], 1, None, 0, "P-2", "새 기준", "", {},
+               [{"field_key": "evidence_claims", "target_kind": "candidate", "target_id": S["c1"]}])
+        # ── 휴지통 목록·상세(본인만, 본문은 상세만) ──
+        L = db.trash_list(U)
+        got = {(x["kind"], x["id"]) for x in L["items"]}
+        assert got == {("record", S["r1"]), ("person", S["p_plain"]), ("reflection", S["refl"])} and L["hours"] == 168, got
+        assert "TRASHMK-B1" not in json.dumps(L, ensure_ascii=False), "목록엔 본문 없음"
+        assert db.trash_list(O)["items"] == [] and db.trash_list(U, "person")["items"][0]["title"] == "TRASHMK-사람 별칭"
+        one = db.trash_list(U, limit=1)
+        two = db.trash_list(U, cursor=one["next_cursor"], limit=5)
+        assert len(one["items"]) == 1 and one["next_cursor"] and len(two["items"]) == 2 and not two["next_cursor"]
+        g = db.trash_get(U, "record", S["r1"])
+        assert "TRASHMK-B1" in g["target"]["body"] and g["purge_at"] == m["purge_at"]
+        expect("NOT-FOUND", db.trash_get, U, "record", S["r2"])   # 휴지통 아님
+        # ── 168h 경계(서버 시각 주입): 기한 미만만 복원 ──
+        pa = _trash_row("records", S["r1"])["purge_at"]
+        with _trash_clock(pa):
+            expect("TRASH-EXPIRED", db.trash_restore, U, "record", S["r1"])
+            expect("TRASH-EXPIRED", db.trash_get, U, "record", S["r1"])
+            assert ("record", S["r1"]) not in {(x["kind"], x["id"]) for x in db.trash_list(U)["items"]}, "기한 = 목록에서 빠짐"
+            assert not db.trash_move(U, "record", S["r1"])["restorable"]
+        with _trash_clock(pa - db._dt.timedelta(milliseconds=1)):
+            assert db.trash_restore(U, "record", S["r1"])["restored"]
+        # ── 복원: 같은 ID·관계 다시 보임·결정 그대로 · last_trashed_at 남음(그 전 작업 무효 판정용) ──
+        r = _trash_row("records", S["r1"])
+        assert r["trashed_at"] is None and r["purge_at"] is None and r["last_trashed_at"] is not None
+        assert db.record_get(U, S["r1"])["id"] == S["r1"] and db.candidate_get(U, S["c1"])["status"] == "confirmed"
+        assert {ln["target_id"] for ln in db.item_get(U, S["P"])["links"]} == {S["c1"], S["c2"]}, "상대가 살아나면 관계 다시 보임"
+        expect("NOT-IN-TRASH", db.trash_restore, U, "record", S["r1"])
+        expect("NOT-IN-TRASH", db.trash_purge, U, "record", S["r1"])
+        # ── 재삭제 = 새 168h ──
+        m3 = db.trash_move(U, "record", S["r1"])
+        assert m3["changed"] and m3["purge_at"] > m["purge_at"]
+        # ── 관계 부활 방지: 휴지통 동안 P 의 관계를 바꾸면(c1 연결 제거) 복원해도 돌아오지 않는다 ──
+        P = db.item_get(U, S["P"])
+        ip = db.item_propose(U, S["PR"], 1, S["P"], P["revision"], None, P["title"], P["body"], {},
+                             [{"field_key": "evidence_claims", "target_kind": "candidate", "target_id": S["c2"]}])
+        db.item_decide(U, S["P"], P["revision"], ip["proposal_id"], "apply")
+        db.trash_restore(U, "record", S["r1"])
+        assert [ln["target_id"] for ln in db.item_get(U, S["P"])["links"]] == [S["c2"]], "그사이 지운 관계는 되살리지 않는다"
+        # ── 수동 영구 삭제: 즉시 복원 불가 · 요청 ≠ 제거(행 남음) · 반복 = 같은 결과 ──
+        db.trash_move(U, "record", S["r1"])
+        pr = db.trash_purge(U, "record", S["r1"])
+        assert pr == {"kind": "record", "id": S["r1"], "purge_requested": True, "changed": True}
+        assert not db.trash_purge(U, "record", S["r1"])["changed"]
+        expect("TRASH-EXPIRED", db.trash_restore, U, "record", S["r1"])
+        assert _trash_row("records", S["r1"]) is not None, "물리 제거는 정리 회차"
+        expect("RECORD-MISSING", db.record_get, U, S["r1"])
+        # ── 복원 / 영구 삭제 경합: 하나만 바꾼다 ──
+        db.trash_restore(U, "person", S["p_plain"])
+        for _ in range(3):
+            db.trash_move(U, "person", S["p_plain"], rp)
+
+            def go(fn):
+                try:
+                    return fn(U, "person", S["p_plain"])["changed"]
+                except db.CrmError as e:
+                    return e.code
+            with concurrent.futures.ThreadPoolExecutor(2) as ex:
+                res = list(ex.map(go, (db.trash_restore, db.trash_purge)))
+            assert sorted(map(str, res)) in (["NOT-IN-TRASH", "True"], ["TRASH-EXPIRED", "True"]), res
+            p = _trash_row("people", S["p_plain"])
+            if p["trashed_at"] is not None:   # 영구 삭제가 이겼다 — 다음 반복을 위해 시험이 되돌린다
+                _sql("UPDATE people SET trashed_at=NULL, purge_at=NULL WHERE id=%s", (S["p_plain"],))
+        # ── 항목: revision 필수 · ACTION-RETIRED · 축 AXIS-IN-POLICY · 직접 쓰기 IN-TRASH ──
+        P = db.item_get(U, S["P"])
+        hist = len(P["history"])
+        for act in ("exclude", "pending"):
+            expect("ACTION-RETIRED", db.item_decide, U, S["P"], P["revision"], None, act)
+        assert db.item_get(U, S["P"])["revision"] == P["revision"] and len(db.item_get(U, S["P"])["history"]) == hist, "데이터·revision 불변"
+        AX, (a0, a1) = _bi_axes(U)
+        d = imports.device_connect(U, "휴지통 시험 장치")["device"]
+        imports.device_policy_set(U, d["id"], {"actions": ["like"], "transform_versions": ["board-likes/1"], "axes": [a0]}, d["policy_revision"])
+        e = expect("AXIS-IN-POLICY", db.trash_move, U, "item", a0, 1)
+        assert "휴지통 시험 장치" in e.message and _trash_row("items", a0)["trashed_at"] is None
+        assert db.trash_move(U, "item", a1, 1)["changed"], "정책이 안 쓰는 축은 된다"
+        imports.device_revoke(U, d["id"])
+        assert db.trash_move(U, "item", a0, 1)["changed"], "연결 해제한 장치의 정책은 막지 않는다"
+        rev = db.item_get(U, S["P"])["revision"]
+        db.trash_move(U, "item", S["P"], rev)
+        expect("ARG-INVALID", db.item_get, U, S["P"])
+        expect("IN-TRASH", db.item_decide, U, S["P"], rev, None, "confirm")
+        assert S["P"] not in {x["id"] for x in db.items(U)} and "TRASHMK-P" not in json.dumps(db.state(U), ensure_ascii=False)
+        assert db.trash_list(U, "item")["items"][0]["object_label"] in ("기준", "축")
+        ipz = db.item_propose(U, S["PR"], 1, None, 0, None, "제안만", "", {}, [])
+        expect("ARG-INVALID", db.trash_move, U, "item", ipz["item_id"], 0)   # 적용 전 제안 = PR-2
+        db.trash_restore(U, "item", S["P"])
+        assert db.item_get(U, S["P"])["revision"] == rev
+        # ── 400MB 를 넘어도 이동·복원·영구 삭제 요청은 된다(쓰기 관문 면제) — 일반 쓰기는 QUOTA-GLOBAL ──
+        real = db._measure_db_size
+        db._measure_db_size = lambda: db.DB_QUOTA_BYTES + 1
+        db.quota_cache_reset()
+        try:
+            expect("QUOTA-GLOBAL", db.write_gate, "record_add", {"text": "x"}, U)
+            for op in ("trash_move", "trash_restore", "trash_purge"):
+                db.write_gate(op, {"kind": "record", "id": S["r2"]}, U, quota=op not in db.QUOTA_EXEMPT)
+        finally:
+            db._measure_db_size = real
+            db.quota_cache_reset()
+        # ── 한도 셈 유지: 휴지통 행도 오늘 기록 수에 든다 ──
+        with db.tx() as c:
+            n = c.execute(f"SELECT count(*) AS n FROM records WHERE user_id=%s AND COALESCE(received_at, created) >= {db._KST_TODAY}",
+                          (U,)).fetchone()["n"]
+        assert n == 2, n
+    print("OK — 30c 휴지통 상태 전이·일반 이용 차단(4종·후보 종속·관계·집계·state·직접 쓰기 IN-TRASH)·목록/상세·168h 경계·복원·관계 부활 방지"
+          "·재삭제·영구 삭제 요청·경합·ACTION-RETIRED·AXIS-IN-POLICY·400MB·한도")
+
+
+def test_trash_purge():
+    """30d — 물리 정리: 기한 + 하루 지난 것만(오늘 옮긴 것은 다음 날) · 참조 먼저(후보 관계·기록-사람 연결·접수 deleted) · 후보·이력 CASCADE
+    · 항목 이력 함께 · 사람 HMAC = 표식(별칭 NULL·일반 사람 아님)·HMAC 없음 = 행 삭제 · 생각 삭제 · 독립 대상 유지
+    · 실패 대상 건너뛰기·다음 회차 재시도 · 상한(수·시간) · 표식은 휴지통 목록에도 없음."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    with _trash_switch(True):
+        S = _trash_seed(U)
+        d = imports.device_connect(U, "정리 시험 장치")["device"]
+        ie = db.new_id("ie")
+        _sql("INSERT INTO import_entries (user_id,id,stream_id,original_id,source_revision,kind,request_sha256,projection_sha256,state,"
+             "is_current_applied,resolved_at,resolved_by,target_record_id,transform_version) VALUES "
+             "(%s,%s,%s,'o1','v1','self_text',%s,%s,'applied',true,now(),'user',%s,'self-text/1')",
+             (U, ie, d["id"], secrets.token_bytes(32), secrets.token_bytes(32), S["r1"]))
+        db.trash_move(U, "record", S["r1"])
+        db.trash_move(U, "person", S["p_plain"], 0)
+        db.trash_move(U, "person", S["p_h"], 0)
+        db.trash_move(U, "reflection", S["refl"], 0)
+        hrev = db.item_get(U, S["P"])["revision"]
+        # 오늘 옮김 + 영구 삭제 요청 = 아직 물리 제거 안 함(일일 한도 셈 보존)
+        db.trash_purge(U, "record", S["r1"])
+        out = db.trash_purge_due()
+        assert out["records"] == 0 and _trash_row("records", S["r1"]) is not None, out
+        for t, i in (("records", S["r1"]), ("people", S["p_plain"]), ("people", S["p_h"]), ("source_reflections", S["refl"])):
+            _trash_age(t, i)
+        # 실패 주입 — 기록 하나가 실패해도 나머지는 정리되고, 다음 회차에 그 기록도 된다
+        real = db._purge_fault
+
+        def fault(t, i):
+            if i == S["r1"]:
+                raise RuntimeError("주입")
+        db._purge_fault = fault
+        try:
+            out = db.trash_purge_due()
+        finally:
+            db._purge_fault = real
+        assert out["failed"] == 1 and out["records"] == 0 and out["people"] == 2 and out["source_reflections"] == 1, out
+        assert _trash_row("records", S["r1"]) is not None, "실패 = 완료 아님(행 남음)"
+        out = db.trash_purge_due()
+        assert out["records"] == 1 and out["failed"] == 0, out
+        assert _trash_row("records", S["r1"]) is None and _trash_row("candidates", S["c1"]) is None
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM candidate_history WHERE candidate_id=%s", (S["c1"],)).fetchone()["n"] == 0
+            assert c.execute("SELECT count(*) AS n FROM item_links WHERE target_candidate_id=%s", (S["c1"],)).fetchone()["n"] == 0
+            e = c.execute("SELECT state,target_record_id,is_current_applied,payload,deleted_target_id FROM import_entries WHERE id=%s",
+                          (ie,)).fetchone()
+            assert e == {"state": "deleted", "target_record_id": None, "is_current_applied": False, "payload": None,
+                         "deleted_target_id": S["r1"]}, e
+            assert c.execute("SELECT count(*) AS n FROM activity_links WHERE person_id=%s", (S["p_plain"],)).fetchone()["n"] == 0
+        assert _trash_row("records", S["r2"]) is not None and db.item_get(U, S["P"])["revision"] == hrev, "독립 대상·기준 revision 그대로"
+        assert [ln["target_id"] for ln in db.item_get(U, S["P"])["links"]] == [S["c2"]]
+        assert _trash_row("people", S["p_plain"]) is None, "HMAC 없는 사람 = 행 삭제"
+        mk = _trash_row("people", S["p_h"])
+        assert mk["alias"] is None and mk["purged_at"] is not None and mk["identity_hmac"] is not None and mk["trashed_at"] is not None, mk
+        assert S["p_h"] not in {p["id"] for p in db.people_all(U)} and db.trash_list(U, "person")["items"] == [], "표식 = 일반·휴지통 둘 다 아님"
+        expect("NOT-FOUND", db.trash_restore, U, "person", S["p_h"])
+        expect("NOT-FOUND", db.person_get, U, S["p_h"])
+        assert _trash_row("source_reflections", S["refl"]) is None
+        assert db.trash_purge_due() == {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "failed": 0, "left": False}, "표식은 다시 안 집는다"
+        # 항목 정리 — 이력·판 CASCADE, 들어오는 관계 먼저(기록 attach_to)
+        db.record_attach(U, S["r2"], attach_to=[{"target_kind": "item", "target_id": S["P"]}])
+        assert any(x["target_id"] == S["P"] for x in db.record_links(U, [S["r2"]]))
+        db.trash_move(U, "item", S["P"], hrev)
+        assert not any(x["target_id"] == S["P"] for x in db.record_links(U, [S["r2"]])), "휴지통 대상 관계 숨김"
+        _trash_age("items", S["P"])
+        assert db.trash_purge_due()["items"] == 1 and _trash_row("items", S["P"]) is None
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM item_history WHERE item_id=%s", (S["P"],)).fetchone()["n"] == 0
+            assert c.execute("SELECT count(*) AS n FROM item_links WHERE target_item_id=%s", (S["P"],)).fetchone()["n"] == 0
+        # 상한 — 대상 수 0·시간 0 이면 아무것도 안 하고 「남김」
+        r3 = db.record_add(U, "또 지울 글", "본문")["id"]
+        db.trash_move(U, "record", r3)
+        _trash_age("records", r3)
+        assert db.trash_purge_due(limit=0)["left"] and db.trash_purge_due(seconds=0)["left"] and _trash_row("records", r3) is not None
+        assert db.trash_purge_due()["records"] == 1
+    print("OK — 30d 물리 정리(하루 미룸·참조 먼저·접수 deleted·CASCADE·사람 표식/삭제·생각·독립 대상 유지·실패 건너뛰기·재시도·상한·표식 재집계 0)")
+
+
+async def test_trash_web_mcp():
+    """30e — 웹 /api/trash*(401·Origin 403·꺼짐 503·모양 400·목록·상세·이동·복원·영구 삭제·남의 것 404) · /api/state switches.trash
+    · 사람·생각 삭제 라우트 = 켜짐이면 휴지통(PERSON-IN-USE 없음) · MCP trash_*(꺼짐 SWITCH-OFF · 왕복) · item_decide exclude ACTION-RETIRED
+    · state_get 에 휴지통 본문 없음 · lifespan 이 휴지통 정리를 기다리지 않는다(_purger 첫 회차)."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    S = _trash_seed(U)
+    site = main.site
+    real = site.dev, site.dev_user
+    prev = os.environ.get("CRM_DEV_USER")
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            def who(email):
+                site.dev, site.dev_user = True, email
+
+            async def post(path, body, origin=True):
+                return await h.post(path, json=body, headers={"origin": PUBLIC} if origin else {})
+            who("tester@example.com")
+            with _trash_switch(False):
+                assert (await h.get("/api/state")).json()["switches"]["trash"] is False
+                assert (await h.get("/api/trash")).status_code == 503
+                r = await post("/api/trash/move", {"kind": "record", "id": S["r1"]})
+                assert r.status_code == 503 and r.json()["code"] == "SWITCH-OFF"
+                os.environ["CRM_DEV_USER"] = "tester@example.com"
+                async with Client(main.mcp) as c:
+                    assert _prb_err(await c.call_tool("trash_list", {})) == "SWITCH-OFF"
+                    assert _prb_err(await c.call_tool("trash_move", {"kind": "record", "target_id": S["r1"], "expected_revision": None})) == "SWITCH-OFF"
+            with _trash_switch(True):
+                assert (await h.get("/api/state")).json()["switches"]["trash"] is True
+                site.dev = False
+                assert (await h.get("/api/trash")).status_code == 401
+                who("tester@example.com")
+                assert (await post("/api/trash/move", {"kind": "record", "id": S["r1"]}, origin=False)).status_code == 403
+                assert (await post("/api/trash/move", {"kind": "record"})).status_code == 400
+                assert (await post("/api/trash/nope", {"kind": "record", "id": S["r1"]})).status_code == 404
+                r = await post("/api/trash/move", {"kind": "record", "id": S["r1"]})
+                assert r.status_code == 200 and r.json()["changed"] and r.headers["cache-control"] == "no-store", r.text
+                st = (await h.get("/api/state")).json()
+                assert "TRASHMK-T1" not in json.dumps(st, ensure_ascii=False) and "TRASHMK-C1" not in json.dumps(st, ensure_ascii=False)
+                L = (await h.get("/api/trash")).json()
+                assert [x["id"] for x in L["items"]] == [S["r1"]], L
+                g = await h.get(f"/api/trash/record/{S['r1']}")
+                assert g.status_code == 200 and "TRASHMK-B1" in g.json()["target"]["body"]
+                assert (await h.get(f"/api/journal?id={S['r1']}")).status_code == 404, "일반 상세 = 없음"
+                # 사람 삭제 라우트 — 켜짐 = 휴지통(연결 있어도)
+                r = await post(f"/api/people/{S['p_plain']}/delete", {"expected_revision": 0})
+                assert r.status_code == 200 and r.json()["trashed"] and r.json()["deleted"], r.text
+                r = await post(f"/api/reflections/{S['refl']}/delete", {"expected_revision": 0})
+                assert r.status_code == 200 and r.json()["trashed"]
+                assert _trash_row("source_reflections", S["refl"])["trashed_at"] is not None
+                # 남의 것 = 404
+                who("other@example.com")
+                assert (await h.get(f"/api/trash/record/{S['r1']}")).status_code == 404
+                assert (await post("/api/trash/restore", {"kind": "record", "id": S["r1"]})).status_code == 404
+                who("tester@example.com")
+                r = await post("/api/trash/restore", {"kind": "record", "id": S["r1"]})
+                assert r.status_code == 200 and r.json()["restored"]
+                r = await post("/api/trash/purge", {"kind": "person", "id": S["p_plain"]})
+                assert r.status_code == 200 and r.json()["purge_requested"]
+                r = await post("/api/trash/restore", {"kind": "person", "id": S["p_plain"]})
+                assert r.status_code == 400 and r.json()["code"] == "TRASH-EXPIRED"
+                rev = db.item_get(U, S["P"])["revision"]
+                r = await post("/api/item/decide", {"item_id": S["P"], "expected_revision": rev, "action": "exclude"})
+                assert r.status_code == 400 and r.json()["code"] == "ACTION-RETIRED"
+                # MCP 왕복
+                os.environ["CRM_DEV_USER"] = "tester@example.com"
+                async with Client(main.mcp) as c:
+                    m = val(await c.call_tool("trash_move", {"kind": "reflection", "target_id": S["refl"], "expected_revision": 0}))
+                    assert not m["changed"], "이미 휴지통 = 같은 결과"
+                    L = val(await c.call_tool("trash_list", {}))
+                    assert {(x["kind"], x["id"]) for x in L["items"]} == {("reflection", S["refl"])}, L
+                    assert val(await c.call_tool("trash_restore", {"kind": "reflection", "target_id": S["refl"], "expected_revision": 0}))["restored"]
+                    assert val(await c.call_tool("trash_move", {"kind": "record", "target_id": S["r1"], "expected_revision": None}))["changed"]
+                    st = val(await c.call_tool("state_get", {}))
+                    assert "TRASHMK-T1" not in json.dumps(st, ensure_ascii=False)
+                    assert _prb_err(await c.call_tool("record_get", {"record_id": S["r1"]})) == "RECORD-MISSING"
+                    res = await c.call_tool("item_decide", {"item_id": S["P"], "expected_revision": rev, "proposal_id": None, "action": "pending",
+                                                            "history_id": None})
+                    assert _prb_err(res) == "ACTION-RETIRED" and "trash_move" in res.content[0].text
+                    assert val(await c.call_tool("trash_purge", {"kind": "record", "target_id": S["r1"], "expected_revision": None}))["purge_requested"]
+                assert "trash_move" in main.INSTRUCTIONS and "168시간" in main.INSTRUCTIONS
+        # lifespan — 휴지통 정리를 기다리지 않는다(정리가 막혀도 서빙 시작)
+        import threading
+        gate = threading.Event()
+        sm = main.mcp.session_manager
+
+        @asynccontextmanager
+        async def fake_run():   # 세션 매니저 run() 은 인스턴스당 한 번
+            yield
+        calls = []
+
+        def slow(*a, **k):
+            calls.append("db")
+            gate.wait(5)
+            return {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "failed": 0, "left": False}
+        real_due, real_act = db.trash_purge_due, activity.trash_purge_due
+        db.trash_purge_due = slow
+        activity.trash_purge_due = lambda *a, **k: {"activities": 0, "failed": 0, "left": False}
+        sm.run = fake_run
+        try:
+            t0 = time.monotonic()
+            async with main.lifespan(main.app):
+                served = time.monotonic() - t0
+                for _ in range(50):
+                    if calls:
+                        break
+                    await asyncio.sleep(0.02)
+                assert calls == ["db"], "서빙 시작 뒤 _purger 첫 회차에서 정리"
+                gate.set()
+            assert served < 3, served
+        finally:
+            gate.set()
+            db.trash_purge_due, activity.trash_purge_due = real_due, real_act
+            del sm.run
+    finally:
+        site.dev, site.dev_user = real
+        if prev is None:
+            os.environ.pop("CRM_DEV_USER", None)
+        else:
+            os.environ["CRM_DEV_USER"] = prev
+    print("OK — 30e 웹 /api/trash*·state 스위치·사람/생각 삭제 라우트·MCP trash_*·ACTION-RETIRED·state_get 차단·lifespan 비대기")
+
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────
 

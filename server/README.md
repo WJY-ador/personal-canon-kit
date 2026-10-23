@@ -235,6 +235,19 @@ DATABASE_URL=… .venv/bin/python migrate_cli.py close  <명세.json> --user <ui
 - **시험**: `test_tools.py` 29절(3값·기준 ±2초 경계·쓰기 간격 60초(안 = 행 xmin 불변)·등록≠최근·서버 시각·작업 요청·여러 장치 최댓값·유효 임대(만료 뒤 offline·남 임대 영향 0)·인증 실패 0·남 장치 0·기준 상수 묶음·/app 전용·출력에 토큰 비밀값 0).
 - **되돌림**: 필드는 추가만 — 남겨도 옛 화면이 동작한다. 장치 요청의 시각 기록을 빼려면 `web._device` 의 `db.device_seen` 한 줄.
 
+## 운영 — 휴지통 (PR-1)
+
+[삭제] = 휴지통 이동, 168시간(서버 시각) 안 [복원]·[영구 삭제]. 대상 5종 = 내 글(`records`) · 항목(`items`, 적용된 것 — 기준·결정·축·커스텀) · 사람(`people`) · 읽고 든 생각(`source_reflections`) · 활동(`activities`, 원천 전체 판). 후보는 독립 대상이 아니다(부모 글을 따라 숨고 정리된다). 승인 대기·제안·확정 전 정리 텍스트는 PR-2.
+
+- **저장**: 5종 공통 열 `trashed_at`(NULL = 일반 이용) · `purge_at`(복원 기한 = 이동 + 168h, 수동 영구 삭제 = 요청 시각) · `last_trashed_at`(마지막 이동, 복원해도 남는다 — 그 전에 시작한 작업은 그 대상을 쓰지 못한다). 업무 상태(`decision`·`archived_at`·`review`)·`deleted_at` 과 별개. 행 보존이라 일일 한도는 휴지통 행도 센다. 새 사용자 표 없음.
+- **일반 이용 차단**(스위치 무관): 조회마다 `trashed_at IS NULL`(목록·상세·직접 ID·관계·집계·「나」·`state`·MCP). 관계는 행을 그대로 두고 상대가 휴지통이면 같은 쿼리의 JOIN 으로 숨긴다(`db._links_by_item` 의 `hidden`, `record_links`) — 상대를 복원하면 다시 보이고, 그사이 지운 관계는 돌아오지 않는다. 살아 있는 항목의 필드를 다시 쓰면(제안 적용·편집) 그 필드의 숨은 관계(휴지통 상대)도 함께 지워지고, 상대를 복원해도 돌아오지 않는다 — 수정은 보이는 상태 기준. 휴지통 대상에 일반 쓰기 = `IN-TRASH`. 본문은 휴지통 상세(`trash_get`)에서만. 쿼리 수는 그대로(같은 쿼리의 WHERE·JOIN).
+- **기한**: 복원·휴지통 열람 = `purge_at > 지금`(미만 엄격, 지나면 `TRASH-EXPIRED` 「복원 기간이 끝났어요.」). 중복 삭제 = 기존 결과(연장 0) · 복원 뒤 재삭제 = 새 168h. 수동 [영구 삭제] = `purge_at := 지금` — 즉시 복원 불가, 본문 제거는 정리 회차(요청 ≠ 제거 완료).
+- **물리 정리**(`main.trash_purge_round` → `activity.trash_purge_due` → `db.trash_purge_due`): `_purger` 태스크의 첫 회차(서빙 시작 뒤 — lifespan 이 기다리지 않는다)부터 매 회차(24h). 대상 = `purge_at <= 지금` 이고 **KST 오늘 전에 옮긴 것**(오늘 옮긴 행은 다음 날 — 일일 한도 셈 보존). 대상마다 트랜잭션 하나 + `statement_timeout 5s`, 회차 상한 200건·20초, 실패 대상은 건너뛰고 다음 회차. 참조(NO ACTION) 먼저: 후보를 가리키는 `item_links` · `activity_links` · 수신 기록은 `import_entries.state='deleted'`(target NULL, 표식) → 행 DELETE(후보·이력·판·stage 는 CASCADE). 수신 기록 표식엔 지우기 직전 대상 ID(`import_entries.deleted_target_id`, FK 없음)를 남긴다 — 「내가 지운 대상」과 「없는 ID」 구별. 영구 삭제 뒤에도 판 기록(`item_versions.links`)에 대상 ID 가 남을 수 있다 — 본문은 남지 않는다. 사람: HMAC 있는 사람 = 별칭 NULL + `purged_at` 표식(같은 HMAC 재전송이 새 사람을 만들지 않게, 일반·휴지통 어디에도 안 나온다), HMAC 없는 사람 = 행 삭제. `_job_sweep` 에는 넣지 않는다. 부분 인덱스 `ix_<t>_purge (purge_at)`·`ix_<t>_trash (user_id, trashed_at DESC)` WHERE 휴지통.
+- **축 보호**: 연결 해제 안 된 장치의 허용 규칙(`import_streams.policy.axes`)이 쓰는 축은 이동 거절 `AXIS-IN-POLICY`(장치 이름 안내). 이동·허용 규칙 저장 둘 다 사용자 행 잠금을 먼저 잡아 경합하지 않는다.
+- **진입**(스위치 `CRM_TRASH_ENABLED`, 기본 꺼짐 — 꺼짐 = `SWITCH-OFF`, 기존 동작 그대로): 웹 `GET /api/trash?kind=&cursor=&limit=` · `GET /api/trash/{kind}/{id}` · `POST /api/trash/{move|restore|purge} {kind, id, expected_revision?}`(item·person·reflection 은 이동 때 revision 필수 · 503 SWITCH-OFF · 404 NOT-FOUND · 400 그 밖). MCP `trash_list`(읽기) · `trash_move`·`trash_restore`·`trash_purge`(쓰기, 전역 400MB 관문 면제 — 넘어도 삭제된다). `/api/state` 에 `switches.trash`. 켜짐이면 `item_decide` 의 `exclude`·`pending` = `ACTION-RETIRED`(데이터·revision 불변, `trash_move` 안내) · 사람·생각 삭제(`person_delete`·`source_reflection_delete`, 웹 같은 경로) = 휴지통 이동(연결 있어도 — `PERSON-IN-USE` 없음).
+- **시험**: `test_tools.py` 30절(스키마·옛 DB 이전 · 스위치 꺼짐 회귀 · 4종 이동·차단 전 경로·직접 쓰기·목록/상세·168h 경계(`db.TRASH_CLOCK` 주입)·복원·관계 부활 방지·영구 삭제 요청·경합·ACTION-RETIRED·AXIS-IN-POLICY·400MB · 물리 정리(하루 미룸·참조 순서·실패 건너뛰기·상한·표식) · 웹·MCP·lifespan 비대기). 활동 원천·수신 차단은 `test_trash_flow.py`. 개발 중 한 절만: `CRM_TEST_ONLY=test_trash_core`.
+- **되돌림**: 스위치를 끄면 새 진입만 멈춘다 — 일반 이용 차단·물리 정리는 계속(휴지통 행이 있으면 지킨다). 열은 추가만이라 남겨도 된다. 휴지통을 쓴 뒤엔 휴지통을 모르는 옛 서버로 되돌리지 않는다(휴지통 행이 다시 보인다).
+
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을
   **MCP 와 같은 `AuthKitVerifier`·`user_id_for`** 로 검증·연결한다 → 웹 사용자 = MCP 사용자(같은 sub).

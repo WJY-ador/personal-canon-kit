@@ -2,6 +2,10 @@
 
 - events: 수집 이벤트(어댑터, 중복 기준) ↔ 불투명 original_id · raw_id · 원문 상대 경로
 - revisions: 개정 사슬과 전송 상태. 요청 바이트는 pending/<멱등키>.json 에 원자적으로 둔다.
+  서버가 「삭제됨」으로 답한 개정 = status 'accepted' + server_state 'deleted'(휴지통) | 'purged'(영구 삭제 표식),
+  updated_at = 그 응답을 받은 시각
+  (같은 개정은 다시 보내지 않는다. 내용이 바뀐 새 개정은 이 판 뒤로 보낸다 — 서버가 복원했으면 받는다.
+  스키마 그대로라 이전 판 프로그램도 같은 DB 를 연다)
 - people: 키 공간 · 제공자 · 계정 식별자 ↔ HMAC (PC 전용 매핑)
 - quarantine: 판별 불가 중복·형식 오류. 원문·식별자는 넣지 않고 다이제스트만.
 - halts: 사용자 조치 전까지 멈춘 범위(인증·요약 로그인 등)
@@ -90,6 +94,9 @@ CREATE TABLE IF NOT EXISTS summary_done (
 """
 
 OPEN_STATUSES = ("pending", "halted")
+SERVER_DELETED = "deleted"   # revisions.server_state — 서버가 그 개정을 휴지통에 있는 원본이라 받지 않았다
+SERVER_PURGED = "purged"     # revisions.server_state — 서버가 그 개정을 영구 삭제된 원본(표식)이라 받지 않았다
+DELETED_STATES = (SERVER_DELETED, SERVER_PURGED)
 
 
 def _now() -> str:
@@ -205,6 +212,11 @@ class Store:
         return self.conn.execute(
             "SELECT * FROM revisions WHERE original_id=? AND status='accepted' ORDER BY seq DESC LIMIT 1",
             (original_id,)).fetchone()
+
+    def deleted_response(self, original_id: str):
+        """마지막 접수 응답이 「삭제됨」이면 그 개정 행(server_state·updated_at), 아니면 None. 다음 개정이 접수되면 None."""
+        r = self.latest_accepted(original_id)
+        return r if r is not None and r["server_state"] in DELETED_STATES else None
 
     def has_open_revision(self, original_id: str) -> bool:
         r = self.conn.execute(
@@ -364,6 +376,14 @@ class Store:
         out = {s: 0 for s in ("pending", "accepted", "rejected", "conflict", "halted")}
         for s, n in self.conn.execute("SELECT status, COUNT(*) FROM revisions GROUP BY status"):
             out[s] = n
+        # 삭제 응답을 받은 개정은 접수(accepted)에서 뺀다. 삭제됨 = 마지막 접수 응답이 「삭제됨」인 원본 수
+        # (서버에서 복원한 뒤 다음 개정이 접수되면 풀린다)
+        out["accepted"] -= self.conn.execute(
+            "SELECT COUNT(*) FROM revisions WHERE status='accepted' AND server_state IN (?,?)", DELETED_STATES).fetchone()[0]
+        out["deleted"] = self.conn.execute(
+            "SELECT COUNT(*) FROM revisions r WHERE r.status='accepted' AND r.server_state IN (?,?) AND NOT EXISTS"
+            " (SELECT 1 FROM revisions n WHERE n.original_id=r.original_id AND n.status='accepted' AND n.seq>r.seq)",
+            DELETED_STATES).fetchone()[0]
         out["events"] = self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         out["quarantined"] = self.conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
         out["people"] = self.conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]

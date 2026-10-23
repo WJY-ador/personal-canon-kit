@@ -2,6 +2,7 @@
 · 로그인 오류 멈춤 · 모델에 토큰·키·매핑 미전달 · 기본 꺼짐."""
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import os
 import subprocess
@@ -82,6 +83,49 @@ class SummaryTest(unittest.TestCase):
         # 다시 돌려도 같은 입력은 다시 요약하지 않는다
         r = self.go(cli)
         self.assertEqual(r["attempted"], 0)
+
+    def _summary_deleted(self, cli, state):
+        # 요약 1건을 보내고, 서버가 그 개정을 「삭제됨」(state) 으로 답한 것처럼 기록. 반환 (개정 행, 응답 시각)
+        self.write("d.md", "합성 기록 원본")
+        self.assertEqual(self.go(cli)["staged"], 1)
+        (rev,) = self.st.conn.execute("SELECT * FROM revisions").fetchall()
+        self.st.mark(rev["idempotency_key"], "accepted", result={"state": state})
+        at = _dt.datetime.fromisoformat(self.st.conn.execute(
+            "SELECT updated_at FROM revisions WHERE seq=?", (rev["seq"],)).fetchone()[0])
+        self.write("d.md", "합성 기록 원본 — 고침")
+        return rev, at
+
+    def test_trashed_summary_original_waits_168h_then_retries_once(self):
+        cli = MockCLI()
+        rev, at = self._summary_deleted(cli, _store.SERVER_DELETED)
+        # 168시간 전: 입력이 바뀌어도 모델을 돌리지 않는다(시도·실패 0, 기록 없음)
+        r = summary.summarize(self.st, _config.load(self.th.paths), paths=self.th.paths, exec_runner=cli,
+                              now=lambda: at + summary.TRASH_RETRY - _dt.timedelta(seconds=1))
+        self.assertEqual((r["attempted"], r["staged"], r["failed"], r["deleted"]), (0, 0, 0, 1))
+        self.assertEqual(len(cli.calls), 1)
+        self.assertEqual(self.st.conn.execute("SELECT COUNT(*) FROM summary_done").fetchone()[0], 1)
+        # 168시간 경계: 1회 다시 요약해 보낸다 — 이전 판 = 삭제 응답을 받은 판
+        r = summary.summarize(self.st, _config.load(self.th.paths), paths=self.th.paths, exec_runner=cli,
+                              now=lambda: at + summary.TRASH_RETRY)
+        self.assertEqual((r["attempted"], r["staged"], r["deleted"]), (1, 1, 0))
+        self.assertEqual(len(cli.calls), 2)
+        (new,) = self.st.conn.execute("SELECT * FROM revisions WHERE status='pending'").fetchall()
+        self.assertEqual(new["previous_revision"], rev["revision"])
+        # 그새 영구 삭제됐으면 purged 로 바뀌고, 이후엔 입력이 바뀌어도 시간과 상관없이 건너뜀
+        self.st.mark(new["idempotency_key"], "accepted", result={"state": _store.SERVER_PURGED})
+        self.write("d.md", "합성 기록 원본 — 또 고침")
+        r = summary.summarize(self.st, _config.load(self.th.paths), paths=self.th.paths, exec_runner=cli,
+                              now=lambda: at + 10 * summary.TRASH_RETRY)
+        self.assertEqual((r["attempted"], r["deleted"]), (0, 1))
+        self.assertEqual(len(cli.calls), 2)
+
+    def test_purged_summary_original_never_retries(self):
+        cli = MockCLI()
+        _rev, at = self._summary_deleted(cli, _store.SERVER_PURGED)
+        r = summary.summarize(self.st, _config.load(self.th.paths), paths=self.th.paths, exec_runner=cli,
+                              now=lambda: at + 10 * summary.TRASH_RETRY)
+        self.assertEqual((r["attempted"], r["staged"], r["failed"], r["deleted"]), (0, 0, 0, 1))
+        self.assertEqual(len(cli.calls), 1)
 
     def test_execution_follows_run_kind(self):
         # 사람이 돌린 run-once = attended, 예약 = unattended, 호출자 불명(키 없음) = unattended

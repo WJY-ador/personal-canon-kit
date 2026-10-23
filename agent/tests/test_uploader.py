@@ -8,7 +8,7 @@ import unittest
 
 from agent import contract, osutil, runner, store as _store
 from agent.tests.helpers import (STREAM_ID, TOKEN, FakeImportServer, TempHome, connected_config,
-                                 keystore_with_secrets, synth_row, write_jsonl)
+                                 keystore_with_secrets, run_cli, synth_row, write_jsonl)
 from agent.uploader import Uploader, next_kst_midnight
 
 
@@ -183,6 +183,148 @@ class UploadFlowTest(unittest.TestCase):
         self.srv.script = [(400, {"code": "CONTRACT-INVALID"})]
         res = self.go()
         self.assertEqual(res["upload"]["rejected"], 1)
+
+    # ---- 서버에서 삭제(휴지통·영구 삭제)한 원본: 200 + state=deleted ----
+    # 서버 꼴: 기존 접수 응답 키 + source_deleted(trash|purged). target 은 항상 null, import_id 는 null 일 수 있다
+    DELETED = (200, {"import_id": None, "state": "deleted", "target_kind": None, "target_id": None, "duplicate": False,
+                     "received_at": None, "expires_at": None, "source_deleted": "trash"})
+
+    def _deleted_rows(self, st):
+        return st.conn.execute("SELECT * FROM revisions WHERE server_state IN ('deleted','purged')").fetchall()
+
+    def test_deleted_response_mixed_batch(self):
+        # 첫 전송만 삭제됨 — 그 전송은 끝나고, 같은 실행의 다른 전송은 계속 접수된다
+        self.srv.script = [self.DELETED]
+        res = self.go()
+        up = res["upload"]
+        self.assertEqual((up["deleted"], up["accepted"], up["duplicate"], up["stopped"]), (1, 2, 0, None))
+        self.assertEqual((up["rejected"], up["conflict"], up["halted"]), (0, 0, 0))
+        self.assertEqual(os.listdir(self.th.paths.pending), [])
+        st = self.store()
+        c = st.counts()
+        rows = self._deleted_rows(st)
+        st.close()
+        self.assertEqual((c["accepted"], c["deleted"], c["pending"], c["halted"], c["quarantined"]), (2, 1, 0, 0, 0))
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(r["status"], "accepted")
+        self.assertIsNone(r["import_id"])
+        self.assertIsNone(r["target_id"])          # 삭제 대상을 활성 ID 로 쓰지 않는다
+        self.assertIsNone(r["last_error"])
+        self.assertIsNone(r["next_attempt_at"])
+        code, out = run_cli(["--home", self.th.home, "status"], ks_factory=lambda service: self.ks,
+                            launch_agents_dir=os.path.join(self.th.root, "LaunchAgents"))
+        self.assertEqual(code, 0, out)
+        self.assertIn("접수 2", out)
+        self.assertIn("삭제됨 1", out)                # 수만 — 본문·식별자 없음
+        self.assertNotIn("SYNPOST", out)
+
+    def _change(self, oid):
+        # 원본 내용이 바뀐 것처럼 — 마지막 판의 지문만 바꾼다(다음 수집이 새 개정을 만든다)
+        st = self.store()
+        st.conn.execute("UPDATE revisions SET projection_sha='changed' WHERE original_id=?", (oid,))
+        st.close()
+
+    def _revs(self, oid):
+        st = self.store()
+        rows = st.conn.execute("SELECT * FROM revisions WHERE original_id=? ORDER BY seq", (oid,)).fetchall()
+        c = st.counts()
+        st.close()
+        return rows, c
+
+    def test_deleted_same_revision_never_resent(self):
+        self.srv.script = [self.DELETED]
+        self.go()
+        n = len(self.srv.requests)
+        st = self.store()
+        oid = self._deleted_rows(st)[0]["original_id"]
+        raw_id = st.conn.execute("SELECT raw_id FROM events WHERE original_id=?", (oid,)).fetchone()[0]
+        st.close()
+        res = self.go()                                   # 같은 내용 = 다시 보내지 않는다
+        self.assertEqual((res["upload"]["sent"], res["collect"]["staged"], len(self.srv.requests)), (0, 0, n))
+        st = self.store()
+        self.assertTrue(os.path.isfile(st.resolve_raw_path(raw_id)))   # PC 원문은 지우지 않는다
+        st.close()
+        rows, c = self._revs(oid)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((c["deleted"], c["pending"], c["halted"], c["rejected"]), (1, 0, 0, 0))
+
+    def test_deleted_then_changed_still_deleted_then_restored(self):
+        self.srv.script = [self.DELETED]
+        self.go()
+        st = self.store()
+        oid = self._deleted_rows(st)[0]["original_id"]
+        st.close()
+        # 휴지통에 있는 동안 내용이 바뀜 → 새 개정을 보낸다. 이전 판 = 삭제 응답을 받은 판(서버가 그 판을 기록한다)
+        self._change(oid)
+        self.srv.script = [self.DELETED]
+        res = self.go()
+        self.assertEqual((res["collect"]["staged"], res["upload"]["deleted"], res["upload"]["stopped"]), (1, 1, None))
+        rows, c = self._revs(oid)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[1]["previous_revision"], rows[0]["revision"])
+        self.assertEqual([r["server_state"] for r in rows], ["deleted", "deleted"])
+        self.assertEqual((c["deleted"], c["halted"], c["quarantined"]), (1, 0, 0))   # 원본 수 — 개정 수 아님
+        sent = json.loads(self.srv.requests[-1][1])
+        self.assertEqual(sent["previous_revision"], rows[0]["revision"])
+        # 서버에서 복원 → 다음 변경은 정상 접수, 「삭제됨」 이 풀린다
+        self._change(oid)
+        res = self.go()
+        self.assertEqual((res["collect"]["staged"], res["upload"]["accepted"], res["upload"]["deleted"]), (1, 1, 0))
+        rows, c = self._revs(oid)
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[2]["previous_revision"], rows[1]["revision"])
+        self.assertEqual(rows[2]["server_state"], "applied")
+        self.assertEqual((c["deleted"], c["accepted"]), (0, 3))
+
+    def test_old_server_responses_unchanged(self):
+        # 삭제 상태가 없는 이전 서버 응답(applied·noop·pending, duplicate) — 기존 동작 그대로
+        self.srv.script = [(200, {"import_id": "imp_1", "state": "noop", "target_kind": "activity",
+                                  "target_id": "a_1", "duplicate": True}),
+                           (201, {"import_id": "imp_2", "state": "pending", "target_kind": None,
+                                  "target_id": None, "duplicate": False})]
+        res = self.go()
+        up = res["upload"]
+        self.assertEqual((up["accepted"], up["duplicate"], up["deleted"]), (3, 1, 0))
+        st = self.store()
+        c = st.counts()
+        states = sorted(r[0] or "" for r in st.conn.execute("SELECT server_state FROM revisions"))
+        noop = st.conn.execute("SELECT * FROM revisions WHERE server_state='noop'").fetchone()
+        st.close()
+        self.assertEqual((c["accepted"], c["deleted"]), (3, 0))
+        self.assertNotIn("deleted", states)
+        self.assertIn("noop", states)
+        self.assertIn("pending", states)
+        self.assertEqual((noop["import_id"], noop["target_id"]), ("imp_1", "a_1"))
+
+    def test_deleted_duplicate_and_purged(self):
+        # 같은 개정 재전송(duplicate=true, 대응표 id 있음)·영구 삭제 표식(purged) — 둘 다 삭제됨, duplicate 로 세지 않는다
+        self.srv.script = [(200, {"import_id": "imp_1", "state": "deleted", "target_kind": None, "target_id": None,
+                                  "duplicate": True, "received_at": None, "expires_at": None, "source_deleted": "trash"}),
+                           (200, {"import_id": None, "state": "deleted", "target_kind": None, "target_id": None,
+                                  "duplicate": False, "received_at": None, "expires_at": None, "source_deleted": "purged"})]
+        res = self.go()
+        up = res["upload"]
+        self.assertEqual((up["deleted"], up["accepted"], up["duplicate"]), (2, 1, 0))
+        st = self.store()
+        rows = self._deleted_rows(st)
+        c = st.counts()
+        st.close()
+        self.assertEqual(sorted((r["import_id"], r["target_id"]) for r in rows), [(None, None), (None, None)])
+        self.assertEqual(sorted(r["server_state"] for r in rows), ["deleted", "purged"])   # 휴지통 · 영구 삭제 표식
+        self.assertEqual((c["accepted"], c["deleted"]), (1, 2))
+
+    def test_deleted_state_on_success_only(self):
+        # 새 4xx 없음 — 삭제 상태는 성공 응답에서만 읽는다(201 이어도 같게). 오류 응답에 state 가 있어도 기존 분기
+        self.srv.script = [(201, {"import_id": "imp_1", "state": "deleted"}),
+                           (400, {"code": "CONTRACT-INVALID", "state": "deleted"})]
+        res = self.go()
+        up = res["upload"]
+        self.assertEqual((up["deleted"], up["accepted"], up["rejected"]), (1, 1, 1))
+        st = self.store()
+        rows = self._deleted_rows(st)
+        st.close()
+        self.assertEqual([r["import_id"] for r in rows], [None])
 
     def test_request_body_never_logged_in_errors(self):
         self.srv.script = [(500, {"code": "X"})]

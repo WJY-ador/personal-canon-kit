@@ -2,6 +2,10 @@
 
 - 항상 저장해 둔 바이트와 멱등 키를 그대로 다시 보낸다(요청을 다시 만들지 않는다, 모델 재실행 없음).
 - 200/201            → accepted(대기 파일 삭제)
+- 200 + 삭제 상태(201 이어도 같게) → accepted + server_state 'deleted'(휴지통) | 'purged'(source_deleted=purged,
+  영구 삭제 표식). 그 개정은
+  재시도·재전송 없음. 내용이 바뀐 새 개정은 이 판 뒤로 보낸다(서버가 복원했으면 받는다). 서버 ID 는 저장하지 않는다.
+  이전 서버(삭제 상태 없음)는 위 줄 그대로
 - 409 IDEMPOTENCY-CONFLICT·KIND-CHANGED → conflict + 격리(같은 키에 다른 본문 / 원본 종류 변경)
 - 409 SOURCE-REVISION-CONFLICT·기타 409 → halted(그 원본만 멈춤, 사용자 확인 필요)
 - 400/413/415/422 · 403 POLICY-DENIED → rejected + 격리(계약·장치 정책 불일치)
@@ -21,6 +25,7 @@ import urllib.error
 import urllib.request
 
 from . import osutil
+from . import store as _store
 
 IMPORTS_PATH = "/api/imports"
 DEVICE_PATH = "/api/imports/device"
@@ -33,6 +38,7 @@ CONFLICT_CODES = ("IDEMPOTENCY-CONFLICT", "KIND-CHANGED")
 UPLOAD_HALT_SCOPES = ("auth", "config", "account", "policy", "forbidden")
 REJECT_STATUSES = (400, 413, 415, 422)
 MAX_RESPONSE_BYTES = 64 * 1024
+DELETED_STATE = "deleted"   # 서버 200 응답의 state — 그 원본이 휴지통·영구 삭제 상태라 이 개정을 받지 않았다
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -136,7 +142,7 @@ class Uploader:
         return self._device_call("POST", DEVICE_REVOKE_PATH)
 
     def run(self, store, *, max_n: int = 100, min_interval: float = 0.0) -> dict:
-        out = {"sent": 0, "accepted": 0, "duplicate": 0, "conflict": 0, "halted": 0, "rejected": 0,
+        out = {"sent": 0, "accepted": 0, "duplicate": 0, "deleted": 0, "conflict": 0, "halted": 0, "rejected": 0,
                "deferred": 0, "stopped": None}
         for scope in UPLOAD_HALT_SCOPES:
             if store.halted(scope):
@@ -172,7 +178,12 @@ class Uploader:
                 out["stopped"] = "network"
                 break
             code = payload.get("code") if isinstance(payload.get("code"), str) else ""
-            if status in (200, 201):
+            if status in (200, 201) and payload.get("state") == DELETED_STATE:
+                # 삭제된 원본 — 끝난 전송으로 두고 이번 실행의 다른 전송은 계속. 서버 ID 는 활성 대상이 아니라 남기지 않는다
+                purged = payload.get("source_deleted") == "purged"
+                store.mark(key, "accepted", result={"state": _store.SERVER_PURGED if purged else _store.SERVER_DELETED})
+                out["deleted"] += 1
+            elif status in (200, 201):
                 store.mark(key, "accepted", result=payload)
                 out["accepted"] += 1
                 if status == 200 or payload.get("duplicate") is True:

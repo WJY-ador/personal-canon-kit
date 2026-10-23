@@ -74,6 +74,7 @@ def _stage(st, cfg, original_id, kind, transform_version, execution, fields, cou
     if st.has_open_revision(original_id):
         counts["waiting"] += 1
         return
+    # 이전 판 = 마지막으로 서버에 보낸 판. 「삭제됨」 응답을 받은 판도 accepted 라 여기 잡힌다(서버가 그 판을 기록한다)
     accepted = st.latest_accepted(original_id)
     prev = accepted["revision"] if accepted is not None else None
     if accepted is not None and accepted["projection_sha"] == proj:

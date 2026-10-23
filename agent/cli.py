@@ -279,7 +279,7 @@ def cmd_status(ctx: Ctx, a) -> int:
         try:
             c = st.counts()
             ctx.say(f"이벤트 {c['events']} · 대기 {c['pending']} · 접수 {c['accepted']} · 멈춤 {c['halted']} · "
-                    f"충돌 {c['conflict']} · 거절 {c['rejected']} · 격리 {c['quarantined']} · 사람 {c['people']}")
+                    f"충돌 {c['conflict']} · 거절 {c['rejected']} · 삭제됨 {c['deleted']} · 격리 {c['quarantined']} · 사람 {c['people']}")
             ctx.say(f"오늘 요약 시도: {st.summary_attempts_today(osutil.kst_today())}")
             if c["halts"]:
                 ctx.say("멈춤 범위: " + ", ".join(c["halts"]))

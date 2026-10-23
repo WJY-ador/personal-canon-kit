@@ -11,6 +11,8 @@ B. app.html 정적 — 「나」 상세(PR①: 빈 상태 문구·옛 링크 #_m
 C. app.html 정적 — 대화 서랍(PR ②-b B5: 스위치 · 버튼 3 · 기본 포함 · 자동 확정 0 · 쓰기 3곳 · 편집 잠금 → 이탈 재정리 · 최신 결과만).
 D. 대화 서랍 실행(③-0.2, node — 대화 절 함수를 가짜 DOM 으로 돌린다): 장치 상태 없음/최근 연결/오프라인 · 스위치 꺼짐 = 현행 · 남 장치 0 ·
    뺀 변경 표시 = 확정 미리보기의 excluded.
+F. 휴지통 PR-1 화면(node 실행 포함): 스위치 S.switches.trash + 새 탐색일 때만 [삭제]·Setup 「휴지통」 · 꺼짐 = 현행 · 기준 [남기기]+[삭제] · 후보 [삭제] 0 ·
+   r4 §8 문구 · 휴지통 행(종류·제목·삭제 시각·복원 가능 기한)·더 보기·복원·영구 삭제·기한 이후 · 「반영 안 함」 한 표현 · 근거 이용 불가.
 E. test_tools.py 에서 옮겨 온 app.html 정적 단언(③-0.2 A1~A5·B1~B4 — 문의 esc·계정 메뉴·구조 정의·LABELS·24h 화면·라이트 기본·셰이더·동의·재인증).
 """
 import asyncio
@@ -187,7 +189,7 @@ def test_static():
         body = home[home.index(f):home.index("\n}\n", home.index(f))]
         assert body.count("corePost(") == 1, f
     for w in ('"/api/me/name"', "/api/reflections/${encodeURIComponent(x.id)}", '"/api/candidate/decide"', '"edit_confirm"', '"/api/item/decide"',
-              "/review`", "확인했어요", "확인 전으로", "고쳐서 남기기", "남기지 않기", "저장", "취소"):
+              "/review`", "확인했어요", "확인 전으로", "고쳐서 남기기", "반영 안 함", "저장", "취소"):
         assert w in home, w
     assert not re.search(r"corePost\([^)]*/api/(people|sources)", home), "출처·사람 쓰기 없음(홈) — 고치기는 기존 화면(#_obj/person·#_obj/source) 링크로"
     # 미저장 보호 — 대화창 문구 · hashchange 가드 · 새로 고침 경고
@@ -534,6 +536,183 @@ CHAT.want = "j3"; chatShow(Object.assign({}, p2, {id: "p3"}), "j3", "r2"); out.c
     print("OK — 뺀 변경 표시(excluded 그대로·연쇄 포함·이름 = 본 변경·체크 칸 0·확정 = 그 미리보기·저장 수 = 포함만·새로 고침 뒤 수 유지·결과별 이름) 통과")
 
 
+TRASH_ASK = "삭제하면 휴지통으로 이동해요. 삭제 시각부터 168시간 동안 복원할 수 있고, 이후 서버 정리 때 영구 삭제돼요."   # r4 §8 글자 그대로
+TRASH_PURGE_ASK = "지금부터 복원할 수 없어요. 본문은 서버 정리 때 영구 삭제돼요."
+TRASH_PURGED = "영구 삭제를 요청했어요. 이제 복원할 수 없어요."
+TRASH_NOTE = "복원 기한이 지나면 목록에서 사라지고 복원할 수 없어요. 본문은 이후 서버 정리 때 삭제돼요."
+
+
+def test_static_trash():
+    """휴지통 PR-1 화면 — 스위치(S.switches.trash) 켜짐 + 새 탐색일 때만 [삭제]·Setup 「휴지통」 · 꺼짐 = 기존 동작 그대로 ·
+    「남기지 않음」 → 「반영 안 함」(스위치 무관, 글자만) · 삭제된 근거 빈 자리 = 「근거를 이용할 수 없어요.」 · 서버 접점 = trashApi 한 곳."""
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    tr = js[js.index("// ── 휴지통 (trash PR-1)"):js.index("// ── /휴지통 ──")]
+    assert "const trashOn = () => !!(S && S.switches && S.switches.trash) && navNew();" in tr
+    for w in (TRASH_ASK, TRASH_PURGE_ASK, TRASH_PURGED, TRASH_NOTE, "복원 기간이 끝났어요.", "휴지통이 비어 있어요.", "복원 가능 기한 "):
+        assert w in tr, w
+    code = "\n".join(l for l in tr.splitlines() if not l.lstrip().startswith("//"))
+    assert "처리 중" not in code and "재시도 중" not in code and "예정" not in code, "「영구 삭제 처리 중·재시도 중·예정」 화면 상태 0(r4 §8)"
+    assert tr.count("/api/trash") == 4 and js.count("/api/trash") == 4, "휴지통 API 는 trashApi 한 곳에서만"
+    for w in ('getJSON("/api/trash" + (cursor ? "?cursor=" + encodeURIComponent(cursor) : ""))', 'corePost("/api/trash/move"', 'corePost("/api/trash/restore"', 'corePost("/api/trash/purge"'):
+        assert w in tr, w
+    assert "localStorage" not in tr and "Storage" not in tr
+    # 진입점 — 상세마다 trashBtn(꺼짐 = 빈 문자열) · 사람·생각은 켜짐이면 휴지통, 꺼짐이면 기존 즉시 삭제(data-core) 그대로
+    for w in ('trashBtn("record", x.id, null, "#_me")', 'trashBtn("item", x.id, x.revision, "#_me/" + meTabOfItem(x))',
+              'trashBtn("reflection", x.id, x.revision, "#_me")', 'trashBtn("activity", a.id, null, "#_obj/activity")',
+              'trashOn() ? trashBtn("person", p.id, p.revision, "#_obj/person") : `<button class="secondary" type="button" data-core="person-del"',
+              'trashOn() ? trashBtn("reflection", x.id, x.revision, `#_obj/source/${x.source_id}`) : `<button class="secondary" type="button" data-core="refl-del"',
+              'trashBtn("item", it.id, it.revision, `#${tab.id}/${d.id}`)', "j.old_revision_links && !trashOn()",
+              '(trashOn() ? homeActs(r) : "")', '${trashOn() ? homeActs({k: "journal", id, x: {id}}) : ""}'):   # 내 글 동작 칸 = 켜짐일 때만(꺼짐 = 현행)
+        assert w in js, w
+    assert 'if (!window.confirm("이 사람을 지울까요? 되돌릴 수 없어요.")) return;' in js and 'if (!window.confirm("이 읽고 든 생각을 지울까요? 되돌릴 수 없어요.")) return;' in js, \
+        "꺼짐 = 기존 즉시 삭제 경로 유지"
+    assert not re.search(r'trashBtn\("cand', js) and "data-trash=\"cand" not in js, "후보 = 독립 휴지통 대상 아님(r4 D3) — 새 거절 버튼 0"
+    # 기준 — 서랍·「나」 상세 모두 켜짐이면 [남기지 않기]·[되돌리기] 대신 [남기기]만(+[삭제]). 꺼짐 분기는 옛 버튼 그대로
+    drawer = js[js.index("function drawerHtml(tab, it)"):js.index("function proposalHtml(")]
+    on = drawer[drawer.index("if (!isNew && trashOn())"):drawer.index("} else if (it.semantic_kind === \"principle\" && !isNew)")]
+    assert 'data-iact="exclude"' not in on and 'data-iact="pending"' not in on and 'data-iact="confirm"' in on
+    assert 'data-iact="exclude"' in drawer and ">반영 안 함</button>" in drawer and "되돌리기" in drawer, "꺼짐 분기 = 옛 버튼(글자만 「반영 안 함」)"
+    # Setup — SETUP_PAGES 리터럴은 그대로, 켜짐일 때만 「휴지통」 페이지
+    assert 'const setupPages = () => trashOn() ? SETUP_PAGES.concat([["trash", "휴지통"]]) : SETUP_PAGES;' in js
+    assert "setupPages().some(p => p[0] === R.a)" in js and "else if (page === \"trash\") renderTrash();" in js
+    # 「반영 안 함」 — 칩·필터·저장 메시지·이력·메타(스위치 무관). 기존 상태 표시만 바꾸고 동작은 그대로
+    for w in ('<span class="badge b-off">반영 안 함</span>', '["excluded", "반영 안 함"]', 'excluded: ["st-off", "반영 안 함"]',
+              'exclude: "반영 안 함으로 표시했어요."', '"반영 안 함으로 표시했어요. 목록에서 빠졌어요."', 'btn("tertiary", "exclude", "반영 안 함")',
+              'data-act="exclude" disabled>반영 안 함</button>', '["exclude", "secondary", "반영 안 함"]', 'exclude: "반영 안 함", pending: "아직 안 정함"', '"반영 안 함" : "확정 전"',
+              '["반영 안 함", cs.filter(c => c.status === "excluded").length, "--soft"]'):
+        assert w in js, w
+    assert "남기지 않" not in html, "「남기지 않음·않기·않았어요」 0 — 표현은 「반영 안 함」 하나(동작 exclude 는 그대로)"
+    assert js.count("반영 안 함으로 표시했어요.") == 5 and "반영 안 함으로 저장했어요." not in js
+    assert "근거를 이용할 수 없어요." in js and "찾을 수 없는 대상" not in js, "삭제된 근거 = 「근거를 이용할 수 없어요.」"
+    # PR-2 몫은 그대로 — 승인 대기 [제외] · 제안 [제외] · 대화 「뺀 것」
+    assert 'act === "inbox-exclude"' in js and '<button class="secondary" type="button" data-iact="discard">제외</button>' in js and "뺀 것 ${" in js
+    print("OK — 휴지통 정적(스위치 게이트·r4 §8 문구 그대로·처리 중 상태 0·접점 한 곳·진입점 6·후보 버튼 0·기준 버튼 변경·Setup 페이지·반영 안 함·근거 이용 불가·PR-2 몫 그대로) 통과")
+
+
+def trash_run(scenario):
+    """휴지통 절 실행(node) — 휴지통 절(이벤트 연결 전까지) + Setup 페이지 목록 + 「나」 상세 동작 칸(homeActs) + 날짜·esc 도우미.
+    서버·DOM 은 가짜: api = 보낸 요청 기록, confirmAsk = 확인창 문구 기록, done/fail = coreDone·coreFail 호출 기록."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    assert node, "node 가 필요해요(CI 는 setup-node) — 휴지통 실행 시험"
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    helpers = "\n".join(re.search(rf"^{p}.*$", js, re.M).group(0) for p in (
+        r"const esc = ", r"const toDate = ", r"const pad2 = ", r"function mdhm\(", r"const SETUP_PAGES = ", r"const setupPages = ", r"const LOADING = "))
+    a = js.index("function homeActs(r) {")
+    acts = js[a:js.index("\n}\n", a) + 3]
+    b = js.index("// ── 휴지통 (trash PR-1)")
+    tr = js[b:js.index("// ── /휴지통 ──", b)]   # 클릭 연결은 가짜 document 가 받고 버린다 · hashchange 는 HASH 로
+    stub = """let S = null, NAVNEW = true, homeEdit = null, homeAct = null, coreFlash = null; const navNew = () => NAVNEW;
+const location = {hash: "#_me/principle/i1"}; const meTabOfItem = () => "principle";
+const WHAT = {OFFLINE: "서버에 연결하지 못했어요."};
+const els = {}; const $ = id => els[id] || (els[id] = {id, textContent: "", innerHTML: "", hidden: false});
+const document = {querySelectorAll: () => [], querySelector: () => null, addEventListener() {}};
+let ROUTE = {tab: "_setup", a: "trash"}; const route = () => ROUTE;
+const api = []; let REPLY = {ok: true, j: {}}, LIST = {ok: true, j: {rows: []}};
+const corePost = async (url, body) => { api.push({url, body}); return REPLY; };
+const getJSON = async url => { api.push({url}); return LIST; };
+const confirmAsk = []; let CONFIRM = true; let HASH = () => {};
+const window = {confirm: t => { confirmAsk.push(t); return CONFIRM; }, addEventListener: (ev, f) => { if (ev === "hashchange") HASH = f; }};
+const done = [], fail = [];
+const coreDone = async (text, hash) => { done.push({text, hash}); }; const coreFail = async (res, err) => { fail.push(res.code); };
+const coreFlashShow = () => {}; const load = async () => { S = Object.assign({}, S); };
+const fakeBtn = (d, err) => ({dataset: d, disabled: false, closest: () => ({querySelector: () => err})});"""
+    src = f"{stub}\n{helpers}\n{acts}\n{tr}\nconst out = {{}};\n(async () => {{\n{scenario}\n}})().then(() => console.log(JSON.stringify(out)), e => {{ console.error(e); process.exit(1); }});"
+    r = subprocess.run([node, "-"], input=src, capture_output=True, text=True, timeout=60, env=dict(os.environ, TZ="Asia/Seoul"))
+    assert r.returncode == 0, r.stderr[-800:]
+    return json.loads(r.stdout)
+
+
+def test_trash_switch():
+    """스위치별 차이 — 꺼짐(또는 옛 탐색) = [삭제]·휴지통 페이지 0, 기준 [남기기]·[남기지 않기]·[되돌리기] 그대로 ·
+    켜짐 = 내 글·항목·생각 상세에 [삭제] · 기준은 [남기기](확정이면 없음) + [삭제] · 후보는 [삭제] 0(r4 D3)."""
+    o = trash_run("""
+const it = (dec) => ({k: "item", id: "i1", x: {id: "i1", revision: 3, semantic_kind: "principle", decision: dec}});
+const rows = {journal: {k: "journal", id: "r1", x: {id: "r1"}}, refl: {k: "refl", id: "f1", x: {id: "f1", revision: 2, review: "pending"}},
+  cand: {k: "cand", id: "c1", x: {id: "c1", status: "pending", revision: 1}}, plain: {k: "item", id: "i2", x: {id: "i2", revision: 1, semantic_kind: "event"}}};
+const snap = () => ({on: trashOn(), pages: setupPages().map(p => p[0]), btn: trashBtn("record", "r1", null, "#_me"),
+  pend: homeActs(it("pending")), conf: homeActs(it("confirmed")), excl: homeActs(it("excluded")),
+  journal: homeActs(rows.journal), refl: homeActs(rows.refl), cand: homeActs(rows.cand), plain: homeActs(rows.plain)});
+S = {switches: {converse: true}}; out.none = snap();
+S = {switches: {trash: false}}; out.off = snap();
+S = {switches: {trash: true}}; NAVNEW = false; out.old = snap();
+NAVNEW = true; out.on = snap();
+""")
+    btns = lambda h: re.findall(r"<button[^>]*>([^<]+)</button>", h)   # noqa: E731
+    for k in ("none", "off", "old"):
+        s = o[k]
+        assert s["on"] is False and "trash" not in s["pages"] and s["btn"] == "", (k, "꺼짐·옛 탐색 = 버튼·페이지 0")
+        assert btns(s["pend"]) == ["남기기", "반영 안 함"] and btns(s["conf"]) == ["반영 안 함", "되돌리기"] and btns(s["excl"]) == ["남기기", "되돌리기"], (k, "기준 = 옛 버튼(글자만 「반영 안 함」)")
+        assert "data-trash" not in s["journal"] + s["refl"] + s["cand"] + s["plain"], (k, "[삭제] 0")
+    s = o["on"]
+    assert s["on"] is True and s["pages"][-1] == "trash" and s["pages"][:6] == ["layout", "structure", "objects", "devices", "map", "help"]
+    assert s["btn"] == '<button class="secondary" type="button" data-trash="record" data-id="r1" data-back="#_me">삭제</button>'
+    assert btns(s["pend"]) == ["남기기", "삭제"] and btns(s["excl"]) == ["남기기", "삭제"] and btns(s["conf"]) == ["삭제"], "기준 = [남기기] + [삭제], [남기지 않기]·[되돌리기] 0"
+    assert 'data-trash="item" data-id="i1" data-rev="3" data-back="#_me/principle"' in s["pend"]
+    assert btns(s["journal"]) == ["삭제"] and 'data-trash="record"' in s["journal"]
+    assert btns(s["refl"]) == ["확인했어요", "삭제"] and 'data-trash="reflection" data-id="f1" data-rev="2"' in s["refl"]
+    assert btns(s["plain"]) == ["삭제"] and "data-trash" not in s["cand"] and btns(s["cand"]) == ["남기기", "고쳐서 남기기", "반영 안 함"], "후보 = [삭제] 0 · 기존 결정 그대로(글자만)"
+    print("OK — 휴지통 스위치(꺼짐·필드 없음·옛 탐색 = [삭제]·페이지 0·기준 옛 버튼 · 켜짐 = 내 글·항목·생각 [삭제]·기준 [남기기]+[삭제]·후보 [삭제] 0) 통과")
+
+
+def test_trash_flow():
+    """[삭제] = r4 §8 확인창 → 휴지통 API(종류·ID·revision) → 「휴지통으로 옮겼어요.」 + 목록 주소 · 취소 = 요청 0 · 축 정책 차단 = 장치 안내 ·
+    Setup 휴지통 = 행(종류·제목·삭제 시각·복원 가능 기한)·빈 상태·안내 · [복원] · [영구 삭제] = 확인·접수 문구 · 기한 이후 = 「복원 기간이 끝났어요.」."""
+    o = trash_run("""
+S = {switches: {trash: true}};
+const err = {textContent: ""};
+CONFIRM = false; await trashDel(fakeBtn({trash: "item", id: "i1", rev: "3", back: "#_me/axis"}, err)); out.cancel = api.length;
+CONFIRM = true; await trashDel(fakeBtn({trash: "item", id: "i1", rev: "3", back: "#_me/axis"}, err)); out.del = api.pop(); out.done = done.pop();
+await trashDel(fakeBtn({trash: "record", id: "r1", back: "#_me"}, err)); out.delRec = api.pop(); done.length = 0;
+REPLY = {ok: false, code: "AXIS-IN-POLICY", msg: "이 축은 장치 「회사 PC」의 허용 규칙에 쓰여 삭제할 수 없어요."};
+await trashDel(fakeBtn({trash: "item", id: "ax1", rev: "1", back: "#_me/axis"}, err)); out.axis = err.textContent; out.axisDone = done.length;
+REPLY = {ok: false, code: "CONFLICT"}; await trashDel(fakeBtn({trash: "person", id: "p1", rev: "2", back: "#_obj/person"}, err)); out.fail = fail.slice();
+out.ask = confirmAsk.slice();
+// Setup 휴지통
+LIST = {ok: true, j: {items: [], next_cursor: null, hours: 168}}; renderTrash(); await new Promise(r => setTimeout(r, 0)); out.empty = $("view").innerHTML;
+LIST = {ok: true, j: {items: [{kind: "record", id: "r1", title: "<첫 글>", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z", revision: null, restore_state: null},
+  {kind: "person", id: "p1", title: "민수", trashed_at: "2026-10-22T15:30:00Z", purge_at: "2026-10-29T15:30:00Z", revision: 2, restore_state: null}], next_cursor: "c2", hours: 168}};
+S = Object.assign({}, S); renderTrash(); await new Promise(r => setTimeout(r, 0)); out.list = $("view").innerHTML;
+LIST = {ok: true, j: {items: [{kind: "item", id: "i9", title: "결정 하나", object_label: "결정", trashed_at: "2026-10-21T00:00:00Z", purge_at: "2026-10-28T00:00:00Z"}], next_cursor: null}};
+await trashMore(); out.moreUrl = api.slice(-1)[0].url; out.more = $("view").innerHTML;
+const rb = d => ({dataset: d, disabled: false});
+REPLY = {ok: true, j: {kind: "record", id: "r1", restored: true}}; await trashDo(rb({kind: "record", id: "r1"}), "restore"); out.restore = api.slice(-1)[0]; renderTrash(); await new Promise(r => setTimeout(r, 0)); out.restoreMsg = $("view").innerHTML;
+REPLY = {ok: true, j: {}}; await trashDo(rb({kind: "record", id: "r1"}), "restore"); renderTrash(); out.restoreMsg2 = $("view").innerHTML;
+confirmAsk.length = 0; CONFIRM = false; const n = api.length; await trashDo(rb({kind: "person", id: "p1"}), "purge"); out.purgeCancel = api.length - n;
+confirmAsk.length = 0; CONFIRM = true; await trashDo(rb({kind: "person", id: "p1"}), "purge"); out.purge = api.slice(-1)[0]; out.purgeAsk = confirmAsk.slice(); renderTrash(); out.purgeMsg = $("view").innerHTML;
+REPLY = {ok: false, code: "TRASH-EXPIRED"}; await trashDo(rb({kind: "record", id: "r1"}), "restore"); renderTrash(); out.expired = $("view").innerHTML;
+HASH(); ROUTE = {tab: "_me", a: ""}; HASH(); out.leftMsg = TRASH.msg; ROUTE = {tab: "_setup", a: "trash"};
+LIST = {ok: false, code: "OFFLINE"}; S = Object.assign({}, S); renderTrash(); await new Promise(r => setTimeout(r, 0)); out.loadFail = $("view").innerHTML;
+""")
+    assert o["cancel"] == 0, "확인창 취소 = 요청 0"
+    assert o["del"] == {"url": "/api/trash/move", "body": {"kind": "item", "id": "i1", "expected_revision": 3}}
+    assert o["done"] == {"text": "휴지통으로 옮겼어요.", "hash": "#_me/axis"}, "성공 = 결과 한 줄 + 목록 주소(삭제한 상세는 더 열리지 않는다)"
+    assert o["delRec"] == {"url": "/api/trash/move", "body": {"kind": "record", "id": "r1"}}, "revision 없는 종류 = expected_revision 생략"
+    assert o["axis"] == "이 축은 장치 「회사 PC」의 허용 규칙에 쓰여 삭제할 수 없어요." and o["axisDone"] == 0, "축 정책 차단 = 서버 장치 안내 그대로 · 이동 0"
+    assert o["fail"] == ["CONFLICT"], "그 밖 오류 = 기존 coreFail(다시 불러오기)"
+    assert set(o["ask"]) == {TRASH_ASK}, "삭제 확인창 = r4 §8 글자 그대로"
+    assert "휴지통이 비어 있어요." in o["empty"] and TRASH_NOTE in o["empty"] and "<button" not in o["empty"]
+    L = o["list"]
+    assert L.count('class="trow"') == 2 and "&lt;첫 글&gt;" in L and "<첫 글>" not in L, "제목 = esc"
+    assert "10월 23일 10:00 삭제 · 복원 가능 기한 10월 30일 10:00" in L and "10월 23일 00:30 삭제 · 복원 가능 기한 10월 30일 00:30" in L, "사용자 시간대 날짜·시각"
+    assert ">내 글</span>" in L and ">사람</span>" in L and L.count(">복원</button>") == 2 and L.count(">영구 삭제</button>") == 2
+    assert "처리 중" not in L and "영구 삭제 예정" not in L and L.count("data-trash-more") == 1, "다음 쪽이 있으면 [더 보기] 1"
+    assert o["moreUrl"] == "/api/trash?cursor=c2" and o["more"].count('class="trow"') == 3 and ">결정</span> <b>결정 하나</b>" in o["more"] and "data-trash-more" not in o["more"], \
+        "더 보기 = 서버 커서 그대로 · 항목 종류 = object_label · 끝이면 버튼 0"
+    assert o["restore"] == {"url": "/api/trash/restore", "body": {"kind": "record", "id": "r1"}}
+    assert "복원했어요.</p>" in o["restoreMsg"] and "복원했어요.</p>" in o["restoreMsg2"], "복원 문구는 목록을 다시 받아 그린 뒤에도 남는다"
+    assert o["purgeCancel"] == 0 and o["purgeAsk"] == [TRASH_PURGE_ASK] and o["purge"] == {"url": "/api/trash/purge", "body": {"kind": "person", "id": "p1"}}
+    assert TRASH_PURGED in o["purgeMsg"]
+    assert 'class="ferr" id="trash-msg"' in o["expired"] and "복원 기간이 끝났어요." in o["expired"], "기한 이후 = 「복원 기간이 끝났어요.」"
+    assert o["leftMsg"] == "", "휴지통을 떠나면 지난 결과 문구를 지운다(다시 들어와도 안 보인다)"
+    assert "서버에 연결하지 못했어요." in o["loadFail"]
+    print("OK — 휴지통 흐름(확인창 r4 문구·취소 요청 0·종류·ID·revision·성공 문구+주소·축 정책 장치 안내·행 종류·제목 esc·삭제 시각·복원 가능 기한(사용자 시간대)·빈 상태·안내·복원·영구 삭제 확인·접수·기한 이후·불러오기 실패) 통과")
+
+
 def test_static_moved():
     """test_tools.py 에서 옮겨 온 app.html 정적 단언(③-0.2 — 서버 에이전트 목록 A1~A5·B1~B4, 검증 범위 그대로).
     문자열 단언으로 둔 이유: 파일 성질(인라인 스크립트·CSP 해시·on* 0·특정 낱말 부재·마크업 구간·서버 정본과 같은 문구)이라 실행으로 보이지 않는다.
@@ -688,6 +867,9 @@ async def run():
         test_chat_nodev_session()
         test_chat_restore_offline()
         test_chat_excluded()
+        test_static_trash()
+        test_trash_switch()
+        test_trash_flow()
         test_static_moved()
         await test_records_api()
     finally:

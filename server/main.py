@@ -54,6 +54,7 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. �
 - 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
 - 사람(person_save)은 사용자가 말한 별칭 하나만 저장한다. 연락처·소속·SNS·그 사람의 말·평가는 넣지 않는다.
 - 출처 요약/반응(source_reflection_save)은 사용자가 출처를 접한 뒤 한 자기 생각만 저장한다. 타인의 말·경험·생각을 옮기거나 다시 정리하지 않는다. 검토 완료는 판단 확정이 아니고 근거로 인용할 수 없다 — 사용자가 말할 때만 source_reflection_review 를 부른다.
+- 삭제는 휴지통이다(휴지통이 켜졌을 때). 내 글·항목(기준·결정·축·커스텀)·사람·읽고 든 생각·활동은 사용자가 지우라고 말할 때만 trash_move 로 옮긴다. 삭제 시각부터 168시간 안에 trash_restore 로 복원할 수 있고, 그 뒤엔 서버 정리 때 영구 삭제된다. trash_purge(영구 삭제 요청)는 되돌릴 수 없으니 사용자가 분명히 말할 때만 부른다. 휴지통 대상은 다른 도구에서 보이지 않는다. 휴지통이 켜지면 기준의 남기지 않기·되돌리기(item_decide exclude·pending)는 없다 — 남기지 않을 기준은 삭제한다.
 """
 
 DEV = env("DEV") == "1"
@@ -86,13 +87,15 @@ WRITE_TOOLS = frozenset({
     "question_add", "record_add", "candidates_propose", "candidate_decide", "profile_set", "definition_propose", "definition_apply",
     "item_propose", "item_decide", "record_attach",
     "person_save", "person_delete", "source_create", "source_reflection_save", "source_reflection_review", "source_reflection_delete",
-    "record_provenance_set", "definition_archive", "definition_restore"})   # 마지막 셋 = R5 결함(PR B 범위 추가)
+    "record_provenance_set", "definition_archive", "definition_restore",   # 이 줄 셋 = R5 결함(PR B 범위 추가)
+    "trash_move", "trash_restore", "trash_purge"})                          # 휴지통 PR-1 — 전역 크기 관문 면제(db.QUOTA_EXEMPT)
 ALLOWED_TOOLS = frozenset({
     "state_get", "question_list", "candidate_list", "record_get", "definitions_get", "help_get", "feedback_send", "ticket_list_mine",
     "ticket_get_mine", "display_name_set", "me_get", "person_list", "person_get", "source_list", "source_get", "source_reflection_list",
     "source_reflection_get",
     # board 이전(2026-10-20) 읽기 7 — 활동·사람/출처 문맥·「나」 집계·승인 대기. 승인·제외는 웹에서만
-    "activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get"})
+    "activity_list", "activity_get", "person_context_get", "source_context_get", "me_aggregate_get", "inbox_list", "inbox_get",
+    "trash_list"})   # 휴지통 PR-1 목록(본문 없음)
 
 # 도구 호출 하나 안에서 푼 uid — guard 가 호출마다 새 dict 를 꽂는다. 쓰기 게이트(전역 크기)와 도구 본문이 같은 조회를 한 번만 하고,
 # 사용 집계(usage_count)가 추가 DB 조회 없이 uid 를 읽는다. guard 밖(직접 호출)에선 None — 매번 푼다.
@@ -352,7 +355,8 @@ def item_decide(
     proposal_id: Annotated[str | None, Field(description="apply·discard 때 제안 ID. 그 외 null")],
     action: Annotated[Literal["apply", "confirm", "exclude", "pending", "archive", "restore", "discard"],
                       Field(description="apply=제안 적용, discard=제안 버리기, confirm=기준을 내 판단으로 남기기, exclude=남기지 않기, "
-                                        "pending=아직 안 정함으로, archive=보관, restore=history_id 시점으로 되돌리기")],
+                                        "pending=아직 안 정함으로, archive=보관, restore=history_id 시점으로 되돌리기. "
+                                        "휴지통이 켜지면 exclude·pending 은 ACTION-RETIRED(아무것도 안 바뀜) — 남기지 않을 기준은 trash_move")],
     history_id: Annotated[int | None, Field(description="restore 때 이력 ID. 그 외 null")],
     ctx: Context,
 ) -> dict:
@@ -616,6 +620,60 @@ def source_reflection_delete(
 ) -> dict:
     """출처 요약/반응 하나를 지운다. 사용자가 지우라고 말했을 때만 부른다."""
     return db.source_reflection_delete(uid_of(ctx), reflection_id, expected_revision)
+
+
+# ── 휴지통 (2026-10-23 PR-1) — 스위치 CRM_TRASH_ENABLED 꺼짐 = SWITCH-OFF. 목록은 본문 없음(제목·별칭·첫 줄만) ──
+TrashKind = Literal["record", "item", "person", "reflection", "activity"]
+_TRASH_REV_DESC = "item·person·reflection 의 지금 revision(이동 때 필수). record·activity 는 null"
+
+
+@mcp.tool()
+@guard
+def trash_list(
+    ctx: Context,
+    kind: Annotated[Literal["", "record", "item", "person", "reflection", "activity"], Field(description="종류로 거르기 (선택, 빈 값 = 전부)")] = "",
+    cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
+    limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
+) -> dict:
+    """휴지통 목록 — 복원 기한(purge_at) 전인 것만, 최근 삭제 순. 기한이 지난 것은 복원할 수 없고 목록에서도 빠진다."""
+    return db.trash_list(uid_of(ctx), kind, cursor, limit)
+
+
+@mcp.tool()
+@guard
+def trash_move(
+    kind: Annotated[TrashKind, Field(description="record=내 글, item=항목(기준·결정·축·커스텀), person=사람, reflection=읽고 든 생각, activity=활동(원천 전체)")],
+    target_id: Annotated[str, Field(description="대상 ID")],
+    expected_revision: Annotated[int | None, Field(description=_TRASH_REV_DESC)],
+    ctx: Context,
+) -> dict:
+    """대상을 휴지통으로 옮긴다(삭제). 사용자가 지우라고 말했을 때만 부른다. 168시간 안에 trash_restore 로 복원할 수 있다.
+    연결된 상대(글·항목·활동)는 그대로 남는다. 장치 허용 규칙이 쓰는 축은 AXIS-IN-POLICY — 사용자에게 장치 화면에서 먼저 빼라고 안내한다."""
+    return db.trash_move(uid_of(ctx), kind, target_id, expected_revision)
+
+
+@mcp.tool()
+@guard
+def trash_restore(
+    kind: Annotated[TrashKind, Field(description="대상 종류")],
+    target_id: Annotated[str, Field(description="대상 ID")],
+    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). record·activity 는 null")],
+    ctx: Context,
+) -> dict:
+    """휴지통 대상을 삭제 직전 상태로 복원한다(같은 ID). 복원 기한이 지났으면 TRASH-EXPIRED. 복원은 승인·적용·확정이 아니다."""
+    return db.trash_restore(uid_of(ctx), kind, target_id, expected_revision)
+
+
+@mcp.tool()
+@guard
+def trash_purge(
+    kind: Annotated[TrashKind, Field(description="대상 종류")],
+    target_id: Annotated[str, Field(description="대상 ID")],
+    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). record·activity 는 null")],
+    ctx: Context,
+) -> dict:
+    """휴지통 대상의 영구 삭제를 요청한다 — 지금부터 복원할 수 없다. 본문은 서버 정리 때 지워진다. 사용자가 분명히 말할 때만 부른다."""
+    return db.trash_purge(uid_of(ctx), kind, target_id, expected_revision)
 
 
 # ── board 이전 읽기 도구 (2026-10-20) — 활동·관계·「나」 집계·승인 대기. 쓰기 없음(승인·제외는 웹에서만) ──
@@ -886,9 +944,33 @@ async def purge_once():
         print(f"[jobs] 작업 정리 실패 — 계속: {type(e).__name__}", flush=True)
 
 
+async def trash_purge_round():
+    """휴지통 물리 정리 한 회차 — 활동 원천 → 기록 → 항목 → 사람 → 생각. 회차 전체 시간·대상 수 상한(db.TRASH_PURGE_SECONDS·LIMIT),
+    대상마다 트랜잭션·statement_timeout, 실패 대상은 건너뛰고 다음 회차. 예외를 내지 않는다. 로그는 건수만."""
+    import time
+    t0 = time.monotonic()
+    a = {"activities": 0, "failed": 0, "left": False}
+    try:   # 활동 원천을 먼저 — 활동 출발 관계(activity_links)가 사람·축·기록을 가리킨다
+        a = await run_in_threadpool(activity.trash_purge_due, db.TRASH_PURGE_SECONDS, db.TRASH_PURGE_LIMIT)
+    except Exception as e:
+        print(f"[trash] 활동 원천 정리 실패 — 계속: {type(e).__name__}", flush=True)
+    try:   # 남은 시간·대상 수만 이어서(회차 전체 상한)
+        left = max(0.0, db.TRASH_PURGE_SECONDS - (time.monotonic() - t0))
+        out = await run_in_threadpool(db.trash_purge_due, left, max(0, db.TRASH_PURGE_LIMIT - a["activities"] - a["failed"]))
+        n = sum(v for k, v in out.items() if k not in ("failed", "left"))
+        if a["activities"] or n or a["failed"] or out["failed"]:
+            print(f"[trash] 휴지통 정리 — 활동 원천 {a['activities']}건 · 그 밖 {n}건 · 실패 {a['failed'] + out['failed']}건"
+                  + (" · 상한 도달(다음 회차에 이어서)" if a["left"] or out["left"] else ""), flush=True)
+    except Exception as e:
+        print(f"[trash] 휴지통 정리 실패 — 계속: {type(e).__name__}", flush=True)
+
+
 async def _purger():
-    """실행 중 매일 1회 파기(P3). 시작 때 1회는 lifespan 이 따로 부른다."""
+    """실행 중 매일 1회 파기(P3). 시작 때 1회 purge_once 는 lifespan 이 따로 부른다.
+    휴지통 물리 정리는 이 태스크의 첫 회차(서빙 시작 뒤 — lifespan 이 기다리지 않는다)부터 매 회차. Render Free 는 잠들면 안 돈다 —
+    기한 판정은 조회 조건이라 정리가 늦어도 복원·열람은 막힌다."""
     while True:
+        await trash_purge_round()
         await asyncio.sleep(PURGE_EVERY)
         await purge_once()
 

@@ -11,17 +11,20 @@
 - 스위치(summary.enabled)는 약관·권한 제한·CLI 보관 동작 확인 전 꺼 둔다(기본 false).
 - execution 신고: 사람이 직접 돌린 run-once = attended(서버 IMPORTS 스위치만), 예약(--scheduled)·호출자 불명 = unattended
   (서버 UNATTENDED_SUMMARY 스위치도 필요).
+- 서버가 요약 원본을 「삭제됨」으로 답했으면 모델을 돌리지 않는다. 영구 삭제(purged)는 계속 건너뛰고, 휴지통은 응답 뒤
+  168시간이 지나 입력이 바뀌어 있으면 1회 다시 요약해 보낸다(복원됐으면 접수, 그새 영구 삭제됐으면 purged 로 바뀐다).
 시험은 모의 실행기로만 한다. 실제 구독 CLI 리허설은 원작자 수동.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import hashlib
 import json
 import os
 import re
 import subprocess
 
-from . import jcs, osutil, runner as _runner
+from . import jcs, osutil, runner as _runner, store as _store
 
 TRANSFORM = "self-summary/1"
 PROMPT = (
@@ -36,6 +39,7 @@ PROMPT = (
 _LOGIN_RE = re.compile(r"(?i)(not logged in|log ?in|authenticat|unauthori[sz]ed|subscription|"
                        r"permission denied|invalid api key|credit balance|oauth|forbidden)")
 MAX_INPUT_BYTES = 64 * 1024
+TRASH_RETRY = _dt.timedelta(hours=168)   # 서버 휴지통 보관 기간 — 지나면 복원됐거나 영구 삭제 표식만 남는다
 MAX_OUTPUT_BYTES = 256 * 1024
 
 
@@ -117,11 +121,22 @@ def parse_model_output(stdout: bytes):
     return (title or None), body
 
 
-def summarize(st, cfg: dict, *, paths, exec_runner=None) -> dict:
+def _retry_after_trash(rev, now: _dt.datetime) -> bool:
+    """「삭제됨」 응답 개정 — 영구 삭제(purged)는 다시 요약하지 않는다. 휴지통은 응답 받은 뒤 TRASH_RETRY 가 지나야 1회."""
+    if rev["server_state"] != _store.SERVER_DELETED:
+        return False
+    try:
+        at = _dt.datetime.fromisoformat(rev["updated_at"])
+    except (TypeError, ValueError):
+        return False
+    return at.tzinfo is not None and now >= at + TRASH_RETRY
+
+
+def summarize(st, cfg: dict, *, paths, exec_runner=None, now=osutil.kst_now) -> dict:
     sc = cfg.get("summary") or {}
     # 사람이 직접 돌린 run-once(--scheduled 없이) = attended — 서버 마스터 스위치만으로 접수. 예약 실행·호출자 불명 = unattended
     execution = "attended" if cfg.get("_execution") == "attended" else "unattended"
-    out = {"attempted": 0, "staged": 0, "failed": 0, "skipped": None}
+    out = {"attempted": 0, "staged": 0, "failed": 0, "deleted": 0, "skipped": None}
     if not sc.get("enabled"):
         out["skipped"] = "disabled"
         return out
@@ -156,6 +171,13 @@ def summarize(st, cfg: dict, *, paths, exec_runner=None) -> dict:
                 in_ev = st.event_create("summary-input", rel, "summary_input", None, raw_obj=None)
             prev = st.summary_status(in_ev["original_id"], sha)
             if prev is not None and (prev["status"] == "staged" or prev["day"] == day):
+                continue
+            sum_ev = st.event_get("summary", in_ev["original_id"])
+            gone = st.deleted_response(sum_ev["original_id"]) if sum_ev is not None else None
+            if gone is not None and not _retry_after_trash(gone, now()):
+                # 서버가 이 요약 원본을 「삭제됨」으로 답했다 — 모델을 돌리지 않는다(구독 낭비 방지). 시도·실패로 세지 않고
+                # 기록도 남기지 않는다. 휴지통이면 168시간 뒤 바뀐 입력으로 1회 다시 요약(복원됐으면 접수, 영구 삭제됐으면 purged)
+                out["deleted"] += 1
                 continue
             if st.summary_attempts_today(day) >= limit:
                 out["skipped"] = "daily-limit"

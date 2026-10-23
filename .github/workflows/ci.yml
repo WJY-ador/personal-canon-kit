@@ -124,6 +124,19 @@ jobs:
           DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_web_home
         run: python server/test_web_home.py
 
+      # 휴지통 PR-1(2026-10-23) — 활동 원천 차단·사람 표식·축 정책·쌓기·운영자 집계·물리 정리. 시작 가드가 crm_test* 를 보므로
+      # 전용 DB 를 만들고 이 단계에만 DATABASE_URL 을 덮어쓴다(다른 단계 env 불변)
+      - name: "④-e 휴지통 흐름 시험 (test_trash_flow.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_trash_flow
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:crm@localhost:5432/crm", autocommit=True) as c:
+              c.execute("CREATE DATABASE crm_test_trash_flow")
+          PY
+          python server/test_trash_flow.py
+
       # 이전 CLI 시험 가드는 DB 이름을 crm_test_bi_mig 하나로 고정한다(test_migrate_cli.ALLOWED_DBS)
       - name: "④-c board 이전 CLI 시험 (test_migrate_cli.py)"
         env:

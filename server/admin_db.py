@@ -620,7 +620,7 @@ ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유�
            "AND oc.version=%(names_ver)s) AS names, m.version AS std_version, m.state AS std_state, "
            "(SELECT coalesce(jsonb_object_agg(ch.std_key, ch.state), '{}'::jsonb) FROM std_choices ch WHERE ch.user_id=u.id) AS std_choices, "
            "(SELECT count(*) FROM sources s WHERE s.user_id=u.id AND s.activity_provider IS NULL) AS sources_n, "   # 활동 출처는 값·개수 0(v5 약속)
-           "(SELECT count(*) FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
+           "(SELECT count(*) FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "   # 휴지통 기록(trashed_at)은 M-D 위반 아님
            "WHERE c.user_id=u.id AND r.deleted_at IS NOT NULL) AS md_broken "
            "FROM users u LEFT JOIN std_marks m ON m.user_id=u.id AND m.version=%(ver)s "
            "WHERE (%(uid)s::text IS NULL OR u.id=%(uid)s) ORDER BY u.created, u.id",
@@ -640,19 +640,25 @@ ALLOW["userview.defs"] = {   # 적용·보관 아닌 오브젝트 × 보관 아�
 }
 ALLOW["userview.links"] = {   # 항목 출발 연결 묶음 — 출발(살아 있는 항목만) 오브젝트·필드 × 실제 도착 종류·오브젝트 × 대상 없음 여부 × 개수
     # dangling = 대상 항목이 보관·적용 전이거나 대상 기록이 지워졌다. 기록 출발 연결(attach_to·axes)은 관계(참조 필드)가 아니라 뺀다.
+    # 휴지통 PR-1: 휴지통 출발 항목은 세지 않는다 · 휴지통 대상(항목·기록·후보의 부모 기록)은 끊긴 근거가 아니라 trashed 로 따로 센다
+    # (사용자가 복원할 수 있는 정상 상태 — 무결성 오류 아님. link_stats 가 「검사 불가 why=trashed」 로 분류)
     "sql": "SELECT l.user_id, md5(l.source_object_id) AS source_ref, md5(l.field_key) AS field_ref, "
            "CASE WHEN l.target_item_id IS NOT NULL THEN 'item' WHEN l.target_record_id IS NOT NULL THEN 'record' ELSE 'candidate' END "
            "AS target_kind, md5(ti.object_id) AS target_ref, "
            "((ti.id IS NOT NULL AND (ti.archived_at IS NOT NULL OR ti.revision = 0)) OR tr.deleted_at IS NOT NULL) AS dangling, "
+           "(ti.trashed_at IS NOT NULL OR tr.trashed_at IS NOT NULL OR cr.trashed_at IS NOT NULL) AS trashed, "
            "count(*) AS n FROM item_links l "
            "JOIN items si ON si.user_id=l.user_id AND si.id=l.source_item_id AND si.revision > 0 AND si.archived_at IS NULL "
+           "AND si.trashed_at IS NULL "
            "LEFT JOIN items ti ON ti.user_id=l.user_id AND ti.id=l.target_item_id "
            "LEFT JOIN records tr ON tr.user_id=l.user_id AND tr.id=l.target_record_id "
+           "LEFT JOIN candidates cd ON cd.user_id=l.user_id AND cd.id=l.target_candidate_id "
+           "LEFT JOIN records cr ON cr.user_id=cd.user_id AND cr.id=cd.record_id "
            "WHERE (%(uid)s::text IS NULL OR l.user_id=%(uid)s) AND l.source_item_id IS NOT NULL "
            # board 이전 — 사람·출처·활동 대상 연결은 운영자에게 값도 개수도 보이지 않는다(처리방침 v5 약속 유지)
            "AND l.target_person_id IS NULL AND l.target_source_id IS NULL AND l.target_activity_id IS NULL "
-           "GROUP BY 1, 2, 3, 4, 5, 6 ORDER BY 1, 2, 3, 4, 5, 6",
-    "cols": ("user_id", "source_ref", "field_ref", "target_kind", "target_ref", "dangling", "n"),
+           "GROUP BY 1, 2, 3, 4, 5, 6, 7 ORDER BY 1, 2, 3, 4, 5, 6, 7",
+    "cols": ("user_id", "source_ref", "field_ref", "target_kind", "target_ref", "dangling", "trashed", "n"),
     "viewer": VIEWER_ADMIN, "consent": None,
 }
 ALLOW["userview.tickets"] = {   # 문의 요약 — 종류 × 상태 개수(원문·메모 없음)
@@ -735,7 +741,9 @@ def link_stats(v, user_input):
             unchecked.append({"rel": None, "n": ln["n"], "why": "no_def"})
             continue
         r = raw[i]
-        if ln["dangling"]:
+        if ln.get("trashed"):   # 휴지통 대상 — 끊긴 근거(REF-DANGLING)가 아니다. 복원하면 다시 정상, 기한이 지나면 정리가 연결을 지운다
+            unchecked.append({"rel": i, "n": ln["n"], "why": "trashed"})
+        elif ln["dangling"]:
             errors.append({"code": "REF-DANGLING", "rel": i, "n": ln["n"], "why": "target"})
         elif ln["target_kind"] != r["target_kind"]:
             errors.append({"code": "REF-MISMATCH", "rel": i, "n": ln["n"], "why": "kind"})
