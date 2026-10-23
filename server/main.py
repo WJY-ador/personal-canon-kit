@@ -47,7 +47,8 @@ INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. �
 - 후보(candidates_propose)는 네가 뽑되, 각 후보의 quote 는 그 기록 원문에서 글자 그대로 복사한 연속 구간이어야 한다. 원문에 같은 구간이 두 번 이상 나오면 앞뒤를 포함해 한 곳만 가리키게 더 길게 인용한다. 원문에 없는 사실·수치를 만들지 않는다. 타인의 말로 보이는 문장은 후보로 내지 않는다. 기록 1편당 최대 3개 — 넘기면 거절된다.
 - 후보는 사용자의 판단이 아니다. 사용자가 원문과 대조해 "남길게/빼줘/고쳐서 남길게"라고 말할 때만 candidate_decide 를 부른다. 네가 대신 confirm 하지 않는다. 확정 전에 후보 문장을 사용자에게 그대로 보여 준다.
 - 사용자가 묻지 않은 설정(프로필·질문)을 추정으로 확정하지 않는다. 추정은 status=guessed 로만 저장한다.
-- 기준(principle 항목)은 후보가 아니다. 여러 확정 판단을 종합해 사용자가 정한 한 문장이다. 후보 문장을 기준으로 옮겨 적거나, 사용자가 말하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
+- 판단 종류 항목(semantic_kind principle — 기준 등)은 후보가 아니다. 사용자가 읽고 확인한 최종 글만 사용자의 판단이다. 후보 문장을 그대로 옮겨 적거나, 사용자가 확인하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
+- 항목 stage(draft 초안 → organized 정리됨 → confirmed 확정)는 서버가 정한다. 필수 칸이 차면 organized, 판단 종류만 사용자의 확인 1번(item_decide confirm 또는 화면의 대화 확정)으로 confirmed. organized 는 확정이 아니다 — 확정 여부는 decision 으로만 말한다. 되돌리기는 사용자만 정한다.
 - 승격 조건(promotion)은 사실일 뿐이다. 충족 여부와 상관없이 기준으로 남길지는 사용자가 정한다.
 - 질문에 답하지 않는 후보는 candidates_propose 의 question_id 를 빈 문자열("")로 보낸다. 화면은 기록별로 묶는다.
 - 사용자가 '안 돼요/고쳐 주세요/이건 왜 이래요' 류를 말하면 feedback_send 로 운영자에게 문의하자고 제안한다. 보낼 글을 사용자에게 그대로 보여 주고, 사용자가 확인하면 그때 호출한다.
@@ -354,14 +355,14 @@ def item_decide(
     expected_revision: Annotated[int, Field(description="항목의 지금 revision")],
     proposal_id: Annotated[str | None, Field(description="apply·discard 때 제안 ID. 그 외 null")],
     action: Annotated[Literal["apply", "confirm", "exclude", "pending", "archive", "restore", "discard"],
-                      Field(description="apply=제안 적용, discard=제안 버리기, confirm=기준을 내 판단으로 남기기, exclude=남기지 않기, "
+                      Field(description="apply=제안 적용, discard=제안 버리기, confirm=판단 종류 항목을 내 판단으로 남기기(확인 1번), exclude=남기지 않기, "
                                         "pending=아직 안 정함으로, archive=보관, restore=history_id 시점으로 되돌리기. "
                                         "휴지통이 켜지면 exclude·pending·discard 는 ACTION-RETIRED(아무것도 안 바뀜) — 남기지 않을 기준은 trash_move(kind=item), "
                                         "버릴 제안은 trash_move(kind=item_proposal)")],
     history_id: Annotated[int | None, Field(description="restore 때 이력 ID. 그 외 null")],
     ctx: Context,
 ) -> dict:
-    """사용자가 말한 결정을 항목에 저장한다. 사용자가 말하기 전에 부르지 않는다. confirm·exclude·pending 은 기준(principle)만.
+    """사용자가 말한 결정을 항목에 저장한다. 사용자가 말하기 전에 부르지 않는다. confirm·exclude·pending 은 판단 종류(semantic_kind principle) 항목만.
     confirm 결과의 promotion 은 승격 조건 충족 여부(사실)일 뿐 — 미충족이어도 저장되고, 사용자에게 그대로 알린다."""
     return db.item_decide(uid_of(ctx), item_id, expected_revision, proposal_id or None, action, history_id)
 

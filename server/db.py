@@ -3534,6 +3534,9 @@ def _axis_object(c, uid):
     return r["id"] if r else None
 
 
+_ME_STD = {k: contract.std_id_of(o) for k, o in (("principle", "principles"), ("decision", "decision_events"), ("axis", "axes"))}   # app.html ME_STD 와 같은 매핑
+
+
 def me_stats(uid):
     """「나」 통계 — 전체 범위(페이징 무관), 읽기만. 반환
     {"axes": [{id, code, title, items, records, readings, n}],   # 축 = 분류 역할 오브젝트의 적용·미보관 항목, 코드 순(→ 만든 순 → id)
@@ -3543,14 +3546,17 @@ def me_stats(uid):
     축 건수 = 그 축에 **직접** 연결된 고유 항목(자기 자신 제외·적용·미보관) + 고유 기록(record_attach axes, 지운 기록 제외) + 읽기 자료(②-d 전 0).
     한 글이 두 축에 붙으면 각 축에서 1. 활동은 축 건수에 넣지 않는다.
     히트맵 날짜 = 기록 COALESCE(source_date, kst(source_created_at)) · 활동 occurred_on(현재 판·active). 둘 다 없는 기록은 빠진다(created 대체 없음).
-    kinds: principle·decision = semantic_kind principle·event 의 적용·미보관 항목 전체 · axis = 분류 역할 오브젝트 항목 ·
-    custom = 그 밖의 적용·미보관 항목 · records = 지우지 않은 기록 · readings = 0(②-d 전) · people·sources = 행 수."""
+    kinds: 「나」 하위 탭과 같은 기준(정의의 std_id — app.html ME_STD) — principle·decision·axis = std:principles·std:decision_events·std:axes
+    정의의 적용·미보관 항목 · custom = 그 밖의 미보관 정의(std_id 없음 포함)의 적용·미보관 항목 · records = 지우지 않은 기록 ·
+    readings = 0(②-d 전) · people·sources = 행 수. semantic_kind 로 나누지 않는다(편입 전 원작자 정의 = semantic_kind principle 인 커스텀).
+    waiting.principles_pending = std:principles 정의의 확정 전(pending) 항목(링크 #_me/principle 과 같은 기준).
+    축 띠(axes)만 분류 역할 오브젝트 기준이다."""
     import activity, imports   # 둘 다 db 를 가져다 쓴다 — 모듈 맨 위에서 가져오면 순환
     with tx() as c:
         ax_obj = _axis_object(c, uid)
-        live = ("SELECT i.id, i.object_id, o.semantic_kind FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+        live = ("SELECT i.id, i.object_id, o.std_id, o.archived_at AS def_archived FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
                 "WHERE i.user_id=%(uid)s AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL")
-        a = {"uid": uid, "ax": ax_obj}
+        a = {"uid": uid, "ax": ax_obj, **{f"std_{k}": v for k, v in _ME_STD.items()}, "stds": list(_ME_STD.values())}
         axes = [] if ax_obj is None else [dict(r) for r in _all(c, f"""
             WITH live AS ({live})
             SELECT x.id, x.code, x.title,
@@ -3577,17 +3583,17 @@ def me_stats(uid):
             d = frm + _dt.timedelta(days=i)
             cells.append({"d": d.isoformat(), "records": rec.get(d, 0), "activities": act.get(d, 0)})
         k = _one(c, f"""WITH live AS ({live}) SELECT
-            (SELECT count(*) FROM live WHERE semantic_kind='principle' AND object_id IS DISTINCT FROM %(ax)s) AS principle,
-            (SELECT count(*) FROM live WHERE semantic_kind='event' AND object_id IS DISTINCT FROM %(ax)s) AS decision,
-            (SELECT count(*) FROM live WHERE object_id = %(ax)s) AS axis,
-            (SELECT count(*) FROM live WHERE semantic_kind NOT IN ('principle','event') AND object_id IS DISTINCT FROM %(ax)s) AS custom,
+            (SELECT count(*) FROM live WHERE std_id = %(std_principle)s) AS principle,
+            (SELECT count(*) FROM live WHERE std_id = %(std_decision)s) AS decision,
+            (SELECT count(*) FROM live WHERE std_id = %(std_axis)s) AS axis,
+            (SELECT count(*) FROM live WHERE (std_id IS NULL OR std_id <> ALL(%(stds)s)) AND def_archived IS NULL) AS custom,
             (SELECT count(*) FROM records WHERE user_id=%(uid)s AND deleted_at IS NULL AND trashed_at IS NULL) AS records,
             (SELECT count(*) FROM people WHERE user_id=%(uid)s AND trashed_at IS NULL) AS people,
             (SELECT count(*) FROM sources WHERE user_id=%(uid)s) AS sources,
             (SELECT count(*) FROM candidates cd JOIN records r ON r.user_id=cd.user_id AND r.id=cd.record_id AND r.deleted_at IS NULL
               AND r.trashed_at IS NULL WHERE cd.user_id=%(uid)s AND cd.decision='pending') AS candidates_pending,
             (SELECT count(*) FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id WHERE i.user_id=%(uid)s
-              AND o.semantic_kind='principle' AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL
+              AND o.std_id=%(std_principle)s AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL
               AND i.decision='pending') AS principles_pending""", a)
     kinds = {"principle": k["principle"], "decision": k["decision"], "axis": k["axis"], "custom": k["custom"],
              "records": k["records"], "readings": 0, "people": k["people"], "sources": k["sources"]}

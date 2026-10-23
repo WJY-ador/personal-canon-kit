@@ -8100,7 +8100,10 @@ async def test_pr1b_layout_stats():
                     rr = await _bi_post(tok, _bi_act(Dv, policy_revision=2, occurred_on=occ.isoformat() if occ else None, axes=axes))
                     assert rr.status_code == 201, rr.text
 
-            # ── 통계 ──
+            # ── 통계 ── 종류 = 정의의 std_id(하위 탭 기준). 위 셋은 표준 편입으로 친다(3773·4710행 선례 — SQL 로 std_id 만)
+            with db.tx() as c:
+                for oid, sid in ((PO, "std:principles"), (EO, "std:decision_events"), (AXO, "std:axes")):
+                    assert c.execute("UPDATE object_defs SET std_id=%s WHERE user_id=%s AND id=%s", (sid, U, oid)).rowcount == 1
             s = db.me_stats(U)
             assert set(s) == {"axes", "heatmap", "kinds", "waiting"}
             assert [(x["id"], x["code"]) for x in s["axes"]] == [(X0, "AX-0"), (X1, "AX-1"), (X2, "AX-2")], s["axes"]
@@ -8135,7 +8138,23 @@ async def test_pr1b_layout_stats():
             assert not any(x["records"] or x["activities"] for x in so["heatmap"]["cells"])
             OAX = _ux_obj(O, "axes", "collection")
             OX = _ux_item(O, OAX, "AX-0", "남의 축")
-            assert [x["id"] for x in db.me_stats(O)["axes"]] == [OX] and db.me_stats(O)["kinds"]["axis"] == 1
+            so = db.me_stats(O)   # 축 띠 = 분류 역할(key axes) 기준 그대로 · kinds = std_id 기준 — 편입 전 축 정의 항목은 커스텀
+            assert [x["id"] for x in so["axes"]] == [OX] and (so["kinds"]["axis"], so["kinds"]["custom"]) == (0, 1), so["kinds"]
+            # 편입 전 기준 정의(semantic_kind principle, std_id 없음) = 커스텀 · 확정 전 기준 아님(하위 탭 기준과 같은 숫자)
+            ORO = _ux_obj(O, "rules_ux", "principle")
+            _ux_item(O, ORO, "RU-0", "편입 전 기준")
+            so = db.me_stats(O)
+            assert (so["kinds"]["principle"], so["kinds"]["custom"], so["waiting"]["principles_pending"]) == (0, 2, 0), (so["kinds"], so["waiting"])
+            with db.tx() as c:
+                c.execute("UPDATE object_defs SET std_id='std:principles' WHERE user_id=%s AND id=%s", (O, ORO))
+            so = db.me_stats(O)
+            assert (so["kinds"]["principle"], so["kinds"]["custom"], so["waiting"]["principles_pending"]) == (1, 1, 1), (so["kinds"], so["waiting"])
+            # 보관한 커스텀 정의의 항목 = 커스텀에서 빠진다(탭은 미보관 정의만 보인다)
+            ONO = _ux_obj(O, "notes_ux", "collection")
+            _ux_item(O, ONO, "NT-0", "보관될 메모")
+            assert db.me_stats(O)["kinds"]["custom"] == 2
+            db.definition_archive(O, ONO)
+            assert db.me_stats(O)["kinds"]["custom"] == 1
             with db.tx() as c:
                 assert c.execute("SELECT count(*) AS n FROM user_roles WHERE user_id=%s", (O,)).fetchone()["n"] == 0, "통계는 역할 행을 안 쓴다"
             site.dev_user = "other@example.com"
@@ -10561,7 +10580,9 @@ def test_trash2_sessions():
                 assert res[1] == "NOT-IN-TRASH" and row["trashed_at"] is None, res
                 db.trash_move(U, "stack_session", str(s4))
             else:
-                assert res[0] == "TRASH-EXPIRED" and res[1]["purge_requested"] and row["purge_at"] <= db.now(), res
+                with db.tx() as c:   # DB 시각으로 비교 — db.now() 는 초 절삭이라 같은 초 안이면 purge_at 보다 이르다
+                    due = c.execute("SELECT %s <= statement_timestamp() AS ok", (row["purge_at"],)).fetchone()["ok"]
+                assert res[0] == "TRASH-EXPIRED" and res[1]["purge_requested"] and due, res
                 break
         # 휴지통 작업은 열린 작업 수에 안 든다
         with db.tx() as c:
