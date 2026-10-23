@@ -663,10 +663,12 @@ SOURCE_DELETED = ("trash", "purged")
 def _source_deleted(c, uid, stream_id, original_id):
     """원천 삭제 상태 — None | "trash" | "purged". 쿼리 1번(대응표 UNIQUE 앞부분 인덱스).
     trash = 현재 판(is_current_applied)의 결과가 휴지통 — 활동은 모든 판이 함께 옮겨지고, 승인한 기록은 승인마다 새 기록이라
-    옛 판의 기록만 휴지통이면 원천은 살아 있다(현재 결과까지 막지 않는다). purged = 대상 없는 state=deleted 행만 남음(현재 판도 없다)."""
+    옛 판의 기록만 휴지통이면 원천은 살아 있다(현재 결과까지 막지 않는다). purged = 결과를 영구 삭제한 표식(deleted_target_id 있음)이
+    있고 대상 있는 행이 없음. 휴지통 PR-2: 영구 삭제한 승인 대기(state=deleted, deleted_target_id NULL)는 원천을 막지 않는다 —
+    승인 대기는 휴지통 중에도 같은 원본의 새 개정을 받는다(r4 §4)."""
     r = _one(c, "SELECT bool_or(e.is_current_applied AND (a.trashed_at IS NOT NULL OR rec.trashed_at IS NOT NULL "
                 "OR it.trashed_at IS NOT NULL)) AS trash, "
-                "bool_or(e.state='deleted') AS gone, "
+                "bool_or(e.state='deleted' AND e.deleted_target_id IS NOT NULL) AS gone, "
                 "bool_or(num_nonnulls(e.target_activity_id, e.target_record_id, e.target_item_id, e.target_object_id) > 0) AS has_target "
                 "FROM import_entries e LEFT JOIN activities a ON a.user_id=e.user_id AND a.id=e.target_activity_id "
                 "LEFT JOIN records rec ON rec.user_id=e.user_id AND rec.id=e.target_record_id "
@@ -797,6 +799,12 @@ def _apply_activity(c, dev, req, latest, current, req_sha, proj_sha, nbytes):
     return _insert_entry(c, dev, req, latest, req_sha, proj_sha, "applied", True, activity_id=aid)
 
 
+def _pending_load(c, uid):
+    """승인 대기 용량에 드는 활성 대기 {n, b} — pending·만료 전·휴지통 아님(수신·휴지통 복원이 같은 기준)."""
+    return _one(c, "SELECT count(*) AS n, COALESCE(sum(payload_bytes), 0) AS b FROM import_entries WHERE user_id=%s AND state='pending' "
+                   "AND expires_at > now() AND trashed_at IS NULL", (uid,))
+
+
 def _receive_self(c, dev, req, latest, current, req_sha, proj_sha):
     uid = dev["user_id"]
     payload = _pending_payload(req)
@@ -816,15 +824,18 @@ def _receive_self(c, dev, req, latest, current, req_sha, proj_sha):
     if latest:
         c.execute("UPDATE import_entries SET is_latest_received=false WHERE user_id=%s AND id=%s", (uid, latest["id"]))
     # 같은 원본의 옛 대기 개정은 승인할 수 없다 — 제외(superseded)로 닫고 본문을 지운다. 이미 승인한 판은 그대로
+    # 휴지통 PR-2: 휴지통 대기 행은 덮어쓰지 않는다(본문·기한 보존, 새 대기와 공존 — 최신 표시만 새 판으로 넘어가 복원이 INBOX-NOT-LATEST)
     c.execute("UPDATE import_entries SET state='excluded', payload=NULL, payload_bytes=0, resolved_at=now(), resolved_by='superseded' "
-              "WHERE user_id=%s AND stream_id=%s AND original_id=%s AND state='pending'", (uid, dev["id"], req["original_id"]))
+              "WHERE user_id=%s AND stream_id=%s AND original_id=%s AND state='pending' AND trashed_at IS NULL",
+              (uid, dev["id"], req["original_id"]))
     if current and bytes(current["projection_sha256"]) == proj_sha:   # 승인한 판과 반영 내용이 같다 — 대기 없이 noop
         c.execute("UPDATE import_entries SET is_current_applied=false WHERE user_id=%s AND id=%s", (uid, current["id"]))
         return _insert_entry(c, dev, req, latest, req_sha, proj_sha, "noop", True, record_id=current["target_record_id"])
-    p = _one(c, "SELECT count(*) AS n, COALESCE(sum(payload_bytes), 0) AS b FROM import_entries WHERE user_id=%s AND state='pending' "
-                "AND expires_at > now()", (uid,))   # 만료됐지만 아직 파기 전(expire_pending 은 하루 1회)인 행은 세지 않는다
+    # 만료됐지만 아직 파기 전(expire_pending 은 하루 1회)인 행은 세지 않는다. 휴지통 PR-2: 휴지통 대기 행도 세지 않는다(활성 대기만 —
+    # [삭제]로 자리가 난다, r4 §4). 남용은 하루 접수 예산(카운터, 삭제·복원으로 회복 없음)과 168h 기한이 막고, 복원은 이 용량을 다시 검사한다
+    p = _pending_load(c, uid)
     if p["n"] + 1 > PENDING_MAX or p["b"] + pbytes > PENDING_MAX_BYTES:
-        raise CrmError("INBOX-FULL", "승인 대기가 가득 찼어요.", "웹 「승인 대기」에서 승인하거나 제외한 뒤 다시 보내세요.")
+        raise CrmError("INBOX-FULL", "승인 대기가 가득 찼어요.", "웹 「승인 대기」에서 정리한 뒤 다시 보내세요.")
     return _insert_entry(c, dev, req, latest, req_sha, proj_sha, "pending", False, payload=payload, pbytes=pbytes)
 
 
@@ -942,7 +953,8 @@ def entry_status(authorization: str, import_id: str) -> dict:
     if not e:
         raise _nf("그 접수")
     if gone or e["state"] == DELETED_STATE:   # 삭제된 원천의 접수 행은 대상 ID 를 돌려주지 않는다
-        return _deleted_resp(e, gone, True)   # source_deleted null = 차단됐던 전송인데 원천은 그 뒤 복원됐다
+        return _deleted_resp(e, gone, True)   # source_deleted null = 차단됐던 전송인데 원천은 그 뒤 복원됐다, 또는 휴지통에서
+        # 영구 삭제한 승인 대기(휴지통 PR-2 — 원천을 막지 않는다). PC 는 둘 다 accepted 로 처리한다(재시도 없음)
     return _resp(e, True)
 
 
@@ -956,7 +968,8 @@ INBOX_STATES = ("pending", "applied", "noop", "excluded", "expired", "all")
 _INBOX_SQL = ("SELECT e.id,e.kind,e.state,e.payload,e.payload_bytes,e.expires_at,e.received_at AS created,e.received_at,e.resolved_at,"
               "e.resolved_by,e.is_latest_received,e.target_record_id,e.execution,(e.expires_at > now()) AS alive,s.id AS device_id,"
               "s.label AS device_label FROM import_entries e JOIN import_streams s ON s.user_id=e.user_id AND s.id=e.stream_id "
-              "WHERE e.user_id=%s AND e.kind IN ('self_text','self_summary') AND e.state <> 'deleted'")   # 휴지통 PR-1: 원천 차단 행은 목록·상세에 없다
+              "WHERE e.user_id=%s AND e.kind IN ('self_text','self_summary') AND e.state <> 'deleted' AND e.trashed_at IS NULL")
+# 휴지통 PR-1: 원천 차단·영구 삭제 행(state=deleted)은 목록·상세에 없다 · PR-2: 휴지통 대기 행도 없다(본문은 휴지통 상세 db.trash_get 만)
 
 
 def _inbox_out(r, body=False):
@@ -979,10 +992,10 @@ def _inbox_out(r, body=False):
 
 
 def inbox_count(uid: str) -> int:
-    """승인할 수 있는(최신·pending·만료 전) 대기 수 — 「나」 홈 [승인 대기 N]."""
+    """승인할 수 있는(최신·pending·만료 전·휴지통 아님) 대기 수 — 「나」 홈 [승인 대기 N]. 휴지통 대기는 활성 대기로 세지 않는다(r4 §4)."""
     with tx() as c:
         return _one(c, "SELECT count(*) AS n FROM import_entries WHERE user_id=%s AND state='pending' AND is_latest_received "
-                       "AND expires_at > now()", (uid,))["n"]
+                       "AND expires_at > now() AND trashed_at IS NULL", (uid,))["n"]
 
 
 def inbox_list(uid: str, state: str = "pending", cursor: str = "", limit: int = 50) -> dict:
@@ -1012,10 +1025,12 @@ def inbox_get(uid: str, import_id: str) -> dict:
 
 
 def _inbox_lock(c, uid, import_id):
-    r = _one(c, f"SELECT {_ENTRY_COLS},(expires_at > now()) AS alive FROM import_entries WHERE user_id=%s AND id=%s "
+    r = _one(c, f"SELECT {_ENTRY_COLS},(expires_at > now()) AS alive,trashed_at FROM import_entries WHERE user_id=%s AND id=%s "
                 "AND kind IN ('self_text','self_summary') FOR UPDATE", (uid, str(import_id or "")))
-    if not r:
+    if not r or r["state"] == DELETED_STATE:
         raise _nf("그 승인 대기 글")
+    if r["trashed_at"] is not None:   # 휴지통 PR-2 — 휴지통 대기는 승인·제외하지 않는다(복원 뒤에)
+        raise db._in_trash("그 승인 대기 글")
     if r["state"] != "pending":
         raise CrmError("INBOX-RESOLVED", "이미 처리한 승인 대기예요.", "목록을 새로 고치세요.")
     return r
@@ -1064,7 +1079,8 @@ def inbox_approve(uid: str, import_id: str) -> dict:
 
 
 def inbox_exclude(uid: str, import_id: str) -> dict:
-    """제외(웹만, 스위치 무관) — pending → excluded, payload 삭제. 반환 {"import_id", "state": "excluded"}."""
+    """제외(웹만) — pending → excluded, payload 삭제. 반환 {"import_id", "state": "excluded"}.
+    휴지통 스위치 켜짐이면 웹이 먼저 ACTION-RETIRED 로 막는다(옛 동작을 새 의미로 번역하지 않는다 — [삭제]는 db.trash_move kind=pending)."""
     with tx() as c:
         db._user_lock(c, uid)
         e = _inbox_lock(c, uid, import_id)
@@ -1081,10 +1097,130 @@ def counters_purge() -> int:
 
 
 def expire_pending() -> int:
-    """만료 지난 대기 → expired(payload 삭제). 서버 시작·매일(main.purge_once). 반환 건수."""
+    """만료 지난 대기 → expired(payload 삭제). 서버 시작·매일(main.purge_once). 반환 건수.
+    휴지통 대기는 건너뛴다(휴지통 동안 대기시간이 멈춘다 — 복원 때 남은 만큼 새 기한, 휴지통 기한이 지나면 trash_purge_due 가 정리)."""
     with tx() as c:
         return c.execute("UPDATE import_entries SET state='expired', payload=NULL, payload_bytes=0, resolved_at=now(), "
-                         "resolved_by='expiry' WHERE state='pending' AND expires_at <= now()").rowcount
+                         "resolved_by='expiry' WHERE state='pending' AND expires_at <= now() AND trashed_at IS NULL").rowcount
+
+
+# ── 휴지통 PR-2: 승인 대기 글 (r4 §4) ─────────────────────────
+# db.trash_move·trash_restore·trash_purge(kind="pending") 가 사용자 잠금을 잡은 트랜잭션 안에서 trash_op 를 부른다(활동 activity.trash_op 와
+# 같은 꼴). 물리 정리 = trash_purge_due(main 정리 회차). 휴지통 목록·상세는 db(trash_list·trash_get). 열은 다른 대상과 같은 trashed_at·purge_at·last_trashed_at.
+# 휴지통 동안 업무 상태 pending·본문(payload)·expires_at 을 그대로 둔다. expires_at 은 멈춘 값이라 남은 대기시간 = expires_at - trashed_at
+# (삭제 당시 잔여), 복원 = expires_at := 지금 + 그 잔여. 휴지통 행은 목록·상세·승인·제외·자동 만료·활성 개수·같은 원본 대체(superseded)에서
+# 빠진다. 승인 대기 용량(PENDING_MAX 행·바이트)도 활성 대기만 센다 — [삭제]로 자리가 나고, 복원이 용량을 다시 검사한다(넘으면 INBOX-FULL,
+# 양쪽 불변). 하루 접수 예산(import_counters)은 손대지 않는다(삭제·복원·영구 삭제로 회복 없음).
+# 같은 원본의 새 개정은 휴지통 중에도 받는다(새 대기와 공존, 원천 차단 아님) — 그러면 휴지통 행은 최신이 아니라 복원 = INBOX-NOT-LATEST
+# (양쪽 불변). 영구 삭제 = state 'deleted'(PR-1 삭제 종료 상태 재사용 — excluded·expired 아님) · 본문 NULL · trashed_at·purge_at NULL ·
+# last_trashed_at 남김 · deleted_target_id NULL(결과 표식 아님 — 원천을 막지 않는다, _source_deleted). 대응표 행은 남는다(판 체인 — 복원 뒤·
+# 영구 삭제 뒤 PC 의 다음 개정이 이어진다).
+# 승인 대기 본문은 public 이라 휴지통에서도 운영 백업에 들어간다(tmp 의 백업 제외는 확정 전 정리 텍스트만).
+
+def _trash_lock(c, uid, import_id):
+    r = _one(c, f"SELECT {_ENTRY_COLS},trashed_at,purge_at,last_trashed_at,{db._TNOW} AS now FROM import_entries "
+                "WHERE user_id=%(uid)s AND id=%(id)s AND kind IN ('self_text','self_summary') FOR UPDATE",
+             {"now": db.TRASH_CLOCK, "uid": uid, "id": str(import_id or "")})
+    if not r or r["state"] == DELETED_STATE:   # 원천 차단 행·영구 삭제 끝난 대기 = 없음
+        raise _nf("그 승인 대기 글")
+    return r
+
+
+def trash_op(c, uid, op, import_id):
+    """op ∈ move·restore·purge — db._trash_do 와 같은 반환 꼴(kind="pending"). 호출자가 users 행을 잠갔다.
+    move: pending·대기 만료 전만(이미 처리 = INBOX-RESOLVED, 만료 = INBOX-EXPIRED — 뒤늦은 삭제로 보관을 새로 시작하지 않는다). 중복 = 그 사건 그대로.
+    move 반환에 "remaining_seconds"(멈춘 남은 대기시간, 정수 초).
+    restore: 기한 전만(TRASH-EXPIRED·NOT-IN-TRASH) · 같은 원본에 더 새 개정이 왔으면 INBOX-NOT-LATEST · 복원하면 승인 대기 용량을 넘으면
+    INBOX-FULL(둘 다 양쪽 불변). 새 대기 만료 = 지금 + 잔여 → "expires_at".
+    purge: 기한 전이면 purge_at = 지금(즉시 복원 불가), 이미 복원 불가면 같은 결과. 본문 제거는 trash_purge_due."""
+    r = _trash_lock(c, uid, import_id)
+    a = {"now": db.TRASH_CLOCK, "uid": uid, "id": r["id"]}
+    if op == "move":
+        if r["trashed_at"] is not None:   # 중복 삭제 = 기존 결과(기한 연장 0)
+            return {"kind": "pending", "id": r["id"], "trashed_at": _j(r["trashed_at"]), "purge_at": _j(r["purge_at"]),
+                    "changed": False, "restorable": db._trash_restorable(r),
+                    "remaining_seconds": int((r["expires_at"] - r["trashed_at"]).total_seconds())}
+        if r["state"] != "pending":
+            raise CrmError("INBOX-RESOLVED", "이미 처리한 승인 대기예요.", "목록을 새로 고치세요.")
+        if r["expires_at"] <= r["now"]:
+            raise CrmError("INBOX-EXPIRED", "보관 기간이 지난 승인 대기예요.")
+        n = _one(c, f"UPDATE import_entries SET trashed_at={db._TNOW}, last_trashed_at={db._TNOW}, "
+                    f"purge_at={db._TNOW} + make_interval(hours => {db.TRASH_HOURS}) "
+                    "WHERE user_id=%(uid)s AND id=%(id)s AND state='pending' AND trashed_at IS NULL RETURNING trashed_at, purge_at", a)
+        return {"kind": "pending", "id": r["id"], "trashed_at": _j(n["trashed_at"]), "purge_at": _j(n["purge_at"]),
+                "changed": True, "restorable": True, "remaining_seconds": int((r["expires_at"] - n["trashed_at"]).total_seconds())}
+    if op not in ("restore", "purge"):
+        raise ValueError(op)
+    if r["trashed_at"] is None:
+        raise db._not_in_trash()
+    if not db._trash_restorable(r):
+        if op == "purge":   # 이미 복원 불가(기한 지남·요청함) — 같은 결과
+            return {"kind": "pending", "id": r["id"], "purge_requested": True, "changed": False}
+        raise db._trash_expired()
+    if op == "purge":
+        c.execute(f"UPDATE import_entries SET purge_at={db._TNOW} WHERE user_id=%(uid)s AND id=%(id)s", a)
+        return {"kind": "pending", "id": r["id"], "purge_requested": True, "changed": True}
+    if not r["is_latest_received"]:   # 휴지통 중 같은 원본의 새 개정이 왔다 — 옛 판은 승인할 수 없다(새 대기를 몰래 대체하지 않는다)
+        raise CrmError("INBOX-NOT-LATEST", "같은 원본의 더 새 개정이 와 있어 복원할 수 없어요.",
+                       "새 개정은 「승인 대기」에서 확인하세요. 이 글은 휴지통에 그대로 있어요.")
+    p = _pending_load(c, uid)   # 휴지통 행은 용량에 안 센다 — 복원으로 용량을 넘기지 않는다(양쪽 불변)
+    if p["n"] + 1 > PENDING_MAX or p["b"] + r["payload_bytes"] > PENDING_MAX_BYTES:
+        raise CrmError("INBOX-FULL", "승인 대기가 가득 차서 복원할 수 없어요.",
+                       "「승인 대기」에서 승인하거나 삭제한 뒤 다시 복원하세요. 이 글은 휴지통에 그대로 있어요.")
+    n = _one(c, f"UPDATE import_entries SET trashed_at=NULL, purge_at=NULL, expires_at={db._TNOW} + (expires_at - trashed_at) "
+                "WHERE user_id=%(uid)s AND id=%(id)s RETURNING expires_at", a)
+    return {"kind": "pending", "id": r["id"], "restored": True, "changed": True, "expires_at": _j(n["expires_at"])}
+
+
+def trash_purge_due(seconds=None, limit=None) -> dict:
+    """휴지통 대기 물리 정리 한 회차 — {"inbox": 정리 수, "failed": 실패 수, "left": 상한으로 남겼나}. 예외를 밖으로 내지 않는다(로그는 건수·예외 이름만).
+    대상 = db._TRASH_DUE(기한 지남 · 오늘(KST) 옮긴 것 제외) 인 pending 휴지통 행. 행 하나 = 트랜잭션 하나 + statement_timeout.
+    탐색은 (purge_at, user_id, id) 커서로 앞으로만 — 한 번에 db.TRASH_BATCH 행만 읽고, 실패한 행을 같은 회차에서 다시 집지 않는다(다음 회차).
+    정리 = UPDATE(행 삭제 아님 — 판 체인): state 'deleted' · payload NULL · resolved_by 'user' · trashed_at·purge_at NULL(부분 인덱스에서 빠진다)
+    · last_trashed_at 은 남는다(영구 삭제한 대기 표식 — 원천 차단 행과 구별)."""
+    import time
+    deadline = time.monotonic() + (db.TRASH_PURGE_SECONDS if seconds is None else seconds)
+    left = db.TRASH_PURGE_LIMIT if limit is None else limit
+    done, failed, after, stop = 0, 0, None, False
+    due = f"{db._TRASH_DUE} AND state='pending'"
+    while not stop:
+        if left <= 0 or time.monotonic() >= deadline:
+            stop = True
+            break
+        a = {"now": db.TRASH_CLOCK, "n": min(db.TRASH_BATCH, left)}
+        cur = ""
+        if after:
+            cur = " AND purge_at >= %(ap)s AND (purge_at, user_id, id) > (%(ap)s, %(au)s, %(ai)s)"
+            a["ap"], a["au"], a["ai"] = after
+        try:
+            with tx() as c:
+                c.execute(f"SET LOCAL statement_timeout = '{db.TRASH_STMT_TIMEOUT}'")
+                rows = _all(c, f"SELECT user_id, id, purge_at FROM import_entries WHERE {due}{cur} "
+                               "ORDER BY purge_at, user_id, id LIMIT %(n)s", a)
+        except Exception as e:
+            print(f"[trash] 승인 대기 정리 대상 조회 실패 — 다음 회차: {type(e).__name__}", flush=True)
+            break
+        if not rows:
+            break
+        for r in rows:
+            if left <= 0 or time.monotonic() >= deadline:
+                stop = True
+                break
+            left -= 1
+            after = (r["purge_at"], r["user_id"], r["id"])
+            try:
+                with tx() as c:
+                    c.execute(f"SET LOCAL statement_timeout = '{db.TRASH_STMT_TIMEOUT}'")
+                    db._purge_fault("import_entries", r["id"])
+                    if c.execute("UPDATE import_entries SET state='deleted', payload=NULL, payload_bytes=0, trashed_at=NULL, "
+                                 "purge_at=NULL, resolved_at=COALESCE(resolved_at, now()), resolved_by='user' "
+                                 f"WHERE user_id=%(uid)s AND id=%(id)s AND {due}",   # 그사이 복원됐으면 0행 — 건너뛴다
+                                 {"now": db.TRASH_CLOCK, "uid": r["user_id"], "id": r["id"]}).rowcount:
+                        done += 1
+            except Exception as e:
+                failed += 1
+                print(f"[trash] 승인 대기 하나 정리 실패 — 다음 회차에 다시: {type(e).__name__}", flush=True)
+    return {"inbox": done, "failed": failed, "left": stop}
 
 
 # ── board 이전 기본 연산 (migrate_cli.py) ────────────────────

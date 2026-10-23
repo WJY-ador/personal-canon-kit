@@ -4,6 +4,7 @@
 가드: server/.env 를 읽지 않는다(운영 DB 폴백 사고 방지) — DATABASE_URL 을 명시해야 하고, 호스트는 로컬, DB 이름은 crm_test 로 시작해야 한다.
 정본: notes 계획 §4 · astra r4 §3(활동)·§7(사람·후보·축)·§8(정리)·§12 PR-1 행. 데이터 상태(행·열)까지 본다.
 """
+import datetime as dt
 import hashlib
 import json
 import os
@@ -553,6 +554,281 @@ def test_admin_and_grounds(ctx):
           "후보 정리(참조 먼저·본문 제거·기준 유지)")
 
 
+# ── PR-2: 승인 대기 글 (r4 §4·§12 PR-2 행) — pending 보존·잔여시간 정지·목록/승인/만료/개수/대체 제외·용량·충돌·경합·스위치 꺼짐 ──
+ENTRY_KEYS = "state,payload,payload_bytes,expires_at,trashed_at,purge_at,last_trashed_at,is_latest_received,resolved_by,deleted_target_id"
+
+
+def entry(uid, iid):
+    return rows(f"SELECT {ENTRY_KEYS} FROM import_entries WHERE user_id=%s AND id=%s", (uid, iid))[0]
+
+
+def db_now():
+    return rows("SELECT now() AS t")[0]["t"]
+
+
+def pend(tok, dev, pr, original=None, revision=None, prev=None, **kw):
+    """승인 대기 1건 — (import_id, original, revision)."""
+    o, v = original or _o(), revision or _v()
+    st, b = send(tok, text_req(dev, o, v, prev, policy_revision=pr, **kw))
+    assert st == 201 and b["state"] == "pending", (st, b)
+    return b["import_id"], o, v
+
+
+def frozen(uid, iid):
+    """합성 — 2시간 전에 휴지통으로 옮긴 대기, 남은 대기 1시간(멈춘 expires_at 은 이미 지금보다 과거)."""
+    run_sql("UPDATE import_entries SET trashed_at=now()-interval '2 hours', last_trashed_at=now()-interval '2 hours', "
+            "purge_at=now()+interval '166 hours', expires_at=now()-interval '1 hour' WHERE user_id=%s AND id=%s", (uid, iid))
+
+
+def inbox_ids(uid, state="all"):
+    return {e["id"] for e in imports.inbox_list(uid, state, limit=100)["entries"]}
+
+
+def test_pending_hide_and_paths(ctx):
+    uid, dev, tok, ax, pr = ctx
+    for k in (("device", "day", "self"), ("user", "day", "self")):   # 하루 접수 예산은 이 절 밖(한 프로세스 안에서만)
+        imports.LIMITS[k] = (100000, None)
+    e1, o1, v1 = pend(tok, dev, pr, body="휴지통 대기 본문 하나")
+    before = entry(uid, e1)
+    n0 = imports.inbox_count(uid)
+    m = db.trash_move(uid, "pending", e1)
+    assert m["changed"] and m["kind"] == "pending", m
+    a = entry(uid, e1)
+    assert a["state"] == "pending" and a["payload"] == before["payload"] and a["expires_at"] == before["expires_at"], \
+        "휴지통 동안 pending·본문·expires_at 그대로"
+    assert a["trashed_at"] is not None and a["last_trashed_at"] == a["trashed_at"]
+    assert (a["purge_at"] - a["trashed_at"]).total_seconds() == db.TRASH_HOURS * 3600
+    m2 = db.trash_move(uid, "pending", e1)   # 중복 = 같은 사건(연장 0)
+    assert not m2["changed"] and entry(uid, e1)["purge_at"] == a["purge_at"], m2
+    # 목록·상세·개수·승인·제외에서 빠진다
+    assert e1 not in inbox_ids(uid, "pending") and e1 not in inbox_ids(uid, "all")
+    expect("NOT-FOUND", imports.inbox_get, uid, e1)
+    assert imports.inbox_count(uid) == n0 - 1
+    os.environ["CRM_INBOX_APPROVALS_ENABLED"] = "1"
+    expect("IN-TRASH", imports.inbox_approve, uid, e1)
+    expect("IN-TRASH", imports.inbox_exclude, uid, e1)   # 휴지통 대기는 제외 함수로도 손대지 않는다(켜짐이면 웹이 먼저 ACTION-RETIRED)
+    assert entry(uid, e1)["state"] == "pending" and entry(uid, e1)["payload"] is not None
+    # 휴지통 상세만 본문
+    g = db.trash_get(uid, "pending", e1)
+    assert "휴지통 대기 본문 하나" in json.dumps(g, ensure_ascii=False, default=str), g
+    assert e1 in {i["id"] for i in db.trash_list(uid, "pending")["items"]}
+    # 자동 만료는 휴지통 행을 건너뛴다(대기시간 정지) — 남은 1시간인 채로 멈춘 expires_at 이 지금보다 과거여도
+    frozen(uid, e1)
+    imports.expire_pending()
+    assert entry(uid, e1)["state"] == "pending" and entry(uid, e1)["payload"] is not None, "휴지통 대기는 만료되지 않는다"
+    r = db.trash_restore(uid, "pending", e1)
+    b = entry(uid, e1)
+    left = (b["expires_at"] - db_now()).total_seconds()
+    assert r["restored"] and b["trashed_at"] is None and b["purge_at"] is None and 3500 < left <= 3600, (r, left)
+    assert r["expires_at"] and e1 in inbox_ids(uid, "pending") and imports.inbox_count(uid) == n0
+    # 대기 만료가 지난 글은 삭제로 휴지통을 시작하지 못한다
+    e2, _, _ = pend(tok, dev, pr)
+    run_sql("UPDATE import_entries SET expires_at=now()-interval '1 second' WHERE user_id=%s AND id=%s", (uid, e2))
+    expect("INBOX-EXPIRED", db.trash_move, uid, "pending", e2)
+    assert entry(uid, e2)["trashed_at"] is None
+    # 처리 끝난 대기(제외·승인)는 옮기지 않는다
+    imports.expire_pending()
+    expect("INBOX-RESOLVED", db.trash_move, uid, "pending", e2)
+    print("OK — 승인 대기 휴지통: pending·본문·expires_at 보존 · 중복 삭제 연장 0 · 목록·상세·개수·승인·제외 차단 · 휴지통 상세만 본문 · "
+          "자동 만료 건너뜀 · 복원 = 지금 + 잔여 · 만료·처리 끝난 글은 삭제 불가")
+    return e1, o1, v1
+
+
+def test_pending_same_source(ctx, e1, o1, v1):
+    uid, dev, tok, ax, pr = ctx
+    db.trash_move(uid, "pending", e1)
+    a = entry(uid, e1)
+    # 휴지통 중 같은 원본의 새 개정 — 새 대기와 공존(옛 휴지통 행 덮어쓰기·superseded 없음, 원천 차단 아님)
+    e3, _, v3 = pend(tok, dev, pr, o1, prev=v1, body="새 개정 본문")
+    b = entry(uid, e1)
+    assert b["state"] == "pending" and b["payload"] == a["payload"] and b["expires_at"] == a["expires_at"] and b["resolved_by"] is None, \
+        "휴지통 본문을 superseded 로 지우지 않는다"
+    assert not b["is_latest_received"] and entry(uid, e3)["is_latest_received"]
+    # 복원 충돌 — 양쪽 그대로
+    snap = (entry(uid, e1), entry(uid, e3))
+    expect("INBOX-NOT-LATEST", db.trash_restore, uid, "pending", e1)
+    assert (entry(uid, e1), entry(uid, e3)) == snap, "복원 충돌이면 양쪽 본문·상태·기한 불변"
+    # 휴지통 중 또 새 개정 — 살아 있는 대기(e3)만 superseded
+    e4, _, v4 = pend(tok, dev, pr, o1, prev=v3)
+    assert entry(uid, e3)["state"] == "excluded" and entry(uid, e3)["resolved_by"] == "superseded"
+    assert entry(uid, e1)["state"] == "pending" and entry(uid, e1)["payload"] is not None
+    # 영구 삭제 요청 → 즉시 복원 불가 → (다음 날) 정리 = state deleted · 본문 NULL · 휴지통 열 NULL · last_trashed_at 남김 · 표식 ID 없음
+    assert db.trash_purge(uid, "pending", e1)["changed"]
+    expect("TRASH-EXPIRED", db.trash_restore, uid, "pending", e1)
+    assert not db.trash_purge(uid, "pending", e1)["changed"]
+    assert e1 not in {i["id"] for i in db.trash_list(uid, "pending")["items"]}
+    out = imports.trash_purge_due()
+    assert entry(uid, e1)["state"] == "pending", ("오늘 옮긴 행은 다음 날 정리", out)
+    shift_trash(uid, "import_entries", [e1], 1)
+    out = imports.trash_purge_due()
+    c = entry(uid, e1)
+    assert out["inbox"] >= 1 and out["failed"] == 0, out
+    assert c["state"] == "deleted" and c["payload"] is None and c["payload_bytes"] == 0 and c["trashed_at"] is None \
+        and c["purge_at"] is None and c["last_trashed_at"] is not None and c["deleted_target_id"] is None and c["resolved_by"] == "user", c
+    expect("NOT-FOUND", db.trash_restore, uid, "pending", e1)
+    assert e1 not in inbox_ids(uid, "all")
+    assert entry(uid, e4)["state"] == "pending", "같은 원본의 살아 있는 대기는 그대로"
+    # 영구 삭제한 대기가 최신이어도 원천을 막지 않는다 — PC 의 다음 개정 = 새 승인 대기(201)
+    e5, o5, v5 = pend(tok, dev, pr)
+    db.trash_move(uid, "pending", e5)
+    db.trash_purge(uid, "pending", e5)
+    shift_trash(uid, "import_entries", [e5], 1)
+    imports.trash_purge_due()
+    assert entry(uid, e5)["state"] == "deleted"
+    st, b = send(tok, text_req(dev, o5, _v(), v5, policy_revision=pr))
+    assert st == 201 and b["state"] == "pending", ("영구 삭제한 대기 뒤 다음 개정은 막지 않는다", st, b)
+    # 복원 뒤 다음 개정 = 기존 superseded 규칙
+    e6, o6, v6 = pend(tok, dev, pr)
+    db.trash_move(uid, "pending", e6)
+    db.trash_restore(uid, "pending", e6)
+    e7, _, _ = pend(tok, dev, pr, o6, prev=v6)
+    assert entry(uid, e6)["state"] == "excluded" and entry(uid, e6)["resolved_by"] == "superseded" and entry(uid, e7)["state"] == "pending"
+    print("OK — 같은 원본: 휴지통 중 새 개정 공존(덮어쓰기 0) · 복원 충돌 INBOX-NOT-LATEST 양쪽 불변 · 살아 있는 대기만 superseded · "
+          "영구 삭제 요청 즉시 복원 불가 · 정리 = deleted·본문 NULL(다음 날) · 영구 삭제 뒤 다음 개정 201 · 복원 뒤 다음 개정 superseded")
+
+
+def test_pending_clock(ctx):
+    """25일째 삭제 → 31일째 복원 = 36일째 대기 만료(r3 §2). 경계 = 복원 기한 미만만."""
+    uid, dev, tok, ax, pr = ctx
+    D = imports.PENDING_DAYS
+    e, _, _ = pend(tok, dev, pr)
+    eb, _, _ = pend(tok, dev, pr)
+    t0 = db_now()
+    run_sql("UPDATE import_entries SET received_at=%s, expires_at=%s + make_interval(days => %s) WHERE user_id=%s AND id = ANY(%s)",
+            (t0, t0, D, uid, [e, eb]))
+    day = dt.timedelta(days=1)
+    try:
+        db.TRASH_CLOCK = t0 + 25 * day
+        assert db.trash_move(uid, "pending", e)["remaining_seconds"] == 5 * 86400, "삭제 당시 남은 대기 5일"
+        db.trash_move(uid, "pending", eb)
+        a = entry(uid, e)
+        assert a["trashed_at"] == t0 + 25 * day and a["purge_at"] == t0 + 32 * day and a["expires_at"] == t0 + 30 * day, a
+        db.TRASH_CLOCK = t0 + 31 * day
+        r = db.trash_restore(uid, "pending", e)
+        assert entry(uid, e)["expires_at"] == t0 + 36 * day, ("31일째 복원 = 36일째 만료", entry(uid, e))
+        assert dt.datetime.fromisoformat(r["expires_at"]) == t0 + 36 * day, r
+        db.TRASH_CLOCK = t0 + 32 * day   # 복원 기한 = 32일째 — 같으면 불가
+        expect("TRASH-EXPIRED", db.trash_restore, uid, "pending", eb)
+        assert entry(uid, eb)["trashed_at"] is not None and entry(uid, eb)["state"] == "pending"
+        db.TRASH_CLOCK = t0 + 32 * day - dt.timedelta(seconds=1)
+        db.trash_restore(uid, "pending", eb)
+        assert entry(uid, eb)["expires_at"] == t0 + 37 * day - dt.timedelta(seconds=1)
+        # 복원 뒤 다시 삭제 = 새 168h, 대기 잔여는 초기화하지 않는다
+        db.TRASH_CLOCK = t0 + 33 * day
+        db.trash_move(uid, "pending", e)
+        a = entry(uid, e)
+        assert a["purge_at"] == t0 + 40 * day and a["expires_at"] - a["trashed_at"] == 3 * day, a
+    finally:
+        db.TRASH_CLOCK = None
+    print("OK — 시간: 25일째 삭제(휴지통 기한 32일째) → 31일째 복원 = 36일째 대기 만료 · 기한 경계 미만만 · 재삭제 = 새 168h·잔여 유지")
+
+
+def test_pending_quota(ctx):
+    """승인 대기 용량(PENDING_MAX 행·바이트) — 활성 대기만 센다([삭제]로 자리가 난다) · 복원이 용량을 넘기면 INBOX-FULL(양쪽 불변)
+    · 하루 접수 예산(카운터)은 삭제·복원으로 되돌리지 않는다."""
+    uid, dev, tok, ax, pr = ctx
+    e, _, _ = pend(tok, dev, pr)
+    keep, keep_b = imports.PENDING_MAX, imports.PENDING_MAX_BYTES
+
+    def self_used():
+        return rows("SELECT COALESCE(sum(n),0) AS n FROM import_counters WHERE user_id=%s AND bucket='self' AND period='day' "
+                    "AND scope_key='user'", (uid,))[0]["n"]
+    try:
+        live = rows("SELECT count(*) AS n FROM import_entries WHERE user_id=%s AND state='pending' AND trashed_at IS NULL "
+                    "AND expires_at > now()", (uid,))[0]["n"]
+        imports.PENDING_MAX = live
+        st, b = send(tok, text_req(dev, policy_revision=pr))
+        assert st == 429 and b["code"] == "INBOX-FULL", ("가득 찬 상태", st, b)
+        used = self_used()
+        db.trash_move(uid, "pending", e)
+        st, b = send(tok, text_req(dev, policy_revision=pr))
+        assert st == 201 and b["state"] == "pending", ("휴지통 행은 용량에 안 센다 — [삭제]로 자리가 난다", st, b)
+        e_new = b["import_id"]
+        assert self_used() == used + 1, "하루 예산은 접수마다 쓴다(삭제로 회복 없음)"
+        snap = (entry(uid, e), entry(uid, e_new))
+        x = expect("INBOX-FULL", db.trash_restore, uid, "pending", e)
+        assert "복원" in x.message and (entry(uid, e), entry(uid, e_new)) == snap, "복원이 용량을 넘기면 거절 · 양쪽 불변"
+        imports.PENDING_MAX = keep
+        b_live = rows("SELECT COALESCE(sum(payload_bytes),0) AS b FROM import_entries WHERE user_id=%s AND state='pending' "
+                      "AND trashed_at IS NULL AND expires_at > now()", (uid,))[0]["b"]
+        imports.PENDING_MAX_BYTES = b_live + entry(uid, e)["payload_bytes"] - 1   # 바이트도 같은 기준
+        expect("INBOX-FULL", db.trash_restore, uid, "pending", e)
+        assert entry(uid, e)["trashed_at"] is not None
+        imports.PENDING_MAX_BYTES = keep_b
+        before = self_used()
+        db.trash_restore(uid, "pending", e)
+        assert entry(uid, e)["trashed_at"] is None and self_used() == before, "삭제·복원은 하루 예산을 바꾸지 않는다"
+    finally:
+        imports.PENDING_MAX, imports.PENDING_MAX_BYTES = keep, keep_b
+    print("OK — 용량: 휴지통 대기는 PENDING_MAX(행·바이트)에 안 센다([삭제]로 자리) · 복원이 넘기면 INBOX-FULL·양쪽 불변 · "
+          "하루 접수 예산은 삭제·복원으로 회복·변경 없음")
+
+
+def test_pending_races(ctx):
+    """경합 — 승인 vs 삭제(하나만 성공, 데이터 모순 없음) · 만료 vs 복원(어느 순서든 같은 결과)."""
+    import concurrent.futures as cf
+    uid, dev, tok, ax, pr = ctx
+    os.environ["CRM_INBOX_APPROVALS_ENABLED"] = "1"
+
+    def _try(fn, *a):
+        try:
+            return "ok", fn(*a)
+        except db.CrmError as e:
+            return e.code, None
+    for _ in range(4):
+        e, _, _ = pend(tok, dev, pr)
+        with cf.ThreadPoolExecutor(2) as ex:
+            fa = ex.submit(_try, imports.inbox_approve, uid, e)
+            fm = ex.submit(_try, db.trash_move, uid, "pending", e)
+            ra, rm = fa.result(), fm.result()
+        r = entry(uid, e)
+        if ra[0] == "ok":
+            assert rm[0] == "INBOX-RESOLVED" and r["state"] == "applied" and r["trashed_at"] is None, (ra, rm, r)
+            assert count(uid, "records", "AND id=%s", (ra[1]["record_id"],)) == 1
+        else:
+            assert rm[0] == "ok" and ra[0] == "IN-TRASH" and r["state"] == "pending" and r["trashed_at"] is not None, (ra, rm, r)
+            assert r["payload"] is not None
+    for _ in range(4):
+        e, _, _ = pend(tok, dev, pr)
+        db.trash_move(uid, "pending", e)
+        frozen(uid, e)
+        with cf.ThreadPoolExecutor(2) as ex:
+            fx = ex.submit(_try, imports.expire_pending)
+            fr = ex.submit(_try, db.trash_restore, uid, "pending", e)
+            fx.result(), fr.result()
+        r = entry(uid, e)
+        assert r["state"] == "pending" and r["payload"] is not None and r["trashed_at"] is None, r
+        assert 3000 < (r["expires_at"] - db_now()).total_seconds() <= 3600, "어느 순서든 복원 = 지금 + 잔여 1시간"
+    print("OK — 경합: 승인 vs 삭제 하나만(applied+기록 | 휴지통 pending+본문) · 만료 vs 복원 = 같은 결과(만료되지 않고 잔여 재부여)")
+
+
+def test_pending_switch_off(ctx):
+    """스위치 꺼짐 — [제외] 그대로(excluded·본문 삭제) · 휴지통 쓰기 SWITCH-OFF · 휴지통 행 차단·만료 건너뜀은 그대로."""
+    uid, dev, tok, ax, pr = ctx
+    e_t, o_t, v_t = pend(tok, dev, pr)
+    db.trash_move(uid, "pending", e_t)
+    os.environ["CRM_TRASH_ENABLED"] = "0"
+    try:
+        e, _, _ = pend(tok, dev, pr)
+        assert imports.inbox_exclude(uid, e) == {"import_id": e, "state": "excluded"}
+        r = entry(uid, e)
+        assert r["state"] == "excluded" and r["payload"] is None and r["resolved_by"] == "user" and r["trashed_at"] is None
+        e2, _, _ = pend(tok, dev, pr)
+        expect("SWITCH-OFF", db.trash_move, uid, "pending", e2)
+        expect("SWITCH-OFF", db.trash_restore, uid, "pending", e_t)
+        assert entry(uid, e2)["trashed_at"] is None
+        assert e_t not in inbox_ids(uid, "all"), "꺼져도 휴지통 행은 일반 목록에 없다"
+        expect("IN-TRASH", imports.inbox_exclude, uid, e_t)
+        frozen(uid, e_t)
+        imports.expire_pending()
+        assert entry(uid, e_t)["state"] == "pending", "꺼져도 휴지통 대기는 만료되지 않는다"
+        st, b = send(tok, text_req(dev, o_t, _v(), v_t, policy_revision=pr))
+        assert st == 201 and entry(uid, e_t)["state"] == "pending" and entry(uid, e_t)["payload"] is not None, "꺼져도 superseded 가 덮어쓰지 않는다"
+    finally:
+        os.environ["CRM_TRASH_ENABLED"] = "1"
+    print("OK — 스위치 꺼짐: [제외] = excluded 그대로 · 휴지통 쓰기 SWITCH-OFF · 휴지통 행 목록 차단·만료 건너뜀·덮어쓰기 0 유지")
+
+
 def main():
     for k in SWITCHES + ("CRM_TRASH_ENABLED",):
         os.environ[k] = "1"
@@ -571,6 +847,15 @@ def main():
         test_admin_and_grounds(ctx)
         o = db.user_by_email(OTHER)["id"]   # 남의 id = 없는 id
         expect("NOT-FOUND", db.trash_move, o, "activity", st1["ids"][0])
+        # PR-2 승인 대기 — 앞 절이 허용 규칙을 바꿨다(현재 policy_revision 으로)
+        ctx = ctx[:4] + ({d["id"]: d for d in imports.device_list(ctx[0])["devices"]}[ctx[1]]["policy_revision"],)
+        e1, o1, v1 = test_pending_hide_and_paths(ctx)
+        test_pending_same_source(ctx, e1, o1, v1)
+        test_pending_clock(ctx)
+        test_pending_quota(ctx)
+        test_pending_races(ctx)
+        test_pending_switch_off(ctx)
+        expect("NOT-FOUND", db.trash_move, o, "pending", e1)
         print("OK — 휴지통 흐름 시험 전부 통과")
     finally:
         db.TRASH_CLOCK = None
