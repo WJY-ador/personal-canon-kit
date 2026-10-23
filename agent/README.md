@@ -145,15 +145,15 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 ```
 서버 공용 시험 벡터(`server/contract/imports/vectors/`)와 이전 명세 스키마가 없으면 그 시험은 건너뜁니다.
 
-## 11. 작업 전달 (`jobs.py`, 준비 중 · 기본 꺼짐)
+## 11. 작업 전달 (`jobs.py` — 대화 켜짐 · 루틴 꺼짐)
 
-웹에서 들어온 작업(대화 정리 등)을 서버가 이 PC 에 맡기고, PC 가 구독 CLI(`claude -p`)로 한 번 실행해 결과를 돌려주는 부분입니다. 상주 실행 명령은 `python3 -m agent serve --jobs` 입니다. 서버의 작업 스위치(`CRM_CONVERSE_ENABLED`·`CRM_ROUTINE_ENABLED`)는 꺼져 있고, 실 CLI 는 이용 조건 확인 전에는 돌지 않게 막아 두었습니다(아래).
+웹에서 들어온 작업(대화 정리 등)을 서버가 이 PC 에 맡기고, PC 가 구독 CLI(`claude -p`)로 한 번 실행해 결과를 돌려주는 부분입니다. 상주 실행 명령은 `MYCRM_JOBS_ALLOW_REAL_CLI=1 python3 -m agent serve --jobs` 입니다. 서버의 작업 스위치는 대화(`CRM_CONVERSE_ENABLED`)가 켜져 있고 루틴(`CRM_ROUTINE_ENABLED`)은 꺼져 있습니다. 실 CLI 는 사용자가 자기 PC 에서 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 로 켤 때만 돕니다 — 자기 PC·자기 구독으로 돌린다는 명시 동의입니다(아래).
 
 **상주 실행(`serve --jobs`)**:
 - **시작**: 홈 잠금 `locks/jobs.lock`(OS 파일 잠금 — 프로세스가 강제로 죽어도 OS 가 풀어 다음 시작을 막지 않습니다) → 장치 확인(`GET /api/imports/device`). 이미 다른 `serve --jobs` 가 돌고 있으면 종료 코드 1, 토큰이 없거나 거절·폐기면 종료 코드 3 으로 CLI 를 부르지 않고 끝납니다. 서버에 닿지 못하면 30초부터 최대 15분까지 늘려 기다리며 다시 확인합니다.
 - **끝내기**: 첫 Ctrl+C·SIGTERM = 새 작업을 받지 않습니다. 실행 중 작업이 있으면 최대 30초 동안 완료·결과 전송을 기다립니다(작업이 없으면 바로 끝). 30초를 넘기거나 신호가 한 번 더 오면 CLI 와 그 하위 프로세스를 함께 끝내고(종료 확인) 멈춥니다. 서버에는 임대 갱신이 없어, 기다리는 동안도 처음 받은 5분 임대 안에서만 결과가 받아집니다.
 - **끊긴 실행**: 끝났는지 모르는 실행은 실패로 보내지 않습니다 — 서버가 임대 만료 뒤 「확인 필요」로 남기고 다시 실행하지 않습니다. 다시 시작해도 그 작업을 다시 받거나 CLI 를 다시 부르지 않습니다.
-- **출력**: 한 줄에 JSON 하나 — 작업 ID·종류·결과 코드·HTTP 상태·오류 코드·걸린 시간만. 입력·결과·프롬프트·토큰·서버 주소·CLI 출력·예외 문구는 쓰지 않습니다(예외는 클래스 이름만).
+- **출력**: 한 줄에 JSON 하나 — 작업 ID·종류·결과 코드·HTTP 상태·오류 코드·걸린 시간만. 입력·결과·프롬프트·토큰·서버 주소·CLI 출력·예외 문구·로컬 경로는 쓰지 않습니다(예외는 클래스 이름만). 시작 단계에서 멈추면 `stopped`(어디서 멈췄나)와 필요하면 `reason_code`(예: `cli-not-found` — 아래 「CLI 경로」)를 남깁니다.
 - **폴 주기**: 정상 = 롱폴 30초(소켓 여유 포함 최대 45초, `jobs.MAX_POLL_PERIOD_SEC`). CLI 실행 중(최대 5분)·서버 오류 대기(최대 15분)·429(최대 1시간) 동안은 폴하지 않습니다.
 
 동작:
@@ -164,7 +164,8 @@ python3 -m unittest discover -s agent/tests   # 키트 루트에서. Keychain·l
 - **입력 제한**: 8,000 코드포인트 **그리고** UTF-8 32KiB. 넘으면 실행하지 않고 `input-too-large` 로 끝냅니다.
 - **동시 1**: 한 프로세스는 한 번에 작업 하나, 한 홈에는 작업 프로세스 하나(잠금 `locks/jobs.lock` — 예약 실행의 `run` 잠금과 다른 이름이라 서로 막지 않습니다).
 - **CLI 격리**: `--tools ""` · `--strict-mcp-config --mcp-config '{"mcpServers":{}}'` · `--setting-sources project` · `--permission-mode dontAsk` · `--max-turns 1` · `--output-format json`, 같은 대화는 `--resume`. 최소 환경변수, 빈 작업 폴더(`jobs-work/`), 입력은 표준 입력으로만. 토큰·HMAC 키·대응표는 넘기지 않습니다.
-- **실 CLI 차단**: 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 이 없으면 실 CLI 어댑터를 만들 수 없습니다. 시험은 `tests/fake_claude.py` 만 씁니다.
+- **실 CLI 켜기**: 환경변수 `MYCRM_JOBS_ALLOW_REAL_CLI=1` 이 없으면 실 CLI 어댑터를 만들지 않고 멈춥니다(`"stopped": "adapter"`). 켜는 것은 사용자 몫입니다 — 자기 PC 에서 자기 구독으로 돌립니다. 시험은 `tests/fake_claude.py` 만 씁니다.
+- **CLI 경로**: 설정 파일(`<홈>/config.json`)의 `summary.cli_path` 가 있으면 그 값을 씁니다. 비어 있으면 PATH 에서 `claude` 를 찾아 절대 경로로 씁니다(찾은 경로를 설정에 저장하지 않음). 못 찾으면 `"stopped": "adapter"` · `"reason_code": "cli-not-found"` 로 종료 코드 1 — `summary.cli_path` 에 `claude` 의 절대 경로(`which claude` 결과)를 적고 다시 시작하세요. launchd 등 무인 실행은 PATH 가 로그인 셸과 다를 수 있으니 그때는 `summary.cli_path` 를 적어 두세요.
 
 **대화 정리(쌓기 단계, `stack.py` — kind `converse`)**:
 - **정의 스냅샷**: 입력을 받은 뒤 `GET /api/device/jobs/<id>/definitions?lease_generation=N` 을 한 번 받아 그 작업 동안 고정합니다(모델을 다시 돌려도 다시 받지 않음). 연결이 끊기면 한 번 더 받고, 서버가 작업을 줄 때 알려 준 정의 버전과 다르면 실행하지 않습니다.
