@@ -870,7 +870,7 @@ body.chat-open { padding-right: 380px; }
 .chat .cblk { border-left: 3px solid var(--warn); padding: .2rem 0 .2rem .5rem; }
 .chat .cblk p { margin: 0 0 .3rem; font-size: .8rem; }
 .chat .cblk input { width: 100%; }
-.chat .cacts { display: flex; justify-content: flex-end; }
+.chat .cacts { display: flex; justify-content: flex-end; gap: .4rem; }   /* 주 [확정] + 보조 [삭제](휴지통 켜짐) */
 .chat .cline { margin: 0; padding: .35rem .9rem; border-top: 1px solid var(--line); min-height: 1.9em; font-size: .74rem; color: var(--muted); }
 .chat .cline.bad { color: var(--fail); }
 .chat .ccomp { padding: .5rem .9rem .8rem; display: flex; flex-direction: column; gap: .35rem; }
@@ -1510,6 +1510,7 @@ function renderDefs(tab) {
     <div class="sohead"><h3 id="sobj-${esc(o.id)}">${esc(o.label)}</h3><span class="tech">${esc(o.key)}</span></div>
     <div class="labels">${originChip(o.origin)}${lockChip(o.locked)}${o.std_name ? `<span class="chip">표준 「${esc(o.std_name)}」</span>` : ""}
       <span class="chip">${esc(KIND_LABEL[o.semantic_kind] || o.semantic_kind)}</span><span class="chip">항목 ${nItems(o.id)}</span></div>
+    ${defPropHtml(o.id)}
     ${o.fields.length ? `<div class="sftbl-wrap"><table class="sftbl"><thead><tr><th scope="col">필드</th><th scope="col">key</th><th scope="col">값</th>
       <th scope="col">구분</th><th scope="col">보호</th></tr></thead><tbody>${o.fields.map(f => fieldRow(o, f)).join("")}</tbody></table></div>`
       : `<p class="hint">필드가 없어요.</p>`}</article>`;
@@ -1539,6 +1540,16 @@ function renderDefs(tab) {
       <p class="hint">표준 정의마다 편입·보류·거절을 골라요. 편입한 정의는 「표준 정의 보호」를 받아요. 고르지 않아도 다른 기능은 그대로예요.</p>
       <p id="std-msg" role="status" aria-atomic="true"></p><div id="std-pv" aria-busy="true"><p class="empty">미리보기를 불러오는 중이에요…</p></div></section>${tab.settings ? "</details>" : ""}</div>`;
   loadPreview();
+}
+
+// 정의 제안(휴지통 PR-2) — 적용된 자료 종류에 걸린 미적용 제안(S.definitions[].proposal). 휴지통 켜짐일 때만 「제안이 있어요」 + [삭제].
+// 적용은 지금처럼 연결한 AI 대화에서(definition_apply). 꺼짐 = 그리지 않음(기존 화면 그대로 — 정의 제안 표면 없음)
+function defPropHtml(oid) {
+  const d = defById(oid), pr = d && d.proposal;
+  if (!trashOn() || !pr) return "";
+  return `<div class="proposal" data-errbox><b>정의 제안이 있어요</b>
+    <p class="hint" style="margin:.3rem 0 0">연결한 AI 대화에서 제안한 정의 변경이에요. 적용은 그 대화에서 해요. 지금 정의는 바뀌지 않아요.</p>
+    <div class="pacts">${trashBtn("definition_proposal", pr.proposal_id, null, location.hash || "#_setup/structure")}</div><p class="ferr" role="alert" aria-atomic="true"></p></div>`;
 }
 
 // PR① 내 구조 설정 — 이름 공유 동의(계정 메뉴 항목을 옮김, 같은 API) · 고급 접힘(다시 그려도 열린 채로).
@@ -1590,6 +1601,7 @@ const STRUCT_TEXT = {match: "일치 — 표준과 같은 모양", extend: "확�
   conflict: "충돌 — 표준과 모양이 달라요"};
 const STD_CONFLICT = {
   key_draft_only: () => "같은 key 오브젝트가 아직 적용 전 초안이에요. 대화에서 초안을 적용하거나 key 를 바꾼 뒤 다시 보세요",
+  key_in_trash: () => "같은 key 오브젝트 제안이 휴지통에 있어요. 휴지통에서 복원하거나 영구 삭제한 뒤 다시 보세요",
   key_archived: () => "같은 key 오브젝트가 보관돼 있어요",
   kind: () => "오브젝트 종류(semantic_kind)가 표준과 달라요",
   field_missing: f => `표준 필드 ${f} 가 없어요`,
@@ -1628,7 +1640,7 @@ function pvCard(o) {
       ${o.can_incorporate ? `<button class="primary" type="button" data-std="incorporated" data-key="${esc(o.std_key)}" aria-haspopup="dialog">편입…</button>` : ""}</div>
     ${o.can_incorporate ? "" : `<p class="blocked">편입할 수 없어요 — ${(o.blocked || []).map(b => esc(BLOCK_TEXT[b] || "지금은 편입할 수 없어요.")).join(" ")}</p>`}`;
   return `<article class="spvc" aria-labelledby="spv-${esc(o.std_key)}"><h4 id="spv-${esc(o.std_key)}">표준 「${esc(o.std_name)}」<span class="chip ${stc[0]}">${esc(stc[1])}</span></h4>
-    <dl><dt>${TX("내 자료 종류", "내 오브젝트")}</dt><dd>${obj ? `${esc(obj.label)} <span class="tech">${esc(obj.key)} · r${esc(obj.revision)}${obj.archived ? " · 보관됨" : ""}</span>` : "없음 — 편입하면 표준 정의를 새로 넣어요"}</dd>
+    <dl><dt>${TX("내 자료 종류", "내 오브젝트")}</dt><dd>${obj ? `${esc(obj.label || "(휴지통의 제안)")} <span class="tech">${esc(obj.key)} · r${esc(obj.revision)}${obj.archived ? " · 보관됨" : ""}</span>` : "없음 — 편입하면 표준 정의를 새로 넣어요"}</dd>
       <dt>구조</dt><dd>${esc(STRUCT_TEXT[o.structure] || o.structure)}${(o.conflicts || []).length ? `<ul>${o.conflicts.map(x =>
         `<li>${esc((STD_CONFLICT[x.code] || (() => "표준과 다른 곳이 있어요"))(x.field || ""))}</li>`).join("")}</ul>` : ""}</dd>
       ${o.meaning_check ? `<dt>뜻 확인</dt><dd>key 가 같아도 뜻이 같다는 보장은 없어요. 편입할 때 같은 뜻으로 쓰는지 확인해요.</dd>` : ""}
@@ -1757,7 +1769,7 @@ function drawerHtml(tab, it) {
     h += `<p class="promo">승격 조건 — 확정 근거 <b>${m.confirmed_claims}/${m.confirmed_claims_min}</b>${m.distinct_events_min ? ` · ${esc(eventLabel(defById(d.id)))} <b>${m.distinct_events}/${m.distinct_events_min}</b>` : ""}
       · ${m.met ? "충족" : "아직 미충족"}. 남길지는 내가 정해요.</p>`;
   }
-  if (pr) h += proposalHtml(it, pr, fields);
+  if (pr) h += proposalHtml(it, pr, fields, `#${tab.id}/${d.id}${isNew ? "" : "/" + it.id}`);   // 제안 [삭제] 뒤 = 새 항목 제안이면 목록, 아니면 그 항목
   if (!isNew && trashOn()) {   // 휴지통 켜짐 — 기준 결정 버튼은 [남기기] 하나 + [삭제](r4 §8)
     const keep = it.semantic_kind === "principle" && it.decision !== "confirmed" ? `<button class="primary" type="button" data-iact="confirm">${TX("남기기", "내 판단으로 남기기")}</button>` : "";
     h += `<div class="pacts" role="group" aria-label="${esc(d.label || LABELS.item)} 동작">${keep}${trashBtn("item", it.id, it.revision, `#${tab.id}/${d.id}`)}</div>`;
@@ -1785,7 +1797,7 @@ function drawerHtml(tab, it) {
     `<li class="phist">r${x.prev_revision + 1} · ${esc(x.action === "confirm" ? TX("남김", HIST_LABEL.confirm) : HIST_LABEL[x.action] || x.action)} · ${esc(mdhm(x.at))}</li>`).join("")}</ul>`;
   return h;
 }
-function proposalHtml(it, pr, fields) {
+function proposalHtml(it, pr, fields, back) {
   const isNew = !it.revision;
   const rows = [];
   const row = (k, a, b) => { if (JSON.stringify(a ?? "") !== JSON.stringify(b ?? "")) rows.push(`<dt>${esc(k)}</dt><dd>${a ? `<del>${esc(clip(a, 120))}</del> → ` : ""}<ins>${esc(clip(b || "(비움)", 200))}</ins></dd>`); };
@@ -1802,7 +1814,8 @@ function proposalHtml(it, pr, fields) {
   return `<div class="proposal"><b>제안이 있어요</b> <span class="tech">${esc(mdhm(pr.proposed_at))}</span>
     ${isNew ? `<p class="hint" style="margin:.3rem 0 0">연결한 AI 대화에서 새로 제안한 항목이에요. 적용하면 목록에 들어가요.</p>`
             : rows.length ? `<dl class="diff">${rows.join("")}</dl>` : `<p class="hint" style="margin:.3rem 0 0">바뀌는 내용이 없어요.</p>`}
-    <div class="pacts"><button class="primary" type="button" data-iact="apply">적용</button><button class="secondary" type="button" data-iact="discard">제외</button></div></div>`;
+    <div class="pacts"><button class="primary" type="button" data-iact="apply">적용</button>${trashOn() ? trashBtn("item_proposal", pr.proposal_id, null, back)
+      : `<button class="secondary" type="button" data-iact="discard">제외</button>`}</div></div>`;   // 거절 = 켜짐 [삭제](휴지통, 슬롯·새 항목 제안 모두) · 꺼짐 [제외]
 }
 async function itemAct(tab, it, act) {
   const panel = $("panel"), st = panel.querySelector(".pstatus"), er = panel.querySelector(".perror");
@@ -2593,14 +2606,15 @@ function homeActs(r) {
   if (r.k === "cand" && x.status === "pending") bs = x.review ? btn("secondary", "exclude", "반영 안 함")
     : btn("primary", "confirm", "남기기") + `<button class="secondary" type="button" data-edit="cand:${esc(x.id)}"${busy}>고쳐서 남기기</button>` + btn("tertiary", "exclude", "반영 안 함");
   else if (r.k === "refl") bs = btn(x.review === "reviewed" ? "secondary" : "primary", "review", x.review === "reviewed" ? "확인 전으로" : "확인했어요");
-  else if (r.k === "item" && x.proposal && x.revision) bs = btn("primary", "apply", "제안 적용") + btn("secondary", "discard", "제안 제외");
+  else if (r.k === "item" && x.proposal && x.revision) bs = btn("primary", "apply", "제안 적용") + (trashOn() ? "" : btn("secondary", "discard", "제안 제외"));   // 켜짐 = 제안 거절은 아래 [삭제](제안)
   else if (r.k === "item" && x.semantic_kind === "principle" && x.revision && trashOn()) bs = x.decision === "confirmed" ? "" : btn("primary", "confirm", "남기기");   // 휴지통 켜짐 = [남기기] + [삭제]
   else if (r.k === "item" && x.semantic_kind === "principle" && x.revision)
     bs = [["confirm", "primary", "남기기"], ["exclude", "secondary", "반영 안 함"], ["pending", "tertiary", "되돌리기"]].filter(([a]) => ({confirm: "confirmed", exclude: "excluded", pending: "pending"})[a] !== (x.decision || "pending"))
       .map(([a, c, l]) => btn(c, a, l)).join("");
   // [삭제] — 휴지통 켜짐일 때만(trashBtn). 후보는 독립 휴지통 대상이 아니라 없다
   if (r.k === "journal") bs += trashBtn("record", x.id, null, "#_me");
-  else if (r.k === "item" && x.revision) bs += trashBtn("item", x.id, x.revision, "#_me/" + meTabOfItem(x));
+  else if (r.k === "item" && x.revision) bs += (x.proposal ? trashBtn("item_proposal", x.proposal.proposal_id, null, location.hash || "#_me", "제안 삭제") : "")
+    + trashBtn("item", x.id, x.revision, "#_me/" + meTabOfItem(x));
   else if (r.k === "refl") bs += trashBtn("reflection", x.id, x.revision, "#_me");
   const here = homeAct && homeAct.at === location.hash ? homeAct : null;
   const msg = `<p class="ferr" role="alert" aria-atomic="true">${esc(here ? here.err : "")}</p><p class="fok" role="status" aria-atomic="true">${esc(here ? here.ok : "")}</p>`;
@@ -3368,8 +3382,31 @@ document.addEventListener("click", e => {
 // 꺼짐 = 버튼·페이지 0, 기존 동작(사람·생각 즉시 삭제 · 기준 [반영 안 함]·[되돌리기]) 그대로. 휴지통 대상을 일반 화면에서 숨기는 일은 서버 몫(화면은 거르지 않는다).
 // 서버 접점은 trashApi 한 곳. 복원 기한은 서버 값(restore_until)을 그대로 보이고, 지난 행은 서버가 목록에서 뺀다. 「영구 삭제 처리 중」 같은 화면 상태는 없다.
 const trashOn = () => !!(S && S.switches && S.switches.trash) && navNew();
-const TRASH_KIND = {record: "내 글", item: "항목", activity: "활동", person: "사람", reflection: "읽고 든 생각"};
+// PR-2 — 보관 전 값 4종(승인 대기 글·항목 제안·정의 제안·확정 전 정리). 거절도 [삭제] 하나(「제외」 없음) — 켜짐일 때만, 꺼짐 = 각 화면의 옛 [제외] 그대로
+const TRASH_KIND = {record: "내 글", item: "항목", activity: "활동", person: "사람", reflection: "읽고 든 생각",
+  pending: "승인 대기 글", item_proposal: "제안", definition_proposal: "정의 제안", stack_session: "확정 전 정리"};
 const TRASH_ASK = "삭제하면 휴지통으로 이동해요. 삭제 시각부터 168시간 동안 복원할 수 있고, 이후 서버 정리 때 영구 삭제돼요.";
+// 확인창 — 종류별(r3 §9 를 r4 §8 의 168시간·「서버 정리 때 영구 삭제」 말로). 없는 종류 = TRASH_ASK
+const TRASH_ASK_KIND = {
+  pending: "승인 대기 글을 삭제할까요? 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있고, 이후 서버 정리 때 영구 삭제돼요. 복원하면 멈췄던 남은 대기시간이 다시 흘러요.",
+  item_proposal: "제안을 삭제할까요? 현재 저장된 값은 바뀌지 않으며, 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있어요. 이후 서버 정리 때 영구 삭제돼요.",
+  definition_proposal: "제안을 삭제할까요? 현재 저장된 값은 바뀌지 않으며, 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있어요. 이후 서버 정리 때 영구 삭제돼요.",
+  stack_session: "정리 내용을 삭제할까요? 삭제 시각부터 168시간 안에 복원하면 확정 전 상태로 돌아가요. 이후 서버 정리 때 영구 삭제돼요.",
+};
+// 휴지통 행의 「복원하면」(서버 restore_state) — 보관 전 값만. 보관된 5종은 원래 자리 그대로라 쓰지 않는다
+const TRASH_BACK = {pending: "승인 대기", item_proposal: "적용 전 제안", definition_proposal: "적용 전 제안", stack_session: "확정 전"};
+// 복원 결과(r3 §9) — 시각 = 서버가 복원 때 새로 정한 만료(복원 시각 + 남은 시간)
+function trashRestored(kind, j) {
+  if (kind === "pending") return `승인 대기로 복원했어요. 대기 만료: ${mdhm(j.expires_at) || "—"}`;
+  if (kind === "item_proposal" || kind === "definition_proposal") return "제안을 복원했어요. 적용 전에 현재 값을 다시 확인해요.";
+  if (kind === "stack_session") return `확정 전 상태로 복원했어요. 임시 보관 만료: ${mdhm(j.expires_at) || "—"}`;
+  return "복원했어요.";
+}
+// 남은 시간(초) → 「N일 N시간」 — 휴지통 동안 멈춘 대기·임시 보관 시간
+function trashLeft(sec) {
+  const n = Math.max(0, Math.floor(Number(sec) || 0)), d = Math.floor(n / 86400), h = Math.floor(n % 86400 / 3600), m = Math.floor(n % 3600 / 60);
+  return d ? `${d}일${h ? ` ${h}시간` : ""}` : h ? `${h}시간${m ? ` ${m}분` : ""}` : `${m}분`;
+}
 const TRASH_NOTE = "복원 기한이 지나면 목록에서 사라지고 복원할 수 없어요. 본문은 이후 서버 정리 때 삭제돼요.";
 const TRASH_PURGE_ASK = "지금부터 복원할 수 없어요. 본문은 서버 정리 때 영구 삭제돼요.";
 const TRASH_PURGED = "영구 삭제를 요청했어요. 이제 복원할 수 없어요.";
@@ -3381,16 +3418,21 @@ const trashApi = {
   restore: (kind, id) => corePost("/api/trash/restore", {kind, id}),
   purge: (kind, id) => corePost("/api/trash/purge", {kind, id}),
 };
-// 상세의 [삭제] — 켜짐일 때만 그린다(꺼짐 = 빈 문자열). back = 삭제 뒤 갈 주소(지금 상세는 더 열리지 않는다)
-const trashBtn = (kind, id, rev, back) => trashOn() ? `<button class="secondary" type="button" data-trash="${esc(kind)}" data-id="${esc(id)}"${rev != null ? ` data-rev="${esc(rev)}"` : ""} data-back="${esc(back || "")}">삭제</button>` : "";
+// 상세의 [삭제] — 켜짐일 때만 그린다(꺼짐 = 빈 문자열). back = 삭제 뒤 갈 주소(지금 상세는 더 열리지 않는다). 제안 2종은 id = 제안 ID(revision 없음) ·
+// label = 한 동작 칸에 [삭제]가 둘일 때만(「나」 상세의 [제안 삭제] — 기존 [제안 적용]과 같은 꼴)
+const trashBtn = (kind, id, rev, back, label) => trashOn() ? `<button class="secondary" type="button" data-trash="${esc(kind)}" data-id="${esc(id)}"${rev != null ? ` data-rev="${esc(rev)}"` : ""} data-back="${esc(back || "")}">${esc(label || "삭제")}</button>` : "";
 // 축 삭제가 장치 허용 규칙에 막혔을 때 — 서버 문구(장치 이름 포함) 그대로, 없으면 기본 안내
 function trashErrText(res) {
   if (res.code === "AXIS-IN-POLICY") return res.msg || "이 축을 쓰는 장치 허용 규칙이 있어 삭제할 수 없어요. 연결 장치에서 이 축을 뺀 뒤 다시 해 주세요.";
   if (res.code === "TRASH-EXPIRED") return TRASH_EXPIRED;
+  // 복원 제한(r4 §4 「화면에 설명」) — 서버 문구 + 할 일(action). 양쪽 그대로: 같은 원본의 더 새 개정(INBOX-NOT-LATEST) · 대기 가득(INBOX-FULL) ·
+  // 제안 자리의 새 제안(CONFLICT, 서버 문구 그대로)
+  if (res.code === "INBOX-NOT-LATEST" || res.code === "INBOX-FULL")
+    return [res.msg || (res.code === "INBOX-FULL" ? "승인 대기가 가득 차서 복원할 수 없어요." : "같은 원본의 더 새 개정이 와 있어 복원할 수 없어요."), res.j && res.j.action].filter(Boolean).join(" ");
   return res.msg || "처리하지 못했어요. 다시 해 보세요.";
 }
 async function trashDel(b) {
-  if (!window.confirm(TRASH_ASK)) return;
+  if (!window.confirm(TRASH_ASK_KIND[b.dataset.trash] || TRASH_ASK)) return;
   const box = b.closest("[data-errbox], #home-detail, #panel, .paper");
   const err = box ? box.querySelector(".ferr, .perror") : null;
   if (err) err.textContent = "";
@@ -3398,7 +3440,12 @@ async function trashDel(b) {
   const res = await trashApi.del(b.dataset.trash, b.dataset.id, b.dataset.rev);
   b.disabled = false;
   if (!res) return;
+  if (res.ok && b.dataset.trash === "stack_session") {   // 대화 확인 카드 — 서랍을 비우고 그 자리에 결과 한 줄(주소는 그대로)
+    chatReset(); chatLine("휴지통으로 옮겼어요. 168시간 안에 Setup › 휴지통에서 복원할 수 있어요."); chatDraw();
+    return load();
+  }
   if (res.ok) return coreDone("휴지통으로 옮겼어요.", b.dataset.back || null);
+  if (b.dataset.trash === "stack_session") { chatLine(trashErrText(res), true); return; }
   if (res.code === "AXIS-IN-POLICY") {
     if (err) err.textContent = trashErrText(res); else { coreFlash = {text: trashErrText(res), bad: true}; coreFlashShow(); }
     return;
@@ -3432,8 +3479,11 @@ async function trashMore() {   // [더 보기] — 서버 커서 그대로 이�
 }
 function trashRow(x) {
   const key = `data-kind="${esc(x.kind)}" data-id="${esc(x.id)}"`;
-  return `<li class="trow"><div class="tmain"><span class="chip">${esc(x.object_label || TRASH_KIND[x.kind] || x.kind)}</span> <b>${esc(x.title || "(제목 없음)")}</b>
-    <p class="recmeta">${esc(mdhm(x.trashed_at))} 삭제 · 복원 가능 기한 ${esc(mdhm(x.purge_at))}</p></div>
+  // 보관 전 값 = 복원될 상태 + 멈춘 남은 시간(승인 대기·확정 전만, 서버 remaining_seconds)
+  const back = TRASH_BACK[x.kind] ? [`복원하면 ${TRASH_BACK[x.kind]}`, x.remaining_seconds != null ? `남은 ${x.kind === "pending" ? "대기시간" : "임시 보관"} ${trashLeft(x.remaining_seconds)}` : ""].filter(Boolean).join(" · ") : "";
+  const chip = x.kind === "item_proposal" ? `${x.object_label ? x.object_label + " " : ""}제안` : x.object_label || TRASH_KIND[x.kind] || x.kind;   // 제안 행 ≠ 같은 종류 항목 행
+  return `<li class="trow"><div class="tmain"><span class="chip">${esc(chip)}</span> <b>${esc(x.title || (x.kind === "stack_session" ? "대화 정리" : "(제목 없음)"))}</b>
+    <p class="recmeta">${esc(mdhm(x.trashed_at))} 삭제 · 복원 가능 기한 ${esc(mdhm(x.purge_at))}</p>${back ? `<p class="recmeta">${esc(back)}</p>` : ""}</div>
     <div class="hacts" role="group" aria-label="휴지통 동작"><button class="primary" type="button" data-trash-restore ${key}>복원</button>
       <button class="secondary" type="button" data-trash-purge ${key}>영구 삭제</button></div></li>`;
 }
@@ -3454,7 +3504,7 @@ async function trashDo(b, act) {
   const res = await trashApi[act](kind, id);
   if (!res) return;
   if (res.ok) {
-    TRASH.msg = act === "purge" ? TRASH_PURGED : "복원했어요.";   // 관계 일부 미복구 안내 = 서버 응답 필드 확정 뒤(core)
+    TRASH.msg = act === "purge" ? TRASH_PURGED : trashRestored(kind, res.j || {});   // 관계 일부 미복구 안내 = 서버 응답 필드 확정 뒤(core)
   } else { TRASH.msg = trashErrText(res); TRASH.bad = true; }
   await load();   // 상태(일반 화면) + 휴지통 목록을 다시 받는다 — 기한이 지난 행은 서버가 뺀다
 }
@@ -3471,8 +3521,8 @@ document.addEventListener("click", e => {
 window.addEventListener("hashchange", () => { const R = route(); if (!(R.tab === "_setup" && R.a === "trash")) { TRASH.msg = ""; TRASH.bad = false; } });   // 떠나면 지난 결과 문구를 지운다
 // ── /휴지통 ──
 // ── 오늘 (PR ①-b S5) — 들어온 것(B9): 저장 승인 대기(대기) + 승인해 저장된 내 글(ingest_kind=inbox · 보관됨) + 장치 활동(보관됨).
-// 들어온 날(KST) 머리글로 묶는다. 대기 = 받은 시각 · 저장된 글 = 저장된 시각 · 활동 = 받은 시각. [삭제] 없음(②-c). 동작 = 대기 상세의 승인·제외(기존 그대로) 2.
-// 라우트 #_today · #_today/inbox/<id>(대기 하나 — 옛 #_inbox/<id> 는 여기로 replace). 지난 승인 대기(승인함·제외함·만료)는 옛 목록 #_inbox/all.
+// 들어온 날(KST) 머리글로 묶는다. 대기 = 받은 시각 · 저장된 글 = 저장된 시각 · 활동 = 받은 시각. 목록에 [삭제] 없음(②-c). 동작 = 대기 상세(inboxOne)의 승인·거절 2.
+// 라우트 #_today · #_today/inbox/<id>(대기 하나 — 옛 #_inbox/<id> 는 여기로 replace). 지난 승인 대기(승인함·반영 안 함·만료)는 옛 목록 #_inbox/all.
 // 읽기만: GET /api/inbox?state=pending · /api/activities(첫 50) — 상태를 새로 받을 때마다 다시 받는다. 저장된 글은 S.journal(불러온 범위).
 const TODAY = {st: null, busy: false, pend: null, acts: null, err: ""};   // st = 받은 때의 S(새 상태면 다시 받는다)
 const kstDay = iso => { const d = toDate(iso); return d ? d.toLocaleDateString("sv-SE", {timeZone: "Asia/Seoul"}) : ""; };
@@ -3523,7 +3573,7 @@ function renderToday2(a, b) {
   const list = todayListSection({a, b});
   const detail = sel ? `<section class="paper hdetail" id="home-detail" aria-live="polite" data-errbox>${homeMobile() ? `<p class="hback"><button class="secondary" type="button" data-home-back data-to="#_today">목록</button></p>` : ""}
     <div id="inbox-one">${LOADING}</div><p class="ferr" role="alert" aria-atomic="true"></p></section>`
-    : mobile ? "" : `<section class="paper hdetail tempty"><p class="hint">대기 글을 고르면 여기서 승인하거나 제외해요. 승인해야 저장돼요.</p></section>`;
+    : mobile ? "" : `<section class="paper hdetail tempty"><p class="hint">대기 글을 고르면 여기서 본문을 보고 승인해요. 승인해야 저장돼요.</p></section>`;
   $("view").innerHTML = `<div class="hhead"><h2>오늘</h2>${msgLine()}</div><div class="home today">${!mobile || !sel ? list : ""}${detail}</div>`;
   if (sel) fill("inbox-one", "/api/inbox/" + encodeURIComponent(b), inboxOne, "저장 승인 대기 글");
   if ($("home-list")) $("home-list").scrollTop = homeListTop;
@@ -3534,7 +3584,7 @@ function todayListSection(R) {
   const n = ready && TODAY.pend ? (TODAY.pend.counts || {}).pending : null;
   return `<section class="hlist tlist" id="home-list" aria-labelledby="today-h"><div class="htools"><h3 id="today-h">들어온 것</h3>${n === null || n === undefined ? "" : `<span class="count">대기 ${esc(n)}</span>`}</div>
     ${TODAY.err ? `<p class="ferr" role="alert">${esc(TODAY.err)}</p>` : ""}${ready ? todayListHtml(rows, sel) : LOADING}
-    <p class="hint tmore">PC·연결 장치에서 들어온 내 글과 활동이에요. 지난 승인 대기(승인함·제외함·만료)는 <a href="#_inbox/all">여기</a>에서 봐요.</p></section>`;
+    <p class="hint tmore">PC·연결 장치에서 들어온 내 글과 활동이에요. 지난 승인 대기(승인함·반영 안 함·만료)는 <a href="#_inbox/all">여기</a>에서 봐요.</p></section>`;
 }
 // ── /오늘 ──
 // 한 출처의 내 기록 · 내 요약 · 내 반응 — 「나」 홈 출처별 탭과 출처 상세가 같이 쓴다
@@ -3705,7 +3755,7 @@ const LOADING = `<p class="hint">불러오는 중이에요…</p>`;
 const PERIODS = [["7d", "최근 7일"], ["30d", "최근 30일"], ["90d", "최근 90일"], ["all", "전체"]];
 const ROLE_LABEL = {author: "글쓴이", counterparty: "상대", participant: "참여자"};
 const INBOX_KIND = {self_text: "내 글", self_summary: "내 글 AI 요약"};
-const INBOX_STATE = {pending: "대기", applied: "승인함", excluded: "제외함", expired: "만료", all: "전체"};
+const INBOX_STATE = {pending: "대기", applied: "승인함", excluded: "반영 안 함", expired: "만료", all: "전체"};   // excluded = 예전 [제외]로 끝난 대기(본문 없음) — 표시만 「반영 안 함」
 const GEN_LABEL = {method: "만든 방법", tool: "도구", model: "모델", input_scope: "입력 범위", inputs: "입력 수"};
 // 생성 정보 값 → 사람 말(계약 canon-inbox/1 의 열거값). 모르는 값은 「기타」 + 원값 작게. 도구·모델은 장치가 신고한 코드 그대로
 const GEN_VALUE = {method: {ai_summary: "AI 요약", none: "없음(직접 씀)"}, input_scope: {self_only: "내 글만"}};
@@ -4012,14 +4062,14 @@ function devHtml(j) {
       ${ds.length ? `<div class="cards">${ds.map(d => devCard(d, ch)).join("")}</div>` : `<div class="empty">아직 연결한 장치가 없어요.</div>`}</section>`;
 }
 
-// 승인 대기 — #_inbox[/<상태>|/<접수 id>]. 승인·제외는 웹에서만
+// 승인 대기 — #_inbox[/<상태>|/<접수 id>]. 승인·거절(꺼짐 [제외] · 휴지통 켜짐 [삭제])은 웹에서만
 function renderInbox(a) {
   if (a && !INBOX_STATE[a]) return renderInboxOne(a);
   const cur = a || "pending";
   const pills = `<nav class="pills" aria-label="상태">${Object.entries(INBOX_STATE).map(([k, l]) => { const on = k === cur;
     return `<a href="#_inbox${k === "pending" ? "" : "/" + k}" class="${on ? "on" : ""}"${on ? ' aria-current="true"' : ""}>${l}${k === "pending" && S.inbox ? `<span class="n">${esc(S.inbox.pending)}</span>` : ""}</a>`; }).join("")}</nav>`;
   $("view").innerHTML = `<div class="paper sheet">${crumbs(navNew() ? ["#_today", "오늘"] : ["#_me", "나"], ["", "저장 승인 대기"])}${msgLine()}<h2 class="title">저장 승인 대기</h2>
-    <p class="hint">PC에서 보낸 내 글과 내 글 AI 요약이에요. 승인해야 저장돼요. 대기 본문은 ${esc(actUi().pending_days || 30)}일 보관하고, 승인·제외·만료 때 지워요.</p>
+    <p class="hint">PC에서 보낸 내 글과 내 글 AI 요약이에요. 승인해야 저장돼요. ${trashOn() ? `대기시간은 ${esc(actUi().pending_days || 30)}일이에요. 승인하면 내 글로 옮기고, 만료되면 대기 본문을 지워요. [삭제]하면 휴지통에 있는 동안 남은 대기시간이 멈춰요.` : `대기 본문은 ${esc(actUi().pending_days || 30)}일 보관하고, 승인·제외·만료 때 지워요.`}</p>
     ${pills}<div id="inbox-list">${LOADING}</div></div>`;
   pager("inbox-list", "/api/inbox?state=" + encodeURIComponent(cur), "entries", inboxRow, cur === "pending" ? "승인할 글이 없어요." : "없어요.", "저장 승인 대기");
 }
@@ -4047,13 +4097,13 @@ function inboxOne(e) {
   const gen = g && typeof g === "object" ? `<h2 class="sh">AI 생성 정보</h2><dl class="kv">${Object.entries(GEN_LABEL).filter(([k]) => g[k] != null && g[k] !== "")
     .map(([k, l]) => `<dt>${l}</dt><dd>${genVal(k, g[k])}</dd>`).join("")}</dl><p class="hint">도구·모델 정보는 연결 장치가 신고한 정보예요.</p>` : "";
   const made = e.source_created_at ? mdhm(e.source_created_at) : e.source_date ? dOnly(e.source_date) : "";
-  const body = e.body != null ? `<div class="doc"><p class="pre">${esc(e.body)}</p></div>` : `<div class="empty">대기 본문이 없어요. 승인·제외·만료 때 대기 본문을 지워요.</div>`;
+  const body = e.body != null ? `<div class="doc"><p class="pre">${esc(e.body)}</p></div>` : `<div class="empty">대기 본문이 없어요. ${trashOn() ? "승인·만료·영구 삭제 때 대기 본문을 지워요." : "승인·제외·만료 때 대기 본문을 지워요."}</div>`;
   let acts = "";
   if (e.state === "pending") {
     const why = e.is_latest === false ? "더 새 개정이 들어와서 이 개정은 승인할 수 없어요. 최신 개정을 열어 승인하세요." : "지금은 승인할 수 없어요(만료됐거나 이미 처리됐어요).";
     acts = `<p class="fnote">${esc(e.approve_notice || SELF_NOTE)}</p>${e.approvable ? "" : `<p class="hint">${esc(why)}</p>`}
       <div class="frow"><button class="primary" type="button" data-core="inbox-approve" data-id="${esc(e.id)}"${e.approvable ? "" : " disabled"}>승인</button>
-        <button class="secondary" type="button" data-core="inbox-exclude" data-id="${esc(e.id)}">제외</button></div>`;
+        ${trashOn() ? trashBtn("pending", e.id, null, "#_today") : `<button class="secondary" type="button" data-core="inbox-exclude" data-id="${esc(e.id)}">제외</button>`}</div>`;   // 거절 = 켜짐 [삭제](휴지통) · 꺼짐 [제외](기존)
   }
   return `<div class="labels"><span class="chip${e.kind === "self_summary" ? " o-ai" : ""}">${esc(INBOX_KIND[e.kind] || e.kind)}</span><span class="chip">${esc(INBOX_STATE[e.state] || e.state)}</span></div>
     <h2 class="title">${esc(inboxTitle(e))}</h2>
@@ -4071,7 +4121,8 @@ function navOpen() {
 }
 
 // ── 대화 (PR ②-b B5) — 탭 줄 「대화」(스위치 S.switches.converse 켜짐일 때만) → 오른쪽 서랍: 입력 1 · 상태 1줄 · 확인 카드
-// (정리 글 · 바뀌는 것 · 막힌 질문 · [확정]). 버튼 = 보내기·확정·닫기 3개. 바뀌는 것은 기본 포함(끄기 = 예외 제외), 자동 확정 없음.
+// (정리 글 · 바뀌는 것 · 막힌 질문 · [확정]). 버튼 = 보내기·확정·닫기 3개(휴지통 켜짐 = 확인 카드 보조 [삭제] — 세션째 휴지통, 휴지통 절 trashDel).
+// 바뀌는 것은 기본 포함(끄기 = 예외 제외), 자동 확정 없음.
 // 정리 글을 고치면 즉시 [확정]을 잠그고, 정리 글 칸을 벗어날 때 재정리 작업 1개를 접수한다(키 입력마다 아님). 최신 작업의 결과를 그린 뒤에만
 // [확정]이 켜진다 — 늦게 온 이전 결과·고친 뒤 도착한 결과는 버린다. 서버 접점은 stackApi 한 곳(쓰기 = 작업 접수·제외·확정만).
 // 이어 받기 = 서버 S.stack_session(확정 전·만료 전 최신 세션 1) — 새로 고침 복원 · 두 탭이 같은 세션을 본다(먼저 확정한 쪽만 성공,
@@ -4203,7 +4254,7 @@ function chatCardHtml(p) {
   }).join("");
   const inc = chatIncluded(p), chg = inc.map(c => `<li><label><input type="checkbox" data-cid="${esc(c.cid)}" checked>
       <span>${esc(chatLabel(c))}</span></label>${chatIsGuess(c) ? `<span class="chip o-ai">추정</span>` : ""}</li>`).join("");
-  // 뺀 것 = 이 미리보기의 excluded 그대로(확정이 가리키는 판의 제외 목록 — 연쇄로 함께 빠진 것 포함). 서버는 뺀 변경을 changes 에서 지운다.
+  // 반영 안 함 = 이 미리보기의 excluded 그대로(확정이 가리키는 판의 제외 목록 — 연쇄로 함께 빠진 것 포함). 서버는 뺀 변경을 changes 에서 지운다.
   // 이름 = 서버 excluded_changes[].summary(첫 판의 표시 요약) → 없으면 같은 결과에서 본 변경(CHAT.known) → 그래도 없으면 「앞서 뺀 변경」.
   // 되돌릴 수 없어 체크 칸은 두지 않는다
   const xname = new Map((p.excluded_changes || []).map(x => [x.cid, x.summary]));
@@ -4214,9 +4265,9 @@ function chatCardHtml(p) {
     <p class="clead">이렇게 정리했어요. 맞나요? 고칠 곳은 바로 고치세요 — 고친 글은 다시 정리해요.</p>
     <div class="cunits" id="chat-units">${units}</div>
     ${chg ? `<h4>바뀌는 것 ${inc.length}</h4><ul class="cchg">${chg}</ul>` : ""}
-    ${outs ? `<h4>뺀 것 ${off.size}</h4><ul class="cchg">${outs}</ul>` : ""}
+    ${outs ? `<h4>반영 안 함 ${off.size}</h4><ul class="cchg">${outs}</ul>` : ""}
     ${qs ? `<h4>정해 주세요 ${blk.length}</h4>${qs}` : ""}
-    <div class="cacts"><button type="button" class="primary" id="chat-confirm">확정</button></div>
+    <div class="cacts"><button type="button" class="primary" id="chat-confirm">확정</button>${trashBtn("stack_session", CHAT.sid, null, "")}</div>
   </section>`;
 }
 const chatOpenBlock = p => p.blocked_open === true || chatBlocking(p).length > 0;   // 서버 blocked_open 우선(없으면 화면 계산)
@@ -4224,6 +4275,7 @@ const chatCanConfirm = () => !!(CHAT.preview && CHAT.ready && !CHAT.dirty && !CH
 function chatLock() {
   const b = $("chat-confirm");
   if (b) b.disabled = !chatCanConfirm();
+  document.querySelectorAll("#chat-card button[data-trash]").forEach(x => { x.disabled = !!CHAT.busy; });   // 보내는 중·확정 중엔 [삭제]도 잠금
   document.querySelectorAll("#chat-card li:not(.out) input[data-cid]").forEach(x => { x.disabled = !chatCanToggle(); });   // 고치는 중·보내는 중엔 끄기도 잠금
   const nodev = chatNoDev();   // 장치 없음 = 재정리(작업 접수)를 부르는 칸 잠금 — 정리 글은 읽기만, 막힘 답 칸 잠금
   document.querySelectorAll("#chat-units textarea[data-uid]").forEach(x => { x.readOnly = nodev; });
@@ -4245,7 +4297,7 @@ function chatShow(p, jid, rv) {
   CHAT.preview = p; CHAT.jid = jid; CHAT.ready = p.latest !== false;   // latest=false = 늦게 온 옛 결과(확정 불가)
   if (rv && String(rv) !== CHAT.rv) CHAT.known = {};   // 변경 ID 는 결과 하나 안에서만 같은 뜻 — 결과가 바뀌면 본 이름을 잊는다
   if (rv) CHAT.rv = String(rv);
-  for (const c of chatChanges(p)) CHAT.known[c.cid] = chatLabel(c);   // 뺀 것 이름 — 빼기 전 판에서 본 변경
+  for (const c of chatChanges(p)) CHAT.known[c.cid] = chatLabel(c);   // 반영 안 함 칸의 이름 — 빼기 전 판에서 본 변경
   if (p.edit_generation != null) CHAT.gen = Math.max(CHAT.gen, Number(p.edit_generation) || 0);   // 재정리 세대 = 세션 현재 값 + 1
   chatLine(p.latest === false ? "이 결과는 최신이 아니에요. 최신 결과를 기다려 주세요." : chatOpenBlock(p) ? "정해 주세요 칸에 답하면 다시 정리해요." : "확인하고 [확정]을 눌러 주세요.", p.latest === false);
   chatDraw();

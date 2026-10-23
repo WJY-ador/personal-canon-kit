@@ -337,7 +337,7 @@ def chat_run(scenario):
     html = (HERE / "app.html").read_text(encoding="utf-8")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
     helpers = "\n".join(re.search(rf"^{p}.*$", js, re.M).group(0) for p in (
-        r"const esc = ", r"const toDate = ", r"const pad2 = ", r"function mdhm\("))
+        r"const esc = ", r"const toDate = ", r"const pad2 = ", r"function mdhm\(", r"const trashOn = ", r"const trashBtn = "))   # 확인 카드 보조 [삭제](휴지통 켜짐)
     a = js.index("// ── 대화 (PR ②-b B5)")
     chat = js[a:js.index('document.addEventListener("click"', a)]
     stub = """let S = null; const navNew = () => true; const els = {};
@@ -452,7 +452,7 @@ out.sent = sent; out.after = {{line: CHAT.line, sid: CHAT.sid, nav: chatNavHtml(
     assert d["form"] is True and d["note"] is False and d["text"] == NODEV, ("입력 칸 대신 안내 1줄", d)
     assert d["ro"] is True and d["bq"] is True and d["send"] is True, ("재정리를 부르는 칸 잠금", d)
     assert o["sends"] == 0 and o["line"] == NODEV and o["dirty"] is False, (o["sends"], o["line"], o["dirty"], "작업 접수 0(새 턴·재정리·막힘 답) — 안내 1줄")
-    assert o["excl"] == 1 and "뺀 것 1" in o["card"], "끄기(서버 작업)는 된다"
+    assert o["excl"] == 1 and "반영 안 함 1" in o["card"], "끄기(서버 작업)는 된다"
     assert o["sent"] and o["sent"]["preview_id"] == "p2", "확정(서버 작업)은 된다 — 뺀 판을 가리킨다"
     a = o["after"]
     assert a["line"] == "저장했어요 · 변경 1" and a["sid"] == "" and a["nav"] == f'<span class="chatnote" role="note">{NODEV}</span>', \
@@ -496,7 +496,7 @@ out.off_q = await go("offline", "queued"); out.off_run = await go("offline", "ru
 
 def test_chat_excluded():
     """③-0.2 뺀 변경 표시 = 확정이 가리키는 미리보기의 실제 excluded. 서버 exclude 는 뺀 변경(연쇄·같은 단위 포함)을 changes 에서 지우고
-    excluded 에 ID 를 쌓는다 → 화면은 excluded 를 「뺀 것 N」으로 그대로 그린다(이름 = 같은 결과에서 본 변경, 못 봤으면 「앞서 뺀 변경」).
+    excluded 에 ID 를 쌓는다 → 화면은 excluded 를 「반영 안 함 N」(옛 「뺀 것 N」)으로 그대로 그린다(이름 = 같은 결과에서 본 변경, 못 봤으면 「앞서 뺀 변경」).
     확정 요청은 그 미리보기(id·판·해시)를 가리킨다 · 바뀌는 것 = 기본 포함 체크 · 뺀 것엔 체크 칸 0 · 결과가 바뀌면 본 이름을 잊는다."""
     o = chat_run("""
 S = {switches: {converse: true}, devices_status: {state: "recent", last_seen_at: null, threshold_seconds: 180}};
@@ -522,15 +522,15 @@ CHAT.want = "j3"; chatShow(Object.assign({}, p2, {id: "p3"}), "j3", "r2"); out.c
 """)
     xs = lambda h: re.findall(r'<li class="out" data-xcid="([^"]+)"><span>([^<]*)</span><span class="cnote">뺐어요</span></li>', h)   # noqa: E731
     on = lambda h: re.findall(r'<input type="checkbox" data-cid="([^"]+)"( checked)?( disabled)?>', h)   # noqa: E731
-    assert xs(o["card1"]) == [] and "뺀 것" not in o["card1"] and "바뀌는 것 3" in o["card1"], "뺀 것 없음 = 칸 0"
+    assert xs(o["card1"]) == [] and "반영 안 함" not in o["card1"] and "바뀌는 것 3" in o["card1"], "뺀 것 없음 = 칸 0"
     assert on(o["card1"]) == [("c1", " checked", ""), ("c2", " checked", ""), ("c3", " checked", "")], "바뀌는 것 = 기본 포함(체크), 기본 off 0"
     assert xs(o["card2"]) == [("c2", "새 판단: 나"), ("c3", "새 판단: 다")], "뺀 것 = excluded 그대로(연쇄 포함) · 이름 = 빼기 전 본 변경"
-    assert "뺀 것 2" in o["card2"] and "바뀌는 것 1" in o["card2"] and on(o["card2"]) == [("c1", " checked", "")], "뺀 것엔 체크 칸 0"
+    assert "반영 안 함 2" in o["card2"] and "뺀 것" not in o["card2"] and "바뀌는 것 1" in o["card2"] and on(o["card2"]) == [("c1", " checked", "")], "뺀 것엔 체크 칸 0"
     assert o["card2"].count("<button") == 1, "버튼 = [확정] 하나"
     assert o["sent"] == {"jid": "j1", "body": {"request_id": o["sent"]["body"]["request_id"], "preview_id": "p2", "preview_version": 2, "preview_sha": "h2"}}, \
         "확정 = 뺀 것을 그린 그 미리보기(서버는 그 판의 excluded 로 저장)"
     assert o["line"] == "저장했어요 · 변경 1", "저장 문구의 변경 수 = 바뀌는 것(뺀 것 제외)"
-    assert xs(o["card3"]) == [("c2", "앞서 뺀 변경"), ("c3", "앞서 뺀 변경")] and "뺀 것 2" in o["card3"], "새로 고침 뒤 = 이름 없이 같은 수"
+    assert xs(o["card3"]) == [("c2", "앞서 뺀 변경"), ("c3", "앞서 뺀 변경")] and "반영 안 함 2" in o["card3"], "새로 고침 뒤 = 이름 없이 같은 수"
     assert xs(o["card4"]) == [("c2", "앞서 뺀 변경"), ("c3", "앞서 뺀 변경")], "다른 결과의 같은 ID 에 옛 이름 0"
     assert xs(o["card5"]) == [("c2", "새 판단: 나"), ("c3", "새 판단: 다")], "새로 고침 뒤 = 서버 excluded_changes 이름(키 없으면 「앞서 뺀 변경」)"
     print("OK — 뺀 변경 표시(excluded 그대로·연쇄 포함·이름 = 본 변경·체크 칸 0·확정 = 그 미리보기·저장 수 = 포함만·새로 고침 뒤 수 유지·결과별 이름) 통과")
@@ -585,9 +585,24 @@ def test_static_trash():
     assert "남기지 않" not in html, "「남기지 않음·않기·않았어요」 0 — 표현은 「반영 안 함」 하나(동작 exclude 는 그대로)"
     assert js.count("반영 안 함으로 표시했어요.") == 5 and "반영 안 함으로 저장했어요." not in js
     assert "근거를 이용할 수 없어요." in js and "찾을 수 없는 대상" not in js, "삭제된 근거 = 「근거를 이용할 수 없어요.」"
-    # PR-2 몫은 그대로 — 승인 대기 [제외] · 제안 [제외] · 대화 「뺀 것」
-    assert 'act === "inbox-exclude"' in js and '<button class="secondary" type="button" data-iact="discard">제외</button>' in js and "뺀 것 ${" in js
-    print("OK — 휴지통 정적(스위치 게이트·r4 §8 문구 그대로·처리 중 상태 0·접점 한 곳·진입점 6·후보 버튼 0·기준 버튼 변경·Setup 페이지·반영 안 함·근거 이용 불가·PR-2 몫 그대로) 통과")
+    # PR-2 — 거절도 [삭제](켜짐) · 꺼짐 분기 = 옛 [제외] 그대로 · 진입점 4(승인 대기·항목 제안 2곳·정의 제안·대화 확인 카드)
+    for w in ('trashOn() ? trashBtn("pending", e.id, null, "#_today") : `<button class="secondary" type="button" data-core="inbox-exclude"',
+              'trashOn() ? trashBtn("item_proposal", pr.proposal_id, null, back)', ': `<button class="secondary" type="button" data-iact="discard">제외</button>`}',
+              'trashBtn("item_proposal", x.proposal.proposal_id, null, location.hash || "#_me", "제안 삭제")', '(trashOn() ? "" : btn("secondary", "discard", "제안 제외"))',
+              'trashBtn("definition_proposal", pr.proposal_id, null, location.hash || "#_setup/structure")', "${defPropHtml(o.id)}",
+              '<button type="button" class="primary" id="chat-confirm">확정</button>${trashBtn("stack_session", CHAT.sid, null, "")}'):
+        assert w in js, w
+    assert 'act === "inbox-exclude"' in js, "꺼짐 = 기존 승인 대기 [제외] 경로 유지"
+    for k, w in TRASH2_ASK.items():
+        assert f'{k}: "{w}"' in tr, (k, "확인창 = r3 §9 를 r4 §8 말(168시간·서버 정리 때 영구 삭제)로")
+        assert "7일" not in w and "168시간" in w and "서버 정리 때 영구 삭제" in w
+    for w in TRASH2_RESTORED:
+        assert w in tr, w
+    assert "if (!window.confirm(TRASH_ASK_KIND[b.dataset.trash] || TRASH_ASK)) return;" in tr
+    # 스위치 무관 글자 — 「뺀 것」 0 · 승인 대기 상태 excluded = 「반영 안 함」(「제외함」 0)
+    assert "뺀 것" not in html and "제외함" not in html, "「뺀 것 N」→「반영 안 함 N」 · 「제외함」→「반영 안 함」"
+    assert '<h4>반영 안 함 ${off.size}</h4>' in js and 'excluded: "반영 안 함", expired: "만료"' in js
+    print("OK — 휴지통 정적(스위치 게이트·r4 §8 문구 그대로·처리 중 상태 0·접점 한 곳·진입점 6+PR-2 4·후보 버튼 0·기준 버튼 변경·Setup 페이지·반영 안 함·근거 이용 불가·꺼짐 = 옛 [제외]·「뺀 것」·「제외함」 0) 통과")
 
 
 def trash_run(scenario):
@@ -601,9 +616,12 @@ def trash_run(scenario):
     html = (HERE / "app.html").read_text(encoding="utf-8")
     js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
     helpers = "\n".join(re.search(rf"^{p}.*$", js, re.M).group(0) for p in (
-        r"const esc = ", r"const toDate = ", r"const pad2 = ", r"function mdhm\(", r"const SETUP_PAGES = ", r"const setupPages = ", r"const LOADING = "))
-    a = js.index("function homeActs(r) {")
-    acts = js[a:js.index("\n}\n", a) + 3]
+        r"const esc = ", r"const toDate = ", r"const pad2 = ", r"function mdhm\(", r"function md\(", r"const SETUP_PAGES = ", r"const setupPages = ", r"const LOADING = ",
+        r"const clip = ", r"const recById = ", r"const defsList = ", r"const defById = ", r"const SELF_NOTE = ", r"const INBOX_KIND = ", r"const INBOX_STATE = ",
+        r"const GEN_LABEL = ", r"const GEN_VALUE = ", r"const actUi = "))
+    block = lambda head: js[js.index(head):js.index("\n}\n", js.index(head)) + 3]   # noqa: E731 — 함수 하나(닫는 } 까지)
+    acts = "".join(block(h) for h in ("function homeActs(r) {", "function genVal(", "function dOnly(", "function fieldVal(", "function inboxTitle(",
+                                       "function inboxOne(", "function proposalHtml(", "function defPropHtml("))
     b = js.index("// ── 휴지통 (trash PR-1)")
     tr = js[b:js.index("// ── /휴지통 ──", b)]   # 클릭 연결은 가짜 document 가 받고 버린다 · hashchange 는 HASH 로
     stub = """let S = null, NAVNEW = true, homeEdit = null, homeAct = null, coreFlash = null; const navNew = () => NAVNEW;
@@ -620,7 +638,8 @@ const window = {confirm: t => { confirmAsk.push(t); return CONFIRM; }, addEventL
 const done = [], fail = [];
 const coreDone = async (text, hash) => { done.push({text, hash}); }; const coreFail = async (res, err) => { fail.push(res.code); };
 const coreFlashShow = () => {}; const load = async () => { S = Object.assign({}, S); };
-const fakeBtn = (d, err) => ({dataset: d, disabled: false, closest: () => ({querySelector: () => err})});"""
+const fakeBtn = (d, err) => ({dataset: d, disabled: false, closest: () => ({querySelector: () => err})});
+const chatCalls = []; const chatReset = () => chatCalls.push("reset"); const chatLine = (t, bad) => chatCalls.push(["line", t, !!bad]); const chatDraw = () => chatCalls.push("draw");"""
     src = f"{stub}\n{helpers}\n{acts}\n{tr}\nconst out = {{}};\n(async () => {{\n{scenario}\n}})().then(() => console.log(JSON.stringify(out)), e => {{ console.error(e); process.exit(1); }});"
     r = subprocess.run([node, "-"], input=src, capture_output=True, text=True, timeout=60, env=dict(os.environ, TZ="Asia/Seoul"))
     assert r.returncode == 0, r.stderr[-800:]
@@ -711,6 +730,124 @@ LIST = {ok: false, code: "OFFLINE"}; S = Object.assign({}, S); renderTrash(); aw
     assert o["leftMsg"] == "", "휴지통을 떠나면 지난 결과 문구를 지운다(다시 들어와도 안 보인다)"
     assert "서버에 연결하지 못했어요." in o["loadFail"]
     print("OK — 휴지통 흐름(확인창 r4 문구·취소 요청 0·종류·ID·revision·성공 문구+주소·축 정책 장치 안내·행 종류·제목 esc·삭제 시각·복원 가능 기한(사용자 시간대)·빈 상태·안내·복원·영구 삭제 확인·접수·기한 이후·불러오기 실패) 통과")
+
+
+TRASH2_ASK = {   # PR-2 확인창 — r3 §9 문구를 r4 §8 의 168시간·「서버 정리 때 영구 삭제」 말로(한 가지 말)
+    "pending": "승인 대기 글을 삭제할까요? 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있고, 이후 서버 정리 때 영구 삭제돼요. 복원하면 멈췄던 남은 대기시간이 다시 흘러요.",
+    "item_proposal": "제안을 삭제할까요? 현재 저장된 값은 바뀌지 않으며, 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있어요. 이후 서버 정리 때 영구 삭제돼요.",
+    "definition_proposal": "제안을 삭제할까요? 현재 저장된 값은 바뀌지 않으며, 삭제 시각부터 168시간 동안 휴지통에서 복원할 수 있어요. 이후 서버 정리 때 영구 삭제돼요.",
+    "stack_session": "정리 내용을 삭제할까요? 삭제 시각부터 168시간 안에 복원하면 확정 전 상태로 돌아가요. 이후 서버 정리 때 영구 삭제돼요.",
+}
+TRASH2_RESTORED = ("승인 대기로 복원했어요. 대기 만료: ", "제안을 복원했어요. 적용 전에 현재 값을 다시 확인해요.", "확정 전 상태로 복원했어요. 임시 보관 만료: ")   # r3 §9 그대로
+
+
+def test_trash2_switch():
+    """PR-2 진입점 — 꺼짐(필드 없음·옛 탐색 포함) = 승인 대기 [제외] · 제안 [제외]/[제안 제외] · 정의 제안 표면 0 그대로 ·
+    켜짐 = 거절이 전부 [삭제](승인 대기 → pending(접수 ID) · 슬롯 제안·새 항목 제안 → item_proposal · 정의 제안 → definition_proposal(제안 ID, revision 없음)) · 켜짐 화면에 「제외」 글자 0."""
+    o = trash_run("""
+const pend = {id: "ie1", kind: "self_text", state: "pending", title: "대기 글", body: "본문", received_at: "2026-10-23T01:00:00Z", expires_at: "2026-11-22T01:00:00Z",
+  approvable: true, is_latest: true, device: {label: "회사 PC"}, execution: "manual"};
+const gone = Object.assign({}, pend, {id: "ie2", state: "excluded", body: null, title: null});
+const slot = {id: "i1", revision: 3, title: "옛 제목", body: "", data: {}, links: [], object_id: "o1"}, pr = {proposal_id: "pp1", proposed_at: "2026-10-23T02:00:00Z", title: "새 제목", data: {}, links: []};
+const fresh = {id: "i2", revision: 0, object_id: "o1"}, pr0 = {proposal_id: "pp2", proposed_at: "2026-10-23T02:00:00Z", title: "새 항목", data: {}, links: []};
+const homeItem = {k: "item", id: "i1", x: {id: "i1", revision: 3, semantic_kind: "event", proposal: {proposal_id: "pp1"}}};
+const snap = () => ({inbox: inboxOne(pend), gone: inboxOne(gone), slot: proposalHtml(slot, pr, [], "#structure/o1/i1"), fresh: proposalHtml(fresh, pr0, [], "#structure/o1"),
+  def: defPropHtml("o1"), defNone: defPropHtml("o2"), home: homeActs(homeItem)});
+S = {switches: {converse: true}, definitions: [{id: "o1", revision: 4, proposal: {proposal_id: "dp1", base_revision: 4, definition: {}}}, {id: "o2", revision: 1, proposal: null}], journal: []};
+out.none = snap();
+S = Object.assign({}, S, {switches: {trash: false}}); out.off = snap();
+S = Object.assign({}, S, {switches: {trash: true}}); NAVNEW = false; out.old = snap();
+NAVNEW = true; out.on = snap();
+""")
+    btns = lambda h: re.findall(r"<button[^>]*>([^<]+)</button>", h)   # noqa: E731
+    for k in ("none", "off", "old"):
+        s = o[k]
+        assert btns(s["inbox"]) == ["승인", "제외"] and 'data-core="inbox-exclude" data-id="ie1"' in s["inbox"], (k, "승인 대기 = [승인]·[제외] 그대로")
+        assert btns(s["slot"]) == ["적용", "제외"] and btns(s["fresh"]) == ["적용", "제외"] and 'data-iact="discard"' in s["slot"], (k, "제안 = [적용]·[제외] 그대로")
+        assert s["def"] == "" and s["defNone"] == "", (k, "정의 제안 표면 0(기존 화면 그대로)")
+        assert btns(s["home"]) == ["제안 적용", "제안 제외"], (k, "「나」 상세 = [제안 적용]·[제안 제외] 그대로")
+        assert "data-trash" not in "".join(s.values()), (k, "[삭제] 0")
+        assert "승인·제외·만료 때 대기 본문을 지워요." in s["gone"], (k, "빈 본문 안내 = 기존 문구")
+    s = o["on"]
+    assert btns(s["inbox"]) == ["승인", "삭제"] and 'data-trash="pending" data-id="ie1" data-back="#_today"' in s["inbox"] and "inbox-exclude" not in s["inbox"], "승인 대기 거절 = [삭제]"
+    assert 'data-trash="item_proposal" data-id="pp1" data-back="#structure/o1/i1"' in s["slot"] and btns(s["slot"]) == ["적용", "삭제"], "슬롯 제안 = [삭제](제안 ID · 그 항목으로)"
+    assert 'data-trash="item_proposal" data-id="pp2" data-back="#structure/o1"' in s["fresh"], "새 항목 제안(revision 0) = 제안 ID [삭제] · 목록으로"
+    assert 'data-trash="definition_proposal" data-id="dp1" data-back=' in s["def"] and "정의 제안이 있어요" in s["def"] and s["defNone"] == "", "정의 제안 = 제안 있는 정의만 [삭제]"
+    assert "data-rev" not in s["slot"] + s["fresh"] + s["def"], "제안 = 제안 ID 자체가 판(revision 없음)"
+    assert btns(s["home"]) == ["제안 적용", "제안 삭제", "삭제"] and 'data-trash="item_proposal" data-id="pp1"' in s["home"], "「나」 상세 = [제안 적용]·[제안 삭제]·항목 [삭제]"
+    assert all("제외" not in v for v in s.values()), "켜짐 화면에 「제외」 글자 0"
+    assert "승인·만료·영구 삭제 때 대기 본문을 지워요." in s["gone"] and ">반영 안 함</span>" in s["gone"], "예전 [제외] 대기 = 「반영 안 함」"
+    print("OK — 휴지통 PR-2 스위치(꺼짐·필드 없음·옛 탐색 = 옛 [제외]·정의 제안 표면 0 · 켜짐 = 승인 대기·슬롯 제안·새 항목 제안·정의 제안·「나」 상세 [삭제], 「제외」 0) 통과")
+
+
+def test_trash2_flow():
+    """PR-2 [삭제]·휴지통 — 종류별 확인창(r3 §9 → r4 말) · 요청(종류·ID·revision·제안 ID) · 대화 확인 카드 [삭제] = 서랍 비움 + 결과 한 줄(주소 그대로) ·
+    휴지통 행 = 복원될 상태 + 멈춘 남은 시간 · 복원 결과 3종(대기 만료·제안 재확인·임시 보관 만료) · 복원 충돌 = 안내(양쪽 그대로)."""
+    o = trash_run("""
+S = {switches: {trash: true}};
+const err = {textContent: ""};
+await trashDel(fakeBtn({trash: "pending", id: "ie1", back: "#_today"}, err)); out.inbox = api.pop(); out.inboxDone = done.pop();
+await trashDel(fakeBtn({trash: "item_proposal", id: "pp1", back: "#structure/o1/i1"}, err)); out.prop = api.pop(); done.length = 0;
+await trashDel(fakeBtn({trash: "definition_proposal", id: "dp1", back: "#_setup/structure"}, err)); out.def = api.pop(); done.length = 0;
+await trashDel(fakeBtn({trash: "stack_session", id: "s1", back: ""}, err)); out.stack = api.pop(); out.stackDone = done.length; out.chat = chatCalls.slice(); chatCalls.length = 0;
+REPLY = {ok: false, code: "CONFLICT", msg: "다른 곳에서 먼저 바뀌었어요."}; await trashDel(fakeBtn({trash: "stack_session", id: "s1", back: ""}, err)); out.stackFail = chatCalls.slice(); out.stackFailCore = fail.length;
+CONFIRM = false; const n0 = api.length; await trashDel(fakeBtn({trash: "pending", id: "ie1", back: "#_today"}, err)); out.cancel = api.length - n0; CONFIRM = true;
+out.ask = confirmAsk.slice();
+LIST = {ok: true, j: {items: [
+  {kind: "pending", id: "ie1", title: "대기 글", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z", restore_state: "pending", remaining_seconds: 5 * 86400 + 3 * 3600},
+  {kind: "item_proposal", id: "pp1", title: "새 제목", object_label: "결정", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z", restore_state: "unapplied"},
+  {kind: "definition_proposal", id: "dp1", title: "결정", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z"},
+  {kind: "stack_session", id: "s2", title: null, trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z", restore_state: "unconfirmed", remaining_seconds: 60},
+  {kind: "stack_session", id: "s1", title: "정리 글 첫 줄", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z", restore_state: "unconfirmed", remaining_seconds: 12 * 3600 + 30 * 60},
+  {kind: "record", id: "r1", title: "내 글", trashed_at: "2026-10-23T01:00:00Z", purge_at: "2026-10-30T01:00:00Z"}], next_cursor: null}};
+S = Object.assign({}, S); renderTrash(); await new Promise(r => setTimeout(r, 0)); out.list = $("view").innerHTML;
+const rb = d => ({dataset: d, disabled: false});
+const msg = async (kind, j) => { REPLY = {ok: true, j}; await trashDo(rb({kind, id: "x"}), "restore"); return TRASH.msg; };
+out.rInbox = await msg("pending", {expires_at: "2026-10-28T13:00:00Z"}); out.rProp = await msg("item_proposal", {}); out.rDef = await msg("definition_proposal", {});
+out.rStack = await msg("stack_session", {expires_at: "2026-10-24T05:30:00Z"}); out.rRec = await msg("record", {});
+REPLY = {ok: false, code: "INBOX-NOT-LATEST"}; await trashDo(rb({kind: "pending", id: "ie1"}), "restore"); out.conflict = [TRASH.msg, TRASH.bad];
+REPLY = {ok: false, code: "INBOX-NOT-LATEST", msg: "같은 원본의 더 새 개정이 와 있어 복원할 수 없어요.", j: {code: "INBOX-NOT-LATEST", action: "새 개정은 「승인 대기」에서 확인하세요. 이 글은 휴지통에 그대로 있어요."}};
+await trashDo(rb({kind: "pending", id: "ie1"}), "restore"); out.conflictAct = TRASH.msg;
+REPLY = {ok: false, code: "INBOX-FULL", msg: "승인 대기가 가득 차서 복원할 수 없어요.", j: {action: "「승인 대기」에서 승인하거나 삭제한 뒤 다시 복원하세요. 이 글은 휴지통에 그대로 있어요."}};
+await trashDo(rb({kind: "pending", id: "ie1"}), "restore"); out.full = TRASH.msg;
+REPLY = {ok: false, code: "CONFLICT", msg: "그 대상에 새 제안이 있어요 — 새 제안을 적용하거나 삭제한 뒤 복원하세요"}; await trashDo(rb({kind: "item_proposal", id: "pp1"}), "restore"); out.conflict2 = [TRASH.msg, TRASH.bad];
+""")
+    assert o["inbox"] == {"url": "/api/trash/move", "body": {"kind": "pending", "id": "ie1"}} and o["inboxDone"] == {"text": "휴지통으로 옮겼어요.", "hash": "#_today"}
+    assert o["prop"] == {"url": "/api/trash/move", "body": {"kind": "item_proposal", "id": "pp1"}}, "제안 = 제안 ID(revision 없음)"
+    assert o["def"] == {"url": "/api/trash/move", "body": {"kind": "definition_proposal", "id": "dp1"}}
+    assert o["stack"] == {"url": "/api/trash/move", "body": {"kind": "stack_session", "id": "s1"}} and o["stackDone"] == 0, "대화 = 주소 이동 0(서랍 안에서 끝)"
+    assert o["chat"] == ["reset", ["line", "휴지통으로 옮겼어요. 168시간 안에 Setup › 휴지통에서 복원할 수 있어요.", False], "draw"], "대화 [삭제] = 서랍 비움 + 결과 한 줄"
+    assert o["stackFail"] == [["line", "다른 곳에서 먼저 바뀌었어요.", True]] and o["stackFailCore"] == 0, "대화 [삭제] 실패 = 서랍 상태 줄(카드는 그대로)"
+    assert o["cancel"] == 0
+    assert o["ask"][:4] == [TRASH2_ASK["pending"], TRASH2_ASK["item_proposal"], TRASH2_ASK["definition_proposal"], TRASH2_ASK["stack_session"]], "종류별 확인창"
+    L = o["list"]
+    assert L.count('class="trow"') == 6 and ">확정 전 정리</span> <b>대화 정리</b>" in L, "제목 없는 세션 = 「대화 정리」"
+    for w in (">승인 대기 글</span> <b>대기 글</b>", "복원하면 승인 대기 · 남은 대기시간 5일 3시간", ">결정 제안</span> <b>새 제목</b>", "복원하면 적용 전 제안",
+              ">정의 제안</span> <b>결정</b>", ">확정 전 정리</span> <b>정리 글 첫 줄</b>", "복원하면 확정 전 · 남은 임시 보관 12시간 30분"):
+        assert w in L, w
+    assert L.count("복원하면") == 5 and L.count("복원 가능 기한 10월 30일 10:00") == 6, "보관된 5종 행에는 「복원하면」 0"
+    assert o["rInbox"] == "승인 대기로 복원했어요. 대기 만료: 10월 28일 22:00", o["rInbox"]
+    assert o["rProp"] == o["rDef"] == "제안을 복원했어요. 적용 전에 현재 값을 다시 확인해요."
+    assert o["rStack"] == "확정 전 상태로 복원했어요. 임시 보관 만료: 10월 24일 14:30" and o["rRec"] == "복원했어요."
+    assert o["conflict"] == ["같은 원본의 더 새 개정이 와 있어 복원할 수 없어요.", True], "승인 대기 복원 충돌 = 안내(양쪽 그대로)"
+    assert o["conflictAct"] == "같은 원본의 더 새 개정이 와 있어 복원할 수 없어요. 새 개정은 「승인 대기」에서 확인하세요. 이 글은 휴지통에 그대로 있어요.", "복원 제한 = 문구 + 할 일"
+    assert o["full"] == "승인 대기가 가득 차서 복원할 수 없어요. 「승인 대기」에서 승인하거나 삭제한 뒤 다시 복원하세요. 이 글은 휴지통에 그대로 있어요."
+    assert o["conflict2"] == ["그 대상에 새 제안이 있어요 — 새 제안을 적용하거나 삭제한 뒤 복원하세요", True], "제안 복원 충돌 = 서버 문구 그대로"
+    print("OK — 휴지통 PR-2 흐름(종류별 확인창·요청 꼴·대화 [삭제] 서랍 비움·실패 줄·휴지통 행 복원될 상태·남은 시간·복원 결과 3종·복원 충돌) 통과")
+
+
+def test_chat_trash():
+    """대화 확인 카드 — 주 [확정] + 보조 [삭제](휴지통 켜짐만, 세션 ID) · 꺼짐 = [확정] 하나 그대로."""
+    o = chat_run("""
+const p = {id: "p1", preview_version: 1, preview_sha: "h1", latest: true, blocked: [], blocked_open: false, excluded: [],
+  units: [{uid: "u1", text: "하나", change_ids: []}], changes: []};
+S = {switches: {converse: true, trash: false}}; chatReset(); CHAT.sid = "s1"; CHAT.want = "j1"; chatShow(p, "j1", "r1"); out.off = $("chat-cardbox").innerHTML;
+S = {switches: {converse: true, trash: true}}; chatReset(); CHAT.sid = "s1"; CHAT.want = "j1"; chatShow(Object.assign({}, p, {id: "p2"}), "j1", "r1"); out.on = $("chat-cardbox").innerHTML;
+""")
+    btns = lambda h: re.findall(r"<button[^>]*>([^<]+)</button>", h)   # noqa: E731
+    assert btns(o["off"]) == ["확정"], "꺼짐 = [확정] 하나"
+    assert btns(o["on"]) == ["확정", "삭제"] and 'data-trash="stack_session" data-id="s1"' in o["on"] and 'class="primary" id="chat-confirm"' in o["on"], "켜짐 = 주 [확정] + 보조 [삭제]"
+    print("OK — 대화 확인 카드 [삭제](켜짐 = 주 [확정] + 보조 [삭제] · 꺼짐 = [확정] 하나) 통과")
 
 
 def test_static_moved():
@@ -870,6 +1007,9 @@ async def run():
         test_static_trash()
         test_trash_switch()
         test_trash_flow()
+        test_trash2_switch()
+        test_trash2_flow()
+        test_chat_trash()
         test_static_moved()
         await test_records_api()
     finally:
