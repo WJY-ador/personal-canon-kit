@@ -62,7 +62,9 @@
 최종형을 init_schema 로 깔고 그 안에서만 돈 뒤 끝에 지운다(운영 테이블은 안 건드린다). CI 는 빈 Postgres 라 안 쓴다.
 """
 import asyncio
+import contextlib
 import hashlib
+import io
 import json
 from contextlib import asynccontextmanager, contextmanager
 import os
@@ -71,6 +73,8 @@ import secrets
 import sys
 import time
 import urllib.parse
+import uuid
+from datetime import timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -153,10 +157,10 @@ TRASH_TOOLS = {"trash_list", "trash_move", "trash_restore", "trash_purge"}
 TRASH_WRITES = TRASH_TOOLS - {"trash_list"}
 BI = {k: f"bi-{k}@example.com" for k in ("a", "b", "agg", "adm", "del", "mig")}   # 25절: a 장치·수신 · b 남 · agg 집계 · adm 삭제 실행 · del 삭제 대상 · mig 이전
 # 처리방침 머리글(`vN · 날짜`) — PR B 부터 v5. 날짜는 문서가 정본이라 파일에서 읽는다(시험이 날짜를 따로 들지 않는다)
-PRIVACY_VERSION = "v7"   # board 이전(2026-10-20) v6 → PR ②-b(2026-10-22) v7
+PRIVACY_VERSION = "v8"   # board 이전(2026-10-20) v6 → PR ②-b(2026-10-22) v7 → 휴지통 PR-2(2026-10-23) v8
 PRIVACY_HEAD = re.search(r"`(v\d+ · [^`]+)`", (HERE.parent / "guides" / "11-privacy.md").read_text(encoding="utf-8")).group(1)
-# 머리글 꼴 = v7 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
-assert re.fullmatch(r"v7 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
+# 머리글 꼴 = v8 · 2026-10-<두 자리>. 날짜 자리값 DD 는 릴리스 때 채운다(릴리스 체크 「처리방침 날짜 채움」) — 그 전에도 시험은 통과
+assert re.fullmatch(r"v8 · 2026-10-(\d\d|DD)", PRIVACY_HEAD), PRIVACY_HEAD
 # PR B(24절) 시험 사용자 — prb-* 는 표시 이름을 자동으로 채우지 않는다(관문 시험). 그 밖 시험 사용자는 아래 _autoname 이 채운다
 PRB_EMAILS = tuple(f"prb-{k}@example.com" for k in ("a", "b", "noname", "web", "mcp", "del", "dela", "delb", "adm", "race", "old", "nav"))
 TEST_EMAILS += PRB_EMAILS
@@ -1087,17 +1091,24 @@ def test_template_slot(A):
     import template_author as ta
     # 동결 파일 = 지금 TEMPLATE (바뀌면 TEMPLATE_VERSION 을 올리고 새 판 파일을 만든다)
     frozen = json.loads(ta.FROZEN_PATH.read_text(encoding="utf-8"))
-    assert (ta.TEMPLATE_KEY, ta.TEMPLATE_VERSION, ta.TEMPLATE_NAME, db.BACKFILL_TEMPLATE) == ("author", 1, "author@1", "author@1")
-    assert frozen == ta.frozen_doc() == db.template_frozen(db.BACKFILL_TEMPLATE), "TEMPLATE 이 동결 author@1 과 다르다"
-    want_obj = {d["id"]: f"author@1:{d['key']}" for d in frozen["objects"]}
-    want_fld = {(d["id"], f["key"]): f"author@1:{d['key']}.{f['key']}" for d in frozen["objects"] for f in d["fields"]}
+    assert (ta.TEMPLATE_KEY, ta.TEMPLATE_VERSION, ta.TEMPLATE_NAME, db.BACKFILL_TEMPLATE) == ("author", 2, "author@2", "author@1")
+    assert frozen == ta.frozen_doc() == db.template_frozen(ta.TEMPLATE_NAME), "TEMPLATE 이 동결 author@2 와 다르다"
+    # 글 수정(2026-10-23) v2 = v1 에서 기준 register 칸 라벨만 「레지스터」 → 「적용 영역」(값·필드 key 그대로 — 백필 6/25 대상 같다)
+    v1 = db.template_frozen(db.BACKFILL_TEMPLATE)
+    reg = lambda doc: next(f for d in doc["objects"] if d["key"] == "principles" for f in d["fields"] if f["key"] == "register")   # noqa: E731
+    assert (reg(v1)["label"], reg(frozen)["label"]) == ("레지스터", "적용 영역") and reg(v1)["options"] == reg(frozen)["options"]
+    reg(v1)["label"] = "적용 영역"
+    assert {**v1, "template_version": 2} == frozen, "author@2 = author@1 + register 라벨만"
+    T = ta.TEMPLATE_NAME
+    want_obj = {d["id"]: f"{T}:{d['key']}" for d in frozen["objects"]}
+    want_fld = {(d["id"], f["key"]): f"{T}:{d['key']}.{f['key']}" for d in frozen["objects"] for f in d["fields"]}
     assert (len(want_obj), len(want_fld)) == (6, 25), (len(want_obj), len(want_fld))
 
     # (1) 시드(test_definitions 가 A 에 적용) → 템플릿 6/25 만 채워지고 A 의 다른 정의는 NULL
     objs, flds = _slots(A)
     assert {k: v for k, v in objs.items() if v} == want_obj, objs
     assert {k: v for k, v in flds.items() if v} == want_fld, flds
-    assert objs["od_principles"] == "author@1:principles" and flds[("od_principles", "register")] == "author@1:principles.register"
+    assert objs["od_principles"] == f"{T}:principles" and flds[("od_principles", "register")] == f"{T}:principles.register"
     assert len(objs) > 6 and len(flds) > 25, "A 에는 템플릿 밖 정의도 있다(시험 재료)"
 
     # (2) 시드 전용: apply 의 ON CONFLICT … DO UPDATE SET·UPDATE 에 template_slot 없음, MCP·웹 경로는 표시 함수를 안 부른다
@@ -1112,13 +1123,13 @@ def test_template_slot(A):
     p = db.definition_propose(A, "od_axes", rev, {**base, "label": "관심축", "fields": [note]})
     db.definition_apply(A, "od_axes", p["proposal_id"], rev)
     objs, flds = _slots(A)
-    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert objs["od_axes"] == f"{T}:axes" and flds[("od_axes", "keywords")] == f"{T}:axes.keywords", (objs, flds)
     assert flds[("od_axes", "note")] is None, "사용자가 더한 필드는 NULL"
     p = db.definition_propose(A, "od_axes", rev + 1, {**base, "label": "축",
                                                       "fields": [{"key": "keywords", "label": "검색어", "value_type": "text_list"}, note]})
     db.definition_apply(A, "od_axes", p["proposal_id"], rev + 1)
     objs, flds = _slots(A)
-    assert objs["od_axes"] == "author@1:axes" and flds[("od_axes", "keywords")] == "author@1:axes.keywords", (objs, flds)
+    assert objs["od_axes"] == f"{T}:axes" and flds[("od_axes", "keywords")] == f"{T}:axes.keywords", (objs, flds)
     assert flds[("od_axes", "note")] is None and {k: v for k, v in objs.items() if v} == want_obj
 
     # (4) 다른 사용자가 propose/apply 로 템플릿과 같은 key(id 는 자동) · 같은 id(key 는 다름)를 만들어도 NULL
@@ -1157,7 +1168,8 @@ def test_template_slot(A):
             c.commit()
             db.init_schema(c)
             c.commit()
-            assert (_slots(u1, c), _slots(u2, c)) == seeded, "백필 ≠ 시드 표시"
+            old = lambda m: {k: v and v.replace(T + ":", db.BACKFILL_TEMPLATE + ":") for k, v in m.items()}   # noqa: E731 — 백필 = 열 전 시드 판(author@1)
+            assert (_slots(u1, c), _slots(u2, c)) == ((old(seeded[0][0]), old(seeded[0][1])), seeded[1]), "백필 ≠ 시드 표시(판 이름만 다름)"
             assert not any(seeded[1][0].values()) and not any(seeded[1][1].values()), "같은 key·다른 id 사용자 정의는 NULL"
             with c.transaction():
                 assert db._backfill_template_slots(c) == (0, 0), "두 번째 백필이 뭔가 바꿨다"
@@ -3249,7 +3261,7 @@ async def test_optional_consent():
             c.commit()
             db.init_schema(c)
             assert c.execute("SELECT count(*) AS n FROM usage_daily").fetchone()["n"] == 2, "표식이 있으면 지우지 않는다"
-            assert [r["key"] for r in c.execute("SELECT key FROM schema_marks").fetchall()] == [db.USAGE_RESET_MARK]
+            assert {r["key"] for r in c.execute("SELECT key FROM schema_marks").fetchall()} == {db.USAGE_RESET_MARK, db.REGISTER_LABEL_MARK}   # 글 수정: 라벨 이관 표식
             c.execute("DELETE FROM schema_marks")   # 표식 없는 옛 DB
             c.commit()
             db.init_schema(c)
@@ -3907,6 +3919,15 @@ async def run():
         test_trash_core()
         test_trash_purge()
         await test_trash_web_mcp()
+        test_trash2_schema()   # 휴지통 PR-2 31절
+        test_trash2_proposals()
+        test_trash2_sessions()
+        test_trash2_pending_dispatch()
+        test_trash2_off()
+        test_trash2_purge()
+        await test_trash2_web_mcp()
+        test_trash2_list_same()
+        test_trash2_std()
     finally:
         with db.tx() as c:
             ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE email = ANY(%s)", (list(TEST_EMAILS),)).fetchall()]
@@ -8087,7 +8108,10 @@ async def test_pr1b_layout_stats():
                     rr = await _bi_post(tok, _bi_act(Dv, policy_revision=2, occurred_on=occ.isoformat() if occ else None, axes=axes))
                     assert rr.status_code == 201, rr.text
 
-            # ── 통계 ──
+            # ── 통계 ── 종류 = 정의의 std_id(하위 탭 기준). 위 셋은 표준 편입으로 친다(3773·4710행 선례 — SQL 로 std_id 만)
+            with db.tx() as c:
+                for oid, sid in ((PO, "std:principles"), (EO, "std:decision_events"), (AXO, "std:axes")):
+                    assert c.execute("UPDATE object_defs SET std_id=%s WHERE user_id=%s AND id=%s", (sid, U, oid)).rowcount == 1
             s = db.me_stats(U)
             assert set(s) == {"axes", "heatmap", "kinds", "waiting"}
             assert [(x["id"], x["code"]) for x in s["axes"]] == [(X0, "AX-0"), (X1, "AX-1"), (X2, "AX-2")], s["axes"]
@@ -8122,7 +8146,23 @@ async def test_pr1b_layout_stats():
             assert not any(x["records"] or x["activities"] for x in so["heatmap"]["cells"])
             OAX = _ux_obj(O, "axes", "collection")
             OX = _ux_item(O, OAX, "AX-0", "남의 축")
-            assert [x["id"] for x in db.me_stats(O)["axes"]] == [OX] and db.me_stats(O)["kinds"]["axis"] == 1
+            so = db.me_stats(O)   # 축 띠 = 분류 역할(key axes) 기준 그대로 · kinds = std_id 기준 — 편입 전 축 정의 항목은 커스텀
+            assert [x["id"] for x in so["axes"]] == [OX] and (so["kinds"]["axis"], so["kinds"]["custom"]) == (0, 1), so["kinds"]
+            # 편입 전 기준 정의(semantic_kind principle, std_id 없음) = 커스텀 · 확정 전 기준 아님(하위 탭 기준과 같은 숫자)
+            ORO = _ux_obj(O, "rules_ux", "principle")
+            _ux_item(O, ORO, "RU-0", "편입 전 기준")
+            so = db.me_stats(O)
+            assert (so["kinds"]["principle"], so["kinds"]["custom"], so["waiting"]["principles_pending"]) == (0, 2, 0), (so["kinds"], so["waiting"])
+            with db.tx() as c:
+                c.execute("UPDATE object_defs SET std_id='std:principles' WHERE user_id=%s AND id=%s", (O, ORO))
+            so = db.me_stats(O)
+            assert (so["kinds"]["principle"], so["kinds"]["custom"], so["waiting"]["principles_pending"]) == (1, 1, 1), (so["kinds"], so["waiting"])
+            # 보관한 커스텀 정의의 항목 = 커스텀에서 빠진다(탭은 미보관 정의만 보인다)
+            ONO = _ux_obj(O, "notes_ux", "collection")
+            _ux_item(O, ONO, "NT-0", "보관될 메모")
+            assert db.me_stats(O)["kinds"]["custom"] == 2
+            db.definition_archive(O, ONO)
+            assert db.me_stats(O)["kinds"]["custom"] == 1
             with db.tx() as c:
                 assert c.execute("SELECT count(*) AS n FROM user_roles WHERE user_id=%s", (O,)).fetchone()["n"] == 0, "통계는 역할 행을 안 쓴다"
             site.dev_user = "other@example.com"
@@ -9106,6 +9146,12 @@ async def test_pr2b_stack_b3():
                 assert len(vers) == 1 and vers[0]["version_no"] == 1 and vers[0]["prev_version_id"] is None and pr["current_version_id"] == vers[0]["id"]
                 assert vers[0]["fields"]["title"] == "합성 기준 A" and vers[0]["links"] == [{"field_key": "axes", "target_kind": "item", "target_id": ax}]
                 assert R["versions"] == [{"item_id": i_pr, "version_no": 1}]
+                with db.tx() as c:   # 글 수정 — 확인 1번으로 생긴 판 = 판 증거(본문 해시 = 그 판) → 「확인한 최신 판」
+                    pe = c.execute("SELECT version_no,body_sha,kind,confirm_event_id FROM content_confirms WHERE target_kind='item' AND target_id=%s",
+                                   (i_pr,)).fetchall()
+                assert [(x["version_no"], x["body_sha"], x["kind"], str(x["confirm_event_id"])) for x in pe] == \
+                    [(1, pr["body_sha"], "stack_confirm", R["confirm_event_id"])], pe
+                assert db.item_get(U, i_pr)["confirmed_latest"] is True and db.item_get(U, i_ev)["confirmed_latest"] is False
                 assert pr_links == {("axes", ax)} and ev["data"] == {"happened_on": "2026-10-21"} and ev["decision"] is None
                 assert axr["data"]["keywords"] == ["합성", "쌓기"] and axr["revision"] == 2
                 assert links == {("attach_to", i_pr), ("attach_to", i_ev), ("axes", ax)}, links
@@ -9745,7 +9791,7 @@ def test_trash_schema():
         for ix in ("ix_links_target_record", "ix_activity_links_activity", "ix_activity_links_record", "ix_import_target_record",
                    "ix_import_target_item", "ix_import_deleted_target"):
             assert c.execute("SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname=%s", (ix,)).fetchone(), ix
-    assert db.DELETE_TABLES and "trash" not in " ".join(db.DELETE_TABLES), "새 사용자 표 없음 — 표식은 기존 행·열"
+    assert db.DELETE_TABLES and {t for t in db.DELETE_TABLES if "trash" in t} == {"trashed_proposals"}, "PR-1 새 표 0 — PR-2 보존 제안 표 하나만(31절)"
     assert "TRASH_ENABLED" in envnames.SWITCHES and not db.trash_on(), "기본 꺼짐"
     # 옛 DB 재현 — 임시 스키마에 열 없는 5표 + 접수 표를 만들고 _migrate_trash 2회 = 같은 모양
     name = f"trash_old_{secrets.token_hex(3)}"
@@ -10064,7 +10110,7 @@ def test_trash_purge():
         expect("NOT-FOUND", db.trash_restore, U, "person", S["p_h"])
         expect("NOT-FOUND", db.person_get, U, S["p_h"])
         assert _trash_row("source_reflections", S["refl"]) is None
-        assert db.trash_purge_due() == {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "failed": 0, "left": False}, "표식은 다시 안 집는다"
+        assert db.trash_purge_due() == {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "stack_sessions": 0, "trashed_proposals": 0, "failed": 0, "left": False}, "표식은 다시 안 집는다"
         # 항목 정리 — 이력·판 CASCADE, 들어오는 관계 먼저(기록 attach_to)
         db.record_attach(U, S["r2"], attach_to=[{"target_kind": "item", "target_id": S["P"]}])
         assert any(x["target_id"] == S["P"] for x in db.record_links(U, [S["r2"]]))
@@ -10179,10 +10225,11 @@ async def test_trash_web_mcp():
         def slow(*a, **k):
             calls.append("db")
             gate.wait(5)
-            return {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "failed": 0, "left": False}
-        real_due, real_act = db.trash_purge_due, activity.trash_purge_due
+            return {"records": 0, "items": 0, "people": 0, "source_reflections": 0, "stack_sessions": 0, "trashed_proposals": 0, "failed": 0, "left": False}
+        real_due, real_act, real_imp = db.trash_purge_due, activity.trash_purge_due, imports.trash_purge_due
         db.trash_purge_due = slow
         activity.trash_purge_due = lambda *a, **k: {"activities": 0, "failed": 0, "left": False}
+        imports.trash_purge_due = lambda *a, **k: {"inbox": 0, "failed": 0, "left": False}   # PR-2 승인 대기 정리
         sm.run = fake_run
         try:
             t0 = time.monotonic()
@@ -10197,7 +10244,7 @@ async def test_trash_web_mcp():
             assert served < 3, served
         finally:
             gate.set()
-            db.trash_purge_due, activity.trash_purge_due = real_due, real_act
+            db.trash_purge_due, activity.trash_purge_due, imports.trash_purge_due = real_due, real_act, real_imp
             del sm.run
     finally:
         site.dev, site.dev_user = real
@@ -10206,6 +10253,642 @@ async def test_trash_web_mcp():
         else:
             os.environ["CRM_DEV_USER"] = prev
     print("OK — 30e 웹 /api/trash*·state 스위치·사람/생각 삭제 라우트·MCP trash_*·ACTION-RETIRED·state_get 차단·lifespan 비대기")
+
+
+# ── 31) 휴지통 PR-2 서버 핵심 — 항목·정의 제안 · 확정 전 정리(세션) · 승인 대기 dispatch · 잔여시간 · 경합 · 물리 정리 · 스위치 꺼짐 회귀 (2026-10-23, r4 §4~§6·§11·§12) ──
+# 사용자 = tester@·other@ 재사용. 승인 대기의 imports 쪽(목록·승인·superseded·만료·한도·정리 본문)은 test_trash_flow.py — 여기는 db 경로 dispatch·목록·상세만.
+# 세션·작업·임시 본문은 SQL 로 바로 깐다(PC 왕복은 28절이 본다). 표식 문자열 T2MK* 로 일반 경로에 휴지통 본문이 실리는지 본다.
+
+def _t2_obj(U, key, label):
+    r = db.definition_propose(U, None, 0, {"key": key, "label": label, "semantic_kind": "collection", "fields": []})
+    return db.definition_apply(U, r["object_id"], r["proposal_id"], 0)["id"]
+
+
+def _t2_session(U, status="result_ready", sess_left=timedelta(hours=10), job_left=timedelta(hours=9), summary="T2MK-정리 글 첫 줄\n둘째 줄",
+                verbatim=False):
+    """세션 1 + 작업 1(status) + 임시 입력·결과·미리보기(결과가 있으면) — 반환 (sid, jid, preview_id)."""
+    sid, jid, pid, rv = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    with db.tx() as c:
+        inp, res = db._tmp_names(c)
+        prv = db._tmp_previews_name(c)
+        c.execute("INSERT INTO stack_sessions (id,user_id,input_kind,expires_at,latest_job_id) VALUES (%s,%s,%s,now() + %s,%s)",
+                  (sid, U, "verbatim" if verbatim else "converse", sess_left, jid))
+        lease = status in ("leased", "running")
+        c.execute("INSERT INTO jobs (id,user_id,session_id,kind,status,expires_at,device_id,lease_generation,lease_expires_at) "
+                  "VALUES (%s,%s,%s,'converse',%s,now() + %s,%s,%s,CASE WHEN %s THEN now() + interval '5 minutes' END)",
+                  (jid, U, sid, status, job_left, "is_t2dev" if lease else None, 1 if lease else 0, lease))
+        c.execute(f"INSERT INTO {inp} (job_id,user_id,text,bytes) VALUES (%s,%s,'T2MK-입력',8)", (jid, U))
+        if verbatim:
+            c.execute(f"INSERT INTO {db._tmp_verbatim_name(c)} (session_id,user_id,text,bytes) VALUES (%s,%s,'T2MK-원문',8)", (sid, U))
+        if status == "result_ready":
+            c.execute(f"INSERT INTO {res} (job_id,user_id,result_version,summary_text,changes,blocked,text_map,model_meta,units) "
+                      "VALUES (%s,%s,%s,%s,'[]','[]','[]','{}','[]')", (jid, U, rv, summary))
+            c.execute(f"INSERT INTO {prv} (id,job_id,user_id,session_id,result_version,preview_version,preview_sha,edit_generation,units,changes,"
+                      "blocked,target_versions,excluded) VALUES (%s,%s,%s,%s,%s,1,%s,0,'[]','[]','[]','{}','[]')",
+                      (pid, jid, U, sid, rv, "0" * 64))
+            c.execute("UPDATE stack_sessions SET latest_preview_id=%s WHERE id=%s", (pid, sid))
+    return sid, jid, pid
+
+
+def _t2_tmp_count(sid, jid):
+    with db.tx() as c:
+        inp, res = db._tmp_names(c)
+        n = 0
+        for t in (inp, res, db._tmp_previews_name(c)):
+            n += c.execute(f"SELECT count(*) AS n FROM {t} WHERE job_id=%s", (jid,)).fetchone()["n"]
+        n += c.execute(f"SELECT count(*) AS n FROM {db._tmp_verbatim_name(c)} WHERE session_id=%s", (sid,)).fetchone()["n"]
+        return n
+
+
+def _t2_pending(U, title="T2MK-대기 제목", body="T2MK-대기 본문", left=timedelta(days=20)):
+    """승인 대기 1행(board_migration 입력원 — 토큰 없음). 반환 접수 ID."""
+    st, ie = f"is_{secrets.token_hex(12)}", db.new_id("ie")
+    _sql("INSERT INTO import_streams (user_id,id,channel,label) VALUES (%s,%s,'board_migration','t2 입력원') ON CONFLICT DO NOTHING", (U, st))
+    _sql("INSERT INTO import_entries (user_id,id,stream_id,original_id,source_revision,kind,request_sha256,projection_sha256,state,payload,"
+         "payload_bytes,expires_at,transform_version) VALUES (%s,%s,%s,%s,'r1','self_text',%s,%s,'pending',%s,10,now() + %s,'t2')",
+         (U, ie, st, secrets.token_hex(8), secrets.token_bytes(32), secrets.token_bytes(32),
+          json.dumps({"title": title, "body": body, "execution": "attended", "transform_version": "t2"}), left))
+    return ie
+
+
+def test_trash2_schema():
+    """31a — PR-2 열·CHECK·부분 인덱스(import_entries·stack_sessions·trashed_proposals) · jobs.trashed_at · 보존 제안 표 DELETE_TABLES(items 앞)
+    · init 2회 멱등 · 옛 DB(열 없음)에서 _migrate_trash2 2회 = 같은 모양·기존 행 그대로 · CHECK 가 막는 꼴."""
+    db.init_schema()
+    db.init_schema()
+    with db.tx() as c:
+        for t in ("import_entries", "stack_sessions"):
+            assert db._has_col(c, t, "trashed_at") and db._has_col(c, t, "purge_at") and db._has_col(c, t, "last_trashed_at"), t
+            assert db._has_constraint(c, t, f"ck_{t}_trash"), t
+        assert db._has_col(c, "jobs", "trashed_at") and db._has_constraint(c, "jobs", "ck_jobs_trash")
+        for t in db.TRASH2_TABLES:
+            for ix in (f"ix_{t}_purge", f"ix_{t}_trash"):
+                d = c.execute("SELECT indexdef FROM pg_indexes WHERE schemaname=current_schema() AND indexname=%s", (ix,)).fetchone()
+                assert d and "trashed_at IS NOT NULL" in d["indexdef"], (ix, d)
+    order = {t: i for i, t in enumerate(db.DELETE_TABLES)}
+    assert order["trashed_proposals"] < order["items"] < order["object_defs"], db.DELETE_TABLES
+    name = f"trash2_old_{secrets.token_hex(3)}"
+    with db.pool().connection() as c:
+        try:
+            with c.transaction():
+                c.execute(f"CREATE SCHEMA {name}")
+                c.execute(f"SET LOCAL search_path TO {name}")
+                c.execute("CREATE TABLE import_entries (user_id text, id text, state text, payload jsonb)")
+                c.execute("CREATE TABLE stack_sessions (user_id text, id text, terminal_at timestamptz)")
+                c.execute("CREATE TABLE jobs (id text, status text)")
+                c.execute("CREATE TABLE trashed_proposals (user_id text, id text, trashed_at timestamptz, purge_at timestamptz)")
+                c.execute("INSERT INTO import_entries VALUES ('u','e1','pending','{\"body\":\"옛 본문\"}')")
+                db._migrate_trash2(c)
+                db._migrate_trash2(c)
+                assert db._has_constraint(c, "import_entries", "ck_import_entries_trash") and db._has_constraint(c, "jobs", "ck_jobs_trash")
+                assert c.execute("SELECT payload->>'body' AS b FROM import_entries").fetchone()["b"] == "옛 본문", "기존 행 그대로"
+                for bad in ("UPDATE import_entries SET trashed_at=now()",   # purge_at 없이
+                            "UPDATE import_entries SET state='excluded', trashed_at=now(), purge_at=now(), last_trashed_at=now()"):
+                    try:
+                        with c.transaction():
+                            c.execute(bad)
+                        raise AssertionError(bad)
+                    except db.pg_errors.CheckViolation:
+                        pass
+                try:
+                    with c.transaction():
+                        c.execute("INSERT INTO jobs VALUES ('j','running')")
+                        c.execute("UPDATE jobs SET trashed_at=now()")
+                    raise AssertionError("jobs CHECK")
+                except db.pg_errors.CheckViolation:
+                    pass
+                raise RuntimeError("rollback")
+        except RuntimeError:
+            pass
+    print("OK — 31a PR-2 스키마(열·CHECK·부분 인덱스 · jobs.trashed_at · 보존 제안 DELETE_TABLES 순서 · init 2회 · 옛 DB 이전 2회 · CHECK 거절)")
+
+
+def test_trash2_proposals():
+    """31b — 항목 제안(슬롯·revision 0)·정의 제안(슬롯·revision 0): 이동(슬롯 비움 + 보존 단위 원자적·적용 값 불변)·중복 무연장·일반 이용 차단
+    ·남의 것·revision 인자 거절 · 목록·상세(new_item·new_object) · 휴지통 중 새 제안 = 둘 다 보존·복원 CONFLICT(양쪽 불변)
+    · 복원 = 같은 제안 ID 로 자리에·적용 전 재검증(base 바뀌면 CONFLICT, 데이터 불변) · revision 0 같은 ID 복원·적용 · 168h 경계(시각 주입)
+    · 영구 삭제 요청 = 즉시 복원 불가 · discard ACTION-RETIRED(데이터 불변) · 적용 vs 삭제 경합 하나만 · 일일 한도 셈 유지."""
+    import concurrent.futures
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    with _trash_switch(True):
+        oid = _t2_obj(U, "t2things", "것")
+        ip = db.item_propose(U, oid, 1, None, 0, None, "적용 항목", "", {}, [])
+        A = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")["id"]
+        sp = db.item_propose(U, oid, 1, A, 1, None, "T2MK-슬롯 제안", "", {}, [])["proposal_id"]
+        npr = db.item_propose(U, oid, 1, None, 0, None, "T2MK-새 제안", "", {}, [])
+        N, np_ = npr["item_id"], npr["proposal_id"]
+        expect("ACTION-RETIRED", db.item_decide, U, A, 1, sp, "discard")
+        assert _trash_row("items", A)["draft_id"] == sp, "discard 거절 = 불변"
+        for fn in (db.trash_move, db.trash_restore, db.trash_purge, db.trash_get):
+            expect("NOT-FOUND", fn, O, "item_proposal", sp)
+        expect("ARG-INVALID", db.trash_move, U, "item_proposal", sp, 1)
+        expect("ARG-INVALID", db.trash_move, U, "item", N, 0)   # revision 0 = item 이 아니라 item_proposal
+        a0 = _trash_row("items", A)
+        m = db.trash_move(U, "item_proposal", sp)
+        a1 = _trash_row("items", A)
+        kept = _trash_row("trashed_proposals", sp)
+        assert m["changed"] and m["item_id"] == A and a1["draft_id"] is None and a1["draft_doc"] is None, (m, a1)
+        assert (a1["revision"], a1["title"], a1["updated_at"]) == (a0["revision"], a0["title"], a0["updated_at"]), "적용 값 불변"
+        assert kept["item_id"] == A and kept["doc"]["title"] == "T2MK-슬롯 제안" and kept["base_revision"] == 1
+        assert kept["purge_at"] - kept["trashed_at"] == timedelta(hours=168)
+        m2 = db.trash_move(U, "item_proposal", sp)
+        assert not m2["changed"] and m2["purge_at"] == m["purge_at"], "중복 = 기존 결과"
+        assert db.trash_move(U, "item_proposal", np_)["item_id"] == N
+        assert _trash_row("items", N)["draft_id"] == np_ and _trash_row("items", N)["trashed_at"] is not None, "revision 0 = 같은 ID 행 그대로"
+        expect("IN-TRASH", db.item_decide, U, N, 0, np_, "apply")
+        expect("IN-TRASH", db.item_propose, U, oid, 1, N, 0, None, "덮어쓰기", "", {}, [])
+        gen = _trash_general(U) + json.dumps(db.item_proposals(U), ensure_ascii=False, default=str)
+        assert "T2MK" not in gen, "일반 이용 차단"
+        assert db.item_get(U, A)["proposal"] is None
+        L = db.trash_list(U)["items"]
+        byid = {x["id"]: x for x in L}
+        assert byid[sp]["kind"] == "item_proposal" and byid[sp]["new_item"] is False and byid[sp]["item_id"] == A
+        assert byid[np_]["new_item"] is True and byid[np_]["title"] == "T2MK-새 제안" and byid[np_]["restore_state"] == "proposal"
+        assert byid[sp]["remaining_seconds"] is None and byid[sp]["object_label"] == "것"
+        assert {x["id"] for x in db.trash_list(U, "item_proposal")["items"]} == {sp, np_}
+        g = db.trash_get(U, "item_proposal", sp)
+        assert g["target"]["proposal"]["title"] == "T2MK-슬롯 제안" and g["target"]["item_id"] == A
+        assert db.trash_get(U, "item_proposal", np_)["target"]["new_item"] is True
+        # 휴지통 중 새 슬롯 제안 — 둘 다 보존 · 옛 복원은 덮어쓰지 않는다(CONFLICT, 양쪽 그대로)
+        sp2 = db.item_propose(U, oid, 1, A, 1, None, "새 슬롯", "", {}, [])["proposal_id"]
+        expect("CONFLICT", db.trash_restore, U, "item_proposal", sp)
+        assert _trash_row("items", A)["draft_id"] == sp2 and _trash_row("trashed_proposals", sp) is not None
+        db.item_decide(U, A, 1, sp2, "apply")   # 대상이 바뀐다(revision 2)
+        r = db.trash_restore(U, "item_proposal", sp)
+        assert r["restored"] and r["proposal_id"] == sp and _trash_row("trashed_proposals", sp) is None
+        a2 = _trash_row("items", A)
+        assert a2["draft_id"] == sp and a2["draft_base_revision"] == 1 and a2["revision"] == 2
+        assert db.item_get(U, A)["proposal"]["proposal_id"] == sp, "화면·MCP 에서 같은 제안 ID 로 보인다"
+        expect("CONFLICT", db.item_decide, U, A, 2, sp, "apply")   # 재검증 — 기준 revision 이 지났다
+        assert _trash_row("items", A)["title"] == "새 슬롯", "적용 거절 = 데이터 불변"
+        # revision 0 같은 ID 복원 → 적용
+        assert db.trash_restore(U, "item_proposal", np_)["item_id"] == N
+        assert N in {x["id"] for x in db.item_proposals(U)}
+        assert db.item_decide(U, N, 0, np_, "apply")["revision"] == 1
+        # 168h 경계(서버 시각 주입) · 영구 삭제 요청
+        sp3 = db.item_propose(U, oid, 1, A, 2, None, "경계", "", {}, [])["proposal_id"]
+        db.trash_move(U, "item_proposal", sp3)
+        k3 = _trash_row("trashed_proposals", sp3)
+        with _trash_clock(k3["purge_at"]):
+            expect("TRASH-EXPIRED", db.trash_restore, U, "item_proposal", sp3)
+            expect("TRASH-EXPIRED", db.trash_get, U, "item_proposal", sp3)
+            assert sp3 not in {x["id"] for x in db.trash_list(U)["items"]}, "기한 지난 행은 목록에서도 숨김"
+        with _trash_clock(k3["purge_at"] - timedelta(seconds=1)):
+            assert db.trash_get(U, "item_proposal", sp3)["target"]["proposal_id"] == sp3
+        assert db.trash_purge(U, "item_proposal", sp3)["purge_requested"]
+        expect("TRASH-EXPIRED", db.trash_restore, U, "item_proposal", sp3)
+        assert not db.trash_purge(U, "item_proposal", sp3)["changed"]
+        # ── 정의 제안 — 적용된 정의 불변 · 새 오브젝트 제안(revision 0)은 자리를 비운 행이 일반 경로에서 숨는다 ──
+        dp1 = db.definition_propose(U, oid, 1, {"key": "t2things", "label": "T2MK-정의 제안", "semantic_kind": "collection", "fields": []})["proposal_id"]
+        o0 = _trash_row("object_defs", oid)
+        md = db.trash_move(U, "definition_proposal", dp1)
+        o1 = _trash_row("object_defs", oid)
+        assert md["object_id"] == oid and o1["draft_id"] is None and (o1["revision"], o1["label"]) == (o0["revision"], o0["label"])
+        dn = db.definition_propose(U, None, 0, {"key": "t2new", "label": "T2MK-새 오브젝트", "semantic_kind": "collection", "fields": []})
+        db.trash_move(U, "definition_proposal", dn["proposal_id"])
+        assert db.definitions(U, [dn["object_id"]]) == [] and "T2MK" not in json.dumps(db.definitions(U, [oid]), ensure_ascii=False)
+        expect("CONFLICT", db.definition_apply, U, dn["object_id"], dn["proposal_id"], 0)
+        L = {x["id"]: x for x in db.trash_list(U, "definition_proposal")["items"]}
+        assert L[dp1]["new_object"] is False and L[dn["proposal_id"]]["new_object"] is True and L[dn["proposal_id"]]["title"] == "T2MK-새 오브젝트"
+        assert db.trash_get(U, "definition_proposal", dp1)["target"]["definition"]["label"] == "T2MK-정의 제안"
+        dp2 = db.definition_propose(U, oid, 1, {"key": "t2things", "label": "다른 제안", "semantic_kind": "collection", "fields": []})["proposal_id"]
+        expect("CONFLICT", db.trash_restore, U, "definition_proposal", dp1)
+        assert _trash_row("object_defs", oid)["draft_id"] == dp2 and _trash_row("trashed_proposals", dp1) is not None
+        db.trash_move(U, "definition_proposal", dp2)
+        assert db.trash_restore(U, "definition_proposal", dp1)["object_id"] == oid
+        assert db.definition_apply(U, oid, dp1, 1)["label"] == "T2MK-정의 제안", "복원 = 미적용 제안 — 적용은 사용자가"
+        db.trash_restore(U, "definition_proposal", dn["proposal_id"])
+        assert db.definitions(U, [dn["object_id"]])[0]["proposal"]["proposal_id"] == dn["proposal_id"]
+        # 일일 한도 셈 — 새 항목 제안 행은 휴지통에서도 센다(삭제·재생성 우회 불가)
+        with db.tx() as c:
+            n_before = c.execute(f"SELECT count(*) AS n FROM items WHERE user_id=%s AND created_at >= {db._KST_TODAY}", (U,)).fetchone()["n"]
+        x = db.item_propose(U, oid, 2, None, 0, None, "한도", "", {}, [])   # 정의가 위에서 revision 2
+        db.trash_move(U, "item_proposal", x["proposal_id"])
+        with db.tx() as c:
+            assert c.execute(f"SELECT count(*) AS n FROM items WHERE user_id=%s AND created_at >= {db._KST_TODAY}", (U,)).fetchone()["n"] == n_before + 1
+        # 적용 vs 삭제 경합 — 하나만 성공, 남은 상태가 서로 맞다
+        for _ in range(3):
+            rev = _trash_row("items", A)["revision"]
+            px = db.item_propose(U, oid, db.definitions(U, [oid])[0]["revision"], A, rev, None, "경합", "", {}, [])["proposal_id"]
+
+            def ap():
+                return db.item_decide(U, A, rev, px, "apply")
+
+            def mv():
+                return db.trash_move(U, "item_proposal", px)
+            with concurrent.futures.ThreadPoolExecutor(2) as ex:
+                fs = [ex.submit(ap), ex.submit(mv)]
+                res = []
+                for f in fs:
+                    try:
+                        res.append(f.result())
+                    except db.CrmError as e:
+                        res.append(e.code)
+            ok = [r_ for r_ in res if isinstance(r_, dict)]
+            assert len(ok) == 1, res
+            kept_row = _trash_row("trashed_proposals", px)
+            if "restored" not in ok[0] and ok[0].get("kind") == "item_proposal":   # 삭제가 이겼다
+                assert kept_row is not None and _trash_row("items", A)["revision"] == rev
+            else:   # 적용이 이겼다
+                assert kept_row is None and _trash_row("items", A)["revision"] == rev + 1
+    print("OK — 31b 항목·정의 제안(슬롯 → 보존 단위 원자적·적용 값 불변·revision 0 같은 ID·중복·차단·목록/상세·새 제안 공존·복원 CONFLICT"
+          "·같은 ID 복원·재검증·168h 경계·영구 삭제 요청·discard ACTION-RETIRED·한도 셈·적용 vs 삭제 경합)")
+
+
+def test_trash2_sessions():
+    """31c — 확정 전 정리(세션): 이동(결과 작업 만료 동결·진행 중 작업 취소 = PC JOB-GONE)·확정/만료 세션 거절·중복 · 일반 이용 차단(세션 GET·현재 세션
+    ·작업 GET·취소·제외·확정·이어 쓰기) · _job_sweep·jobs_purge 가 휴지통 본문을 지우지 않음(동결된 expires_at 이 지나도) · 복원 = 세션·작업 각자 잔여
+    (24h 재부여 없음, 시각 주입) · 복원은 재개 아님(취소된 작업 그대로·늦은 결과 거부) · 목록·상세(본문 tmp 읽기만) · 168h 경계 · 복원 vs 영구 삭제 경합."""
+    import concurrent.futures
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    dev = {"user_id": U, "id": "is_t2dev"}
+    with _trash_switch(True):
+        s1, j1, p1 = _t2_session(U, verbatim=True)
+        s2, j2, _ = _t2_session(U, status="running")
+        for fn in (db.trash_move, db.trash_restore, db.trash_get):
+            expect("NOT-FOUND", fn, O, "stack_session", str(s1))
+        expect("NOT-FOUND", db.trash_move, U, "stack_session", "not-a-uuid")
+        expect("ARG-INVALID", db.trash_move, U, "stack_session", str(s1), 0)
+        m = db.trash_move(U, "stack_session", str(s1))
+        S1, J1 = _trash_row("stack_sessions", s1), _trash_row("jobs", j1)
+        assert m["changed"] and 9.9 * 3600 < m["remaining_seconds"] <= 10 * 3600, m
+        assert S1["trashed_at"] == J1["trashed_at"] and J1["status"] == "result_ready" and S1["terminal_at"] is None
+        assert not db.trash_move(U, "stack_session", str(s1))["changed"]
+        db.trash_move(U, "stack_session", str(s2))
+        J2 = _trash_row("jobs", j2)
+        assert J2["status"] == "cancelled" and J2["terminal_at"] is not None and J2["trashed_at"] is None, "진행 중 작업 = 버린 작업"
+        expect("JOB-GONE", db.job_fail, {"user_id": U, "id": "is_t2dev"}, str(j2), {"lease_generation": 1, "reason_code": "timeout"})
+        expect("JOB-GONE", db.job_fail, dev, str(j1), {"lease_generation": 0, "reason_code": "timeout"})
+        # 일반 이용 차단
+        expect("NOT-FOUND", db.stack_session_get, U, str(s1))
+        assert (db.stack_session_current(U) or {}).get("id") not in (str(s1), str(s2))
+        expect("NOT-FOUND", db.job_get, U, str(j1))
+        expect("NOT-FOUND", db.job_cancel, U, str(j1))
+        expect("IN-TRASH", db.stack_exclude, U, str(p1), ["c1"])
+        saved = {n: os.environ.get("CRM_" + n) for n in ("CONVERSE_ENABLED",)}
+        os.environ["CRM_CONVERSE_ENABLED"] = "1"
+        try:
+            expect("IN-TRASH", db.job_create, U, "converse", "이어서", str(s1))
+            expect("IN-TRASH", stack_service.confirm, U, str(j1), {"request_id": "t2confirm1", "preview_id": str(p1), "preview_version": 1,
+                                                                   "preview_sha": "0" * 64})
+        finally:
+            for n, v in saved.items():
+                os.environ.pop("CRM_" + n, None)
+                if v is not None:
+                    os.environ["CRM_" + n] = v
+        # 만료 동결 — 시간이 흘러 원래 expires_at 이 지나도 sweep 이 지우지 않는다. 잔여 = expires_at - trashed_at(세션 4.5분 · 작업 4분)
+        _sql("UPDATE stack_sessions SET trashed_at=now() - interval '5 minutes', last_trashed_at=now() - interval '5 minutes', "
+             "expires_at=now() - interval '30 seconds', purge_at=now() + interval '160 hours' WHERE id=%s", (s1,))
+        _sql("UPDATE jobs SET trashed_at=now() - interval '5 minutes', expires_at=now() - interval '1 minute' WHERE id=%s", (j1,))
+        n_tmp = _t2_tmp_count(s1, j1)
+        assert n_tmp == 4, n_tmp   # 입력·결과·미리보기·원문
+        with db.tx() as c:
+            db._job_sweep(c)
+        db.jobs_purge()
+        assert _t2_tmp_count(s1, j1) == 4 and _trash_row("jobs", j1)["status"] == "result_ready" and _trash_row("stack_sessions", s1)["terminal_at"] is None
+        L = {x["id"]: x for x in db.trash_list(U, "stack_session")["items"]}
+        assert L[str(s1)]["title"] == "T2MK-정리 글 첫 줄" and L[str(s1)]["input_kind"] == "verbatim" and L[str(s1)]["restore_state"] == "unconfirmed"
+        assert L[str(s1)]["remaining_seconds"] == 270 and L[str(s2)]["title"] is None, L
+        g = db.trash_get(U, "stack_session", str(s1))
+        assert g["target"]["summary_text"].startswith("T2MK-정리 글") and g["target"]["remaining_seconds"] == 270
+        T = _trash_row("stack_sessions", s1)["trashed_at"] + timedelta(hours=1)
+        with _trash_clock(T):
+            r = db.trash_restore(U, "stack_session", str(s1))
+        S1, J1 = _trash_row("stack_sessions", s1), _trash_row("jobs", j1)
+        assert S1["expires_at"] == T + timedelta(seconds=270) and J1["expires_at"] == T + timedelta(seconds=240), (S1["expires_at"], J1["expires_at"], T)
+        assert r["expires_at"] == S1["expires_at"].isoformat() and S1["trashed_at"] is None and J1["trashed_at"] is None
+        assert S1["last_trashed_at"] is not None, "마지막 이동 남음"
+        # 복원 = 재개 아님 — 취소된 작업은 그대로 · 늦은 결과 거부
+        db.trash_restore(U, "stack_session", str(s2))
+        assert _trash_row("jobs", j2)["status"] == "cancelled"
+        expect("JOB-GONE", db.job_fail, dev, str(j2), {"lease_generation": 1, "reason_code": "timeout"})
+        # 확정·만료 세션은 이동 불가
+        s3, j3, _ = _t2_session(U, sess_left=timedelta(seconds=-1), job_left=timedelta(seconds=-2))
+        expect("JOB-GONE", db.trash_move, U, "stack_session", str(s3))
+        _sql("UPDATE stack_sessions SET terminal_at=now() WHERE id=%s", (s2,))
+        expect("JOB-GONE", db.trash_move, U, "stack_session", str(s2))
+        # 168h 경계 · 복원 vs 영구 삭제 경합(하나만)
+        s4, j4, _ = _t2_session(U)
+        db.trash_move(U, "stack_session", str(s4))
+        P4 = _trash_row("stack_sessions", s4)["purge_at"]
+        with _trash_clock(P4):
+            expect("TRASH-EXPIRED", db.trash_restore, U, "stack_session", str(s4))
+            assert str(s4) not in {x["id"] for x in db.trash_list(U)["items"]}
+        with _trash_clock(P4 - timedelta(seconds=1)):
+            assert db.trash_get(U, "stack_session", str(s4))["target"]["id"] == str(s4)
+        for _ in range(3):
+            with concurrent.futures.ThreadPoolExecutor(2) as ex:
+                fs = [ex.submit(db.trash_restore, U, "stack_session", str(s4)), ex.submit(db.trash_purge, U, "stack_session", str(s4))]
+                res = []
+                for f in fs:
+                    try:
+                        res.append(f.result())
+                    except db.CrmError as e:
+                        res.append(e.code)
+            row = _trash_row("stack_sessions", s4)
+            if isinstance(res[0], dict):   # 복원이 먼저 — 영구 삭제는 휴지통 아님
+                assert res[1] == "NOT-IN-TRASH" and row["trashed_at"] is None, res
+                db.trash_move(U, "stack_session", str(s4))
+            else:
+                with db.tx() as c:   # DB 시각으로 비교 — db.now() 는 초 절삭이라 같은 초 안이면 purge_at 보다 이르다
+                    due = c.execute("SELECT %s <= statement_timestamp() AS ok", (row["purge_at"],)).fetchone()["ok"]
+                assert res[0] == "TRASH-EXPIRED" and res[1]["purge_requested"] and due, res
+                break
+        # 휴지통 작업은 열린 작업 수에 안 든다
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s) AND trashed_at IS NULL",
+                             (U, list(db.JOB_LIVE))).fetchone()["n"] == 2   # j1(복원) · j3(만료 지났지만 sweep 전) — j4 는 휴지통, j2 는 취소
+    print("OK — 31c 확정 전 정리(세션 단위·만료 동결·진행 중 작업 취소 JOB-GONE·확정/만료 거절·일반 이용 차단 7·sweep/jobs_purge 본문 보존"
+          "·복원 각자 잔여(시각 주입)·재개 아님·목록/상세 tmp 읽기·168h 경계·복원 vs 영구 삭제 하나만)")
+
+
+def test_trash2_pending_dispatch():
+    """31d — kind=pending 이 db 진입(스위치·사용자 잠금)을 거쳐 imports.trash_op 로 간다 · 목록·상세(제목·본문·remaining_seconds·entry_kind)
+    · 일반 상세(inbox_get) 차단 · 대기 만료가 지나도 정지 · 복원 = 지금 + 잔여 · revision 인자 거절 · 남의 것. 상세 의미는 test_trash_flow.py."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    with _trash_switch(True):
+        ie = _t2_pending(U)
+        expect("ARG-INVALID", db.trash_move, U, "pending", ie, 0)
+        expect("NOT-FOUND", db.trash_move, O, "pending", ie)
+        m = db.trash_move(U, "pending", ie)
+        assert m["kind"] == "pending" and m["changed"], m
+        expect("NOT-FOUND", imports.inbox_get, U, ie)
+        x = {r["id"]: r for r in db.trash_list(U, "pending")["items"]}[ie]
+        assert x["title"] == "T2MK-대기 제목" and x["entry_kind"] == "self_text" and 19.9 * 86400 < x["remaining_seconds"] <= 20 * 86400, x
+        assert db.trash_get(U, "pending", ie)["target"]["body"] == "T2MK-대기 본문"
+        _sql("UPDATE import_entries SET trashed_at=now() - interval '2 hours', last_trashed_at=now() - interval '2 hours', "
+             "expires_at=now() - interval '1 hour' WHERE id=%s", (ie,))   # 원래 만료가 지나도
+        imports.expire_pending()
+        assert _trash_row("import_entries", ie)["state"] == "pending", "휴지통 동안 만료 정지"
+        T = db.now() + timedelta(minutes=5)
+        with _trash_clock(T):
+            r = db.trash_restore(U, "pending", ie)
+        assert _trash_row("import_entries", ie)["expires_at"] == T + timedelta(hours=1) and r["expires_at"], r
+    print("OK — 31d 승인 대기 db 진입 dispatch(스위치·잠금·revision 거절·남의 것) · 목록·상세 · inbox_get 차단 · 만료 정지 · 복원 = 지금 + 잔여")
+
+
+def test_trash2_off():
+    """31e — 스위치 꺼짐 회귀: 새 종류 4 = SWITCH-OFF(데이터 불변) · discard 그대로(슬롯 비움 · revision 0 행 삭제) · 세션 GET·작업 그대로
+    · 휴지통 행은 꺼져도 일반 이용에서 숨김(켜짐 때 옮긴 것)."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    with _trash_switch(True):
+        oid = _t2_obj(U, "t2off", "끔")
+        h = db.item_propose(U, oid, 1, None, 0, None, "T2MK-켜짐 때 삭제", "", {}, [])
+        db.trash_move(U, "item_proposal", h["proposal_id"])
+        sh, _jh, _ = _t2_session(U)
+        db.trash_move(U, "stack_session", str(sh))
+    with _trash_switch(False):
+        ip = db.item_propose(U, oid, 1, None, 0, None, "적용", "", {}, [])
+        A = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")["id"]
+        sp = db.item_propose(U, oid, 1, A, 1, None, "슬롯", "", {}, [])["proposal_id"]
+        npr = db.item_propose(U, oid, 1, None, 0, None, "새", "", {}, [])
+        s1, j1, _ = _t2_session(U)
+        for k, i in (("item_proposal", sp), ("definition_proposal", "dp_x"), ("stack_session", str(s1)), ("pending", "ie_x")):
+            expect("SWITCH-OFF", db.trash_move, U, k, i)
+        assert _trash_row("items", A)["draft_id"] == sp and _trash_row("stack_sessions", s1)["trashed_at"] is None
+        assert db.item_decide(U, A, 1, sp, "discard")["proposal"] is None, "옛 discard 그대로"
+        assert db.item_decide(U, npr["item_id"], 0, npr["proposal_id"], "discard") == {"id": npr["item_id"], "discarded": True, "deleted": True}
+        assert db.stack_session_get(U, str(s1))["session_id"] == str(s1) and db.job_get(U, str(j1))["status"] == "result_ready"
+        assert h["item_id"] not in {x["id"] for x in db.item_proposals(U)}, "꺼져도 휴지통 행은 숨김"
+        expect("NOT-FOUND", db.stack_session_get, U, str(sh))
+    print("OK — 31e 스위치 꺼짐 회귀(새 종류 SWITCH-OFF·데이터 불변 · discard 그대로 · 세션·작업 그대로 · 휴지통 행은 계속 숨김)")
+
+
+def test_trash2_purge():
+    """31f — 물리 정리(db.trash_purge_due): 세션 = 작업·세션 행 + tmp 4표 제거 · 보존 제안 행 제거 + 빈 revision 0 정의 행 제거(적용 정의 그대로)
+    · revision 0 항목 제안 행 제거 · 오늘 옮긴 것은 다음 날 · 실패 대상 건너뛰기(다음 회차) · 계정 삭제 = 보존 제안 0 · main 회차 예외 없음."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    O = db.user_by_email("other@example.com")["id"]
+    with _trash_switch(True):
+        oid = _t2_obj(U, "t2purge", "정리")
+        sp = db.item_propose(U, oid, 1, db.item_decide(U, *(lambda r: (r["item_id"], 0, r["proposal_id"]))(
+            db.item_propose(U, oid, 1, None, 0, None, "적용", "", {}, [])), "apply")["id"], 1, None, "T2MK-슬롯", "", {}, [])["proposal_id"]
+        npr = db.item_propose(U, oid, 1, None, 0, None, "T2MK-새", "", {}, [])
+        dn = db.definition_propose(U, None, 0, {"key": "t2purgenew", "label": "T2MK-새 오브젝트", "semantic_kind": "collection", "fields": []})
+        s1, j1, _ = _t2_session(U, verbatim=True)
+        s2, j2, _ = _t2_session(U)
+        s_today, _jt, _ = _t2_session(U)
+        for k, i in (("item_proposal", sp), ("item_proposal", npr["proposal_id"]), ("definition_proposal", dn["proposal_id"]),
+                     ("stack_session", str(s1)), ("stack_session", str(s2)), ("stack_session", str(s_today))):
+            db.trash_move(U, k, i)
+        for t, i in (("trashed_proposals", sp), ("items", npr["item_id"]), ("trashed_proposals", dn["proposal_id"]),
+                     ("stack_sessions", s1), ("stack_sessions", s2)):
+            _trash_age(t, i)
+        _sql("UPDATE stack_sessions SET purge_at = now() - interval '1 second' WHERE id=%s", (s_today,))   # 기한은 지났지만 오늘 옮김
+        real = db._purge_fault
+
+        def fault(t, i):
+            if t == "stack_sessions" and str(i) == str(s2):
+                raise RuntimeError("주입")
+        db._purge_fault = fault
+        try:
+            out = db.trash_purge_due()
+        finally:
+            db._purge_fault = real
+        assert out["stack_sessions"] == 1 and out["trashed_proposals"] == 2 and out["items"] == 1 and out["failed"] == 1, out
+        assert _trash_row("stack_sessions", s1) is None and _trash_row("jobs", j1) is None and _t2_tmp_count(s1, j1) == 0, "세션·작업·tmp 제거"
+        assert _trash_row("stack_sessions", s2) is not None and _t2_tmp_count(s2, j2) == 3, "실패 대상 = 그대로(다음 회차)"
+        assert _trash_row("stack_sessions", s_today) is not None, "오늘 옮긴 것은 다음 날"
+        assert _trash_row("trashed_proposals", sp) is None and _trash_row("items", npr["item_id"]) is None
+        assert _trash_row("object_defs", dn["object_id"]) is None and _trash_row("object_defs", oid)["revision"] == 1, "빈 초안 행만 제거"
+        out2 = db.trash_purge_due()
+        assert out2["stack_sessions"] == 1 and out2["failed"] == 0 and _trash_row("stack_sessions", s2) is None, out2
+        expect("NOT-FOUND", db.trash_restore, U, "stack_session", str(s1))
+        expect("JOB-GONE", db.job_fail, {"user_id": U, "id": "is_t2dev"}, str(j1), {"lease_generation": 0, "reason_code": "timeout"})
+        # 계정 삭제 — 보존 제안 0
+        o_obj = _t2_obj(O, "t2del", "삭제")
+        pz = db.item_propose(O, o_obj, 1, None, 0, None, "x", "", {}, [])
+        A = db.item_decide(O, pz["item_id"], 0, pz["proposal_id"], "apply")["id"]
+        db.trash_move(O, "item_proposal", db.item_propose(O, o_obj, 1, A, 1, None, "y", "", {}, [])["proposal_id"])
+        db.user_delete(O)
+        with db.tx() as c:
+            assert c.execute("SELECT count(*) AS n FROM trashed_proposals WHERE user_id=%s", (O,)).fetchone()["n"] == 0
+    print("OK — 31f 물리 정리(세션·작업·tmp · 보존 제안·빈 초안 정의 · revision 0 제안 · 오늘 것 다음 날 · 실패 건너뛰기·다음 회차 · 정리 뒤 JOB-GONE"
+          " · 계정 삭제 0)")
+
+
+async def test_trash2_web_mcp():
+    """31g — 웹 /api/trash 새 종류 왕복 · 켜짐이면 /api/inbox/{id}/exclude·/api/item/decide discard = 400 ACTION-RETIRED(데이터 불변)
+    · 꺼짐이면 그대로 · MCP trash_move/list kind 새 값 · main 정리 회차(활동 → 승인 대기 → db) 예외 없음."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    site = main.site
+    real = site.dev, site.dev_user
+    prev = os.environ.get("CRM_DEV_USER")
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url=PUBLIC) as h:
+            site.dev, site.dev_user = True, "tester@example.com"
+
+            async def post(path, body):
+                return await h.post(path, json=body, headers={"origin": PUBLIC})
+            with _trash_switch(True):
+                oid = _t2_obj(U, "t2web", "웹")
+                ip = db.item_propose(U, oid, 1, None, 0, None, "적용", "", {}, [])
+                A = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")["id"]
+                sp = db.item_propose(U, oid, 1, A, 1, None, "T2MK-웹 제안", "", {}, [])["proposal_id"]
+                r = await post("/api/item/decide", {"item_id": A, "expected_revision": 1, "proposal_id": sp, "action": "discard"})
+                assert r.status_code == 400 and r.json()["code"] == "ACTION-RETIRED" and _trash_row("items", A)["draft_id"] == sp
+                ie = _t2_pending(U)
+                r = await post(f"/api/inbox/{ie}/exclude", {})
+                assert r.status_code == 400 and r.json()["code"] == "ACTION-RETIRED" and _trash_row("import_entries", ie)["state"] == "pending"
+                r = await post("/api/trash/move", {"kind": "item_proposal", "id": sp})
+                assert r.status_code == 200 and r.json()["item_id"] == A, r.text
+                r = await post("/api/trash/move", {"kind": "pending", "id": ie})
+                assert r.status_code == 200 and r.json()["changed"], r.text
+                L = (await h.get("/api/trash?kind=item_proposal")).json()["items"]
+                assert [x["id"] for x in L] == [sp] and "remaining_seconds" in L[0]
+                g = await h.get(f"/api/trash/pending/{ie}")
+                assert g.status_code == 200 and g.json()["target"]["body"] == "T2MK-대기 본문"
+                sp2 = db.item_propose(U, oid, 1, A, 1, None, "새", "", {}, [])["proposal_id"]
+                r = await post("/api/trash/restore", {"kind": "item_proposal", "id": sp})
+                assert r.status_code == 400 and r.json()["code"] == "CONFLICT" and _trash_row("items", A)["draft_id"] == sp2
+                r = await post("/api/trash/restore", {"kind": "pending", "id": ie})
+                assert r.status_code == 200 and r.json()["expires_at"], r.text
+                # HTTP 매핑 — 같은 코드 = 같은 상태(웹은 _crm_err·_TRASH_HTTP 둘 다 IN-TRASH·INBOX-* = 400, NOT-FOUND 404)
+                assert (await post("/api/trash/move", {"kind": "pending", "id": ie})).status_code == 200
+                os.environ["CRM_INBOX_APPROVALS_ENABLED"] = "1"
+                try:
+                    r = await post(f"/api/inbox/{ie}/approve", {})
+                    assert r.status_code == 400 and r.json()["code"] == "IN-TRASH", r.text
+                finally:
+                    os.environ.pop("CRM_INBOX_APPROVALS_ENABLED", None)
+                _sql("UPDATE import_entries SET is_latest_received=false WHERE id=%s", (ie,))   # 휴지통 중 더 새 개정이 온 꼴
+                r = await post("/api/trash/restore", {"kind": "pending", "id": ie})
+                assert r.status_code == 400 and r.json()["code"] == "INBOX-NOT-LATEST", r.text
+                assert _trash_row("import_entries", ie)["trashed_at"] is not None, "충돌 = 불변"
+                ie3 = _t2_pending(U, left=timedelta(seconds=-1))
+                r = await post("/api/trash/move", {"kind": "pending", "id": ie3})
+                assert r.status_code == 400 and r.json()["code"] == "INBOX-EXPIRED", r.text
+                os.environ["CRM_DEV_USER"] = "tester@example.com"
+                async with Client(main.mcp) as c:
+                    m = val(await c.call_tool("trash_move", {"kind": "item_proposal", "target_id": sp2, "expected_revision": None}))
+                    assert m["changed"] and m["proposal_id"] == sp2
+                    L = val(await c.call_tool("trash_list", {"kind": "item_proposal"}))
+                    assert {x["id"] for x in L["items"]} == {sp, sp2}, L
+                    assert _prb_err(await c.call_tool("item_decide", {"item_id": A, "expected_revision": 1, "proposal_id": None,
+                                                                      "action": "discard", "history_id": None})) == "ACTION-RETIRED"
+                # 정리 회차 — 새 종류 전부 대상이 있을 때 반환 키까지 KeyError 없이(로그에 「실패」 없음). 승인 대기·세션·보존 제안·새 항목 제안
+                sx, jx, _ = _t2_session(U)
+                db.trash_move(U, "stack_session", str(sx))
+                npx = db.item_propose(U, oid, 1, None, 0, None, "정리", "", {}, [])
+                db.trash_move(U, "item_proposal", npx["proposal_id"])
+                for t, i in (("import_entries", ie), ("stack_sessions", sx), ("trashed_proposals", sp), ("trashed_proposals", sp2),
+                             ("items", npx["item_id"])):
+                    _trash_age(t, i)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    await main.trash_purge_round()   # 활동 → 승인 대기 → db
+                log = out.getvalue()
+                assert "정리 실패" not in log and "KeyError" not in log and "승인 대기 1건 · 그 밖 4건 · 실패 0건" in log, log
+                assert _trash_row("import_entries", ie)["state"] == "deleted" and _trash_row("stack_sessions", sx) is None
+                assert _trash_row("trashed_proposals", sp) is None and _trash_row("items", npx["item_id"]) is None
+                # lifespan — 서빙 시작 뒤 _purger 첫 회차가 진짜 함수로 돈다(대기 없음 · 「실패」 로그 없음)
+                sy, _jy, _ = _t2_session(U)
+                db.trash_move(U, "stack_session", str(sy))
+                _trash_age("stack_sessions", sy)
+                sm = main.mcp.session_manager
+
+                @asynccontextmanager
+                async def fake_run():
+                    yield
+                real_run = sm.run
+                sm.run = fake_run
+                out = io.StringIO()
+                try:
+                    with contextlib.redirect_stdout(out):
+                        async with main.lifespan(main.app):
+                            for _ in range(100):
+                                if _trash_row("stack_sessions", sy) is None:
+                                    break
+                                await asyncio.sleep(0.05)
+                finally:
+                    sm.run = real_run
+                assert _trash_row("stack_sessions", sy) is None and "휴지통 정리 실패" not in out.getvalue(), out.getvalue()
+            with _trash_switch(False):
+                ie2 = _t2_pending(U)
+                r = await post(f"/api/inbox/{ie2}/exclude", {})
+                assert r.status_code == 200 and _trash_row("import_entries", ie2)["state"] == "excluded", r.text
+    finally:
+        site.dev, site.dev_user = real
+        os.environ.pop("CRM_DEV_USER", None)
+        if prev is not None:
+            os.environ["CRM_DEV_USER"] = prev
+    print("OK — 31g 웹 /api/trash 새 종류(이동·목록·상세·복원 CONFLICT·대기 복원) · 켜짐 discard·inbox exclude ACTION-RETIRED · 꺼짐 그대로 · MCP 새 kind · HTTP 매핑(IN-TRASH·INBOX-* 400) · 정리 회차·lifespan 실함수(새 종류 KeyError·실패 0)")
+
+
+def test_trash2_list_same():
+    """31h — 휴지통 목록의 인덱스 장치(_LIST_LIVE: trashed_at > 지금 - 168h 중복 조건 + purge_at + 0초)가 결과를 바꾸지 않는다 —
+    장치를 뺀 기준 쿼리(purge_at > 지금)와 행·순서가 같다(이동·수동 영구 삭제·기한 경계 전후, 종류 9 전부)."""
+    import re as _re
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    with _trash_switch(True):
+        S = _trash_seed(U)
+        db.trash_move(U, "record", S["r1"])
+        db.trash_move(U, "person", S["p_plain"], db.person_get(U, S["p_plain"])["revision"])
+        db.trash_move(U, "reflection", S["refl"], 0)
+        db.trash_purge(U, "reflection", S["refl"])   # 수동 영구 삭제 요청 = purge_at 이 이동 + 168h 보다 이르다
+        oid = _t2_obj(U, "t2same", "같음")
+        ip = db.item_propose(U, oid, 1, None, 0, None, "적용", "", {}, [])
+        A = db.item_decide(U, ip["item_id"], 0, ip["proposal_id"], "apply")["id"]
+        db.trash_move(U, "item_proposal", db.item_propose(U, oid, 1, A, 1, None, "슬롯", "", {}, [])["proposal_id"])
+        db.trash_move(U, "item_proposal", db.item_propose(U, oid, 1, None, 0, None, "새", "", {}, [])["proposal_id"])
+        sid, _j, _ = _t2_session(U)
+        db.trash_move(U, "stack_session", str(sid))
+        db.trash_move(U, "pending", _t2_pending(U))
+        db.trash_move(U, "item", A, 1)
+        live = (r"(\w\.)?trashed_at > " + _re.escape(db._TNOW + " - " + db._TRASH_INTERVAL) + r" AND \((\w\.)?purge_at \+ interval '0 s'\)")
+        assert len(_re.findall(live, db._TRASH_LIST_SQL)) == 9
+        ref = _re.sub(live, lambda m: f"{m.group(2) or ''}purge_at", db._TRASH_LIST_SQL)
+        assert "interval '0 s'" not in ref
+        t0 = _trash_row("records", S["r1"])["trashed_at"]
+        for at in (None, t0 + timedelta(hours=1), t0 + timedelta(hours=168) - timedelta(seconds=1), t0 + timedelta(hours=168),
+                   t0 + timedelta(hours=200)):
+            a = {"now": at, "uid": U, "kind": "", "n": 101}
+            with db.tx() as c:
+                res = db._tmp_names(c)[1]
+                got = [(r["kind"], r["id"]) for r in c.execute(db._TRASH_LIST_SQL.format(after="", res=res), a).fetchall()]
+                want = [(r["kind"], r["id"]) for r in c.execute(ref.format(after="", res=res), a).fetchall()]
+            assert got == want, (at, got, want)
+            if at is None:
+                assert len(got) == 7 and ("reflection", S["refl"]) not in got, got   # 영구 삭제 요청한 생각은 빠진다
+    print("OK — 31h 휴지통 목록 인덱스 장치 = 기준 쿼리와 같은 행·순서(가지 9 조건 · 종류 7 · 수동 영구 삭제 · 168h 경계 전후 5시각)")
+
+
+def test_trash2_std():
+    """31i — 표준 편입(_std_objects)이 정의 제안을 휴지통에 넣어 자리가 빈 revision 0 행을 key 로 집을 때: 미리보기 = conflict key_in_trash
+    (초안이 있다는 key_draft_only 아님) · 그 이름(제안 내용)을 싣지 않는다 · 편입 = DEF-INVALID·쓰기 0 · 복원하면 key_draft_only ·
+    영구 삭제(정리) 뒤 missing — 휴지통 정의를 표준으로 착각하지 않는다."""
+    cleanup()
+    U = db.user_by_email("tester@example.com")["id"]
+    with _trash_switch(True):
+        assert next(o for o in db.std_preview(U)["objects"] if o["std_key"] == "decision_events")["structure"] == "missing", "재료: 같은 key 없음"
+        dn = db.definition_propose(U, None, 0, {"key": "decision_events", "label": "T2MK-결정 초안", "semantic_kind": "event", "fields": []})
+        db.trash_move(U, "definition_proposal", dn["proposal_id"])
+        pv = db.std_preview(U)
+        o = next(x for x in pv["objects"] if x["std_key"] == "decision_events")
+        assert o["structure"] == "conflict" and o["conflicts"] == [{"code": "key_in_trash", "field": None}] and not o["can_incorporate"], o
+        assert o["object"]["label"] is None and "T2MK" not in json.dumps(pv, ensure_ascii=False)
+        before = _trash_row("object_defs", dn["object_id"])
+        e = expect("DEF-INVALID", db.std_choose, U, "decision_events", "incorporated", True, 0)
+        assert "key_in_trash" in e.message and "T2MK" not in e.message
+        assert _trash_row("object_defs", dn["object_id"]) == before, "쓰기 0"
+        db.trash_restore(U, "definition_proposal", dn["proposal_id"])
+        o = next(x for x in db.std_preview(U)["objects"] if x["std_key"] == "decision_events")
+        assert o["conflicts"] == [{"code": "key_draft_only", "field": None}] and o["object"]["label"] == "T2MK-결정 초안"
+        db.trash_move(U, "definition_proposal", dn["proposal_id"])
+        _trash_age("trashed_proposals", dn["proposal_id"])
+        assert db.trash_purge_due()["trashed_proposals"] == 1
+        assert next(x for x in db.std_preview(U)["objects"] if x["std_key"] == "decision_events")["structure"] == "missing"
+    print("OK — 31i 표준 편입 × 휴지통 정의 제안(key_in_trash · 이름 0 · 편입 DEF-INVALID·쓰기 0 · 복원 = key_draft_only · 정리 뒤 missing)")
 
 
 # ── 임시 스키마 격리 (CRM_TEST_SCHEMA) ─────────────────

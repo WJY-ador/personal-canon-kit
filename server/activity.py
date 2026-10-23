@@ -451,24 +451,37 @@ def trash_purge_due(seconds=None, limit=None) -> dict:
     import time
     deadline = time.monotonic() + (db.TRASH_PURGE_SECONDS if seconds is None else seconds)
     left = db.TRASH_PURGE_LIMIT if limit is None else limit
-    done, failed, seen, stop = 0, 0, set(), False
+    done, failed, seen, after, stop = 0, 0, set(), None, False
     while not stop:
         if left <= 0 or time.monotonic() >= deadline:
             stop = True
             break
+        # 휴지통 PR-2(PR-1 후속): 판 행을 (purge_at, user_id, id) 커서로 앞으로만 TRASH_BATCH 행씩 읽고(ix_activities_purge 범위 스캔 + LIMIT)
+        # 그 판들의 원천 키만 붙인다 — 전 사용자 만료 판을 모아 GROUP BY 한 뒤 LIMIT 하던 탐색을 바꿨다(한 번에 읽는 양 = 배치 상한).
+        # 판이 배치 경계에 걸린 원천은 seen 으로 한 번만 처리한다. 실패·건너뛴 원천은 커서가 지나가 이 회차에 다시 집지 않는다(다음 회차).
+        a = {"now": db.TRASH_CLOCK, "n": min(db.TRASH_BATCH, left)}
+        cur = ""
+        if after:
+            cur = " AND purge_at >= %(ap)s AND (purge_at, user_id, id) > (%(ap)s, %(au)s, %(ai)s)"
+            a["ap"], a["au"], a["ai"] = after
         try:   # 판 열(trashed_at·purge_at)은 activities 에만 있어 db._TRASH_DUE 를 그대로 쓴다
             with tx() as c:
                 c.execute(f"SET LOCAL statement_timeout = '{db.TRASH_STMT_TIMEOUT}'")
-                keys = [(r["user_id"], r["stream_id"], r["original_id"]) for r in _all(
-                    c, f"SELECT e.user_id, e.stream_id, e.original_id, min(a.purge_at) AS p FROM activities a JOIN import_entries e "
-                       f"ON e.user_id=a.user_id AND e.target_activity_id=a.id WHERE {db._TRASH_DUE} "
-                       "GROUP BY 1, 2, 3 ORDER BY p LIMIT %(n)s", {"now": db.TRASH_CLOCK, "n": min(db.TRASH_BATCH, left) + len(seen)})]
+                vers = _all(c, f"SELECT v.user_id, v.id, v.purge_at, e.stream_id, e.original_id FROM (SELECT user_id, id, purge_at "
+                               f"FROM activities WHERE {db._TRASH_DUE}{cur} ORDER BY purge_at, user_id, id LIMIT %(n)s) v "
+                               "LEFT JOIN LATERAL (SELECT stream_id, original_id FROM import_entries WHERE user_id=v.user_id "
+                               "AND target_activity_id=v.id LIMIT 1) e ON true ORDER BY v.purge_at, v.user_id, v.id", a)
         except Exception as e:
             print(f"[trash] 활동 정리 대상 조회 실패 — 다음 회차: {type(e).__name__}", flush=True)
             break
-        keys = [k for k in keys if k not in seen]
-        if not keys:
+        if not vers:
             break
+        after = (vers[-1]["purge_at"], vers[-1]["user_id"], vers[-1]["id"])
+        keys = []
+        for v in vers:
+            k = (v["user_id"], v["stream_id"], v["original_id"])
+            if v["stream_id"] is not None and k not in seen and k not in keys:
+                keys.append(k)
         for k in keys:
             if left <= 0 or time.monotonic() >= deadline:
                 stop = True

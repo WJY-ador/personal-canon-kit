@@ -129,7 +129,7 @@ _DAILY_NAMES = {"records": "기록은", "candidates": "후보는", "decisions": 
 _DAILY_SOURCES = {
     "records": (("records", "COALESCE(received_at, created)"),),   # board 이전: 이전한 기록의 created 가 과거여도 받은 시각으로 센다
     "candidates": (("candidates", "created"),),
-    "decisions": (("candidate_history", "at"), ("item_history", "at")),
+    "decisions": (("candidate_history", "at"), ("item_history", "at", "action <> 'edit'")),   # 글 수정 — 재수정·비기준 저장은 안 센다(첫 확정 저장 edit_confirm 은 센다)
     "proposals": (("object_defs", "created_at", "std_id IS NULL"), ("items", "COALESCE(received_at, created_at)")),   # 표준 정의(시드·편입)는 사용자 제안이 아니다
     "questions": (("questions", "created"),),
     "people": (("people", "created"),),
@@ -462,6 +462,8 @@ def _init_schema(c):
         _migrate_board_import(c)   # board 이전(2026-10-20) — 열·이름 붙은 CHECK·부분 UNIQUE·item_links 대상 확장
         _migrate_stack(c)   # PR ②-b — jobs 새 열·definitions_version text·items 판 포인터·generation_kind 넓히기
         _migrate_trash(c)   # 휴지통 PR-1 — 5종 휴지통 열·CHECK·부분 인덱스 · 사람 표식 · 접수 deleted 상태
+        _migrate_trash2(c)   # 휴지통 PR-2 — 승인 대기·세션·작업 휴지통 열·CHECK · 제안 보존 표 인덱스
+        _migrate_edit(c)   # 글 수정 — 판·변경 번호·본문 해시 열 · 기존 확정 정리 글 판 1 증거 · 「적용 영역」 라벨 1회 이관
         _init_tmp(c)   # PR ②-a 임시 보관 — schema.sql 의 jobs 뒤(FK 대상). 위치는 current_schema() 로 정한다
         _migrate_classify_roles(c)
         _backfill_template_slots(c)   # 매번 돈다 — 시드가 적용 뒤 표시 전에 끊긴 경우도 여기서 채운다
@@ -626,6 +628,94 @@ def _migrate_trash(c):
         if not c.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relnamespace = current_schema()::regnamespace",
                          (name,)).fetchone():
             c.execute(ddl)
+
+
+TRASH2_TABLES = ("import_entries", "stack_sessions", "trashed_proposals")   # PR-2 — 부분 인덱스 ix_<t>_purge·ix_<t>_trash 를 가진 표
+_TRASH2_CHECKS = {
+    "import_entries": _TRASH_CHECK[:-1] + " AND (trashed_at IS NULL OR state = 'pending'))",
+    "stack_sessions": _TRASH_CHECK[:-1] + " AND (trashed_at IS NULL OR terminal_at IS NULL))"}
+
+
+def _migrate_trash2(c):
+    """휴지통 PR-2 — 옛 DB 를 schema.sql 최종형과 같은 모양으로(expand 만, 멱등). trashed_proposals 는 schema.sql 이 만든다(새 표).
+    · import_entries·stack_sessions: trashed_at·purge_at·last_trashed_at + ck_<t>_trash · jobs: trashed_at + ck_jobs_trash
+    · 부분 인덱스 ix_<t>_purge(만료 탐색)·ix_<t>_trash(소유자 목록) — 기존 승인 대기 CHECK·expires_at 은 그대로"""
+    for t, ck in _TRASH2_CHECKS.items():
+        for n, ddl in _TRASH_COLS:
+            if not _has_col(c, t, n):
+                c.execute(f"ALTER TABLE {t} ADD COLUMN {n} {ddl}")
+        if not _has_constraint(c, t, f"ck_{t}_trash"):
+            c.execute(f"ALTER TABLE {t} ADD CONSTRAINT ck_{t}_trash {ck}")
+    if not _has_col(c, "jobs", "trashed_at"):
+        c.execute("ALTER TABLE jobs ADD COLUMN trashed_at timestamptz")
+    if not _has_constraint(c, "jobs", "ck_jobs_trash"):
+        c.execute("ALTER TABLE jobs ADD CONSTRAINT ck_jobs_trash CHECK (trashed_at IS NULL OR status = 'result_ready')")
+    for t in TRASH2_TABLES:
+        for name, ddl in ((f"ix_{t}_purge", f"CREATE INDEX ix_{t}_purge ON {t} (purge_at) WHERE trashed_at IS NOT NULL"),
+                          (f"ix_{t}_trash", f"CREATE INDEX ix_{t}_trash ON {t} (user_id, trashed_at DESC) WHERE trashed_at IS NOT NULL")):
+            if not c.execute("SELECT 1 FROM pg_class WHERE relname = %s AND relnamespace = current_schema()::regnamespace",
+                             (name,)).fetchone():
+                c.execute(ddl)
+
+
+_EDIT_COLS = (("records", "content_version", "integer NOT NULL DEFAULT 1"), ("records", "change_no", "integer NOT NULL DEFAULT 0"),
+              ("records", "content_at", "timestamptz"),
+              ("records", "body_sha", "text GENERATED ALWAYS AS (crm_sha256_utf8(body)) STORED"),
+              ("candidates", "record_version", "integer NOT NULL DEFAULT 1"),
+              ("items", "change_no", "integer NOT NULL DEFAULT 0"),
+              ("items", "body_sha", "text GENERATED ALWAYS AS (crm_sha256_utf8(body)) STORED"))
+_EDIT_CHECKS = (("records", "ck_records_content_version", "CHECK (content_version > 0)"),
+                ("records", "ck_records_change_no", "CHECK (change_no >= 0)"),
+                ("candidates", "ck_candidates_record_version", "CHECK (record_version > 0)"),
+                ("items", "ck_items_change_no", "CHECK (change_no >= 0)"))
+REGISTER_LABEL_MARK = "author_register_label_v1"   # schema_marks 키 — 원작자 정의 「레지스터」 → 「적용 영역」 1회 이관
+REGISTER_SLOT = "author@1:principles.register"
+REGISTER_OLD, REGISTER_NEW = "레지스터", "적용 영역"
+
+
+def _migrate_edit(c):
+    """글 수정(2026-10-23) — 옛 DB 를 schema.sql 최종형과 같은 모양으로(expand 만, 멱등). record_versions·content_confirms 는 schema.sql 이 만든다.
+    · 열·CHECK: 기존 행 = 판 1(content_version·record_version DEFAULT 1)·변경 번호 0·본문 해시(generated — ADD 때 계산)
+    · 확정한 대화 정리 글 = 판 1 증거(stack_confirm). 해시는 확인 당시 해시(confirm_events.final_text_sha)가 지금 본문 해시와 같을 때만 —
+      다르면 NULL(모름, 소급하지 않는다). 증거가 이미 있는 글은 건너뛴다(매번 돌아도 같다)
+    · 확인 1번으로 생긴 항목 판 = 그 판 증거 — 확정 뒤 행이 안 바뀐 것만(해시 = 지금 본문), 바뀐 항목은 넣지 않는다
+    · 1회(schema_marks): 원작자 템플릿 계보(author@1) 기준 정의의 register 칸 라벨 「레지스터」 → 「적용 영역」. 값·revision·history 는 그대로,
+      미적용·휴지통 정의 제안 문서의 같은 칸 라벨도 같이(적용·복원 때 옛 라벨로 되돌아가지 않게)"""
+    for t, n, ddl in _EDIT_COLS:
+        if not _has_col(c, t, n):
+            c.execute(f"ALTER TABLE {t} ADD COLUMN {n} {ddl}")
+    for t, name, ddl in _EDIT_CHECKS:
+        if not _has_constraint(c, t, name):
+            c.execute(f"ALTER TABLE {t} ADD CONSTRAINT {name} {ddl}")
+    c.execute("INSERT INTO content_confirms (user_id,target_kind,target_id,version_no,body_sha,kind,confirmed_by,confirmed_at,confirm_event_id) "
+              "SELECT r.user_id,'record',r.id,1,CASE WHEN ce.final_text_sha = r.body_sha THEN r.body_sha END,'stack_confirm',r.user_id,"
+              "ce.created_at,ce.id FROM records r JOIN confirm_events ce ON ce.user_id=r.user_id "
+              "AND ce.id::text = r.generation_meta->>'confirm_event_id' WHERE r.generation_kind='conversation' AND NOT EXISTS "
+              "(SELECT 1 FROM content_confirms x WHERE x.user_id=r.user_id AND x.target_kind='record' AND x.target_id=r.id)")
+    # 확인 1번으로 생긴 항목 판 = 판 증거 — 그 판이 지금 판이고 확정 뒤 행이 안 바뀐 것(item_revision = revision)만, 해시 = 지금 본문.
+    # 확정 뒤 바뀐 항목은 넣지 않는다(소급 없음). 판마다 한 번(매번 돌아도 같다)
+    c.execute("INSERT INTO content_confirms (user_id,target_kind,target_id,version_no,body_sha,kind,confirmed_by,confirmed_at,confirm_event_id) "
+              "SELECT i.user_id,'item',i.id,iv.version_no,i.body_sha,'stack_confirm',i.user_id,iv.created_at,iv.confirm_event_id FROM items i "
+              "JOIN item_versions iv ON iv.user_id=i.user_id AND iv.id=i.current_version_id WHERE iv.confirm_event_id IS NOT NULL "
+              "AND iv.item_revision=i.revision AND NOT EXISTS (SELECT 1 FROM content_confirms x WHERE x.user_id=i.user_id "
+              "AND x.target_kind='item' AND x.target_id=i.id AND x.version_no=iv.version_no)")
+    if _one(c, "INSERT INTO schema_marks (key) VALUES (%s) ON CONFLICT (key) DO NOTHING RETURNING key", (REGISTER_LABEL_MARK,)):
+        rows = _all(c, "SELECT f.user_id, f.object_id FROM field_defs f WHERE f.template_slot=%s AND f.key='register' AND f.label=%s",
+                    (REGISTER_SLOT, REGISTER_OLD))
+        for r in rows:
+            c.execute("UPDATE field_defs SET label=%s WHERE user_id=%s AND object_id=%s AND key='register' AND label=%s",
+                      (REGISTER_NEW, r["user_id"], r["object_id"], REGISTER_OLD))
+            docs = [("object_defs", "draft_doc", "id", d["id"], d["doc"]) for d in _all(
+                c, "SELECT id, draft_doc AS doc FROM object_defs WHERE user_id=%s AND id=%s AND draft_doc IS NOT NULL", (r["user_id"], r["object_id"]))]
+            docs += [("trashed_proposals", "doc", "id", d["id"], d["doc"]) for d in _all(
+                c, "SELECT id, doc FROM trashed_proposals WHERE user_id=%s AND object_id=%s", (r["user_id"], r["object_id"]))]
+            for t, col, kcol, kid, doc in docs:
+                fs = (doc or {}).get("fields") or []
+                hit = [f for f in fs if isinstance(f, dict) and f.get("key") == "register" and f.get("label") == REGISTER_OLD]
+                for f in hit:
+                    f["label"] = REGISTER_NEW
+                if hit:
+                    c.execute(f"UPDATE {t} SET {col}=%s WHERE user_id=%s AND {kcol}=%s", (Jsonb(doc), r["user_id"], kid))
 
 
 def _widen_check(c, t, name, col, vals):
@@ -987,10 +1077,27 @@ def question_get(uid, qid):
 
 AUTHOR_KINDS = ("self", "external", "unknown")
 TEXT_PROCESSES = ("verbatim", "structured", "rewritten", "generated", "unknown")
-# PR ②-b(K4·Q2): 확인 1번을 거친 대화 정리(conversation + 실재 확인 이벤트)도 적격. ai·routine 은 원문이어도 비적격. unknown·mixed 는 그대로
-_ELIGIBLE_SQL = ("(r.author_kind='self' AND r.deleted_at IS NULL AND r.trashed_at IS NULL AND ((r.text_process='verbatim' AND r.generation_kind NOT IN ('ai','routine')) "
-                 "OR (r.generation_kind='conversation' AND EXISTS (SELECT 1 FROM confirm_events ce WHERE ce.user_id=r.user_id "
-                 "AND ce.id::text = r.generation_meta->>'confirm_event_id'))))")
+# PR ②-b(K4·Q2): ai·routine 은 원문이어도 비적격. unknown·mixed 는 그대로.
+# 글 수정(2026-10-23, astra r2 S3): 판 ver 의 적격 = 본인 글·삭제 안 됨·휴지통 아님 AND (최초 수신 원문(판 1·verbatim)
+# OR 판 ver 이하에서 가장 늦은 확인 증거(content_confirms)의 판·해시 = (ver, 그 판 본문 해시)). 「아무 증거나 일치」가 아니라 같은 조회 안에서
+# 최신 하나를 고른다 — 현재 판이면 최신 증거, 과거 판(후보가 가리키는 판)이면 그 판의 증거. 확정한 대화 정리 = 판 1 증거(stack_confirm),
+# 웹 직접 저장 = 새 판 증거(direct_edit). 해시 NULL(모름)은 일치하지 않는다. 상관 서브쿼리라 조회 수는 그대로다.
+def _elig_sql(ver, r="r"):
+    vsha = (f"(CASE WHEN {ver} = {r}.content_version THEN {r}.body_sha ELSE (SELECT rv.body_sha FROM record_versions rv "
+            f"WHERE rv.user_id={r}.user_id AND rv.record_id={r}.id AND rv.version_no={ver}) END)")
+    return (f"({r}.author_kind='self' AND {r}.deleted_at IS NULL AND {r}.trashed_at IS NULL AND (({ver} = 1 AND {r}.text_process='verbatim' "
+            f"AND {r}.generation_kind NOT IN ('ai','routine')) OR COALESCE(({ver}, {vsha}) = (SELECT e.version_no, e.body_sha "
+            f"FROM content_confirms e WHERE e.user_id={r}.user_id AND e.target_kind='record' AND e.target_id={r}.id AND e.version_no <= {ver} "
+            f"ORDER BY e.version_no DESC, e.id DESC LIMIT 1), false)))")
+
+
+def _confirmed_sql(target_kind, ver, sha, user, tid):
+    """판 ver(본문 해시 sha)이 그 판 이하 최신 확인 증거와 판·해시가 맞는가(bool, 증거 없음 = false)."""
+    return (f"COALESCE(({ver}, {sha}) = (SELECT e.version_no, e.body_sha FROM content_confirms e WHERE e.user_id={user} "
+            f"AND e.target_kind='{target_kind}' AND e.target_id={tid} AND e.version_no <= {ver} ORDER BY e.version_no DESC, e.id DESC LIMIT 1), false)")
+
+
+_ELIGIBLE_SQL = _elig_sql("r.content_version")   # 지금 판 기준(후보 만들기·출처 정정). 후보가 가리키는 판은 _elig_sql("c.record_version")
 INELIGIBLE_WHY = "이 기록은 본인 원문이 아니라 근거로 쓸 수 없어요"
 _REC_COLS = "id,title,body,source,source_id,question_id,author_kind,text_process,created"   # source = 옛 문자열(보존), source_id = 출처 연결
 
@@ -1073,9 +1180,15 @@ def record_add(uid, title, body, question_id=None, source="대화에서 입력",
     return out
 
 
+_REC_EDIT_COLS = (f",r.content_version,r.change_no,({_ELIGIBLE_SQL}) AS eligible,"
+                  f"({_confirmed_sql('record', 'r.content_version', 'r.body_sha', 'r.user_id', 'r.id')}) AS confirmed")   # 글 수정 — 판·변경 번호·적격·확인
+
+
 def record_get(uid, rid):
+    """글 수정: content_version(지금 판)·change_no(변경 번호)·eligible(인용 적격)·confirmed(지금 판 = 최신 확인 증거) 포함. 조회 1번."""
     with tx() as c:
-        r = _one(c, f"SELECT {_REC_COLS} FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL AND trashed_at IS NULL",
+        r = _one(c, f"SELECT {','.join('r.' + k for k in _REC_COLS.split(','))}{_REC_EDIT_COLS} FROM records r "
+                    "WHERE r.user_id=%s AND r.id=%s AND r.deleted_at IS NULL AND r.trashed_at IS NULL",
                  (uid, rid))   # 휴지통 기록 = 없는 것(본문은 휴지통 경로 trash_get 에서만)
     if not r:
         raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {rid}")
@@ -1144,7 +1257,7 @@ def records(uid, limit=50, before=None, before_id=None):
         args = (uid, before_id, before, before, before_id)
     with tx() as c:
         rows = _all(c, "SELECT id,title,body,source,source_id,question_id,author_kind,text_process,notes,created,"
-                       "source_date,ingest_kind,generation_kind FROM records "
+                       "source_date,ingest_kind,generation_kind,content_version FROM records "
                        "WHERE user_id=%s AND deleted_at IS NULL AND trashed_at IS NULL" + cond
                        + f" ORDER BY {RECORD_SORT} DESC, created DESC, id DESC LIMIT %s",
                        (uid, *args, limit))
@@ -1203,7 +1316,7 @@ def candidates_propose(uid, record_id, question_id, items, origin):
     added, dropped = [], []
     with tx() as c:
         _daily_gate(c, uid, "candidates", len(items or []))   # 제출한 수로 센다(검사 전) — 한 호출 최대 3
-        rec = _one(c, f"SELECT r.id,r.body,r.author_kind,r.text_process,r.deleted_at,r.trashed_at,({_ELIGIBLE_SQL}) AS eligible "
+        rec = _one(c, f"SELECT r.id,r.body,r.content_version,r.author_kind,r.text_process,r.deleted_at,r.trashed_at,({_ELIGIBLE_SQL}) AS eligible "
                       "FROM records r WHERE r.user_id=%s AND r.id=%s AND r.deleted_at IS NULL FOR UPDATE OF r", (uid, record_id))
         if not rec:
             raise CrmError("RECORD-MISSING", f"기록을 찾을 수 없어요: {record_id}")
@@ -1238,31 +1351,42 @@ def candidates_propose(uid, record_id, question_id, items, origin):
                 dropped.append({"text": text, "why": f"기록 1편당 후보는 {MAX_CANDIDATES_PER_RECORD}개까지예요"})
                 continue
             cid = new_id("c")
-            c.execute("INSERT INTO candidates (id,user_id,question_id,record_id,text,quote,quote_start,quote_end,origin,wording_by) "
-                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                      (cid, uid, question_id, record_id, text, quote, start, end, origin, wording_by))
+            c.execute("INSERT INTO candidates (id,user_id,question_id,record_id,text,quote,quote_start,quote_end,origin,wording_by,record_version) "
+                      "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",   # 글 수정 — 인용·오프셋은 지금 판 본문 기준(그 판에 고정)
+                      (cid, uid, question_id, record_id, text, quote, start, end, origin, wording_by, rec["content_version"]))
             have += 1
             added.append(cid)
     return added, dropped
 
 
 _CAND_COLS = ("id,question_id,record_id,text,quote,quote_start,quote_end,origin,decision AS status,edited_by_user,"
-              "revision,wording_by,wording_approved,created,updated")
+              "revision,wording_by,wording_approved,created,updated,record_version")   # record_version = 인용이 가리키는 기록 판
 # 후보는 휴지통 독립 대상이 아니다(r4 D3) — 부모 글이 휴지통이면 후보·인용·후보 관계를 일반 이용에서 숨긴다. 별칭 c 의 후보 기준
 _CAND_PARENT_LIVE = "NOT EXISTS (SELECT 1 FROM records pr WHERE pr.user_id=c.user_id AND pr.id=c.record_id AND pr.trashed_at IS NOT NULL)"
 
 
+def _review_of(rec):
+    """적격 판정(eligible, _elig_sql)이 실린 근거 기록 → 재검토 사유 코드. 적격이면 None. 비적격인데 출처 판정 사유가 없으면(확인하지 않은 판·
+    해시 불일치) processed — 원작자 결정 3(새 사유 코드 없이 재사용)."""
+    if rec["eligible"]:
+        return None
+    return contract.review_reason(rec) or "processed"
+
+
 def _with_review(c, uid, rows):
-    """후보마다 review = 근거 기록의 재검토 사유 코드(contract.review_reason) — 미확정(pending·excluded)이고 근거가 비적격일 때만,
-    그 밖은 None(§6). 후보·quote·기록 연결은 그대로 둔다 — 바뀌는 건 확정 가능 여부뿐."""
-    ids = list({r["record_id"] for r in rows})
-    recs = {x["id"]: x for x in _all(c, "SELECT id,author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id = ANY(%s)",
+    """후보마다 review = 근거 기록의 재검토 사유 코드 — 미확정(pending·excluded)이고 근거가 비적격일 때만, 그 밖은 None(§6).
+    글 수정: 적격은 후보가 가리키는 판 기준 SQL(_elig_sql("c.record_version")) — 후보 확정 검사(_confirm_check)와 같은 계약. 조회 1번.
+    후보·quote·기록 연결은 그대로 둔다 — 바뀌는 건 확정 가능 여부뿐."""
+    ids = [r["id"] for r in rows]
+    recs = {x["cid"]: x for x in _all(c, "SELECT c.id AS cid,r.author_kind,r.text_process,r.deleted_at,"
+                                         f"({_elig_sql('c.record_version')}) AS eligible FROM candidates c JOIN records r "
+                                         "ON r.user_id=c.user_id AND r.id=c.record_id WHERE c.user_id=%s AND c.id = ANY(%s)",
                                        (uid, ids))} if ids else {}
     out = []
     for r in rows:
         d = _iso(r)
-        rec = recs.get(r["record_id"])
-        d["review"] = None if d["status"] == "confirmed" or rec is None else contract.review_reason(rec)
+        rec = recs.get(r["id"])
+        d["review"] = None if d["status"] == "confirmed" or rec is None else _review_of(rec)
         out.append(d)
     return out
 
@@ -1316,10 +1440,11 @@ def _cand_bump(c, uid, r, action, sets, args):
 
 
 def _confirm_check(c, uid, r):
-    """확정 시 재검사(§6) — 근거 기록을 _eligible 전체 조건으로 다시 본다(FOR SHARE: 출처 정정 FOR UPDATE 와 직렬화).
-    비적격이면 CANDIDATE-REVIEW(사유별 문구). 결정이 confirmed 로 바뀔 때만 부른다 — 이미 확정된 판단은 건드리지 않는다."""
-    rec = _one(c, "SELECT author_kind,text_process,deleted_at FROM records WHERE user_id=%s AND id=%s FOR SHARE", (uid, r["record_id"]))
-    why = contract.review_reason(rec) if rec else "deleted"
+    """확정 시 재검사(§6) — 근거 기록을 후보가 가리키는 판의 적격 SQL(_elig_sql, 목록 review·승격 집계와 같은 계약)로 다시 본다
+    (FOR SHARE: 출처 정정·글 저장 FOR UPDATE 와 직렬화). 비적격이면 CANDIDATE-REVIEW(사유별 문구). 결정이 confirmed 로 바뀔 때만 부른다."""
+    rec = _one(c, f"SELECT r.author_kind,r.text_process,r.deleted_at,({_elig_sql('%(v)s::int')}) AS eligible FROM records r "
+                  "WHERE r.user_id=%(uid)s AND r.id=%(rid)s FOR SHARE OF r", {"v": r["record_version"], "uid": uid, "rid": r["record_id"]})
+    why = _review_of(rec) if rec else "deleted"
     if why:
         raise _cand_review(why)
 
@@ -1711,7 +1836,8 @@ def _def_out(c, uid, row, include_archived=False):
 def definitions(uid, object_ids=None, include_archived=False):
     """적용된(revision>0) 정의 + 필드. object_ids 로 콕 집어 물으면 적용 전 새 오브젝트 제안(revision 0)도 돌려주고 draft=true 를 단다
     (R5 결함 R-4 — 응답 모양은 키 추가만. 전체 목록(object_ids 없음)엔 초안을 넣지 않는다)."""
-    sql = f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s" + ("" if object_ids else " AND revision > 0")
+    sql = f"SELECT {_DEF_COLS} FROM object_defs WHERE user_id=%s" + (" AND (revision > 0 OR draft_id IS NOT NULL)" if object_ids
+                                                                         else " AND revision > 0")   # 휴지통 PR-2 — 제안을 뺀 빈 초안 행은 숨김
     args = [uid]
     if not include_archived:
         sql += " AND archived_at IS NULL"
@@ -1898,7 +2024,7 @@ STD_CHOICE_STATES = ("deferred", "refused")   # std_choose 의 기록만 하는 
 STD_READY = ("seeded", "incorporated")   # 참조 대상이 이 상태여야 그 참조를 가진 표준 오브젝트를 편입할 수 있다(§3 참조 의존)
 STD_STRUCTURES = ("match", "extend", "missing", "conflict")   # 일치 · 확장(표준 + 사용자 필드) · 누락(같은 key 없음) · 충돌
 # 충돌 사유 — field=None 이면 오브젝트 단위, 아니면 표준 필드 key 하나
-STD_CONFLICTS = ("key_draft_only", "key_archived", "kind", "field_missing", "field_archived", "field_value_type",
+STD_CONFLICTS = ("key_draft_only", "key_in_trash", "key_archived", "kind", "field_missing", "field_archived", "field_value_type",
                  "field_target_kind", "field_target", "field_multiple", "field_required", "field_options")
 STD_BLOCKS = ("already", "conflict", "needs_target")   # 편입 불가 사유: 이미 seeded·incorporated · 구조 충돌 · 참조 대상 미편입
 
@@ -1968,7 +2094,7 @@ def _std_objects(c, uid, lock=False):
     없으면 같은 key 행 — 적용 전 초안(revision 0)·보관 행도 돌려준다(판정은 호출자). UNIQUE(user_id, key) 라 key 갈래는 많아야 하나.
     lock=True 면 그 행들을 FOR UPDATE(편입 적용 — definition_apply 와 직렬화)."""
     sids = [contract.std_id_of(k) for k in contract.STD_KEYS]
-    rows = _all(c, "SELECT id,key,label,semantic_kind,revision,archived_at,std_id FROM object_defs "
+    rows = _all(c, "SELECT id,key,label,semantic_kind,revision,archived_at,std_id,draft_id FROM object_defs "
                    "WHERE user_id=%s AND (key = ANY(%s) OR std_id = ANY(%s)) ORDER BY created_at, id" + (" FOR UPDATE" if lock else ""),
                 (uid, list(contract.STD_KEYS), sids))
     out = {}
@@ -1983,8 +2109,8 @@ def _std_classify(sd, row, fields, target_ids):
     — 표준 참조 필드는 이 id 를 가리켜야 같다. label·policy·사용자 필드 순서는 보지 않는다(잠금 밖)."""
     if row is None:
         return "missing", []
-    if row["revision"] == 0:
-        return "conflict", [{"code": "key_draft_only", "field": None}]
+    if row["revision"] == 0:   # 휴지통 PR-2 — 제안을 휴지통에 넣어 자리가 빈 초안 행 = key_in_trash(초안이 있다고 안내하지 않는다)
+        return "conflict", [{"code": "key_draft_only" if row.get("draft_id") else "key_in_trash", "field": None}]
     if row["archived_at"] is not None:
         return "conflict", [{"code": "key_archived", "field": None}]
     probs = []
@@ -2056,8 +2182,10 @@ def _std_assess(c, uid, lock=False):
             "std_key": k, "std_id": contract.std_id_of(k), "std_name": contract.std_name(contract.std_id_of(k)), "state": state,
             "choice": {kk: ch[kk] for kk in ("def_id", "def_revision", "confirmed_meaning", "at")} if ch else None,
             "structure": structure, "conflicts": conflicts,
-            "object": {"id": row["id"], "key": row["key"], "label": row["label"], "revision": row["revision"],
-                       "archived": row["archived_at"] is not None} if row else None,
+            "object": {"id": row["id"], "key": row["key"],
+                       # 휴지통 정의 제안의 빈 초안 행 — 그 이름(제안 내용)은 휴지통 밖에 싣지 않는다
+                       "label": None if row["revision"] == 0 and not row.get("draft_id") else row["label"],
+                       "revision": row["revision"], "archived": row["archived_at"] is not None} if row else None,
             "meaning_check": row is not None, "lock": _std_lock_effects(sd), "needs": needs,
             "can_incorporate": not blocked, "blocked": blocked})
     return std, out, rows, target_ids
@@ -2451,8 +2579,13 @@ def record_attach(uid, record_id, attach_to=None, axes=None, use_at=None, unatta
 
 # ── 항목 ──
 
+# 글 수정(2026-10-23): change_no(변경 번호) · content_version = 지금 판 번호(현재 행이 그 판 뒤에 바뀌지 않았을 때만, 아니면 NULL)
+# · confirmed_latest = 그 판이 최신 확인 증거와 판·해시가 맞음. 「FROM items」(별칭 없음) 전용 — 상관 서브쿼리라 조회 수는 그대로다.
+_ITEM_CUR_VERSION = ("(SELECT iv.version_no FROM item_versions iv WHERE iv.user_id=items.user_id AND iv.id=items.current_version_id "
+                     "AND iv.item_revision=items.revision)")
 _ITEM_COLS = ("id,object_id,schema_revision,code,title,body,data,decision,revision,draft_doc,draft_id,draft_base_revision,"
-              "archived_at,created_at,updated_at")
+              f"archived_at,created_at,updated_at,change_no,{_ITEM_CUR_VERSION} AS content_version,"
+              f"({_confirmed_sql('item', _ITEM_CUR_VERSION, 'items.body_sha', 'items.user_id', 'items.id')}) AS confirmed_latest")
 
 
 def _object_row(c, uid, oid, applied=True):
@@ -2539,7 +2672,7 @@ def _promotion(c, uid, policy, links):
     ok_ids = set()
     if claim_ids:
         ok_ids = {r["id"] for r in _all(c, "SELECT c.id FROM candidates c JOIN records r ON r.user_id=c.user_id AND r.id=c.record_id "
-                                           f"AND {_ELIGIBLE_SQL} "
+                                           f"AND {_elig_sql('c.record_version')} "   # 글 수정 — 후보가 가리키는 판 기준
                                            "WHERE c.user_id=%s AND c.id = ANY(%s) AND c.decision='confirmed'", (uid, claim_ids))}
     events = 0
     if p["distinct_events_min"] > 0 and p.get("event_field"):
@@ -2647,12 +2780,16 @@ def item_get(uid, item_id):
 def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id=None):
     """apply(제안 적용) · confirm/exclude/pending(기준만, 사용자 판단) · archive · restore(history_id 의 스냅샷을 새 변경으로).
     discard 는 제안(draft)만 버린다 — 새 항목 제안(revision 0)이면 행 삭제, 아니면 draft_* 만 비움. 이력·revision 변화 없음.
+    휴지통 켜짐이면 discard·exclude·pending = ACTION-RETIRED(데이터 불변) — 제안은 trash_move(kind=item_proposal).
     모든 변경은 이력 한 줄 + revision+1. 같은 결정 반복은 no-op. confirm 은 승격 조건을 거절 사유로 쓰지 않고 결과에 사실로 싣는다."""
     if action not in ITEM_ACTIONS:
         raise CrmError("ARG-INVALID", f"action 은 {', '.join(ITEM_ACTIONS)} 중 하나예요.")
     if action in ITEM_RETIRED and trash_on():   # 휴지통 켜짐 — 잠그기 전에 거절(데이터·revision 불변)
         raise CrmError("ACTION-RETIRED", "기준을 남기지 않기·되돌리기는 이제 없어요. 남기지 않을 기준은 삭제해 휴지통으로 옮겨요.",
                        "trash_move(kind=item) 로 삭제하세요(휴지통에서 168시간 안에 복원할 수 있어요). 남기려면 confirm.")
+    if action == "discard" and trash_on():   # 휴지통 PR-2 — 제안 버리기도 삭제(휴지통)로. 조용히 번역하지 않는다
+        raise CrmError("ACTION-RETIRED", "제안 버리기(discard)는 이제 없어요. 제안은 삭제해 휴지통으로 옮겨요.",
+                       "trash_move(kind=item_proposal, target_id=제안 ID) 로 삭제하세요(168시간 안에 복원할 수 있어요).")
     promotion = None
     with tx() as c:
         _daily_gate(c, uid, "decisions")
@@ -2755,6 +2892,235 @@ def item_decide(uid, item_id, expected_revision, proposal_id, action, history_id
     if promotion is not None:
         out["promotion"] = promotion
     return out
+
+
+# ── 글 수정 (2026-10-23, notes 글-수정-구현계획 · astra r2 A′) ─────────────────────────
+# 웹 전용(MCP 도구 없음 — 후보 edit_confirm 선례). 저장 = 그 자리 확정: 이전 판 보존 + 새 판 + 확인 증거(direct_edit) + (기준) 확정 + stage, 한 트랜잭션.
+# 동시성 = 내용 판(기록 content_version · 항목 revision) + 변경 번호(change_no — 휴지통 이동·복원도 올린다). 어긋나면 CONFLICT + latest(입력 보존은 화면).
+# 재시도 = request_id + request_sha(대상·기대 번호·제목·본문) 일치면 처음 결과(판·증거·한도 중복 0). 같은 ID 다른 내용 = EDIT-REQUEST-MISMATCH.
+# 재반환이어도 대상이 지금 휴지통이면 IN-TRASH, 영구 삭제면(증거째 지워져) NOT-FOUND — 삭제된 대상을 유효하다고 돌려주지 않는다.
+# 한도: 새 글 수에 안 센다 · 미확정 기준 첫 확정 저장만 decisions 1(이력 action edit_confirm) · 저장 요청은 분당 EDIT_PER_MINUTE(import_counters).
+# 길이는 WRITE_LIMITS 밖(웹 전용 쓰기 — 표 키는 MCP 도구 이름) — 함수 안 check_len. 내용 이력 복원 = 같은 저장(restored_from_version 은 표지만).
+EDIT_PER_MINUTE = 30
+EDIT_RATE_BUCKET = "edit"   # import_counters.bucket — 사용자 분당 저장 요청
+_EDIT_REQ_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def text_sha(t):
+    """본문 해시 규칙 — schema.sql crm_sha256_utf8 과 같다(UTF-8 바이트 sha256 hex)."""
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()
+
+
+def _edit_args(title, body, request_id, expected, restored_from_version, body_required):
+    """모양·길이 검사 → 다듬은 제목. expected = 기대 번호 두 개(정수)."""
+    if not isinstance(request_id, str) or not _EDIT_REQ_RE.match(request_id):
+        raise CrmError("ARG-INVALID", "request_id 는 8~64자 영숫자·-·_ 예요.")
+    if not isinstance(title, str) or not isinstance(body, str):
+        raise CrmError("ARG-INVALID", "제목·본문은 문자열이에요.")
+    for v in expected:
+        if not _is_int(v) or v < 0:
+            raise CrmError("ARG-INVALID", "기대 판·변경 번호는 0 이상 정수예요.")
+    if restored_from_version is not None and (not _is_int(restored_from_version) or restored_from_version < 1):
+        raise CrmError("ARG-INVALID", "restored_from_version 은 1 이상 정수예요.")
+    title = title.strip()
+    if not title:
+        raise CrmError("ARG-INVALID", "제목이 비었어요.")
+    if body_required and not body.strip():
+        raise CrmError("ARG-INVALID", "본문이 비었어요.")
+    check_len("title", title, LIMIT_TEXT)
+    check_len("body", body, LIMIT_BODY)
+    return title
+
+
+def _edit_req_sha(**kw):
+    return text_sha(json.dumps(kw, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _edit_rate(uid):
+    """저장 요청 속도 — 별도 트랜잭션(뒤가 실패해도 남는다, imports._rate 꼴). 넘으면 RATE-LIMIT."""
+    import imports
+    with tx() as c:
+        if imports._bump(c, uid, "user", "minute", EDIT_RATE_BUCKET)["n"] > EDIT_PER_MINUTE:
+            raise CrmError("RATE-LIMIT", f"저장이 너무 잦아요(분당 {EDIT_PER_MINUTE}회).", "잠시 뒤 다시 저장하세요.")
+
+
+def _edit_replay(c, uid, kind, tid, request_id, req_sha):
+    """같은 request_id 의 앞 저장 — 없으면 None. 내용이 다르면 EDIT-REQUEST-MISMATCH. 반환 = 저장한 응답(식별자만)."""
+    ev = _one(c, "SELECT target_kind,target_id,request_sha,response FROM content_confirms WHERE user_id=%s AND request_id=%s",
+              (uid, request_id))
+    if not ev:
+        return None
+    if (ev["target_kind"], ev["target_id"], ev["request_sha"]) != (kind, tid, req_sha):
+        raise CrmError("EDIT-REQUEST-MISMATCH", "같은 저장 요청 ID 로 다른 내용이 왔어요.", "새로 고침한 뒤 다시 저장하세요.")
+    return ev["response"]
+
+
+def _edit_conflict(latest):
+    e = CrmError("CONFLICT", "다른 곳에서 먼저 바뀌었어요.", "입력한 내용은 남아 있어요. 최신 글과 비교한 뒤 다시 저장하세요.")
+    e.latest = latest   # 화면이 최신 글을 보여 주는 값(web 이 응답 본문에 싣는다)
+    return e
+
+
+def _no_change():
+    return CrmError("NO-CHANGE", "바뀐 내용이 없어요.", "제목이나 본문을 고친 뒤 저장하세요. 그대로 확정하려면 [남기기].")
+
+
+def _confirm_insert(c, uid, kind, tid, ver, body, request_id, req_sha, saved, meta):
+    c.execute("INSERT INTO content_confirms (user_id,target_kind,target_id,version_no,body_sha,kind,confirmed_by,request_id,request_sha,response,meta) "
+              "VALUES (%s,%s,%s,%s,%s,'direct_edit',%s,%s,%s,%s,%s)",
+              (uid, kind, tid, ver, text_sha(body), uid, request_id, req_sha, Jsonb({"saved": saved}), Jsonb(meta)))
+
+
+def record_edit(uid, record_id, title, body, expected_version, expected_change, request_id, restored_from_version=None):
+    """내 글 웹 저장 — 현재 행 → record_versions(이전 판) · 제목·본문·판+1·변경 번호+1 · 확인 증거. 출처·생성 경로는 그대로.
+    반환 {saved: {version, change_no, confirmed, replay}} — 화면 응답은 web 이 record_get 과 합친다."""
+    title = _edit_args(title, body, request_id, (expected_version, expected_change), restored_from_version, True)
+    rid = str(record_id or "")
+    req_sha = _edit_req_sha(kind="record", id=rid, title=title, body=body, expected_version=expected_version,
+                            expected_change=expected_change, restored_from_version=restored_from_version)
+    _edit_rate(uid)
+    with tx() as c:
+        _user_lock(c, uid)
+        prev = _edit_replay(c, uid, "record", rid, request_id, req_sha)
+        r = _one(c, "SELECT * FROM records WHERE user_id=%s AND id=%s AND deleted_at IS NULL FOR UPDATE", (uid, rid))
+        if not r:
+            raise _nf("그 글")
+        if r["trashed_at"] is not None:
+            raise _in_trash("그 글")
+        if prev is not None:
+            return {"saved": {**prev["saved"], "replay": True}}
+        if (r["content_version"], r["change_no"]) != (expected_version, expected_change):
+            raise _edit_conflict({"title": r["title"], "body": r["body"], "content_version": r["content_version"], "change_no": r["change_no"]})
+        if (title, body) == (r["title"], r["body"]):
+            raise _no_change()
+        if restored_from_version is not None and restored_from_version >= r["content_version"]:
+            raise CrmError("ARG-INVALID", "되돌릴 판은 지금 판보다 앞 판이에요.")
+        c.execute("INSERT INTO record_versions (user_id,record_id,version_no,title,body,body_sha,author_kind,text_process,generation_kind,"
+                  "source,source_id,provenance_history,became_current_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                  (uid, rid, r["content_version"], r["title"], r["body"], r["body_sha"], r["author_kind"], r["text_process"],
+                   r["generation_kind"], r["source"], r["source_id"], Jsonb(r["provenance_history"]), r["content_at"] or r["created"]))
+        saved = {"version": r["content_version"] + 1, "change_no": r["change_no"] + 1, "confirmed": True}
+        c.execute("UPDATE records SET title=%s, body=%s, content_version=%s, change_no=%s, content_at=now() WHERE user_id=%s AND id=%s",
+                  (title, body, saved["version"], saved["change_no"], uid, rid))
+        meta = {"restored_from_version": restored_from_version} if restored_from_version is not None else {}
+        _confirm_insert(c, uid, "record", rid, saved["version"], body, request_id, req_sha, saved, meta)
+    return {"saved": {**saved, "replay": False}}
+
+
+_ITEM_EDIT_SETS = {True: "title=%s, body=%s, decision='confirmed', revision=revision+1, change_no=change_no+1, updated_at=now()",
+                   False: "title=%s, body=%s, revision=revision+1, change_no=change_no+1, updated_at=now()"}   # 첫 확정 여부
+
+
+def item_edit(uid, item_id, title, body, expected_revision, expected_change, request_id, restored_from_version=None):
+    """항목 웹 저장 — 지금 행이 판으로 남아 있지 않으면 먼저 판으로 보존(이전 판) · 이력 한 줄(edit | 미확정 기준 첫 확정 edit_confirm)
+    · 제목·본문(+ 기준이면 decision=confirmed, 과거 pending 을 되살리지 않는다)·revision+1·변경 번호+1 · 새 판 · 확인 증거 · stage.
+    미적용 제안이 있으면 PROPOSAL-PENDING(제안을 적용하거나 삭제한 뒤). 반환 {saved: {revision, version, change_no, confirmed, replay}}."""
+    title = _edit_args(title, body, request_id, (expected_revision, expected_change), restored_from_version, False)
+    iid = str(item_id or "")
+    req_sha = _edit_req_sha(kind="item", id=iid, title=title, body=body, expected_revision=expected_revision,
+                            expected_change=expected_change, restored_from_version=restored_from_version)
+    _edit_rate(uid)
+    import stack_service
+    with tx() as c:
+        _user_lock(c, uid)
+        prev = _edit_replay(c, uid, "item", iid, request_id, req_sha)
+        row = _one(c, f"SELECT {_ITEM_COLS},trashed_at FROM items WHERE user_id=%s AND id=%s FOR UPDATE", (uid, iid))
+        if not row:
+            raise _nf("그 항목")
+        if row.pop("trashed_at") is not None:
+            raise _in_trash("그 항목")
+        if row["revision"] == 0:
+            raise CrmError("ARG-INVALID", "아직 적용하지 않은 제안이에요.", "제안을 적용한 뒤 고치세요.")
+        if prev is not None:
+            return {"saved": {**prev["saved"], "replay": True}}
+        if (row["revision"], row["change_no"]) != (expected_revision, expected_change):
+            raise _edit_conflict({"title": row["title"], "body": row["body"], "revision": row["revision"], "change_no": row["change_no"],
+                                  "content_version": row["content_version"]})
+        if row["draft_id"]:
+            raise CrmError("PROPOSAL-PENDING", "이 항목엔 아직 적용하지 않은 제안이 있어요.", "제안을 적용하거나 삭제한 뒤 고치세요.")
+        if row["archived_at"] is not None:
+            raise CrmError("ARG-INVALID", "보관한 항목이에요.", "복원한 뒤 고치세요.")
+        od = _object_row(c, uid, row["object_id"], applied=False)
+        if od["revision"] == 0 or od["archived_at"]:
+            raise _bad_def("이 항목의 오브젝트 정의가 보관됐거나 적용 전이에요.")
+        if (title, body) == (row["title"], row["body"]):
+            raise _no_change()
+        if restored_from_version is not None and not _one(c, "SELECT 1 FROM item_versions WHERE user_id=%s AND item_id=%s AND version_no=%s",
+                                                          (uid, iid, restored_from_version)):
+            raise CrmError("ARG-INVALID", f"되돌릴 판을 찾지 못했어요: {restored_from_version}")
+        first = od["semantic_kind"] == "principle" and row["decision"] != "confirmed"
+        if first:
+            _daily_gate(c, uid, "decisions")
+        if row["content_version"] is None:   # 지금 행이 어느 판과도 같지 않다(판 없음·판 뒤 변경) — 이전 판으로 보존
+            stack_service._new_version(c, uid, iid, None)
+        meta = {"via": "web_edit", "request_id": request_id}
+        if restored_from_version is not None:
+            meta["restored_from_version"] = restored_from_version
+        c.execute("INSERT INTO item_history (user_id,item_id,action,prev_revision,prev_state,event_meta) VALUES (%s,%s,%s,%s,%s,%s)",
+                  (uid, iid, "edit_confirm" if first else "edit", row["revision"],
+                   Jsonb(_item_state(row, _links_by_item(c, uid, [iid]).get(iid, []))), Jsonb(meta)))
+        c.execute(f"UPDATE items SET {_ITEM_EDIT_SETS[first]} WHERE user_id=%s AND id=%s", (title, body, uid, iid))
+        ver = stack_service._new_version(c, uid, iid, None)
+        saved = {"revision": row["revision"] + 1, "version": ver, "change_no": row["change_no"] + 1, "confirmed": True}
+        _confirm_insert(c, uid, "item", iid, ver, body, request_id, req_sha, saved, {k: v for k, v in meta.items() if k != "via"})
+        stack_service.stage_refresh(c, uid, iid)
+    return {"saved": {**saved, "replay": False}}
+
+
+def _ver_arg(v):
+    if not _is_int(v) or v < 1:
+        raise CrmError("ARG-INVALID", "판 번호는 1 이상 정수예요.")
+    return v
+
+
+def _ver_confirmed(c, kind, uid, tid, ver, sha):
+    q = f"SELECT {_confirmed_sql(kind, '%(v)s::int', '%(sha)s::text', '%(uid)s', '%(tid)s')} AS ok"
+    return _one(c, q, {"v": ver, "sha": sha, "uid": uid, "tid": tid})["ok"]
+
+
+def record_version_get(uid, record_id, version_no):
+    """내 글 판 하나 — 지금 판이면 현재 행, 이전 판이면 record_versions(하나의 판 조회 계약). 휴지통·삭제·없는 판 = NOT-FOUND.
+    confirmed = 그 판 이하 최신 확인 증거와 판·해시 일치 · eligible = 그 판의 인용 적격(_elig_sql) · provenance = 그 판 당시 판정."""
+    v = _ver_arg(version_no)
+    rid = str(record_id or "")
+    with tx() as c:
+        r = _one(c, f"SELECT r.*, ({_elig_sql('%(v)s::int')}) AS eligible FROM records r WHERE r.user_id=%(uid)s AND r.id=%(rid)s "
+                    "AND r.deleted_at IS NULL AND r.trashed_at IS NULL", {"v": v, "uid": uid, "rid": rid})
+        if not r:
+            raise _nf("그 글")
+        if v == r["content_version"]:
+            snap = {**r, "became_current_at": r["content_at"] or r["created"]}
+        elif v < r["content_version"]:
+            snap = _one(c, "SELECT * FROM record_versions WHERE user_id=%s AND record_id=%s AND version_no=%s", (uid, rid, v))
+        else:
+            snap = None
+        if not snap:
+            raise _nf("그 판")
+        confirmed = _ver_confirmed(c, "record", uid, rid, v, snap["body_sha"])
+    return {"id": rid, "version_no": v, "is_current": v == r["content_version"], "latest_version": r["content_version"],
+            "title": snap["title"], "body": snap["body"], "became_current_at": _iso_v(snap["became_current_at"]), "confirmed": confirmed,
+            "eligible": r["eligible"], "provenance": {k: snap[k] for k in ("author_kind", "text_process", "generation_kind", "source", "source_id")}}
+
+
+def item_version_get(uid, item_id, version_no):
+    """항목 판 하나 — item_versions(판 이력). is_current = 지금 판이고 그 뒤 행이 바뀌지 않음. 휴지통·적용 전·없는 판 = NOT-FOUND."""
+    v = _ver_arg(version_no)
+    iid = str(item_id or "")
+    with tx() as c:
+        it = _one(c, "SELECT id,revision,current_version_id FROM items WHERE user_id=%s AND id=%s AND revision > 0 AND trashed_at IS NULL",
+                  (uid, iid))
+        if not it:
+            raise _nf("그 항목")
+        iv = _one(c, "SELECT v.id,v.version_no,v.item_revision,v.fields,v.created_at,(SELECT max(x.version_no) FROM item_versions x "
+                     "WHERE x.user_id=v.user_id AND x.item_id=v.item_id) AS latest FROM item_versions v "
+                     "WHERE v.user_id=%s AND v.item_id=%s AND v.version_no=%s", (uid, iid, v))
+        if not iv:
+            raise _nf("그 판")
+        f = iv["fields"]
+        confirmed = _ver_confirmed(c, "item", uid, iid, v, text_sha(f.get("body") or ""))
+    return {"id": iid, "version_no": v, "is_current": iv["id"] == it["current_version_id"] and iv["item_revision"] == it["revision"],
+            "latest_version": iv["latest"], "title": f.get("title"), "body": f.get("body"), "data": f.get("data"), "decision": f.get("decision"),
+            "created_at": _iso_v(iv["created_at"]), "confirmed": confirmed}
 
 
 # ── 문의 데스크 (desk-0) ────────────────────────────────
@@ -3104,10 +3470,12 @@ DELETE_NOTICE = ("7일 뒤 자료를 모두 지우고 계정을 닫습니다. �
 # tickets 는 보존 문의 1건을 빼고 지운다(ticket_history 는 cascade). 시험이 「이 목록 = schema 의 user_id 테이블 − 예외」를 정적으로 본다.
 # board 이전(2026-10-20): 관계(activity_links) → 접수 대응표(import_entries) → 업무 자료(activities) → 한도·입력원(import_counters·import_streams).
 # PR ②-b: 판·stage(items 자식, 확인 이벤트를 가리킨다) → 확인 이벤트 → items.
+# 휴지통 PR-2: 보존 제안(trashed_proposals — items·object_defs 자식, CASCADE 지만 명시) → items.
+# 글 수정: 확인 증거(content_confirms — confirm_events 를 가리킨다) → 확인 이벤트 · 내 글 이전 판(record_versions, records 자식) → records.
 DELETE_TABLES = ("page_layouts", "stack_sessions", "jobs", "item_links", "activity_links", "import_entries", "activities", "import_counters",
-                 "import_streams", "item_stage", "item_versions", "confirm_events", "item_history", "items", "user_roles", "field_defs",
-                 "object_defs", "std_choices", "std_marks",
-                 "candidate_history", "candidates", "source_reflections", "records", "sources", "questions", "profile", "tabs",
+                 "import_streams", "item_stage", "item_versions", "content_confirms", "confirm_events", "item_history", "trashed_proposals", "items",
+                 "user_roles", "field_defs", "object_defs", "std_choices", "std_marks",
+                 "candidate_history", "candidates", "source_reflections", "record_versions", "records", "sources", "questions", "profile", "tabs",
                  "people", "agreements", "optional_consent_log", "optional_consents", "usage_daily", "tickets")
 DELETE_KEEP_TABLES = ("deletion_contacts",)
 
@@ -3497,6 +3865,9 @@ def _axis_object(c, uid):
     return r["id"] if r else None
 
 
+_ME_STD = {k: contract.std_id_of(o) for k, o in (("principle", "principles"), ("decision", "decision_events"), ("axis", "axes"))}   # app.html ME_STD 와 같은 매핑
+
+
 def me_stats(uid):
     """「나」 통계 — 전체 범위(페이징 무관), 읽기만. 반환
     {"axes": [{id, code, title, items, records, readings, n}],   # 축 = 분류 역할 오브젝트의 적용·미보관 항목, 코드 순(→ 만든 순 → id)
@@ -3506,14 +3877,17 @@ def me_stats(uid):
     축 건수 = 그 축에 **직접** 연결된 고유 항목(자기 자신 제외·적용·미보관) + 고유 기록(record_attach axes, 지운 기록 제외) + 읽기 자료(②-d 전 0).
     한 글이 두 축에 붙으면 각 축에서 1. 활동은 축 건수에 넣지 않는다.
     히트맵 날짜 = 기록 COALESCE(source_date, kst(source_created_at)) · 활동 occurred_on(현재 판·active). 둘 다 없는 기록은 빠진다(created 대체 없음).
-    kinds: principle·decision = semantic_kind principle·event 의 적용·미보관 항목 전체 · axis = 분류 역할 오브젝트 항목 ·
-    custom = 그 밖의 적용·미보관 항목 · records = 지우지 않은 기록 · readings = 0(②-d 전) · people·sources = 행 수."""
+    kinds: 「나」 하위 탭과 같은 기준(정의의 std_id — app.html ME_STD) — principle·decision·axis = std:principles·std:decision_events·std:axes
+    정의의 적용·미보관 항목 · custom = 그 밖의 미보관 정의(std_id 없음 포함)의 적용·미보관 항목 · records = 지우지 않은 기록 ·
+    readings = 0(②-d 전) · people·sources = 행 수. semantic_kind 로 나누지 않는다(편입 전 원작자 정의 = semantic_kind principle 인 커스텀).
+    waiting.principles_pending = std:principles 정의의 확정 전(pending) 항목(링크 #_me/principle 과 같은 기준).
+    축 띠(axes)만 분류 역할 오브젝트 기준이다."""
     import activity, imports   # 둘 다 db 를 가져다 쓴다 — 모듈 맨 위에서 가져오면 순환
     with tx() as c:
         ax_obj = _axis_object(c, uid)
-        live = ("SELECT i.id, i.object_id, o.semantic_kind FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+        live = ("SELECT i.id, i.object_id, o.std_id, o.archived_at AS def_archived FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
                 "WHERE i.user_id=%(uid)s AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL")
-        a = {"uid": uid, "ax": ax_obj}
+        a = {"uid": uid, "ax": ax_obj, **{f"std_{k}": v for k, v in _ME_STD.items()}, "stds": list(_ME_STD.values())}
         axes = [] if ax_obj is None else [dict(r) for r in _all(c, f"""
             WITH live AS ({live})
             SELECT x.id, x.code, x.title,
@@ -3540,17 +3914,17 @@ def me_stats(uid):
             d = frm + _dt.timedelta(days=i)
             cells.append({"d": d.isoformat(), "records": rec.get(d, 0), "activities": act.get(d, 0)})
         k = _one(c, f"""WITH live AS ({live}) SELECT
-            (SELECT count(*) FROM live WHERE semantic_kind='principle' AND object_id IS DISTINCT FROM %(ax)s) AS principle,
-            (SELECT count(*) FROM live WHERE semantic_kind='event' AND object_id IS DISTINCT FROM %(ax)s) AS decision,
-            (SELECT count(*) FROM live WHERE object_id = %(ax)s) AS axis,
-            (SELECT count(*) FROM live WHERE semantic_kind NOT IN ('principle','event') AND object_id IS DISTINCT FROM %(ax)s) AS custom,
+            (SELECT count(*) FROM live WHERE std_id = %(std_principle)s) AS principle,
+            (SELECT count(*) FROM live WHERE std_id = %(std_decision)s) AS decision,
+            (SELECT count(*) FROM live WHERE std_id = %(std_axis)s) AS axis,
+            (SELECT count(*) FROM live WHERE (std_id IS NULL OR std_id <> ALL(%(stds)s)) AND def_archived IS NULL) AS custom,
             (SELECT count(*) FROM records WHERE user_id=%(uid)s AND deleted_at IS NULL AND trashed_at IS NULL) AS records,
             (SELECT count(*) FROM people WHERE user_id=%(uid)s AND trashed_at IS NULL) AS people,
             (SELECT count(*) FROM sources WHERE user_id=%(uid)s) AS sources,
             (SELECT count(*) FROM candidates cd JOIN records r ON r.user_id=cd.user_id AND r.id=cd.record_id AND r.deleted_at IS NULL
               AND r.trashed_at IS NULL WHERE cd.user_id=%(uid)s AND cd.decision='pending') AS candidates_pending,
             (SELECT count(*) FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id WHERE i.user_id=%(uid)s
-              AND o.semantic_kind='principle' AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL
+              AND o.std_id=%(std_principle)s AND i.revision > 0 AND i.archived_at IS NULL AND i.trashed_at IS NULL
               AND i.decision='pending') AS principles_pending""", a)
     kinds = {"principle": k["principle"], "decision": k["decision"], "axis": k["axis"], "custom": k["custom"],
              "records": k["records"], "readings": 0, "people": k["people"], "sources": k["sources"]}
@@ -3815,14 +4189,21 @@ def source_reflection_delete(uid, reflection_id, expected_revision):
 # 행 보존이라 일일 한도는 휴지통 행도 센다(삭제·재생성으로 우회 불가). 물리 정리는 오늘(KST) 옮긴 행을 다음 날로 미룬다 — 셈의 기준 행 보존.
 # 스위치 CRM_TRASH_ENABLED(기본 꺼짐) = 이동·복원·영구 삭제·목록 진입만. 꺼짐 = SWITCH-OFF, 기존 즉시 삭제 경로는 그대로.
 TRASH_HOURS = 168
-TRASH_KINDS = {"record": "records", "item": "items", "person": "people", "reflection": "source_reflections", "activity": "activities"}
-TRASH_REV_KINDS = ("item", "person", "reflection")   # expected_revision 이 있는 종류(이동 때 필수). record·activity 는 없다
+TRASH_KINDS = {"record": "records", "item": "items", "person": "people", "reflection": "source_reflections", "activity": "activities",
+               # PR-2 — 보관 전 값. expected_revision 없음(제안 ID·세션 ID·접수 ID 자체가 판). 대상 행 = 아래 _trash2_* 가 찾는다
+               "pending": "import_entries", "item_proposal": "trashed_proposals", "definition_proposal": "trashed_proposals",
+               "stack_session": "stack_sessions"}
+TRASH2_KINDS = ("pending", "item_proposal", "definition_proposal", "stack_session")
+TRASH_REV_KINDS = ("item", "person", "reflection")   # expected_revision 이 있는 종류(이동 때 필수). record·activity·PR-2 종류는 없다
 TRASH_CLOCK = None   # 시험 전용 — datetime 을 넣으면 휴지통 판정의 「지금」이 그 값(일반 이용 차단은 시각을 안 본다)
 TRASH_PURGE_LIMIT = 200          # 물리 정리 한 회차 대상 수 상한(종류 합)
 TRASH_PURGE_SECONDS = 20.0       # 한 회차 시간 상한(초) — 넘으면 남은 것은 다음 회차
 TRASH_STMT_TIMEOUT = "5s"        # 대상 하나 정리 트랜잭션의 문장 시간 상한
 TRASH_BATCH = 20                 # 한 번에 집는 대상 수
-_TNOW = "COALESCE(%(now)s::timestamptz, now())"
+# 「지금」 = 문장 시작 시각(statement_timestamp) — now()(트랜잭션 시작)가 아니다. 복원·영구 삭제·이동은 사용자 행 잠금을 기다린 뒤의 문장에서
+# 판정하므로, 먼저 시작해 잠금을 기다린 복원이 뒤에 커밋된 영구 삭제의 purge_at(그 트랜잭션의 지금)보다 이른 「지금」으로 복원 가능하다고
+# 판정하는 경합(둘 다 성공)을 막는다. 한 문장 안에서는 같은 값이라 trashed_at = last_trashed_at 이 유지된다.
+_TNOW = "COALESCE(%(now)s::timestamptz, statement_timestamp())"
 
 
 def trash_on() -> bool:
@@ -3877,12 +4258,13 @@ def _trash_kind(kind):
     return TRASH_KINDS[kind]
 
 
-_TRASH_NAMES = {"record": "그 글", "item": "그 항목", "person": "그 사람", "reflection": "그 생각", "activity": "그 활동"}
+_TRASH_NAMES = {"record": "그 글", "item": "그 항목", "person": "그 사람", "reflection": "그 생각", "activity": "그 활동",
+                "pending": "그 승인 대기 글", "item_proposal": "그 제안", "definition_proposal": "그 정의 제안", "stack_session": "그 대화 정리"}
 _TRASH_LOCK_EXTRA = {"record": " AND deleted_at IS NULL", "person": " AND purged_at IS NULL", "activity": " AND deleted_at IS NULL"}
 
 
 def _trash_lock(c, uid, kind, tid):
-    """대상 행 잠금 — 없거나 남의 것·지운 기록(deleted_at)·사람 표식 = NOT-FOUND. 적용 전 항목 제안(revision 0)은 PR-2. 반환 행(+now)."""
+    """대상 행 잠금 — 없거나 남의 것·지운 기록(deleted_at)·사람 표식 = NOT-FOUND. 적용 전 항목 제안(revision 0)은 kind=item_proposal. 반환 행(+now)."""
     t = _trash_kind(kind)
     cols = "id,trashed_at,purge_at,last_trashed_at" + (",revision" if kind in TRASH_REV_KINDS else "")
     r = _one(c, f"SELECT {cols},{_TNOW} AS now FROM {t} WHERE user_id=%(uid)s AND id=%(id)s{_TRASH_LOCK_EXTRA.get(kind, '')} FOR UPDATE",
@@ -3890,7 +4272,7 @@ def _trash_lock(c, uid, kind, tid):
     if not r:
         raise _nf(_TRASH_NAMES[kind])
     if kind == "item" and r["revision"] == 0:
-        raise CrmError("ARG-INVALID", "적용 전 제안은 아직 휴지통으로 옮길 수 없어요.", "제안은 지금처럼 버리기(discard)로 정리하세요.")
+        raise CrmError("ARG-INVALID", "적용 전 제안은 kind=item_proposal(id=제안 ID)로 옮겨요.", "proposal_id 로 다시 보내세요.")
     return r
 
 
@@ -3927,6 +4309,17 @@ def _trash_do(uid, kind, tid, op, expected_revision=None, gate=True):
     if gate and not trash_on():
         raise _trash_off()
     t = _trash_kind(kind)
+    if kind in TRASH2_KINDS:
+        if expected_revision is not None:
+            raise CrmError("ARG-INVALID", f"{kind} 는 expected_revision 이 없어요(비워 보내요).")
+        with tx() as c:
+            _user_lock(c, uid)
+            if kind == "pending":   # 승인 대기 전이는 접수 대응표를 아는 imports 에(활동과 같은 꼴)
+                import imports
+                return imports.trash_op(c, uid, op, str(tid or ""))
+            if kind == "stack_session":
+                return _trash2_session(c, uid, op, tid)
+            return _trash2_proposal(c, uid, kind, op, str(tid or ""))
     with tx() as c:
         _user_lock(c, uid)
         if kind == "activity":
@@ -3951,6 +4344,8 @@ def _trash_do(uid, kind, tid, op, expected_revision=None, gate=True):
                     return {"kind": kind, "id": r["id"], "purge_requested": True, "changed": False}
                 raise _trash_expired()
         _trash_rows(c, uid, t, [r["id"]], op)
+        if kind in ("record", "item") and op in ("move", "restore"):   # 글 수정 — 삭제·복원도 변경 번호를 올린다(옛 편집 저장 = 충돌)
+            c.execute(f"UPDATE {t} SET change_no=change_no+1 WHERE user_id=%s AND id=%s", (uid, r["id"]))
         if op == "restore":
             return {"kind": kind, "id": r["id"], "restored": True, "changed": True}
         if op == "purge":
@@ -3958,6 +4353,125 @@ def _trash_do(uid, kind, tid, op, expected_revision=None, gate=True):
         n = _one(c, f"SELECT trashed_at,purge_at FROM {t} WHERE user_id=%s AND id=%s", (uid, r["id"]))
         return {"kind": kind, "id": r["id"], "trashed_at": _iso_v(n["trashed_at"]), "purge_at": _iso_v(n["purge_at"]),
                 "changed": True, "restorable": True}
+
+
+# ── 휴지통 PR-2: 보관 전 값 (astra r4 §4·§5·§6) ──
+# 제안 = 제안 ID(ip_…·dp_…) 하나로 찾는다. 새 항목 제안(revision 0 items 행)은 같은 ID 행 그대로 휴지통 열 · 적용된 항목·정의의 제안 자리(draft_*)와
+# 새 정의 제안(revision 0 object_defs)은 trashed_proposals 로 옮기고 자리를 비운다. 제안엔 만료가 없다(새로 만들지 않는다).
+# 세션 = 확정 전 대화 정리 하나(삭제 단위). 이동 = 진행 중 작업(queued·leased·running) 취소(PC 의 늦은 결과는 JOB-GONE — 복원해도 재개 없음)
+# + result_ready 작업·세션에 같은 trashed_at(만료 동결). 복원 = 각 expires_at := 복원 시각 + (expires_at - trashed_at). 본문은 tmp 그대로.
+_TRASH_INTERVAL = f"make_interval(hours => {TRASH_HOURS})"
+
+
+def _secs(td):
+    return max(0, int(td.total_seconds())) if td is not None else None
+
+
+def _trash2_session(c, uid, op, tid):
+    try:
+        sid = _uuid.UUID(str(tid or ""))
+    except ValueError:
+        raise _nf(_TRASH_NAMES["stack_session"]) from None
+    a = {"now": TRASH_CLOCK, "uid": uid, "id": sid}
+    s = _one(c, f"SELECT id,trashed_at,purge_at,expires_at,terminal_at,confirm_event_id,{_TNOW} AS now FROM stack_sessions "
+                "WHERE user_id=%(uid)s AND id=%(id)s FOR UPDATE", a)
+    if not s:
+        raise _nf(_TRASH_NAMES["stack_session"])
+    a["now"] = s["now"]   # 세션·작업 여러 문장이 같은 시각을 쓴다(잠근 뒤의 지금)
+    out = {"kind": "stack_session", "id": str(sid)}
+    if op == "move":
+        if s["trashed_at"] is not None:   # 중복 삭제 = 기존 결과(기한 연장 0)
+            return {**out, "trashed_at": _iso_v(s["trashed_at"]), "purge_at": _iso_v(s["purge_at"]), "changed": False,
+                    "restorable": _trash_restorable(s), "remaining_seconds": _secs(s["expires_at"] - s["trashed_at"])}
+        if s["terminal_at"] is not None or s["confirm_event_id"] is not None or s["expires_at"] <= s["now"]:
+            raise CrmError("JOB-GONE", "이미 확정했거나 임시 보관이 끝난 대화 정리예요.", "휴지통으로 옮길 내용이 없어요.")
+        # 진행 중 작업 = 버린 작업(복원해도 되살리지 않는다). 결과가 있는 작업만 휴지통(만료 동결)
+        c.execute("UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%(uid)s AND session_id=%(id)s "
+                  "AND status IN ('queued','leased','running')", a)
+        c.execute(f"UPDATE jobs SET trashed_at={_TNOW} WHERE user_id=%(uid)s AND session_id=%(id)s AND status='result_ready'", a)
+        n = _one(c, f"UPDATE stack_sessions SET trashed_at={_TNOW}, last_trashed_at={_TNOW}, purge_at={_TNOW} + {_TRASH_INTERVAL} "
+                    "WHERE user_id=%(uid)s AND id=%(id)s RETURNING trashed_at, purge_at, expires_at", a)
+        return {**out, "trashed_at": _iso_v(n["trashed_at"]), "purge_at": _iso_v(n["purge_at"]), "changed": True, "restorable": True,
+                "remaining_seconds": _secs(n["expires_at"] - n["trashed_at"])}
+    if s["trashed_at"] is None:
+        raise _not_in_trash()
+    if not _trash_restorable(s):
+        if op == "purge":
+            return {**out, "purge_requested": True, "changed": False}
+        raise _trash_expired()
+    if op == "purge":
+        c.execute(f"UPDATE stack_sessions SET purge_at={_TNOW} WHERE user_id=%(uid)s AND id=%(id)s", a)
+        return {**out, "purge_requested": True, "changed": True}
+    c.execute(f"UPDATE jobs SET expires_at={_TNOW} + (expires_at - trashed_at), trashed_at=NULL "
+              "WHERE user_id=%(uid)s AND session_id=%(id)s AND trashed_at IS NOT NULL", a)
+    n = _one(c, f"UPDATE stack_sessions SET expires_at={_TNOW} + (expires_at - trashed_at), trashed_at=NULL, purge_at=NULL "
+                "WHERE user_id=%(uid)s AND id=%(id)s RETURNING expires_at", a)
+    return {**out, "restored": True, "changed": True, "expires_at": _iso_v(n["expires_at"])}
+
+
+def _trash2_proposal(c, uid, kind, op, pid):
+    """제안 전이 — 반환 {kind, id(=제안 ID), proposal_id, item_id|object_id, …}. 대상 표: item_proposal = items · definition_proposal = object_defs."""
+    item = kind == "item_proposal"
+    t, ref = ("items", "item_id") if item else ("object_defs", "object_id")
+    a = {"now": TRASH_CLOCK, "uid": uid, "pid": pid}
+    trash_cols = "trashed_at,purge_at" if item else "NULL::timestamptz AS trashed_at,NULL::timestamptz AS purge_at"
+    slot = _one(c, f"SELECT id,revision,draft_doc,draft_base_revision,{trash_cols},{_TNOW} AS now FROM {t} "
+                   "WHERE user_id=%(uid)s AND draft_id=%(pid)s FOR UPDATE", a) if pid else None
+    kept = None if slot else _one(c, f"SELECT id,{ref} AS ref,base_revision,doc,trashed_at,purge_at,{_TNOW} AS now FROM trashed_proposals "
+                                     f"WHERE user_id=%(uid)s AND id=%(pid)s AND {ref} IS NOT NULL FOR UPDATE", a)
+    out = {"kind": kind, "id": pid, "proposal_id": pid}
+    if slot and item and slot["revision"] == 0:   # 새 항목 제안 — 같은 ID 행 그대로 휴지통(PR-1 열·전이)
+        out[ref] = slot["id"]
+        if op == "move":
+            if slot["trashed_at"] is not None:
+                return {**out, "trashed_at": _iso_v(slot["trashed_at"]), "purge_at": _iso_v(slot["purge_at"]), "changed": False,
+                        "restorable": _trash_restorable(slot)}
+            _trash_rows(c, uid, "items", [slot["id"]], "move")
+            n = _one(c, "SELECT trashed_at,purge_at FROM items WHERE user_id=%s AND id=%s", (uid, slot["id"]))
+            return {**out, "trashed_at": _iso_v(n["trashed_at"]), "purge_at": _iso_v(n["purge_at"]), "changed": True, "restorable": True}
+        if slot["trashed_at"] is None:
+            raise _not_in_trash()
+        if not _trash_restorable(slot):
+            if op == "purge":
+                return {**out, "purge_requested": True, "changed": False}
+            raise _trash_expired()
+        _trash_rows(c, uid, "items", [slot["id"]], op)
+        return {**out, "purge_requested": True, "changed": True} if op == "purge" else {**out, "restored": True, "changed": True}
+    if slot:   # 제안 자리(적용된 항목 · 정의) — 일반 상태
+        out[ref] = slot["id"]
+        if op != "move":
+            raise _not_in_trash()
+        if slot["trashed_at"] is not None:   # 항목 자체가 휴지통 — 그 제안도 항목과 함께 숨어 있다
+            raise _in_trash("그 항목")
+        n = _one(c, f"INSERT INTO trashed_proposals (user_id,id,{ref},base_revision,doc,trashed_at,purge_at,last_trashed_at) "
+                    f"VALUES (%(uid)s,%(pid)s,%(ref)s,%(base)s,%(doc)s,{_TNOW},{_TNOW} + {_TRASH_INTERVAL},{_TNOW}) RETURNING trashed_at,purge_at",
+                 {**a, "ref": slot["id"], "base": slot["draft_base_revision"] or 0, "doc": Jsonb(slot["draft_doc"])})
+        c.execute(f"UPDATE {t} SET draft_doc=NULL, draft_id=NULL, draft_base_revision=NULL WHERE user_id=%s AND id=%s", (uid, slot["id"]))
+        return {**out, "trashed_at": _iso_v(n["trashed_at"]), "purge_at": _iso_v(n["purge_at"]), "changed": True, "restorable": True}
+    if not kept:
+        raise _nf(_TRASH_NAMES[kind])
+    out[ref] = kept["ref"]
+    restorable = _trash_restorable(kept)
+    if op == "move":   # 중복 삭제 = 기존 결과
+        return {**out, "trashed_at": _iso_v(kept["trashed_at"]), "purge_at": _iso_v(kept["purge_at"]), "changed": False,
+                "restorable": restorable}
+    if not restorable:
+        if op == "purge":
+            return {**out, "purge_requested": True, "changed": False}
+        raise _trash_expired()
+    if op == "purge":
+        c.execute(f"UPDATE trashed_proposals SET purge_at={_TNOW} WHERE user_id=%(uid)s AND id=%(pid)s", a)
+        return {**out, "purge_requested": True, "changed": True}
+    # 복원 — 같은 제안 ID 로 자리에 되돌린다. 자리에 새 제안이 있으면 CONFLICT(양쪽 그대로 — 덮어쓰지 않는다). 적용 전 재검증은 apply 가 한다
+    tgt = _one(c, f"SELECT id,draft_id{',trashed_at' if item else ''} FROM {t} WHERE user_id=%s AND id=%s FOR UPDATE", (uid, kept["ref"]))
+    if item and tgt["trashed_at"] is not None:
+        raise _in_trash("그 항목")
+    if tgt["draft_id"] is not None:
+        raise _conflict("그 대상에 새 제안이 있어요 — 새 제안을 적용하거나 삭제한 뒤 복원하세요")
+    c.execute(f"UPDATE {t} SET draft_doc=%s, draft_id=%s, draft_base_revision=%s WHERE user_id=%s AND id=%s",
+              (Jsonb(kept["doc"]), pid, kept["base_revision"], uid, kept["ref"]))
+    c.execute("DELETE FROM trashed_proposals WHERE user_id=%s AND id=%s", (uid, pid))
+    return {**out, "restored": True, "changed": True}
 
 
 def trash_move(uid, kind, target_id, expected_revision=None):
@@ -3987,32 +4501,68 @@ def _trash_cursor(cursor):
         raise CrmError("ARG-INVALID", "cursor 가 맞지 않아요.", "처음부터(cursor 빈 값) 다시 보세요.")
 
 
-# 휴지통 목록 한 벌 — 종류마다 소유자 부분 인덱스(ix_<t>_trash)를 탄다. 활동은 원천마다 현재 판 하나(모든 판이 같은 시각에 옮겨진다)
+# 휴지통 목록 한 벌(쿼리 1개) — 가지마다 WHERE user_id=… AND trashed_at IS NOT NULL AND purge_at > 지금.
+# 실행 계획(EXPLAIN ANALYZE, 시험 DB 2026-10-23 — records 20만 행·사용자 400·기한 전 휴지통 2만 행, 본인 30):
+# · 사용자 분포가 고르면(본인 행 500) 가지마다 소유자 부분 인덱스 ix_<t>_trash(user_id, trashed_at DESC) Bitmap Index Scan —
+#   Index Cond = user_id AND trashed_at > 지금 - 168h, 본인 행만 읽는다(0.02ms).
+# · 한 사용자가 행 대부분을 가진 통계면(본인 행 2만) 플래너가 ix_<t>_purge 를 통째로 훑고 user_id 로 거른다(남의 휴지통 2만 행, 약 12ms).
+#   어느 쪽이든 읽는 양의 상한 = 전 사용자의 168h 안 휴지통 행(부분 인덱스 — 일반 행 수와 무관).
+# 장치(_LIST_LIVE): ① trashed_at > 지금 - 168h = 결과가 같은 중복 조건(purge_at 은 이동 + 168h 이거나 수동 영구 삭제로 더 이르다 —
+# purge_at > 지금 이면 늘 참)이라 소유자 인덱스의 범위 조건이 된다 ② purge_at 비교를 (purge_at + 0초)로 써서 ix_<t>_purge 의 Index Cond 가
+# 못 되게 한다 — ②가 없으면 고른 분포에서도 ix_<t>_purge(전 사용자 기한 전 휴지통) 와 사용자 인덱스 BitmapAnd 가 나왔다.
+# ix_<t>_purge 는 물리 정리 탐색(_TRASH_DUE) 용이다. 작은 표(행 몇 개)는 Seq Scan.
+# 바깥 kind 필터·정렬·LIMIT 은 합친 뒤. 활동은 원천마다 현재 판 하나(모든 판이 같은 시각에 옮겨진다).
+# PR-2: 승인 대기(remaining = 멈춘 대기) · 새 항목 제안(revision 0 items) · 보존 제안(trashed_proposals) · 세션(remaining = 멈춘 임시 보관,
+# 제목 = tmp 결과 첫 줄을 읽기만 — public 에 복제 없음). 열: kind,id,title,sub,revision,state,trashed_at,purge_at,remaining,ref,isnew
+_LIST_LIVE = ("{a}trashed_at > " + _TNOW + " - " + _TRASH_INTERVAL + " AND ({a}purge_at + interval '0 s') > " + _TNOW)   # 위 주석 ①②
 _TRASH_LIST_SQL = f"""SELECT * FROM (
-  SELECT 'record' AS kind, id, title, NULL::text AS sub, NULL::integer AS revision, NULL::text AS state, trashed_at, purge_at
-    FROM records WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND purge_at > {_TNOW} AND deleted_at IS NULL
+  SELECT 'record' AS kind, id, title, NULL::text AS sub, NULL::integer AS revision, NULL::text AS state, trashed_at, purge_at,
+         NULL::interval AS remaining, NULL::text AS ref, NULL::boolean AS isnew
+    FROM records WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='')} AND deleted_at IS NULL
   UNION ALL
   SELECT 'item', i.id, i.title, o.label, i.revision, CASE WHEN i.archived_at IS NOT NULL THEN 'archived' ELSE i.decision END,
-         i.trashed_at, i.purge_at
+         i.trashed_at, i.purge_at, NULL, NULL, NULL
     FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id
-   WHERE i.user_id=%(uid)s AND i.trashed_at IS NOT NULL AND i.purge_at > {_TNOW}
+   WHERE i.user_id=%(uid)s AND i.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='i.')} AND i.revision > 0
   UNION ALL
-  SELECT 'person', id, alias, NULL, revision, NULL, trashed_at, purge_at
-    FROM people WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND purged_at IS NULL AND purge_at > {_TNOW}
+  SELECT 'person', id, alias, NULL, revision, NULL, trashed_at, purge_at, NULL, NULL, NULL
+    FROM people WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND purged_at IS NULL AND {_LIST_LIVE.format(a='')}
   UNION ALL
-  SELECT 'reflection', id, left(body, 200), kind, revision, review, trashed_at, purge_at
-    FROM source_reflections WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND purge_at > {_TNOW}
+  SELECT 'reflection', id, left(body, 200), kind, revision, review, trashed_at, purge_at, NULL, NULL, NULL
+    FROM source_reflections WHERE user_id=%(uid)s AND trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='')}
   UNION ALL
-  SELECT 'activity', a.id, a.action, a.occurred_on::text, NULL, a.state, a.trashed_at, a.purge_at
-    FROM activities a WHERE a.user_id=%(uid)s AND a.trashed_at IS NOT NULL AND a.purge_at > {_TNOW} AND a.deleted_at IS NULL
+  SELECT 'activity', a.id, a.action, a.occurred_on::text, NULL, a.state, a.trashed_at, a.purge_at, NULL, NULL, NULL
+    FROM activities a WHERE a.user_id=%(uid)s AND a.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='a.')} AND a.deleted_at IS NULL
      AND EXISTS (SELECT 1 FROM import_entries e WHERE e.user_id=a.user_id AND e.target_activity_id=a.id AND e.is_current_applied)
+  UNION ALL
+  SELECT 'pending', e.id, COALESCE(NULLIF(btrim(e.payload->>'title'), ''), left(e.payload->>'body', 200)), e.kind, NULL, 'pending',
+         e.trashed_at, e.purge_at, e.expires_at - e.trashed_at, NULL, NULL
+    FROM import_entries e WHERE e.user_id=%(uid)s AND e.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='e.')} AND e.state='pending'
+  UNION ALL
+  SELECT 'item_proposal', i.draft_id, i.draft_doc->>'title', o.label, NULL, 'proposal', i.trashed_at, i.purge_at, NULL, i.id, true
+    FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id
+   WHERE i.user_id=%(uid)s AND i.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='i.')} AND i.revision = 0 AND i.draft_id IS NOT NULL
+  UNION ALL
+  SELECT CASE WHEN p.item_id IS NOT NULL THEN 'item_proposal' ELSE 'definition_proposal' END, p.id,
+         COALESCE(p.doc->>'title', p.doc->>'label'), o.label, NULL, 'proposal', p.trashed_at, p.purge_at, NULL,
+         COALESCE(p.item_id, p.object_id), p.object_id IS NOT NULL AND o.revision = 0
+    FROM trashed_proposals p LEFT JOIN items i ON i.user_id=p.user_id AND i.id=p.item_id
+    JOIN object_defs o ON o.user_id=p.user_id AND o.id=COALESCE(i.object_id, p.object_id)
+   WHERE p.user_id=%(uid)s AND p.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='p.')}
+  UNION ALL
+  SELECT 'stack_session', s.id::text, left(r.summary_text, 400), s.input_kind, NULL, 'unconfirmed', s.trashed_at, s.purge_at,
+         s.expires_at - s.trashed_at, NULL, NULL
+    FROM stack_sessions s LEFT JOIN {{res}} r ON r.user_id=s.user_id AND r.job_id=s.latest_job_id
+   WHERE s.user_id=%(uid)s AND s.trashed_at IS NOT NULL AND {_LIST_LIVE.format(a='s.')}
 ) t WHERE (%(kind)s = '' OR kind = %(kind)s) {{after}} ORDER BY trashed_at DESC, id DESC LIMIT %(n)s"""
 
 
 def trash_list(uid, kind="", cursor="", limit=PAGE_DEFAULT):
     """휴지통 목록(최근 이동 순, 본인 것·복원 기한 전만). 반환 {items:[{kind,id,title,trashed_at,purge_at,revision,restore_state,
-    object_label?·reflection_kind?·occurred_on?}], next_cursor, hours}. title = 글 제목·항목 제목·별칭·생각 첫 줄·활동 행동 이름.
-    본문은 trash_get 에서만. purge_at = 화면 「복원 가능 기한」."""
+    remaining_seconds, object_label?·reflection_kind?·occurred_on?·entry_kind?·item_id?·new_item?·object_id?·new_object?·input_kind?}],
+    next_cursor, hours}. title = 글 제목·항목 제목·별칭·생각 첫 줄·활동 행동 이름·대기 글 제목(없으면 본문 첫 줄)·제안 제목(정의 = 이름)
+    ·정리 글 첫 줄(없으면 null). restore_state = 복원될 업무 상태(pending·proposal·unconfirmed …). remaining_seconds = 휴지통에서 멈춘
+    남은 대기(pending)·임시 보관(stack_session) 초, 그 밖 null. 본문은 trash_get 에서만. purge_at = 화면 「복원 가능 기한」."""
     if not trash_on():
         raise _trash_off()
     if kind:
@@ -4025,18 +4575,27 @@ def trash_list(uid, kind="", cursor="", limit=PAGE_DEFAULT):
     if after:
         cond, a["at"], a["aid"] = "AND (trashed_at, id) < (%(at)s, %(aid)s)", after[0], after[1]
     with tx() as c:
-        rows = _all(c, _TRASH_LIST_SQL.format(after=cond), a)
+        rows = _all(c, _TRASH_LIST_SQL.format(after=cond, res=_tmp_names(c)[1]), a)
     import activity
     out = []
     for r in rows[:limit]:
         d = {"kind": r["kind"], "id": r["id"], "trashed_at": r["trashed_at"].isoformat(), "purge_at": r["purge_at"].isoformat(),
-             "revision": r["revision"], "restore_state": r["state"], "title": r["title"]}
-        if r["kind"] == "item":
+             "revision": r["revision"], "restore_state": r["state"], "title": r["title"], "remaining_seconds": _secs(r["remaining"])}
+        k = r["kind"]
+        if k == "item":
             d["object_label"] = r["sub"]
-        elif r["kind"] == "reflection":
+        elif k == "reflection":
             d["title"], d["reflection_kind"] = _excerpt(r["title"]) or r["title"][:60], r["sub"]
-        elif r["kind"] == "activity":
+        elif k == "activity":
             d["title"], d["occurred_on"] = activity.ACTION_LABELS.get(r["title"], r["title"]), r["sub"]
+        elif k == "pending":
+            d["title"], d["entry_kind"] = _excerpt(r["title"]) or (r["title"] or "")[:60], r["sub"]
+        elif k == "item_proposal":
+            d["object_label"], d["item_id"], d["new_item"] = r["sub"], r["ref"], bool(r["isnew"])
+        elif k == "definition_proposal":
+            d["object_id"], d["new_object"] = r["ref"], bool(r["isnew"])
+        elif k == "stack_session":
+            d["title"], d["input_kind"] = _excerpt(r["title"]) or None, r["sub"]
         out.append(d)
     nxt = ""
     if len(rows) > limit:
@@ -4049,11 +4608,59 @@ _TRASH_GET_SQL = {
     "record": "SELECT id,title,body,source,source_id,question_id,created FROM records WHERE user_id=%(uid)s AND id=%(id)s AND deleted_at IS NULL",
     "item": ("SELECT i.id,i.object_id,o.label AS object_label,o.semantic_kind,i.code,i.title,i.body,i.data,i.decision,i.revision,"
              "i.archived_at,i.created_at,i.updated_at FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
-             "WHERE i.user_id=%(uid)s AND i.id=%(id)s"),
+             "WHERE i.user_id=%(uid)s AND i.id=%(id)s AND i.revision > 0"),
     "person": "SELECT id,alias,revision,created,updated FROM people WHERE user_id=%(uid)s AND id=%(id)s AND purged_at IS NULL",
     "reflection": f"SELECT {_REFL_COLS} FROM source_reflections WHERE user_id=%(uid)s AND id=%(id)s",
     "activity": ("SELECT id,stream_id,source_id,action,state,occurred_on,observed_on,raw_id,received_at FROM activities "
                  "WHERE user_id=%(uid)s AND id=%(id)s AND deleted_at IS NULL")}
+
+
+def _trash2_get_row(c, kind, a):
+    """PR-2 종류의 휴지통 상세 — (상태 행 {trashed_at,purge_at,now} 또는 None, 본문 dict). 본문 = 휴지통 전용(일반 경로는 이 값을 안 준다)."""
+    if kind == "pending":
+        r = _one(c, f"SELECT id,kind AS entry_kind,payload,received_at,expires_at,trashed_at,purge_at,{_TNOW} AS now FROM import_entries "
+                    "WHERE user_id=%(uid)s AND id=%(id)s AND state='pending'", a)
+        if not r:
+            return None, None
+        p = r["payload"] or {}
+        return r, {"id": r["id"], "entry_kind": r["entry_kind"], "title": p.get("title"), "body": p.get("body"),
+                   "source_created_at": p.get("source_created_at"), "source_date": p.get("source_date"), "received_at": r["received_at"],
+                   "remaining_seconds": _secs(r["expires_at"] - r["trashed_at"]) if r["trashed_at"] else None}
+    if kind == "stack_session":
+        try:
+            a = {**a, "id": _uuid.UUID(str(a["id"]))}
+        except ValueError:
+            return None, None
+        _inp, res = _tmp_names(c)
+        r = _one(c, f"SELECT s.id,s.input_kind,s.created_at,s.expires_at,s.trashed_at,s.purge_at,r.summary_text,{_TNOW} AS now "
+                    f"FROM stack_sessions s LEFT JOIN {res} r ON r.user_id=s.user_id AND r.job_id=s.latest_job_id "
+                    "WHERE s.user_id=%(uid)s AND s.id=%(id)s", a)
+        if not r:
+            return None, None
+        return r, {"id": str(r["id"]), "input_kind": r["input_kind"], "summary_text": r["summary_text"], "created_at": r["created_at"],
+                   "remaining_seconds": _secs(r["expires_at"] - r["trashed_at"]) if r["trashed_at"] else None}
+    item = kind == "item_proposal"
+    if item:   # 새 항목 제안(revision 0) — items 행 그대로
+        r = _one(c, f"SELECT i.id,i.object_id,o.label AS object_label,i.draft_doc,i.draft_base_revision,i.trashed_at,i.purge_at,"
+                    f"{_TNOW} AS now FROM items i JOIN object_defs o ON o.user_id=i.user_id AND o.id=i.object_id "
+                    "WHERE i.user_id=%(uid)s AND i.draft_id=%(id)s AND i.revision = 0", a)
+        if r:
+            return r, {"proposal_id": a["id"], "item_id": r["id"], "object_id": r["object_id"], "object_label": r["object_label"],
+                       "new_item": True, "base_revision": r["draft_base_revision"], "proposal": r["draft_doc"]}
+    ref = "item_id" if item else "object_id"
+    r = _one(c, f"SELECT p.id,p.{ref} AS ref,p.base_revision,p.doc,p.trashed_at,p.purge_at,o.id AS object_id,o.label AS object_label,"
+                f"o.revision AS object_revision,{_TNOW} AS now FROM trashed_proposals p LEFT JOIN items i ON i.user_id=p.user_id AND i.id=p.item_id "
+                "JOIN object_defs o ON o.user_id=p.user_id AND o.id=COALESCE(i.object_id, p.object_id) "
+                f"WHERE p.user_id=%(uid)s AND p.id=%(id)s AND p.{ref} IS NOT NULL", a)
+    if not r:
+        return None, None
+    body = {"proposal_id": r["id"], ref: r["ref"], "object_id": r["object_id"], "object_label": r["object_label"],
+            "base_revision": r["base_revision"]}
+    if item:
+        body.update(new_item=False, proposal=r["doc"])
+    else:
+        body.update(new_object=r["object_revision"] == 0, definition=r["doc"])
+    return r, body
 
 
 def trash_get(uid, kind, target_id):
@@ -4063,17 +4670,22 @@ def trash_get(uid, kind, target_id):
     t = _trash_kind(kind)
     a = {"now": TRASH_CLOCK, "uid": uid, "id": str(target_id or "")}
     with tx() as c:
-        st = _one(c, f"SELECT trashed_at,purge_at,{_TNOW} AS now FROM {t} WHERE user_id=%(uid)s AND id=%(id)s"
-                     f"{' AND purged_at IS NULL' if kind == 'person' else ''}", a)
+        if kind in TRASH2_KINDS:
+            st, body = _trash2_get_row(c, kind, a)
+        else:
+            st = _one(c, f"SELECT trashed_at,purge_at,{_TNOW} AS now FROM {t} WHERE user_id=%(uid)s AND id=%(id)s"
+                         f"{' AND purged_at IS NULL' if kind == 'person' else ''}", a)
+            body = None
         if not st or st["trashed_at"] is None:
             raise _nf(_TRASH_NAMES[kind])
         if not _trash_restorable(st):
             raise _trash_expired()
-        r = _one(c, _TRASH_GET_SQL[kind], a)
-    if not r:
+        if body is None:
+            body = _one(c, _TRASH_GET_SQL[kind], a)
+    if not body:
         raise _nf(_TRASH_NAMES[kind])
     return {"kind": kind, "trashed_at": st["trashed_at"].isoformat(), "purge_at": st["purge_at"].isoformat(),
-            "target": {k: _iso_v(v) for k, v in r.items()}}
+            "target": {k: _iso_v(v) for k, v in body.items()}}
 
 
 # ── 휴지통 물리 정리 (main._purger 회차 — 서빙 시작 뒤. _job_sweep 에는 넣지 않는다) ──
@@ -4093,13 +4705,15 @@ def _purge_record(c, uid, rid):
     c.execute("DELETE FROM activity_links WHERE user_id=%s AND record_id=%s", (uid, rid))
     c.execute("DELETE FROM activity_links WHERE user_id=%s AND linked_record_id=%s", (uid, rid))
     c.execute(_ENTRY_DELETED.format(col="target_record_id", extra=""), (uid, rid))
-    c.execute("DELETE FROM records WHERE user_id=%s AND id=%s", (uid, rid))   # 후보·후보 이력·기록 출발 관계 = CASCADE
+    c.execute("DELETE FROM content_confirms WHERE user_id=%s AND target_kind='record' AND target_id=%s", (uid, rid))   # 확인 증거·재시도 결과
+    c.execute("DELETE FROM records WHERE user_id=%s AND id=%s", (uid, rid))   # 후보·후보 이력·기록 출발 관계·이전 판 = CASCADE
 
 
 def _purge_item(c, uid, iid):
     c.execute("DELETE FROM item_links WHERE user_id=%s AND target_item_id=%s", (uid, iid))
     c.execute("DELETE FROM activity_links WHERE user_id=%s AND axis_item_id=%s", (uid, iid))
     c.execute(_ENTRY_DELETED.format(col="target_item_id", extra=", target_item_revision=NULL"), (uid, iid))
+    c.execute("DELETE FROM content_confirms WHERE user_id=%s AND target_kind='item' AND target_id=%s", (uid, iid))   # 확인 증거·재시도 결과
     c.execute("DELETE FROM items WHERE user_id=%s AND id=%s", (uid, iid))   # 이력·판·stage·출발 관계 = CASCADE
 
 
@@ -4115,13 +4729,30 @@ def _purge_reflection(c, uid, sid):
     c.execute("DELETE FROM source_reflections WHERE user_id=%s AND id=%s", (uid, sid))
 
 
+def _purge_session(c, uid, sid):
+    """PR-2 확정 전 정리 — 세션의 작업 행·세션 행 DELETE. tmp 4표(입력·결과·미리보기·원문)는 FK CASCADE 로 함께(_job_sweep 밖, 이 회차에서).
+    확정 안 된 세션이라 확인 이벤트·판이 가리키지 않는다. 그 뒤 PC 의 늦은 요청 = 작업 없음(JOB-GONE)."""
+    c.execute("DELETE FROM jobs WHERE user_id=%s AND session_id=%s", (uid, sid))
+    c.execute("DELETE FROM stack_sessions WHERE user_id=%s AND id=%s", (uid, sid))
+
+
+def _purge_proposal(c, uid, pid):
+    """PR-2 보존 제안 — 행 DELETE. 새 정의 제안이었으면 자리를 비운 revision 0 오브젝트 행(제안 이름·key)도 지운다
+    — 다른 보존 제안·새 제안이 없을 때만(그 행은 항목·필드·역할이 가리킬 수 없다: 모두 적용된 오브젝트만 쓴다)."""
+    r = _one(c, "DELETE FROM trashed_proposals WHERE user_id=%s AND id=%s RETURNING object_id", (uid, pid))
+    if r and r["object_id"]:
+        c.execute("DELETE FROM object_defs o WHERE o.user_id=%s AND o.id=%s AND o.revision = 0 AND o.draft_id IS NULL "
+                  "AND NOT EXISTS (SELECT 1 FROM trashed_proposals p WHERE p.user_id=o.user_id AND p.object_id=o.id)", (uid, r["object_id"]))
+
+
 _TRASH_PURGERS = (("records", _purge_record), ("items", _purge_item), ("people", _purge_person),
-                  ("source_reflections", _purge_reflection))
+                  ("source_reflections", _purge_reflection), ("stack_sessions", _purge_session), ("trashed_proposals", _purge_proposal))
 
 
 def trash_purge_due(seconds=None, limit=None) -> dict:
     """휴지통 물리 정리 한 회차 — {테이블: 정리 수, "failed": 실패 수, "left": 상한으로 남겼나}. 예외를 밖으로 내지 않는다(로그는 건수·예외 이름만).
-    활동 원천은 main 이 activity.trash_purge_due 를 먼저 부른다. 종류 순서 = 기록 → 항목 → 사람 → 생각. 남은 시간·수는 호출자가 이어서 넘긴다."""
+    활동 원천·승인 대기는 main 이 activity·imports.trash_purge_due 를 먼저 부른다. 종류 순서 = 기록 → 항목(새 항목 제안 포함) → 사람 → 생각
+    → 세션(PR-2) → 보존 제안(PR-2). 남은 시간·수는 호출자가 이어서 넘긴다."""
     deadline = time.monotonic() + (TRASH_PURGE_SECONDS if seconds is None else seconds)
     left = TRASH_PURGE_LIMIT if limit is None else limit
     out, failed, stop = {t: 0 for t, _ in _TRASH_PURGERS}, [], False
@@ -4326,24 +4957,26 @@ def _is_int(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
 
-_SET_EXPIRED = "UPDATE jobs SET status='expired', terminal_at=now() WHERE status = ANY(%s) AND expires_at <= now()"
+_SET_EXPIRED = "UPDATE jobs SET status='expired', terminal_at=now() WHERE status = ANY(%s) AND expires_at <= now() AND trashed_at IS NULL"
 _SET_NEEDS_CHECK = ("UPDATE jobs SET status='needs_check', terminal_at=now() "
                     "WHERE status IN ('leased','running') AND lease_expires_at <= now()")
 
 
 def _job_sweep(c):
     """전역 정리(가볍다) — 24h 지난 살아 있는 작업 expired · 임대 만료 needs_check(중복 실행 금지) · 종료·만료 작업의 임시 본문 삭제.
-    장치 폴·웹 접수·상태·주기 파기(purge_once)가 부른다. 반환 {expired, needs_check, tmp}."""
+    장치 폴·웹 접수·상태·주기 파기(purge_once)가 부른다. 반환 {expired, needs_check, tmp}.
+    휴지통 PR-2: 휴지통의 세션·작업(trashed_at)은 만료·임시 본문 삭제에서 뺀다(잔여시간 정지 — 동결된 expires_at 으로 지우지 않는다).
+    휴지통 물리 삭제는 여기 넣지 않는다(main 의 정리 회차 trash_purge_due)."""
     ex = c.execute(_SET_EXPIRED, (list(JOB_LIVE),)).rowcount
     nc = c.execute(_SET_NEEDS_CHECK).rowcount
-    c.execute("UPDATE stack_sessions SET terminal_at=now() WHERE terminal_at IS NULL AND expires_at <= now()")   # ②-b 세션 만료(연장 없음)
+    c.execute("UPDATE stack_sessions SET terminal_at=now() WHERE terminal_at IS NULL AND expires_at <= now() AND trashed_at IS NULL")   # ②-b 세션 만료(연장 없음)
     inp, res = _tmp_names(c)
     n = 0
     for t in (_tmp_previews_name(c), res, inp):
         n += c.execute(f"DELETE FROM {t} x USING jobs j WHERE j.user_id=x.user_id AND j.id=x.job_id "
-                       "AND (j.terminal_at IS NOT NULL OR j.expires_at <= now())").rowcount
+                       "AND (j.terminal_at IS NOT NULL OR j.expires_at <= now()) AND j.trashed_at IS NULL").rowcount
     n += c.execute(f"DELETE FROM {_tmp_verbatim_name(c)} x USING stack_sessions s WHERE s.user_id=x.user_id AND s.id=x.session_id "
-                   "AND (s.terminal_at IS NOT NULL OR s.expires_at <= now())").rowcount
+                   "AND (s.terminal_at IS NOT NULL OR s.expires_at <= now()) AND s.trashed_at IS NULL").rowcount
     return {"expired": ex, "needs_check": nc, "tmp": n}
 
 
@@ -4450,6 +5083,8 @@ def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
                             (uid, sid))
                 if not sess:
                     raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
+                if sess["trashed_at"] is not None:   # 휴지통 PR-2 — 복원 전엔 이어 쓰지 않는다
+                    raise _in_trash("그 대화 정리")
                 if sess["gone_ttl"] or sess["terminal_at"] is not None:
                     raise CrmError("JOB-GONE", "이 대화 세션은 끝났어요(만료·확정).", "새 대화로 시작하세요.")
         elif session_id and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND session_id=%s LIMIT 1", (uid, sid)):
@@ -4457,7 +5092,8 @@ def job_create(uid, kind, text, session_id=None, input_kind=None, restack=None):
         # 연결 장치(연결 해제 안 된 device) 0 = 접수 거절 — 받을 PC 가 없어 queued 로 24시간 남는다. 오프라인 장치는 대기로 접수
         if not _one(c, "SELECT 1 AS x FROM import_streams WHERE user_id=%s AND channel='device' AND revoked_at IS NULL LIMIT 1", (uid,)):
             raise CrmError("NO-DEVICE", JOB_NO_DEVICE_MSG, "Setup › 연결 장치에서 PC 를 연결하세요.")
-        n_open = _one(c, "SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s)", (uid, list(JOB_LIVE)))["n"]
+        n_open = _one(c, "SELECT count(*) AS n FROM jobs WHERE user_id=%s AND status = ANY(%s) AND trashed_at IS NULL",   # 휴지통 작업은 열린 작업이 아니다
+                      (uid, list(JOB_LIVE)))["n"]
         if n_open >= imports.JOBS_OPEN_MAX:
             raise CrmError("JOB-LIMIT", f"진행 중인 작업이 너무 많아요(최대 {imports.JOBS_OPEN_MAX}).", "끝나거나 취소된 뒤 다시 보내세요.")
         n_day = imports._bump(c, uid, "user", "day", "job_" + kind)["n"]   # 무제한이어도 센다(관측)
@@ -4509,7 +5145,7 @@ def job_get(uid, job_id):
     with tx() as c:
         _job_sweep(c)
         j = _one(c, "SELECT * FROM jobs WHERE user_id=%s AND id=%s", (uid, jid))
-        if not j:
+        if not j or j["trashed_at"] is not None:   # 휴지통 PR-2 — 휴지통 세션의 작업 결과는 휴지통 상세에서만
             raise CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")
         out = _job_out(j)
         if j["status"] == "result_ready":
@@ -4530,9 +5166,9 @@ def job_cancel(uid, job_id):
     """웹 취소 — 살아 있는 작업만 cancelled(+ 임시 본문 삭제). 이미 끝났으면 그대로(멱등). 스위치 무관."""
     jid = _job_uuid(job_id, gone=False)
     with tx() as c:
-        j = _one(c, "UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%s AND id=%s AND status = ANY(%s) RETURNING id",
-                 (uid, jid, list(JOB_LIVE)))
-        if not j and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND id=%s", (uid, jid)):
+        j = _one(c, "UPDATE jobs SET status='cancelled', terminal_at=now() WHERE user_id=%s AND id=%s AND status = ANY(%s) "
+                    "AND trashed_at IS NULL RETURNING id", (uid, jid, list(JOB_LIVE)))
+        if not j and not _one(c, "SELECT 1 AS x FROM jobs WHERE user_id=%s AND id=%s AND trashed_at IS NULL", (uid, jid)):
             raise CrmError("NOT-FOUND", "그 작업을 찾을 수 없어요.")
         _job_sweep(c)
     return job_get(uid, job_id)
@@ -4604,7 +5240,7 @@ def _job_dev_row(c, dev, jid):
     """장치 경로 공통 — 본인 사용자 작업만(남·없음·만료·취소 = JOB-GONE). 행 잠금."""
     j = _one(c, "SELECT *, (expires_at <= now()) AS gone_ttl, COALESCE(lease_expires_at > now(), false) AS lease_ok FROM jobs "
                 "WHERE user_id=%s AND id=%s FOR UPDATE", (dev["user_id"], jid))
-    if not j or j["gone_ttl"] or j["status"] in ("expired", "cancelled"):
+    if not j or j["gone_ttl"] or j["status"] in ("expired", "cancelled") or j["trashed_at"] is not None:   # 휴지통 세션 작업 = 버린 작업
         raise _job_gone()
     return j
 
@@ -4765,7 +5401,7 @@ def _job_result_stack(dev, jid, body):
         if ss.snapshot(c, uid, index)["definitions_version"] != j["definitions_version"]:
             raise ss.defs_changed()
         v = ss.validate_result(c, uid, j, body, index)
-        if sess["gone_ttl"] or sess["terminal_at"] is not None:
+        if sess["gone_ttl"] or sess["terminal_at"] is not None or sess["trashed_at"] is not None:
             raise _job_gone()
         c.execute(f"INSERT INTO {res} (job_id,user_id,result_version,summary_text,changes,blocked,text_map,model_meta,units) "
                   "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
@@ -4810,6 +5446,8 @@ def stack_exclude(uid, preview_id, cids):
             raise CrmError("NOT-FOUND", "그 미리보기를 찾을 수 없어요.")
         sess = _stack_session_lock(c, uid, row["session_id"])
         job = _one(c, "SELECT status FROM jobs WHERE user_id=%s AND id=%s", (uid, row["job_id"]))
+        if sess and sess["trashed_at"] is not None:   # 휴지통 PR-2
+            raise _in_trash("그 대화 정리")
         if not sess or sess["gone_ttl"] or sess["terminal_at"] is not None or not job or job["status"] != "result_ready":
             raise _job_gone()
         if sess["latest_preview_id"] != pid:
@@ -4831,7 +5469,7 @@ def stack_exclude(uid, preview_id, cids):
 def stack_session_current(uid):
     """그 사용자의 확정 전·만료 전 가장 늦게 만든 대화 세션 1개 {id, expires_at} 또는 None(/api/state — 새로 고침 복원·두 탭 공유)."""
     with tx() as c:
-        s = _one(c, "SELECT id, expires_at FROM stack_sessions WHERE user_id=%s AND terminal_at IS NULL AND expires_at > now() "
+        s = _one(c, "SELECT id, expires_at FROM stack_sessions WHERE user_id=%s AND terminal_at IS NULL AND expires_at > now() AND trashed_at IS NULL "
                     "ORDER BY created_at DESC, id LIMIT 1", (uid,))
     return {"id": str(s["id"]), "expires_at": s["expires_at"].isoformat()} if s else None
 
@@ -4841,7 +5479,7 @@ def stack_session_get(uid, session_id):
     sid = _job_uuid(session_id, gone=False)
     with tx() as c:
         _job_sweep(c)
-        s = _one(c, "SELECT * FROM stack_sessions WHERE user_id=%s AND id=%s", (uid, sid))
+        s = _one(c, "SELECT * FROM stack_sessions WHERE user_id=%s AND id=%s AND trashed_at IS NULL", (uid, sid))   # 휴지통 = 일반 이용 차단
         if not s:
             raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
         lj = _one(c, "SELECT id, status FROM jobs WHERE user_id=%s AND id=%s", (uid, s["latest_job_id"])) if s["latest_job_id"] else None

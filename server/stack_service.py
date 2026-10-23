@@ -733,6 +733,8 @@ def confirm(uid, job_id, body):
             raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
         if sess["confirm_event_id"] is not None:
             raise db._confirm_stale("이 대화는 이미 확정했어요.")
+        if sess["trashed_at"] is not None:   # 휴지통 PR-2 — 휴지통의 확정 전 정리는 확정할 수 없다(복원 뒤 다시)
+            raise db._in_trash("그 대화 정리")
         if sess["gone_ttl"] or sess["terminal_at"] is not None or j["gone_ttl"] or j["status"] == "expired":
             raise db._job_gone()
         if j["status"] != "result_ready" or sess["latest_job_id"] != jid or sess["latest_preview_id"] != pid:
@@ -853,7 +855,12 @@ def confirm(uid, job_id, body):
                     snap = _snap_state(pl["title"], pl["body"], pl["data"], cur_dec, pl["row"]["code"] if pl["row"] else None,
                                        od["revision"], pl["links"])
                     rev = _bump(c, uid, iid, rev, snap, "confirm", "decision=%s", ("confirmed",), meta)
-                versions.append({"item_id": iid, "version_no": _new_version(c, uid, iid, ceid)})
+                vno = _new_version(c, uid, iid, ceid)
+                versions.append({"item_id": iid, "version_no": vno})
+                # 글 수정(2026-10-23) — 확인 증거: 이 판(본문 해시 = 지금 행)을 이 확인 이벤트로 확인(항목 「확인한 최신 판」 표지)
+                c.execute("INSERT INTO content_confirms (user_id,target_kind,target_id,version_no,body_sha,kind,confirmed_by,confirm_event_id) "
+                          "SELECT user_id,'item',id,%s,body_sha,'stack_confirm',user_id,%s FROM items WHERE user_id=%s AND id=%s",
+                          (vno, ceid, uid, iid))
             touched.append((iid, o))
         _confirm_fault(8)
         # ⑧ 기록 — 원문(던졌을 때) → 정리 글. 근거 = 정리 글 → 변경 항목(허용 관계만)
@@ -870,6 +877,9 @@ def confirm(uid, job_id, body):
         srid = db.new_id("r")
         c.execute(ins, (srid, uid, final_text.strip().splitlines()[0][:40], final_text, SUMMARY_SOURCE, "self", "structured",
                         hist("self", "structured"), "conversation", db.Jsonb({**gm, "companion_record_id": vrid})))
+        # 글 수정(2026-10-23) — 확인 증거: 정리 글 판 1 을 이 확인 이벤트로 확인(인용 적격 = 증거의 판·해시, db._elig_sql)
+        c.execute("INSERT INTO content_confirms (user_id,target_kind,target_id,version_no,body_sha,kind,confirmed_by,confirm_event_id) "
+                  "VALUES (%s,'record',%s,1,%s,'stack_confirm',%s,%s)", (uid, srid, db.text_sha(final_text), uid, ceid))
         if vrid:
             c.execute("UPDATE records SET generation_meta = generation_meta || %s WHERE user_id=%s AND id=%s",
                       (db.Jsonb({"companion_record_id": srid}), uid, vrid))

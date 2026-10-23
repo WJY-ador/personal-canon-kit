@@ -209,7 +209,12 @@ def fixture(email):
         db.display_name_set(uid, "시험작성자")
     except Exception:
         pass
-    template_author.seed(uid, log=lambda *a: None)
+    real_name = template_author.TEMPLATE_NAME
+    template_author.TEMPLATE_NAME = "author@1"   # 운영 원작자 정의는 author@1 계보 그대로다(author@2 는 새 시드만) — 픽스처도 같은 슬롯
+    try:
+        template_author.seed(uid, log=lambda *a: None)
+    finally:
+        template_author.TEMPLATE_NAME = real_name
     for k in ("axes", "decision_events", "principles"):
         d = {x["key"]: x for x in db.definitions(uid)}[k]
         db.std_choose(uid, k, "incorporated", confirmed_meaning=True, expected_revision=d["revision"])

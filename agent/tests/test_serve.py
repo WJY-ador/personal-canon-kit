@@ -535,6 +535,63 @@ class CliServeTest(Base):
         self.assertIn('"stopped": "adapter"', out)
         self.assertEqual((self.dev.calls, self.polls()), (0, 0))
 
+    def _clear_cli_path(self):
+        cfg = _config.load(self.th.paths)
+        cfg["summary"]["cli_path"] = None
+        _config.save(self.th.paths, cfg)
+
+    @unittest.skipUnless(POSIX, "실행 비트로 찾기 = POSIX")
+    def test_cli_path_empty_uses_claude_on_path(self):
+        """cli_path 가 비면 PATH 의 claude 절대 경로로 어댑터를 만든다. 인증 거절로 끝내 CLI 는 부르지 않는다."""
+        from agent.uploader import DeviceError
+        self._clear_cli_path()
+        bindir = tempfile.mkdtemp(dir=self.th.home)
+        fake = os.path.join(bindir, "claude")
+        with open(fake, "w") as f:
+            f.write("#!/bin/sh\nexit 99\n")
+        os.chmod(fake, 0o755)
+        self.dev.result = DeviceError("auth", 401, "TOKEN-REVOKED")
+        with mock.patch.dict(os.environ, {"PATH": bindir, jobs.REAL_CLI_ENV: "1"}), \
+                mock.patch.object(jobs, "ClaudeAdapter", wraps=jobs.ClaudeAdapter) as made:
+            code, out = self.cli(jobs_adapter_factory=None)
+        self.assertEqual(made.call_count, 1)
+        self.assertEqual(made.call_args[0][0], [fake])
+        self.assertTrue(os.path.isabs(made.call_args[0][0][0]))
+        self.assertEqual(code, cli.EXIT_HALT)          # 어댑터 단계를 지나 인증에서 멈춤
+        self.assertEqual((self.dev.calls, self.polls()), (1, 0))
+        self.assertNotIn('"stopped": "adapter"', out)
+        self.assertEqual(_config.load(self.th.paths)["summary"]["cli_path"], None)   # 찾은 경로를 저장하지 않음
+
+    def test_cli_path_empty_not_on_path_stops(self):
+        """cli_path 도 비고 PATH 에도 claude 가 없으면 adapter 정지 + cli-not-found. 경로는 출력하지 않는다."""
+        self._clear_cli_path()
+        bindir = tempfile.mkdtemp(dir=self.th.home)
+        with mock.patch.dict(os.environ, {"PATH": bindir, jobs.REAL_CLI_ENV: "1"}), \
+                mock.patch.object(jobs, "ClaudeAdapter", wraps=jobs.ClaudeAdapter) as made:
+            code, out = self.cli(jobs_adapter_factory=None)
+        self.assertEqual(code, cli.EXIT_ERR)
+        self.assertEqual(made.call_count, 0)
+        self.assertIn('"stopped": "adapter"', out)
+        self.assertIn('"reason_code": "cli-not-found"', out)
+        self.assertNotIn(bindir, out)
+        self.assertNotIn(self.th.home, out)
+        self.assertEqual((self.dev.calls, self.polls()), (0, 0))
+
+    def test_cli_path_config_wins_over_path(self):
+        """config 값이 있으면 PATH 를 보지 않는다(지금 동작 유지)."""
+        cfg = _config.load(self.th.paths)
+        cfg["summary"]["cli_path"] = "/nonexistent/claude-synth"
+        _config.save(self.th.paths, cfg)
+        with mock.patch.dict(os.environ, {jobs.REAL_CLI_ENV: "1"}), \
+                mock.patch.object(cli.shutil, "which") as which, \
+                mock.patch.object(jobs, "ClaudeAdapter", wraps=jobs.ClaudeAdapter) as made:
+            from agent.uploader import DeviceError
+            self.dev.result = DeviceError("auth", 401, "TOKEN-REVOKED")
+            code, out = self.cli(jobs_adapter_factory=None)
+        which.assert_not_called()
+        self.assertEqual(made.call_args[0][0], ["/nonexistent/claude-synth"])
+        self.assertEqual(code, cli.EXIT_HALT)
+
     @unittest.skipUnless(POSIX, "SIGTERM 전달 = POSIX")
     def test_sigterm_runs_job_then_exits_ok(self):
         jid = self.srv.create(kind="summarize_reading")

@@ -612,6 +612,8 @@ def preset_params(params, today=None):
 # 구조는 contract.respond(…, admin_*) 를 거쳐서만 화면에 나간다. 여기선 그 입력을 이름 없이 조립한다 — 오브젝트 id·필드 key 는 md5 대리값
 # (_admin 은 id·key 를 내보내지 않는다), label·선택지는 이름 공유 분기(schema_names) 행이 있을 때만 끼운다. 선택지 값은 꺼내지 않는다.
 # 연결·무결성 조회는 items·records·candidates 의 상태 열(revision·archived_at·deleted_at)과 개수만 읽는다 — 본문 열 0.
+# 승인 대기(import_entries)는 읽지 않는다 — 휴지통 승인 대기(휴지통 PR-2: state pending + trashed_at)·영구 삭제 표식(state deleted)도
+# 값·개수 0, 무결성 위반으로 세지 않는다(복원할 수 있는 정상 상태 · 본문 없는 종료 표식).
 # args 는 {"uid": 사용자 id 또는 None(전원), "ver": 설치 표준 버전, "names_ver": struct_names 현재 버전}.
 USERVIEW_KEYS = ("userview.counts", "userview.defs", "userview.links", "userview.tickets")
 ALLOW["userview.counts"] = {   # 사용자마다 한 행 — 이름 공유 유효 동의 · 표준 표식·선택(코드) · 출처 수 · M-D 위반(근거 기록이 지워진 후보) 수

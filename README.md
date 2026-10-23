@@ -55,6 +55,8 @@ python3 -m unittest discover -s agent/tests  # 로컬 에이전트 시험 (Keych
 
 `agent/` 는 호스팅 판 계정에 내 PC 를 「연결 장치」로 붙이는 프로그램입니다. 수집기 산출물(첫 입력원은 좋아요 `likes.jsonl`)을 활동으로 바꿔 보내고, 다른 사람의 원문은 PC 에 둡니다. macOS 는 1시간 예약(launchd)과 Keychain 을 씁니다. 표준 라이브러리만 씁니다. 쓰는 법은 [agent/README.md](agent/README.md).
 
+웹 「대화」 정리는 서버 스위치가 켜져 있고, PC 에서 `MYCRM_JOBS_ALLOW_REAL_CLI=1 python3 -m agent serve --jobs` 로 켭니다 — 자기 PC·자기 구독 CLI 로 돕니다. 쓰는 법은 [guides/09-hosted-start.md](guides/09-hosted-start.md) 2-1절.
+
 루틴(예약 실행)의 `claude -p` 요약·정리는 사람 없이 돕니다. 조건: ① 루틴 승인을 받은 범위만 실행 ② 판단 확정은 사람이 확인 1번으로만 — 무인 확정 없음 ③ 무인으로 쓴 값은 「루틴이 썼음」 출처 표시 · [삭제]로 되돌릴 수 있음 · 판단 근거로 인용 불가 ④ 내용 제한(타인 식별 정보 제거)은 생성 단계부터 ⑤ PC 실행 시도 10회/일 ⑥ 스위치 기본 꺼짐. 2026-10-22 결정.
 (출시 전 확인: 구독 CLI 무인 실행 약관)
 

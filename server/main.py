@@ -43,18 +43,19 @@ from envnames import env
 INSTRUCTIONS = """이 서버는 사용자의 「내 판단 대시보드」다. 사용자의 기록에서 판단 후보를 찾고, 사용자가 원문과 대조해 남길지 정한다.
 
 규칙:
-- 기록(record_add)은 사용자의 말을 그대로 저장한다. 다듬거나 요약하지 않는다.
+- 기록(record_add)은 사용자의 말을 그대로 저장한다. 다듬거나 요약하지 않는다. 받은 원문은 최초 판으로 보존하고, 사용자가 저장한 수정본은 최신 확정 판으로 보관한다.
 - 후보(candidates_propose)는 네가 뽑되, 각 후보의 quote 는 그 기록 원문에서 글자 그대로 복사한 연속 구간이어야 한다. 원문에 같은 구간이 두 번 이상 나오면 앞뒤를 포함해 한 곳만 가리키게 더 길게 인용한다. 원문에 없는 사실·수치를 만들지 않는다. 타인의 말로 보이는 문장은 후보로 내지 않는다. 기록 1편당 최대 3개 — 넘기면 거절된다.
 - 후보는 사용자의 판단이 아니다. 사용자가 원문과 대조해 "남길게/빼줘/고쳐서 남길게"라고 말할 때만 candidate_decide 를 부른다. 네가 대신 confirm 하지 않는다. 확정 전에 후보 문장을 사용자에게 그대로 보여 준다.
 - 사용자가 묻지 않은 설정(프로필·질문)을 추정으로 확정하지 않는다. 추정은 status=guessed 로만 저장한다.
-- 기준(principle 항목)은 후보가 아니다. 여러 확정 판단을 종합해 사용자가 정한 한 문장이다. 후보 문장을 기준으로 옮겨 적거나, 사용자가 말하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
+- 판단 종류 항목(semantic_kind principle — 기준 등)은 후보가 아니다. 사용자가 읽고 확인한 최종 글만 사용자의 판단이다. 후보 문장을 그대로 옮겨 적거나, 사용자가 확인하기 전에 item_decide 로 적용·확정하지 않는다. 정의·항목은 *_propose 로 제안만 한다.
+- 항목 stage(draft 초안 → organized 정리됨 → confirmed 확정)는 서버가 정한다. 필수 칸이 차면 organized, 판단 종류만 사용자의 확인 1번(item_decide confirm 또는 화면의 대화 확정)으로 confirmed. organized 는 확정이 아니다 — 확정 여부는 decision 으로만 말한다. 되돌리기는 사용자만 정한다.
 - 승격 조건(promotion)은 사실일 뿐이다. 충족 여부와 상관없이 기준으로 남길지는 사용자가 정한다.
 - 질문에 답하지 않는 후보는 candidates_propose 의 question_id 를 빈 문자열("")로 보낸다. 화면은 기록별로 묶는다.
 - 사용자가 '안 돼요/고쳐 주세요/이건 왜 이래요' 류를 말하면 feedback_send 로 운영자에게 문의하자고 제안한다. 보낼 글을 사용자에게 그대로 보여 주고, 사용자가 확인하면 그때 호출한다.
 - 이 노트의 쓰는 법·용어 질문은 help_get 으로 해당 topic(start 또는 words) 하나만 읽고 그 문서 안에서 답한다. 같은 대화에서 이미 읽었으면 다시 부르지 않는다. 문서에 없으면 '문서에서 확인되지 않아요' 라고 하고 가장 가까운 절을 안내한다. 제품 밖 일반 질문엔 적용하지 않는다.
 - 사람(person_save)은 사용자가 말한 별칭 하나만 저장한다. 연락처·소속·SNS·그 사람의 말·평가는 넣지 않는다.
 - 출처 요약/반응(source_reflection_save)은 사용자가 출처를 접한 뒤 한 자기 생각만 저장한다. 타인의 말·경험·생각을 옮기거나 다시 정리하지 않는다. 검토 완료는 판단 확정이 아니고 근거로 인용할 수 없다 — 사용자가 말할 때만 source_reflection_review 를 부른다.
-- 삭제는 휴지통이다(휴지통이 켜졌을 때). 내 글·항목(기준·결정·축·커스텀)·사람·읽고 든 생각·활동은 사용자가 지우라고 말할 때만 trash_move 로 옮긴다. 삭제 시각부터 168시간 안에 trash_restore 로 복원할 수 있고, 그 뒤엔 서버 정리 때 영구 삭제된다. trash_purge(영구 삭제 요청)는 되돌릴 수 없으니 사용자가 분명히 말할 때만 부른다. 휴지통 대상은 다른 도구에서 보이지 않는다. 휴지통이 켜지면 기준의 남기지 않기·되돌리기(item_decide exclude·pending)는 없다 — 남기지 않을 기준은 삭제한다.
+- 삭제는 휴지통이다(휴지통이 켜졌을 때). 내 글·항목(기준·결정·축·커스텀)·사람·읽고 든 생각·활동은 사용자가 지우라고 말할 때만 trash_move 로 옮긴다. 삭제 시각부터 168시간 안에 trash_restore 로 복원할 수 있고, 그 뒤엔 서버 정리 때 영구 삭제된다. trash_purge(영구 삭제 요청)는 되돌릴 수 없으니 사용자가 분명히 말할 때만 부른다. 휴지통 대상은 다른 도구에서 보이지 않는다. 휴지통이 켜지면 기준의 남기지 않기·되돌리기(item_decide exclude·pending)는 없다 — 남기지 않을 기준은 삭제한다. 승인 대기 글·항목/정의 제안·확정 전 대화 정리도 사용자가 지우라고 말할 때만 trash_move(kind=pending·item_proposal·definition_proposal·stack_session)로 옮긴다 — 휴지통이 켜지면 item_decide discard 는 없다. 복원은 승인·적용·확정이 아니다.
 """
 
 DEV = env("DEV") == "1"
@@ -354,13 +355,14 @@ def item_decide(
     expected_revision: Annotated[int, Field(description="항목의 지금 revision")],
     proposal_id: Annotated[str | None, Field(description="apply·discard 때 제안 ID. 그 외 null")],
     action: Annotated[Literal["apply", "confirm", "exclude", "pending", "archive", "restore", "discard"],
-                      Field(description="apply=제안 적용, discard=제안 버리기, confirm=기준을 내 판단으로 남기기, exclude=남기지 않기, "
+                      Field(description="apply=제안 적용, discard=제안 버리기, confirm=판단 종류 항목을 내 판단으로 남기기(확인 1번), exclude=남기지 않기, "
                                         "pending=아직 안 정함으로, archive=보관, restore=history_id 시점으로 되돌리기. "
-                                        "휴지통이 켜지면 exclude·pending 은 ACTION-RETIRED(아무것도 안 바뀜) — 남기지 않을 기준은 trash_move")],
+                                        "휴지통이 켜지면 exclude·pending·discard 는 ACTION-RETIRED(아무것도 안 바뀜) — 남기지 않을 기준은 trash_move(kind=item), "
+                                        "버릴 제안은 trash_move(kind=item_proposal)")],
     history_id: Annotated[int | None, Field(description="restore 때 이력 ID. 그 외 null")],
     ctx: Context,
 ) -> dict:
-    """사용자가 말한 결정을 항목에 저장한다. 사용자가 말하기 전에 부르지 않는다. confirm·exclude·pending 은 기준(principle)만.
+    """사용자가 말한 결정을 항목에 저장한다. 사용자가 말하기 전에 부르지 않는다. confirm·exclude·pending 은 판단 종류(semantic_kind principle) 항목만.
     confirm 결과의 promotion 은 승격 조건 충족 여부(사실)일 뿐 — 미충족이어도 저장되고, 사용자에게 그대로 알린다."""
     return db.item_decide(uid_of(ctx), item_id, expected_revision, proposal_id or None, action, history_id)
 
@@ -623,53 +625,62 @@ def source_reflection_delete(
 
 
 # ── 휴지통 (2026-10-23 PR-1) — 스위치 CRM_TRASH_ENABLED 꺼짐 = SWITCH-OFF. 목록은 본문 없음(제목·별칭·첫 줄만) ──
-TrashKind = Literal["record", "item", "person", "reflection", "activity"]
-_TRASH_REV_DESC = "item·person·reflection 의 지금 revision(이동 때 필수). record·activity 는 null"
+# PR-2(2026-10-23) — 종류 4 추가: pending(승인 대기 글, id = 접수 ID) · item_proposal(항목 제안, id = 제안 ID ip_…) ·
+# definition_proposal(정의 제안, id = 제안 ID dp_…) · stack_session(확정 전 대화 정리, id = 세션 ID). Literal 이 늘어 커넥터 스키마 재승인 대상
+TrashKind = Literal["record", "item", "person", "reflection", "activity", "pending", "item_proposal", "definition_proposal", "stack_session"]
+_TRASH_REV_DESC = "item·person·reflection 의 지금 revision(이동 때 필수). 그 밖 종류는 null"
+_TRASH_KIND_DESC = ("record=내 글, item=항목(기준·결정·축·커스텀), person=사람, reflection=읽고 든 생각, activity=활동(원천 전체), "
+                    "pending=승인 대기 글(id=접수 ID), item_proposal=항목 제안(id=제안 ID), definition_proposal=정의 제안(id=제안 ID), "
+                    "stack_session=확정 전 대화 정리(id=세션 ID)")
 
 
 @mcp.tool()
 @guard
 def trash_list(
     ctx: Context,
-    kind: Annotated[Literal["", "record", "item", "person", "reflection", "activity"], Field(description="종류로 거르기 (선택, 빈 값 = 전부)")] = "",
+    kind: Annotated[Literal["", "record", "item", "person", "reflection", "activity", "pending", "item_proposal", "definition_proposal",
+                            "stack_session"], Field(description="종류로 거르기 (선택, 빈 값 = 전부)")] = "",
     cursor: Annotated[str, Field(description="다음 쪽: 앞 응답의 next_cursor 그대로 (처음은 빈 값)")] = "",
     limit: Annotated[int, Field(description="한 번에 볼 수 (기본 50, 최대 100)")] = 50,
 ) -> dict:
-    """휴지통 목록 — 복원 기한(purge_at) 전인 것만, 최근 삭제 순. 기한이 지난 것은 복원할 수 없고 목록에서도 빠진다."""
+    """휴지통 목록 — 복원 기한(purge_at) 전인 것만, 최근 삭제 순. 기한이 지난 것은 복원할 수 없고 목록에서도 빠진다.
+    restore_state = 복원될 상태, remaining_seconds = 승인 대기·확정 전 정리의 멈춘 남은 시간(복원하면 그만큼 다시 흐른다)."""
     return db.trash_list(uid_of(ctx), kind, cursor, limit)
 
 
 @mcp.tool()
 @guard
 def trash_move(
-    kind: Annotated[TrashKind, Field(description="record=내 글, item=항목(기준·결정·축·커스텀), person=사람, reflection=읽고 든 생각, activity=활동(원천 전체)")],
+    kind: Annotated[TrashKind, Field(description=_TRASH_KIND_DESC)],
     target_id: Annotated[str, Field(description="대상 ID")],
     expected_revision: Annotated[int | None, Field(description=_TRASH_REV_DESC)],
     ctx: Context,
 ) -> dict:
     """대상을 휴지통으로 옮긴다(삭제). 사용자가 지우라고 말했을 때만 부른다. 168시간 안에 trash_restore 로 복원할 수 있다.
-    연결된 상대(글·항목·활동)는 그대로 남는다. 장치 허용 규칙이 쓰는 축은 AXIS-IN-POLICY — 사용자에게 장치 화면에서 먼저 빼라고 안내한다."""
+    연결된 상대(글·항목·활동)는 그대로 남는다. 장치 허용 규칙이 쓰는 축은 AXIS-IN-POLICY — 사용자에게 장치 화면에서 먼저 빼라고 안내한다.
+    제안 삭제는 지금 저장된 값을 바꾸지 않는다. 승인 대기·확정 전 정리는 남은 대기·보관 시간이 휴지통에서 멈춘다."""
     return db.trash_move(uid_of(ctx), kind, target_id, expected_revision)
 
 
 @mcp.tool()
 @guard
 def trash_restore(
-    kind: Annotated[TrashKind, Field(description="대상 종류")],
+    kind: Annotated[TrashKind, Field(description=_TRASH_KIND_DESC)],
     target_id: Annotated[str, Field(description="대상 ID")],
-    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). record·activity 는 null")],
+    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). 그 밖 종류는 null")],
     ctx: Context,
 ) -> dict:
-    """휴지통 대상을 삭제 직전 상태로 복원한다(같은 ID). 복원 기한이 지났으면 TRASH-EXPIRED. 복원은 승인·적용·확정이 아니다."""
+    """휴지통 대상을 삭제 직전 상태로 복원한다(같은 ID). 복원 기한이 지났으면 TRASH-EXPIRED. 복원은 승인·적용·확정·작업 재개가 아니다.
+    제안은 같은 제안 ID 로 돌아온다(적용 전 다시 확인) — 그 자리에 새 제안이 있으면 CONFLICT. 승인 대기는 같은 원본의 새 대기가 있으면 CONFLICT."""
     return db.trash_restore(uid_of(ctx), kind, target_id, expected_revision)
 
 
 @mcp.tool()
 @guard
 def trash_purge(
-    kind: Annotated[TrashKind, Field(description="대상 종류")],
+    kind: Annotated[TrashKind, Field(description=_TRASH_KIND_DESC)],
     target_id: Annotated[str, Field(description="대상 ID")],
-    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). record·activity 는 null")],
+    expected_revision: Annotated[int | None, Field(description="item·person·reflection 의 지금 revision(선택). 그 밖 종류는 null")],
     ctx: Context,
 ) -> dict:
     """휴지통 대상의 영구 삭제를 요청한다 — 지금부터 복원할 수 없다. 본문은 서버 정리 때 지워진다. 사용자가 분명히 말할 때만 부른다."""
@@ -945,7 +956,8 @@ async def purge_once():
 
 
 async def trash_purge_round():
-    """휴지통 물리 정리 한 회차 — 활동 원천 → 기록 → 항목 → 사람 → 생각. 회차 전체 시간·대상 수 상한(db.TRASH_PURGE_SECONDS·LIMIT),
+    """휴지통 물리 정리 한 회차 — 활동 원천 → 승인 대기(PR-2) → 기록 → 항목 → 사람 → 생각 → 세션·보존 제안(PR-2).
+    회차 전체 시간·대상 수 상한(db.TRASH_PURGE_SECONDS·LIMIT),
     대상마다 트랜잭션·statement_timeout, 실패 대상은 건너뛰고 다음 회차. 예외를 내지 않는다. 로그는 건수만."""
     import time
     t0 = time.monotonic()
@@ -954,13 +966,21 @@ async def trash_purge_round():
         a = await run_in_threadpool(activity.trash_purge_due, db.TRASH_PURGE_SECONDS, db.TRASH_PURGE_LIMIT)
     except Exception as e:
         print(f"[trash] 활동 원천 정리 실패 — 계속: {type(e).__name__}", flush=True)
+    p = {"inbox": 0, "failed": 0, "left": False}
+    try:   # PR-2 승인 대기 본문 — 남은 시간·대상 수만 이어서(회차 전체 상한)
+        left = max(0.0, db.TRASH_PURGE_SECONDS - (time.monotonic() - t0))
+        p = await run_in_threadpool(imports.trash_purge_due, left, max(0, db.TRASH_PURGE_LIMIT - a["activities"] - a["failed"]))
+    except Exception as e:
+        print(f"[trash] 승인 대기 정리 실패 — 계속: {type(e).__name__}", flush=True)
     try:   # 남은 시간·대상 수만 이어서(회차 전체 상한)
         left = max(0.0, db.TRASH_PURGE_SECONDS - (time.monotonic() - t0))
-        out = await run_in_threadpool(db.trash_purge_due, left, max(0, db.TRASH_PURGE_LIMIT - a["activities"] - a["failed"]))
+        used = a["activities"] + a["failed"] + p["inbox"] + p["failed"]
+        out = await run_in_threadpool(db.trash_purge_due, left, max(0, db.TRASH_PURGE_LIMIT - used))
         n = sum(v for k, v in out.items() if k not in ("failed", "left"))
-        if a["activities"] or n or a["failed"] or out["failed"]:
-            print(f"[trash] 휴지통 정리 — 활동 원천 {a['activities']}건 · 그 밖 {n}건 · 실패 {a['failed'] + out['failed']}건"
-                  + (" · 상한 도달(다음 회차에 이어서)" if a["left"] or out["left"] else ""), flush=True)
+        failed = a["failed"] + p["failed"] + out["failed"]
+        if a["activities"] or p["inbox"] or n or failed:
+            print(f"[trash] 휴지통 정리 — 활동 원천 {a['activities']}건 · 승인 대기 {p['inbox']}건 · 그 밖 {n}건 · 실패 {failed}건"
+                  + (" · 상한 도달(다음 회차에 이어서)" if a["left"] or p["left"] or out["left"] else ""), flush=True)
     except Exception as e:
         print(f"[trash] 휴지통 정리 실패 — 계속: {type(e).__name__}", flush=True)
 

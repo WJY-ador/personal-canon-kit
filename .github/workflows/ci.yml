@@ -137,6 +137,19 @@ jobs:
           PY
           python server/test_trash_flow.py
 
+      # 글 수정(2026-10-23) — 판 고정·확인 증거·변경 번호·재시도·영구 삭제·쿼리 수 불변. 시작 가드가 crm_test* 를 보므로
+      # 전용 DB 를 만들고 이 단계에만 DATABASE_URL 을 덮어쓴다(다른 단계 env 불변)
+      - name: "④-f 글 수정 흐름 시험 (test_edit_flow.py)"
+        env:
+          DATABASE_URL: postgresql://postgres:crm@localhost:5432/crm_test_edit_flow
+        run: |
+          python - <<'PY'
+          import psycopg
+          with psycopg.connect("postgresql://postgres:crm@localhost:5432/crm", autocommit=True) as c:
+              c.execute("CREATE DATABASE crm_test_edit_flow")
+          PY
+          python server/test_edit_flow.py
+
       # 이전 CLI 시험 가드는 DB 이름을 crm_test_bi_mig 하나로 고정한다(test_migrate_cli.ALLOWED_DBS)
       - name: "④-c board 이전 CLI 시험 (test_migrate_cli.py)"
         env:

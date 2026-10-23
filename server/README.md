@@ -237,7 +237,7 @@ DATABASE_URL=… .venv/bin/python migrate_cli.py close  <명세.json> --user <ui
 
 ## 운영 — 휴지통 (PR-1)
 
-[삭제] = 휴지통 이동, 168시간(서버 시각) 안 [복원]·[영구 삭제]. 대상 5종 = 내 글(`records`) · 항목(`items`, 적용된 것 — 기준·결정·축·커스텀) · 사람(`people`) · 읽고 든 생각(`source_reflections`) · 활동(`activities`, 원천 전체 판). 후보는 독립 대상이 아니다(부모 글을 따라 숨고 정리된다). 승인 대기·제안·확정 전 정리 텍스트는 PR-2.
+[삭제] = 휴지통 이동, 168시간(서버 시각) 안 [복원]·[영구 삭제]. 대상 5종 = 내 글(`records`) · 항목(`items`, 적용된 것 — 기준·결정·축·커스텀) · 사람(`people`) · 읽고 든 생각(`source_reflections`) · 활동(`activities`, 원천 전체 판). 후보는 독립 대상이 아니다(부모 글을 따라 숨고 정리된다). 승인 대기·제안·확정 전 정리 텍스트는 아래 PR-2 절.
 
 - **저장**: 5종 공통 열 `trashed_at`(NULL = 일반 이용) · `purge_at`(복원 기한 = 이동 + 168h, 수동 영구 삭제 = 요청 시각) · `last_trashed_at`(마지막 이동, 복원해도 남는다 — 그 전에 시작한 작업은 그 대상을 쓰지 못한다). 업무 상태(`decision`·`archived_at`·`review`)·`deleted_at` 과 별개. 행 보존이라 일일 한도는 휴지통 행도 센다. 새 사용자 표 없음.
 - **일반 이용 차단**(스위치 무관): 조회마다 `trashed_at IS NULL`(목록·상세·직접 ID·관계·집계·「나」·`state`·MCP). 관계는 행을 그대로 두고 상대가 휴지통이면 같은 쿼리의 JOIN 으로 숨긴다(`db._links_by_item` 의 `hidden`, `record_links`) — 상대를 복원하면 다시 보이고, 그사이 지운 관계는 돌아오지 않는다. 살아 있는 항목의 필드를 다시 쓰면(제안 적용·편집) 그 필드의 숨은 관계(휴지통 상대)도 함께 지워지고, 상대를 복원해도 돌아오지 않는다 — 수정은 보이는 상태 기준. 휴지통 대상에 일반 쓰기 = `IN-TRASH`. 본문은 휴지통 상세(`trash_get`)에서만. 쿼리 수는 그대로(같은 쿼리의 WHERE·JOIN).
@@ -247,6 +247,28 @@ DATABASE_URL=… .venv/bin/python migrate_cli.py close  <명세.json> --user <ui
 - **진입**(스위치 `CRM_TRASH_ENABLED`, 기본 꺼짐 — 꺼짐 = `SWITCH-OFF`, 기존 동작 그대로): 웹 `GET /api/trash?kind=&cursor=&limit=` · `GET /api/trash/{kind}/{id}` · `POST /api/trash/{move|restore|purge} {kind, id, expected_revision?}`(item·person·reflection 은 이동 때 revision 필수 · 503 SWITCH-OFF · 404 NOT-FOUND · 400 그 밖). MCP `trash_list`(읽기) · `trash_move`·`trash_restore`·`trash_purge`(쓰기, 전역 400MB 관문 면제 — 넘어도 삭제된다). `/api/state` 에 `switches.trash`. 켜짐이면 `item_decide` 의 `exclude`·`pending` = `ACTION-RETIRED`(데이터·revision 불변, `trash_move` 안내) · 사람·생각 삭제(`person_delete`·`source_reflection_delete`, 웹 같은 경로) = 휴지통 이동(연결 있어도 — `PERSON-IN-USE` 없음).
 - **시험**: `test_tools.py` 30절(스키마·옛 DB 이전 · 스위치 꺼짐 회귀 · 4종 이동·차단 전 경로·직접 쓰기·목록/상세·168h 경계(`db.TRASH_CLOCK` 주입)·복원·관계 부활 방지·영구 삭제 요청·경합·ACTION-RETIRED·AXIS-IN-POLICY·400MB · 물리 정리(하루 미룸·참조 순서·실패 건너뛰기·상한·표식) · 웹·MCP·lifespan 비대기). 활동 원천·수신 차단은 `test_trash_flow.py`. 개발 중 한 절만: `CRM_TEST_ONLY=test_trash_core`.
 - **되돌림**: 스위치를 끄면 새 진입만 멈춘다 — 일반 이용 차단·물리 정리는 계속(휴지통 행이 있으면 지킨다). 열은 추가만이라 남겨도 된다. 휴지통을 쓴 뒤엔 휴지통을 모르는 옛 서버로 되돌리지 않는다(휴지통 행이 다시 보인다).
+
+## 운영 — 휴지통 (PR-2 · 보관 전 값)
+
+PR-1 과 같은 함수·라우트·화면을 넓혔다(`db.trash_*` · `/api/trash*` · MCP `trash_*` · 168h · `TRASH_CLOCK` · 정리 회차). 새 종류 4 = `pending`(승인 대기 글, id = 접수 ID) · `item_proposal`(항목 제안, id = 제안 ID `ip_…`) · `definition_proposal`(정의 제안, id = 제안 ID `dp_…`) · `stack_session`(확정 전 대화 정리, id = 세션 ID). 새 종류엔 `expected_revision` 이 없다(null — 제안 ID·세션 ID·접수 ID 자체가 판). 휴지통 목록 행에 `remaining_seconds`(승인 대기·세션 = 휴지통에서 멈춘 남은 대기·임시 보관 초, 그 밖 null) · `restore_state`(pending·proposal·unconfirmed …)와 종류별 키(`entry_kind` · `item_id`·`new_item` · `object_id`·`new_object` · `input_kind`).
+
+- **승인 대기**(`import_entries`): 휴지통 열 3(`trashed_at`·`purge_at`·`last_trashed_at`) + `ck_import_entries_trash`(휴지통은 pending 행만). 휴지통 동안 `state='pending'`·본문·`expires_at` 그대로(동결) — 남은 대기 = `expires_at - trashed_at`(열 없음), 복원 = `expires_at := 복원 시각 + 남은 대기`. 대기 목록·상세·승인·제외·자동 만료·활성 개수·같은 원본 대체(superseded)는 `trashed_at IS NULL` 만. 전이·정리는 `imports.trash_op`·`imports.trash_purge_due`(db 가 사용자 잠금 뒤 부른다). 영구 삭제 = `state='deleted'`·본문 NULL·`last_trashed_at` 남김·`deleted_target_id` NULL(대상 영구 삭제 표식과 구별 — excluded·expired 로 꾸미지 않는다). public 이라 운영 백업에 들어간다.
+- **항목 제안**: 적용된 항목의 제안 자리(`draft_*`) = 삭제 때 새 표 `trashed_proposals`(제안 ID 그대로·`item_id`·`base_revision`·`doc`·휴지통 열 3)로 옮기고 자리를 비운다(한 트랜잭션, 항목 값·revision 그대로). 새 항목 제안(revision 0 행) = 같은 ID 행 그대로 `items` 휴지통 열. 복원 = 같은 제안 ID 로 자리에 — 자리에 새 제안이 있으면 `CONFLICT`(양쪽 그대로, 덮어쓰지 않는다). 적용은 기존 `base_revision`·링크 재검증 + `IN-TRASH`(대상이 휴지통). 제안에 새 만료 없음.
+- **정의 제안**(버리기 진입점 신설 = `trash_move(kind=definition_proposal)`): 자리(`object_defs.draft_*`)를 `trashed_proposals`(`object_id`)로. 적용된 정의는 그대로. 새 오브젝트 제안(revision 0 행)은 자리를 비운 행이 남고 일반 경로(`definitions` 직접 ID 포함)에서 숨는다 — 영구 삭제 때 다른 보존 제안·새 제안이 없으면 그 행도 지운다.
+- **확정 전 정리 텍스트**(삭제 단위 = 세션 `stack_sessions`): 휴지통 열 3 + `ck_stack_sessions_trash`, `jobs.trashed_at`(result_ready 만 — `ck_jobs_trash`). 이동 = 진행 중 작업(queued·leased·running) `cancelled`(PC 의 늦은 요청 = `JOB-GONE`, 복원해도 재개 없음) + result_ready 작업·세션에 같은 `trashed_at`(만료 동결). 확정·만료 세션 = `JOB-GONE`. 복원 = 세션·각 작업 `expires_at := 복원 시각 + (expires_at - trashed_at)`(각자 잔여, 24h 재부여·created+24h 재적용 없음). 본문은 tmp 그대로 — 목록 제목·상세는 tmp 결과를 읽기만(public 복제 없음, 운영 백업 제외 유지). `_job_sweep` 은 휴지통 세션·작업을 만료·임시 본문 삭제에서 뺀다(조건 보정 — 물리 삭제는 넣지 않았다). 일반 이용 차단 = 세션 GET·현재 세션·작업 GET·취소·제외·확정·이어 쓰기(`IN-TRASH`/`NOT-FOUND`), 열린 작업 수에서 제외. 영구 삭제 = 정리 회차가 작업·세션 행 DELETE(tmp 4표는 FK CASCADE). 작업 상태 값은 넓히지 않았다 — 행이 없으면 PC 는 `JOB-GONE` 으로 버린다.
+- **옛 거절**(스위치 켜짐만, 데이터·revision 불변 — 삭제로 조용히 번역하지 않는다): `item_decide` 의 `discard` = `ACTION-RETIRED`(+ `exclude`·`pending` 는 PR-1) · 웹 `POST /api/inbox/{id}/exclude` = `ACTION-RETIRED`. 꺼짐 = 기존 그대로.
+- **물리 정리**: `main.trash_purge_round` = 활동 원천 → 승인 대기(`imports.trash_purge_due`, 반환 키 `inbox`) → `db.trash_purge_due`(기록 → 항목·새 항목 제안 → 사람 → 생각 → 세션 → 보존 제안). 회차 시간·대상 수 상한을 이어 넘긴다. 규칙은 PR-1 과 같다(오늘 옮긴 것은 다음 날 · 대상마다 트랜잭션 + statement_timeout · 실패 건너뛰기).
+- **HTTP 상태**(웹, 같은 코드 = 같은 상태): `IN-TRASH`·`INBOX-EXPIRED`·`INBOX-RESOLVED`·`INBOX-NOT-LATEST`·`INBOX-FULL`·`CONFLICT`·`ACTION-RETIRED` = 400 — 승인 대기 라우트(`_crm_err`)와 휴지통 라우트(`_TRASH_HTTP`)가 같다. `NOT-FOUND` 404 · `SWITCH-OFF` 503(휴지통 라우트). 장치 API(`imports._HTTP`)의 409 표는 장치 경로 전용이다.
+- **수신 상태 조회**(`entry_status`)의 `state: deleted · source_deleted: null` = ① 차단 뒤 원천이 복원된 전송 또는 ② 휴지통에서 영구 삭제한 승인 대기 — PC 는 둘 다 accepted 로 처리한다.
+- **휴지통 목록 인덱스**: 가지마다 `trashed_at > 지금 - 168h`(결과가 같은 중복 조건) + `purge_at + 0초 > 지금`(정리용 `ix_<t>_purge` 회피, `db._LIST_LIVE`) — 고른 사용자 분포에서 소유자 부분 인덱스 `ix_<t>_trash` 로 본인 행만 읽는다(실측은 `db._TRASH_LIST_SQL` 위 주석). 기준 쿼리와 같은 결과는 31h 가 본다.
+- **표준 편입**: 정의 제안을 휴지통에 넣어 자리가 빈 revision 0 행이 표준 key 를 쥐면 미리보기 충돌 `key_in_trash`(이름 null, 편입 `DEF-INVALID`) — 복원하면 `key_draft_only`, 영구 삭제(정리) 뒤 `missing`.
+- **「지금」 = 문장 시작 시각**(`db._TNOW` = `statement_timestamp()`, PR-1 은 `now()`): 잠금을 기다린 복원이 뒤에 커밋된 영구 삭제보다 이른 「지금」으로 복원 가능하다고 판정해 둘 다 성공하던 경합을 막는다(31c 경합 시험에서 드러남 — PR-1 종류도 같은 상수라 함께 고쳐졌다).
+- **알려진 한계**: 새 정의 제안(revision 0 오브젝트)은 `/api/state` 에 실리지 않아 화면 [삭제] 가 없다 — MCP `trash_move(kind=definition_proposal)` 로만(후속).
+- **계정 삭제**: `trashed_proposals` 를 `DELETE_TABLES`(items 앞)에 넣었다. tmp 는 기존 `_tmp_delete_user`.
+- **쿼리 수**: 일반 조회는 기존 쿼리의 WHERE 만(`state` 17 · `me_home` 7 · `definitions` 4 · `item_proposals` 2 · `items` 2 · `stack_session_current` 1 — main 98ecb94 과 같다). 휴지통 목록은 1 → 2(tmp 표 이름을 정하는 `current_schema()` 1).
+- **MCP**: `trash_*` 의 `kind` Literal 에 4 값 추가 · `item_decide` 설명 · INSTRUCTIONS 한 줄 — 도구 스키마가 바뀌어 ChatGPT 커넥터는 재승인, Claude 커넥터는 다시 연결.
+- **시험**: `test_tools.py` 31절(스키마·옛 DB 이전 · 항목·정의 제안 · 세션 잔여시간·sweep 보존·재개 아님 · 승인 대기 db 진입 · 경합(적용 vs 삭제·복원 vs 영구 삭제) · 168h 경계(시각 주입) · 스위치 꺼짐 회귀 · 물리 정리·계정 삭제 · 웹·MCP). 승인 대기 의미 시험은 `test_trash_flow.py`. 개발 중 한 절만: `CRM_TEST_ONLY=test_trash2_sessions`.
+- **되돌림**: PR-1 과 같다 — 스위치를 끄면 새 진입만 멈추고 휴지통 행 숨김·만료 동결·물리 정리는 계속. 열·표는 추가만.
 
 ## 웹 (`web.py` · `app.html`)
 - 로그인은 MCP 와 같은 AuthKit. `/login` 이 PKCE(S256)·`resource=<주소>/mcp` 로 authorize 에 보내고, 콜백에서 받은 액세스 토큰을

@@ -1,6 +1,11 @@
 -- My CRM — Postgres 스키마 (2026-10-18 확정, 같은 날 Codex 토론 반영). 설계 근거: data-model.md
 -- 행 격리: 모든 조회·쓰기는 user_id 로 묶는다 (OWD Private). 자식은 (user_id, 부모id) 복합 FK 로 다른 사용자 행을 참조 못 한다.
 
+-- 글 수정(2026-10-23): 본문 해시 규칙 = UTF-8 바이트의 sha256 hex(Python hashlib.sha256(body.encode("utf-8")) 와 같다).
+-- convert_to 는 STABLE 이라 generated column 에 바로 못 쓴다 — 서버 인코딩 UTF8 고정이라 IMMUTABLE 로 감싼다(records·items.body_sha).
+CREATE OR REPLACE FUNCTION crm_sha256_utf8(t text) RETURNS text LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+  AS $$ SELECT encode(sha256(convert_to(t, 'UTF8')), 'hex') $$;
+
 CREATE TABLE IF NOT EXISTS users (
   id            text PRIMARY KEY,                 -- u_...
   email         text NOT NULL UNIQUE,             -- 소문자 정규화. 매직링크·Google 같은 이메일이면 같은 행
@@ -89,7 +94,15 @@ CREATE TABLE IF NOT EXISTS records (
   trashed_at         timestamptz,
   purge_at           timestamptz,
   last_trashed_at    timestamptz,
+  -- 글 수정(2026-10-23, A′). 현재 행 = 최신 판. 이전 판은 record_versions(최초 수신 원문 포함). 옛 DB 는 db._migrate_edit 가 열·CHECK 를 더한다(기존 행 = 판 1).
+  -- content_version = 내용 판(웹 저장마다 +1) · change_no = 변경 번호(저장·휴지통 이동·복원마다 +1) · content_at = 지금 판이 된 시각(NULL = 처음부터)
+  content_version    integer NOT NULL DEFAULT 1,
+  change_no          integer NOT NULL DEFAULT 0,
+  content_at         timestamptz,
+  body_sha           text GENERATED ALWAYS AS (crm_sha256_utf8(body)) STORED,
   UNIQUE (user_id, id),
+  CONSTRAINT ck_records_content_version CHECK (content_version > 0),
+  CONSTRAINT ck_records_change_no CHECK (change_no >= 0),
   CONSTRAINT ck_records_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
   CONSTRAINT fk_records_source FOREIGN KEY (user_id, source_id) REFERENCES sources(user_id, id),   -- 같은 사용자 출처만
   FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE SET NULL (question_id),  -- Lookup
@@ -171,7 +184,10 @@ CREATE TABLE IF NOT EXISTS candidates (
   revision         integer NOT NULL DEFAULT 1,
   wording_by       text,
   wording_approved boolean NOT NULL DEFAULT false,
+  -- 글 수정(2026-10-23): quote·오프셋이 가리키는 기록 판(records.content_version). 기존 후보 = 판 1. 옛 DB 는 db._migrate_edit
+  record_version   integer NOT NULL DEFAULT 1,
   UNIQUE (user_id, id),
+  CONSTRAINT ck_candidates_record_version CHECK (record_version > 0),
   UNIQUE (user_id, record_id, quote_start, quote_end),   -- 같은 근거 구간 재등록 방지
   FOREIGN KEY (user_id, record_id)   REFERENCES records(user_id, id)   ON DELETE CASCADE,   -- M-D: 근거 없는 판단 없음
   FOREIGN KEY (user_id, question_id) REFERENCES questions(user_id, id) ON DELETE RESTRICT,
@@ -303,7 +319,11 @@ CREATE TABLE IF NOT EXISTS items (
   trashed_at          timestamptz,
   purge_at            timestamptz,
   last_trashed_at     timestamptz,
+  -- 글 수정(2026-10-23) — 변경 번호(웹 저장·휴지통 이동·복원마다 +1, revision 과 별개) · 본문 해시. 옛 DB 는 db._migrate_edit
+  change_no           integer NOT NULL DEFAULT 0,
+  body_sha            text GENERATED ALWAYS AS (crm_sha256_utf8(body)) STORED,
   PRIMARY KEY (user_id, id),
+  CONSTRAINT ck_items_change_no CHECK (change_no >= 0),
   CONSTRAINT ck_items_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)),
   UNIQUE (user_id, id, object_id),                  -- item_links 복합 FK 대상
   CONSTRAINT ck_items_ingest_kind CHECK (ingest_kind IN ('legacy','interactive','inbox','board_migration')),
@@ -471,6 +491,12 @@ CREATE TABLE IF NOT EXISTS import_entries (
   target_activity_id   text,
   target_item_revision integer CHECK (target_item_revision >= 0),
   deleted_target_id    text,                        -- 휴지통 PR-1: state=deleted 행만 — 영구 삭제 직전 target_* 값(불투명 ID 표식, FK 없음, 본문 아님). 옛 DB 는 _migrate_trash
+  -- 휴지통 PR-2(승인 대기): pending 행만. 휴지통 동안 state·payload·expires_at 그대로(동결) — 남은 대기 = expires_at - trashed_at.
+  -- 복원 = expires_at := 복원 시각 + 남은 대기. 영구 삭제 = state='deleted'·payload NULL·trashed_at/purge_at NULL·last_trashed_at 남김(deleted_target_id NULL).
+  -- 옛 DB 는 db._migrate_trash2 가 열·CHECK·인덱스를 더한다
+  trashed_at           timestamptz,
+  purge_at             timestamptz,
+  last_trashed_at      timestamptz,
   batch_id             text,
   manifest_sha256      bytea,
   transform_version    text NOT NULL,
@@ -492,7 +518,9 @@ CREATE TABLE IF NOT EXISTS import_entries (
   CHECK (state NOT IN ('applied','noop') OR num_nonnulls(target_object_id, target_item_id, target_record_id, target_activity_id) = 1),
   CHECK (NOT is_current_applied OR state IN ('applied','noop')),
   CHECK (target_item_revision IS NULL OR target_item_id IS NOT NULL),
-  CHECK (kind <> 'activity' OR state <> 'pending')
+  CHECK (kind <> 'activity' OR state <> 'pending'),
+  CONSTRAINT ck_import_entries_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)
+                                            AND (trashed_at IS NULL OR state = 'pending'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_import_latest ON import_entries (user_id, stream_id, original_id) WHERE is_latest_received;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_import_current ON import_entries (user_id, stream_id, original_id) WHERE is_current_applied;
@@ -516,7 +544,7 @@ CREATE TABLE IF NOT EXISTS item_history (
   id            bigserial PRIMARY KEY,
   user_id       text NOT NULL,
   item_id       text NOT NULL,
-  action        text NOT NULL,                      -- apply · confirm · exclude · pending · archive · restore
+  action        text NOT NULL,                      -- apply · confirm · exclude · pending · archive · restore · edit · edit_confirm(글 수정 웹 저장 — 미확정 기준 첫 확정)
   prev_revision integer NOT NULL,
   prev_state    jsonb NOT NULL,                     -- title·body·data·decision·code·schema_revision·links·archived
   event_meta    jsonb NOT NULL DEFAULT '{}',
@@ -721,8 +749,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at          timestamptz NOT NULL DEFAULT now(),
   expires_at          timestamptz NOT NULL,       -- created_at + 24h(서버 시각). 연장 없음
   terminal_at         timestamptz,
+  -- 휴지통 PR-2: 세션(stack_sessions)을 휴지통에 넣을 때 그 세션의 result_ready 작업만 같은 시각. NULL = 일반. 휴지통 동안 expires_at 동결 —
+  -- 남은 보관 = expires_at - trashed_at, 복원 = 복원 시각 + 남은 보관. _job_sweep 만료·임시 본문 삭제는 이 열이 NULL 인 작업만. 옛 DB 는 _migrate_trash2
+  trashed_at          timestamptz,
   UNIQUE (user_id, id),
   CHECK ((status IN ('confirmed','failed','cancelled','expired','needs_check')) = (terminal_at IS NOT NULL)),
+  CONSTRAINT ck_jobs_trash CHECK (trashed_at IS NULL OR status = 'result_ready'),
   CHECK (status <> 'failed' OR reason_code IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_queue ON jobs (user_id, created_at) WHERE status = 'queued';
@@ -742,8 +774,15 @@ CREATE TABLE IF NOT EXISTS stack_sessions (
   confirm_event_id  uuid,                             -- 확정되면 그 확인 이벤트
   created_at        timestamptz NOT NULL DEFAULT now(),
   terminal_at       timestamptz,                      -- 확정·만료 시각
+  -- 휴지통 PR-2(확정 전 정리 텍스트, 삭제 단위 = 세션). records 와 같은 뜻 + 휴지통 동안 expires_at 동결(남은 보관 = expires_at - trashed_at,
+  -- 복원 = 복원 시각 + 남은 보관 — 24h 재부여 없음). 본문은 tmp 그대로(public 복제 없음). 영구 삭제 = 세션·작업 행 DELETE(tmp 는 FK CASCADE). 옛 DB 는 _migrate_trash2
+  trashed_at        timestamptz,
+  purge_at          timestamptz,
+  last_trashed_at   timestamptz,
   UNIQUE (user_id, id),
-  CHECK (confirm_event_id IS NULL OR terminal_at IS NOT NULL)
+  CHECK (confirm_event_id IS NULL OR terminal_at IS NOT NULL),
+  CONSTRAINT ck_stack_sessions_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)
+                                            AND (trashed_at IS NULL OR terminal_at IS NULL))
 );
 
 -- 확인 이벤트 = 사용자가 미리보기 하나(버전·해시)를 보고 [확정] 1번. 대화 정리 기록의 인용 적격 근거(db._eligible). 계정 존속 기간 보관.
@@ -765,7 +804,8 @@ CREATE TABLE IF NOT EXISTS confirm_events (
   UNIQUE (user_id, session_id)                      -- 세션당 확정 1번
 );
 
--- 판 이력 = 확인 1번으로 확정한 판단(principle) 항목의 불변 판. 확정 판은 고치지 않는다 — 새 판 + 이전 판 ID. 인용은 당시 판을 가리킨다.
+-- 판 이력 = 항목의 불변 판. 확인 1번으로 확정한 판단(principle) 판(confirm_event_id) + 글 수정(2026-10-23) 웹 저장 판(모든 종류, 확인 증거는 content_confirms)
+-- + 웹 저장 직전 현재 행이 어느 판과도 같지 않을 때 보존한 이전 상태 판(증거 없음). 확정 판은 고치지 않는다 — 새 판 + 이전 판 ID.
 CREATE TABLE IF NOT EXISTS item_versions (
   user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   id               text NOT NULL,                    -- iv_...
@@ -798,3 +838,69 @@ CREATE TABLE IF NOT EXISTS item_stage (
   PRIMARY KEY (user_id, item_id),
   FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE
 );
+
+-- 휴지통 PR-2(2026-10-23, astra r4 §5) — 미적용 제안의 독립 보존 단위. 적용된 항목(items)·정의(object_defs)의 제안 자리(draft_*)는 하나뿐이라,
+-- 제안을 [삭제]하면 그 내용을 여기로 옮기고 자리를 비운다(한 트랜잭션). 행은 휴지통에 있는 동안만 산다 — 복원 = 같은 제안 ID 로 자리에 되돌리고 이 행 DELETE
+-- (자리에 새 제안이 있으면 CONFLICT, 덮어쓰지 않는다) · 영구 삭제 = 이 행 DELETE. 새 정의 제안(revision 0 오브젝트)도 여기 — 자리를 비운 revision 0 행은 남는다.
+-- 새 항목 제안(revision 0 items 행)은 여기가 아니라 items 의 휴지통 열(같은 ID). 계정 삭제 = db.DELETE_TABLES.
+CREATE TABLE IF NOT EXISTS trashed_proposals (
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id               text NOT NULL,                     -- 제안 ID 그대로(ip_… · dp_…)
+  item_id          text,                              -- 항목 제안이면 그 항목
+  object_id        text,                              -- 정의 제안이면 그 오브젝트
+  base_revision    integer NOT NULL CHECK (base_revision >= 0),   -- 제안을 만든 때의 대상 revision(draft_base_revision)
+  doc              jsonb NOT NULL,                    -- draft_doc 그대로
+  trashed_at       timestamptz NOT NULL,
+  purge_at         timestamptz NOT NULL,
+  last_trashed_at  timestamptz NOT NULL,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE,
+  CHECK (num_nonnulls(item_id, object_id) = 1)
+);
+
+-- 글 수정(2026-10-23, notes 글-수정-구현계획 · astra r2 A′) — 내 글의 이전 판. 웹 저장 직전의 현재 행을 그대로 옮긴다(판 1 = 최초 수신 원문).
+-- 당시 출처·처리 판정을 함께 남긴다(판별 재현). 기록 영구 삭제 = CASCADE. 계정 삭제 = db.DELETE_TABLES.
+CREATE TABLE IF NOT EXISTS record_versions (
+  user_id            text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  record_id          text NOT NULL,
+  version_no         integer NOT NULL CHECK (version_no > 0),
+  title              text NOT NULL,
+  body               text NOT NULL,
+  body_sha           text NOT NULL CHECK (body_sha ~ '^[0-9a-f]{64}$'),
+  author_kind        text NOT NULL,
+  text_process       text NOT NULL,
+  generation_kind    text NOT NULL,
+  source             text NOT NULL,
+  source_id          text,
+  provenance_history jsonb NOT NULL,
+  became_current_at  timestamptz NOT NULL,              -- 이 판이 현재 판이 된 시각
+  replaced_at        timestamptz NOT NULL DEFAULT now(),  -- 다음 판이 저장된 시각
+  PRIMARY KEY (user_id, record_id, version_no),
+  FOREIGN KEY (user_id, record_id) REFERENCES records(user_id, id) ON DELETE CASCADE
+);
+
+-- 확인 증거 = 사용자가 그 판(번호·본문 해시)을 확인했다는 사실. 인용 적격은 「현재 판에 대응하는 최신 증거의 판·해시 일치」(db._elig_sql).
+-- direct_edit = 웹 직접 저장(request_id·request_sha·response = 같은 요청 재전송에 그대로 돌려줄 식별자만, 본문 없음) · stack_confirm = 확인 1번(정리 글 판 1).
+-- body_sha NULL = 모름(기존 확인 이벤트의 당시 해시가 현재 본문과 달라 소급하지 않은 것). 대상 두 종류라 FK 없음 — 영구 삭제(_purge_*)·계정 삭제가 지운다.
+CREATE TABLE IF NOT EXISTS content_confirms (
+  id               bigserial PRIMARY KEY,
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_kind      text NOT NULL CHECK (target_kind IN ('record','item')),
+  target_id        text NOT NULL,
+  version_no       integer NOT NULL CHECK (version_no > 0),
+  body_sha         text CHECK (body_sha ~ '^[0-9a-f]{64}$'),
+  kind             text NOT NULL CHECK (kind IN ('direct_edit','stack_confirm')),
+  confirmed_by     text NOT NULL,
+  confirmed_at     timestamptz NOT NULL DEFAULT now(),
+  confirm_event_id uuid,
+  request_id       text CHECK (request_id ~ '^[A-Za-z0-9_-]{8,64}$'),
+  request_sha      text CHECK (request_sha ~ '^[0-9a-f]{64}$'),
+  response         jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(response) = 'object'),
+  meta             jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(meta) = 'object'),
+  UNIQUE (user_id, request_id),
+  CHECK ((request_id IS NULL) = (request_sha IS NULL)),
+  CHECK ((kind = 'direct_edit') = (request_id IS NOT NULL)),
+  FOREIGN KEY (user_id, confirm_event_id) REFERENCES confirm_events(user_id, id)
+);
+CREATE INDEX IF NOT EXISTS ix_content_confirms_target ON content_confirms (user_id, target_kind, target_id, version_no DESC, id DESC);

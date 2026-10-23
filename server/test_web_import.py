@@ -249,6 +249,17 @@ def test_static():
     assert "e.approve_notice" in js and "처음 수집한 날" in js and "날짜 미확인" in js
     # AI 생성 정보 — 계약 열거값은 사람 말로(원값 노출 금지), 모르는 값은 「기타」 + 원값
     assert 'method: {ai_summary: "AI 요약"' in js and 'input_scope: {self_only: "내 글만"}' in js and "기타 <span" in js
+    # 승인 대기 화면(휴지통 PR-2) — 거절 = 켜짐 [삭제](휴지통, 오늘로) · 꺼짐 [제외](기존 경로·확인창 그대로) · 상태 excluded 라벨 = 「반영 안 함」(동작 불변) ·
+    # 안내 = 켜짐이면 대기시간(휴지통 동안 멈춤)·만료·영구 삭제, 꺼짐이면 기존 「승인·제외·만료 때 지워요」 · 오늘 빈 상세 안내에 거절 동사 0
+    one = js[js.index("function inboxOne(e) {"):js.index("\n}\n", js.index("function inboxOne(e) {"))]
+    assert 'trashOn() ? trashBtn("pending", e.id, null, "#_today") : `<button class="secondary" type="button" data-core="inbox-exclude" data-id="${esc(e.id)}">제외</button>`' in one
+    assert 'data-core="inbox-approve"' in one and one.count("<button") == 2, "버튼 = [승인] + 거절 1(켜짐 [삭제]는 trashBtn)"
+    assert 'if (!window.confirm("이 글을 제외할까요? 대기 본문이 지워지고 되돌릴 수 없어요.")) return;' in js and 'url = `/api/inbox/${encodeURIComponent(id)}/exclude`' in js, "꺼짐 = 기존 [제외] 경로 그대로"
+    assert 'const INBOX_STATE = {pending: "대기", applied: "승인함", excluded: "반영 안 함", expired: "만료", all: "전체"};' in js and "제외함" not in js
+    lst = js[js.index("function renderInbox(a) {"):js.index("\n}\n", js.index("function renderInbox(a) {"))]
+    assert "trashOn() ?" in lst and "[삭제]하면 휴지통에 있는 동안 남은 대기시간이 멈춰요." in lst and "승인·제외·만료 때 지워요." in lst
+    assert "대기 글을 고르면 여기서 본문을 보고 승인해요. 승인해야 저장돼요." in js and "승인하거나 제외해요" not in js
+    assert "지난 승인 대기(승인함·반영 안 함·만료)" in js
     # 감사 라벨 — schema.sql admin_audit CHECK 의 모든 action 에 표시 이름
     sql = (HERE / "schema.sql").read_text(encoding="utf-8")
     blk = re.search(r"CREATE TABLE IF NOT EXISTS admin_audit \((.*?)\n\);", sql, re.S).group(1)

@@ -417,6 +417,13 @@ _CODE_RE = re.compile(r"^[A-Z][A-Z-]*$")
 JOURNAL_PAGE = 50   # S.journal = db.records(uid) 기본 limit 과 같은 값
 
 
+def journal_out(r) -> dict:
+    """/api/journal 응답 꼴 — 글 수정(2026-10-23): 지금 판(content_version)·변경 번호(change_no)·확인(confirmed)·인용 적격(eligible) 포함."""
+    return {"id": r["id"], "title": r["title"], "body": r["body"],
+            "meta": {"created": r["created"], "source": r["source"], "question_id": r["question_id"]},
+            "content_version": r["content_version"], "change_no": r["change_no"], "confirmed": r["confirmed"], "eligible": r["eligible"]}
+
+
 def record_cursor(row):
     """기록 목록 커서 — 불투명 "<created iso>|<id>". /api/state journal_next_before 와 /api/records next_before 가 이 함수 하나로 만든다.
     화면은 이 값을 그대로 /api/records?before= 로 되돌려 보낸다(db.records 의 keyset (created,id))."""
@@ -1334,9 +1341,7 @@ class Web:
             r = await run_in_threadpool(db.record_get, uid, rid)
         except db.CrmError as e:
             return JSONResponse({"code": e.code, "msg": e.message}, status_code=404)
-        return JSONResponse({"id": r["id"], "title": r["title"], "body": r["body"],
-                             "meta": {"created": r["created"], "source": r["source"], "question_id": r["question_id"]}},
-                            headers={"cache-control": "no-store"})
+        return JSONResponse(journal_out(r), headers={"cache-control": "no-store"})
 
     async def api_records(self, request):
         """GET ?before=<커서>&limit=<1..100> — 기록 목록 이어 받기(PR① 홈 「더 보기」). 행 모양 = /api/state journal. 읽기만.
@@ -1477,9 +1482,10 @@ class Web:
     # ── PR B 코어 쓰기: 나 · 사람 · 출처 · 출처 요약/반응 ──
     # 공통 = 세션(401) → Origin(403) → JSON 본문 모양(400 ARG-INVALID) → db.write_gate(길이 · NAME-REQUIRED 403 · 전역 크기) → db.
     # 대상 사용자 = 세션 uid 뿐(본문에 사용자 id 인자가 없다). 남의 id·없는 id = NOT-FOUND 404(같은 모양).
-    async def _core_write(self, request, op: str, shape: dict, call, json_limits: dict | None = None):
+    async def _core_write(self, request, op: str, shape: dict, call, json_limits: dict | None = None, on_error=None):
         """shape = {키: (타입들, 필수)}. call(uid, body) → db 결과. op = db.write_gate 의 쓰기 이름(NAME_EXEMPT 면 관문 면제).
-        json_limits = {키: 바이트} — 문자열이 아닌 값(객체)의 JSON 길이 상한(WRITE_LIMITS 밖 웹 전용 쓰기). 넘으면 400 PAYLOAD-LIMIT(write_gate 전)."""
+        json_limits = {키: 바이트} — 문자열이 아닌 값(객체)의 JSON 길이 상한(WRITE_LIMITS 밖 웹 전용 쓰기). 넘으면 400 PAYLOAD-LIMIT(write_gate 전).
+        on_error = CrmError → 응답(없으면 _crm_err)."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1509,8 +1515,55 @@ class Web:
         try:
             out = await run_in_threadpool(write)
         except db.CrmError as e:
-            return self._crm_err(e)
+            return (on_error or self._crm_err)(e)
         return JSONResponse(out, headers={"cache-control": "no-store"})
+
+    # ── 글 수정 (2026-10-23) — 내 글·항목 제목·본문 그 자리 저장 = 확정(웹 전용, MCP 도구 없음). _core_write(세션 401 → Origin 403 → 모양 400
+    # → db.write_gate('content_edit' — 표시 이름 관문·전역 크기, 길이는 db 함수 안) → db). 성공 = 상세 응답(/api/journal·/api/item 꼴) + saved.
+    # 오류 = CONFLICT(latest 동봉)·IN-TRASH·PROPOSAL-PENDING·EDIT-REQUEST-MISMATCH 409 · RATE-LIMIT 429 · NOT-FOUND 404 · NAME-REQUIRED 403 · 그 밖 400.
+    _EDIT_HTTP = {"CONFLICT": 409, "IN-TRASH": 409, "PROPOSAL-PENDING": 409, "EDIT-REQUEST-MISMATCH": 409, "RATE-LIMIT": 429}
+
+    def _edit_err(self, e) -> JSONResponse:
+        status = self._EDIT_HTTP.get(e.code)
+        if status is None:
+            return self._crm_err(e)
+        body = {"code": e.code, "msg": e.message, "action": e.action}
+        if getattr(e, "latest", None) is not None:
+            body["latest"] = e.latest
+        return JSONResponse(body, status_code=status, headers={"cache-control": "no-store"})
+
+    _EDIT_COMMON = {"title": ((str,), True), "body": ((str,), True), "expected_change": ((int,), True), "request_id": ((str,), True),
+                    "restored_from_version": ((int,), False)}
+
+    async def api_record_edit(self, request):
+        """POST {record_id, title, body, expected_version, expected_change, request_id, restored_from_version?} — db.record_edit."""
+        shape = {"record_id": ((str,), True), "expected_version": ((int,), True), **self._EDIT_COMMON}
+
+        def call(uid, b):
+            out = db.record_edit(uid, b["record_id"], b["title"], b["body"], b["expected_version"], b["expected_change"], b["request_id"],
+                                 b.get("restored_from_version"))
+            return {**journal_out(db.record_get(uid, b["record_id"])), **out}
+        return await self._core_write(request, "content_edit", shape, call, on_error=self._edit_err)
+
+    async def api_item_edit(self, request):
+        """POST {item_id, title, body, expected_revision, expected_change, request_id, restored_from_version?} — db.item_edit."""
+        shape = {"item_id": ((str,), True), "expected_revision": ((int,), True), **self._EDIT_COMMON}
+
+        def call(uid, b):
+            out = db.item_edit(uid, b["item_id"], b["title"], b["body"], b["expected_revision"], b["expected_change"], b["request_id"],
+                               b.get("restored_from_version"))
+            return {**db.item_get(uid, b["item_id"]), **out}
+        return await self._core_write(request, "content_edit", shape, call, on_error=self._edit_err)
+
+    async def api_record_version(self, request):
+        """GET ?id=&v= — 내 글 판 하나(지금 판 = 현재 행, 이전 판 = 이력). 없는 판·휴지통 = 404."""
+        rid, v = request.query_params.get("id", ""), self._qint(request, "v", 0, 0, 2 ** 31 - 1)
+        return await self._core_read(request, lambda uid: db.record_version_get(uid, rid, v))
+
+    async def api_item_version(self, request):
+        """GET ?id=&v= — 항목 판 하나(item_versions). 없는 판·휴지통 = 404."""
+        iid, v = request.query_params.get("id", ""), self._qint(request, "v", 0, 0, 2 ** 31 - 1)
+        return await self._core_read(request, lambda uid: db.item_version_get(uid, iid, v))
 
     async def api_me_name(self, request):
         """POST {display_name} — 표시 이름 저장. 관문 면제(이름을 정하는 경로)."""
@@ -1606,7 +1659,8 @@ class Web:
 
     async def api_trash_op(self, request):
         """POST /api/trash/{move|restore|purge} {kind, id, expected_revision?} — 이동([삭제]) · 복원 · 영구 삭제 요청.
-        expected_revision = item·person·reflection 의 지금 revision(이동 때 필수), record·activity 는 보내지 않는다."""
+        expected_revision = item·person·reflection 의 지금 revision(이동 때 필수), 그 밖 종류(PR-2 pending·item_proposal·
+        definition_proposal·stack_session 포함)는 보내지 않는다."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1705,9 +1759,16 @@ class Web:
         return await self._core_write(request, "inbox_approve", {}, lambda uid, b: imports.inbox_approve(uid, iid))
 
     async def api_inbox_exclude(self, request):
-        """POST /api/inbox/{id}/exclude {} — 제외(대기 본문 삭제)."""
+        """POST /api/inbox/{id}/exclude {} — 제외(대기 본문 삭제). 휴지통 켜짐(PR-2) = ACTION-RETIRED(데이터 불변) — 거절은 [삭제]
+        (POST /api/trash/move kind=pending). 꺼짐 = 기존 그대로."""
         iid = request.path_params["iid"]
-        return await self._core_write(request, "inbox_exclude", {}, lambda uid, b: imports.inbox_exclude(uid, iid))
+
+        def call(uid, b):
+            if db.trash_on():
+                raise db.CrmError("ACTION-RETIRED", "승인 대기 글 제외는 이제 없어요. 받지 않을 글은 삭제해 휴지통으로 옮겨요.",
+                               "휴지통 이동(kind=pending)으로 삭제하세요(168시간 안에 복원할 수 있어요).")
+            return imports.inbox_exclude(uid, iid)
+        return await self._core_write(request, "inbox_exclude", {}, call)
 
     # ── PR ①-b 페이지 레이아웃 · 「나」 통계 (2026-10-22, 구현계획 §3) ──
     # 레이아웃 쓰기 = PUT(저장)·DELETE(기본 복원) 두 개뿐. 세션 401 → Origin 403 → 모양 400 → db.write_gate → db. 버전 불일치 409 LAYOUT-STALE.
@@ -2605,6 +2666,10 @@ class Web:
             Route("/api/candidate/decide", u("web:candidate_decide", self.api_decide), methods=["POST"]),
             Route("/api/item", u("web:item", self.api_item)),
             Route("/api/item/decide", u("web:item_decide", self.api_item_decide), methods=["POST"]),
+            Route("/api/record/edit", u("web:record_edit", self.api_record_edit), methods=["POST"]),   # 글 수정(2026-10-23)
+            Route("/api/item/edit", u("web:item_edit", self.api_item_edit), methods=["POST"]),
+            Route("/api/record/version", u("web:record_version", self.api_record_version)),
+            Route("/api/item/version", u("web:item_version", self.api_item_version)),
             Route("/api/std/preview", u("web:std_preview", self.api_std_preview)),
             Route("/api/std/choose", u("web:std_choose", self.api_std_choose), methods=["POST"]),
             Route("/api/feedback", u("web:feedback", self.api_feedback), methods=["GET", "POST"]),
