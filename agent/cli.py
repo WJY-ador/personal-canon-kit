@@ -9,6 +9,7 @@ import argparse
 import getpass
 import json
 import os
+import shutil
 import sys
 
 from . import AGENT_VERSION, config as _config, contract, hmacid, keystore, osutil, runner, schedule, store as _store
@@ -334,8 +335,11 @@ def cmd_serve_jobs(ctx: Ctx, a) -> int:
         if flush:
             flush()
 
-    def stop(why: str, err=None, code=EXIT_ERR) -> int:
-        log(jobs._log_line({"event": "start", "stopped": why, "error": type(err).__name__ if err else None}))
+    def stop(why: str, err=None, code=EXIT_ERR, reason=None) -> int:
+        rec = {"event": "start", "stopped": why, "error": type(err).__name__ if err else None}
+        if reason:
+            rec["reason_code"] = reason
+        log(jobs._log_line(rec))
         return code
 
     try:
@@ -356,9 +360,14 @@ def cmd_serve_jobs(ctx: Ctx, a) -> int:
     try:
         if ctx.jobs_adapter_factory:
             adapter = ctx.jobs_adapter_factory(runner)
-        else:   # 실 CLI — MYCRM_JOBS_ALLOW_REAL_CLI=1 이 없으면 JobsError(약관 확인 전)
+        else:   # 실 CLI — 사용자가 MYCRM_JOBS_ALLOW_REAL_CLI=1 로 켜야 만들어진다(없으면 JobsError)
             cli_path = (cfg.get("summary") or {}).get("cli_path")
-            adapter = jobs.ClaudeAdapter([cli_path] if cli_path else [], exec_runner=runner, paths=ctx.paths)
+            if not cli_path:   # config 값이 우선, 비면 PATH 의 claude. 찾은 경로는 config 에 저장하지 않는다
+                found = shutil.which("claude")
+                if not found:
+                    return stop("adapter", reason="cli-not-found")
+                cli_path = os.path.abspath(found)
+            adapter = jobs.ClaudeAdapter([cli_path], exec_runner=runner, paths=ctx.paths)
     except jobs.JobsError as e:
         return stop("adapter", e)
 

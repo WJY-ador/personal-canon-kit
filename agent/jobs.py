@@ -20,7 +20,7 @@
   입력·결과·프롬프트 원문은 메모리에서만 다룬다. CLI 세션 ID 는 서버로 보내지 않는다.
 - 결과 반환·로그엔 상태 코드·규칙 코드만(본문·토큰 없음).
 - 실 CLI: argv 는 summary.py 와 같은 격리(도구 끔·빈 MCP·strict·project 설정만·dontAsk·1턴·json).
-  약관 확인 전에는 실행하지 않는다 — fake 가 아니면 환경변수 MYCRM_JOBS_ALLOW_REAL_CLI=1 이 있어야 어댑터가 만들어진다.
+  사용자가 자기 PC·자기 구독으로 켠다 — fake 가 아니면 환경변수 MYCRM_JOBS_ALLOW_REAL_CLI=1 이 있어야 어댑터가 만들어진다.
 쌓기 단계(②-b, kind=converse) = agent/stack.py:
 - 입력 조회 뒤 정의 스냅샷(`GET …/definitions?lease_generation=N`)을 한 번 받아 job 동안 고정한다.
 - /result 본문 = {lease_generation, envelope:{contract:"stack/1",…}, units, changes, blocked, model_meta}.
@@ -390,14 +390,14 @@ def parse_output(stdout: bytes) -> dict:
 
 
 class ClaudeAdapter:
-    """실행만 주입 가능(exec_runner). fake=False(실 CLI)는 약관 확인 전 막는다."""
+    """실행만 주입 가능(exec_runner). fake=False(실 CLI)는 MYCRM_JOBS_ALLOW_REAL_CLI=1 이 없으면 막는다."""
 
     def __init__(self, cli: list, *, fake: bool = False, exec_runner=None, timeout: float = CLI_TIMEOUT,
                  extra_env: dict | None = None, paths=None, monotonic=time.monotonic):
         if not cli or not all(isinstance(x, str) for x in cli) or not os.path.isabs(cli[0]):
             raise JobsError("cli must start with an absolute path")
         if not fake and os.environ.get(REAL_CLI_ENV) != "1":
-            raise JobsError("real claude CLI blocked until terms are confirmed")
+            raise JobsError("real claude CLI blocked: set MYCRM_JOBS_ALLOW_REAL_CLI=1 to enable")
         self.cli = list(cli)
         self.fake = fake
         self.exec_runner = exec_runner or _subprocess_runner
