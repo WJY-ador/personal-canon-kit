@@ -471,6 +471,12 @@ CREATE TABLE IF NOT EXISTS import_entries (
   target_activity_id   text,
   target_item_revision integer CHECK (target_item_revision >= 0),
   deleted_target_id    text,                        -- 휴지통 PR-1: state=deleted 행만 — 영구 삭제 직전 target_* 값(불투명 ID 표식, FK 없음, 본문 아님). 옛 DB 는 _migrate_trash
+  -- 휴지통 PR-2(승인 대기): pending 행만. 휴지통 동안 state·payload·expires_at 그대로(동결) — 남은 대기 = expires_at - trashed_at.
+  -- 복원 = expires_at := 복원 시각 + 남은 대기. 영구 삭제 = state='deleted'·payload NULL·trashed_at/purge_at NULL·last_trashed_at 남김(deleted_target_id NULL).
+  -- 옛 DB 는 db._migrate_trash2 가 열·CHECK·인덱스를 더한다
+  trashed_at           timestamptz,
+  purge_at             timestamptz,
+  last_trashed_at      timestamptz,
   batch_id             text,
   manifest_sha256      bytea,
   transform_version    text NOT NULL,
@@ -492,7 +498,9 @@ CREATE TABLE IF NOT EXISTS import_entries (
   CHECK (state NOT IN ('applied','noop') OR num_nonnulls(target_object_id, target_item_id, target_record_id, target_activity_id) = 1),
   CHECK (NOT is_current_applied OR state IN ('applied','noop')),
   CHECK (target_item_revision IS NULL OR target_item_id IS NOT NULL),
-  CHECK (kind <> 'activity' OR state <> 'pending')
+  CHECK (kind <> 'activity' OR state <> 'pending'),
+  CONSTRAINT ck_import_entries_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)
+                                            AND (trashed_at IS NULL OR state = 'pending'))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_import_latest ON import_entries (user_id, stream_id, original_id) WHERE is_latest_received;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_import_current ON import_entries (user_id, stream_id, original_id) WHERE is_current_applied;
@@ -721,8 +729,12 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at          timestamptz NOT NULL DEFAULT now(),
   expires_at          timestamptz NOT NULL,       -- created_at + 24h(서버 시각). 연장 없음
   terminal_at         timestamptz,
+  -- 휴지통 PR-2: 세션(stack_sessions)을 휴지통에 넣을 때 그 세션의 result_ready 작업만 같은 시각. NULL = 일반. 휴지통 동안 expires_at 동결 —
+  -- 남은 보관 = expires_at - trashed_at, 복원 = 복원 시각 + 남은 보관. _job_sweep 만료·임시 본문 삭제는 이 열이 NULL 인 작업만. 옛 DB 는 _migrate_trash2
+  trashed_at          timestamptz,
   UNIQUE (user_id, id),
   CHECK ((status IN ('confirmed','failed','cancelled','expired','needs_check')) = (terminal_at IS NOT NULL)),
+  CONSTRAINT ck_jobs_trash CHECK (trashed_at IS NULL OR status = 'result_ready'),
   CHECK (status <> 'failed' OR reason_code IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_queue ON jobs (user_id, created_at) WHERE status = 'queued';
@@ -742,8 +754,15 @@ CREATE TABLE IF NOT EXISTS stack_sessions (
   confirm_event_id  uuid,                             -- 확정되면 그 확인 이벤트
   created_at        timestamptz NOT NULL DEFAULT now(),
   terminal_at       timestamptz,                      -- 확정·만료 시각
+  -- 휴지통 PR-2(확정 전 정리 텍스트, 삭제 단위 = 세션). records 와 같은 뜻 + 휴지통 동안 expires_at 동결(남은 보관 = expires_at - trashed_at,
+  -- 복원 = 복원 시각 + 남은 보관 — 24h 재부여 없음). 본문은 tmp 그대로(public 복제 없음). 영구 삭제 = 세션·작업 행 DELETE(tmp 는 FK CASCADE). 옛 DB 는 _migrate_trash2
+  trashed_at        timestamptz,
+  purge_at          timestamptz,
+  last_trashed_at   timestamptz,
   UNIQUE (user_id, id),
-  CHECK (confirm_event_id IS NULL OR terminal_at IS NOT NULL)
+  CHECK (confirm_event_id IS NULL OR terminal_at IS NOT NULL),
+  CONSTRAINT ck_stack_sessions_trash CHECK ((trashed_at IS NULL) = (purge_at IS NULL) AND (trashed_at IS NULL OR last_trashed_at IS NOT NULL)
+                                            AND (trashed_at IS NULL OR terminal_at IS NULL))
 );
 
 -- 확인 이벤트 = 사용자가 미리보기 하나(버전·해시)를 보고 [확정] 1번. 대화 정리 기록의 인용 적격 근거(db._eligible). 계정 존속 기간 보관.
@@ -797,4 +816,24 @@ CREATE TABLE IF NOT EXISTS item_stage (
   updated_at       timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, item_id),
   FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE
+);
+
+-- 휴지통 PR-2(2026-10-23, astra r4 §5) — 미적용 제안의 독립 보존 단위. 적용된 항목(items)·정의(object_defs)의 제안 자리(draft_*)는 하나뿐이라,
+-- 제안을 [삭제]하면 그 내용을 여기로 옮기고 자리를 비운다(한 트랜잭션). 행은 휴지통에 있는 동안만 산다 — 복원 = 같은 제안 ID 로 자리에 되돌리고 이 행 DELETE
+-- (자리에 새 제안이 있으면 CONFLICT, 덮어쓰지 않는다) · 영구 삭제 = 이 행 DELETE. 새 정의 제안(revision 0 오브젝트)도 여기 — 자리를 비운 revision 0 행은 남는다.
+-- 새 항목 제안(revision 0 items 행)은 여기가 아니라 items 의 휴지통 열(같은 ID). 계정 삭제 = db.DELETE_TABLES.
+CREATE TABLE IF NOT EXISTS trashed_proposals (
+  user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  id               text NOT NULL,                     -- 제안 ID 그대로(ip_… · dp_…)
+  item_id          text,                              -- 항목 제안이면 그 항목
+  object_id        text,                              -- 정의 제안이면 그 오브젝트
+  base_revision    integer NOT NULL CHECK (base_revision >= 0),   -- 제안을 만든 때의 대상 revision(draft_base_revision)
+  doc              jsonb NOT NULL,                    -- draft_doc 그대로
+  trashed_at       timestamptz NOT NULL,
+  purge_at         timestamptz NOT NULL,
+  last_trashed_at  timestamptz NOT NULL,
+  PRIMARY KEY (user_id, id),
+  FOREIGN KEY (user_id, item_id) REFERENCES items(user_id, id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id, object_id) REFERENCES object_defs(user_id, id) ON DELETE CASCADE,
+  CHECK (num_nonnulls(item_id, object_id) = 1)
 );

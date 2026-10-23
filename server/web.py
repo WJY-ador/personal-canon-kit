@@ -1606,7 +1606,8 @@ class Web:
 
     async def api_trash_op(self, request):
         """POST /api/trash/{move|restore|purge} {kind, id, expected_revision?} — 이동([삭제]) · 복원 · 영구 삭제 요청.
-        expected_revision = item·person·reflection 의 지금 revision(이동 때 필수), record·activity 는 보내지 않는다."""
+        expected_revision = item·person·reflection 의 지금 revision(이동 때 필수), 그 밖 종류(PR-2 pending·item_proposal·
+        definition_proposal·stack_session 포함)는 보내지 않는다."""
         uid, err = await self._need(request)
         if err:
             return err
@@ -1705,9 +1706,16 @@ class Web:
         return await self._core_write(request, "inbox_approve", {}, lambda uid, b: imports.inbox_approve(uid, iid))
 
     async def api_inbox_exclude(self, request):
-        """POST /api/inbox/{id}/exclude {} — 제외(대기 본문 삭제)."""
+        """POST /api/inbox/{id}/exclude {} — 제외(대기 본문 삭제). 휴지통 켜짐(PR-2) = ACTION-RETIRED(데이터 불변) — 거절은 [삭제]
+        (POST /api/trash/move kind=pending). 꺼짐 = 기존 그대로."""
         iid = request.path_params["iid"]
-        return await self._core_write(request, "inbox_exclude", {}, lambda uid, b: imports.inbox_exclude(uid, iid))
+
+        def call(uid, b):
+            if db.trash_on():
+                raise db.CrmError("ACTION-RETIRED", "승인 대기 글 제외는 이제 없어요. 받지 않을 글은 삭제해 휴지통으로 옮겨요.",
+                               "휴지통 이동(kind=pending)으로 삭제하세요(168시간 안에 복원할 수 있어요).")
+            return imports.inbox_exclude(uid, iid)
+        return await self._core_write(request, "inbox_exclude", {}, call)
 
     # ── PR ①-b 페이지 레이아웃 · 「나」 통계 (2026-10-22, 구현계획 §3) ──
     # 레이아웃 쓰기 = PUT(저장)·DELETE(기본 복원) 두 개뿐. 세션 401 → Origin 403 → 모양 400 → db.write_gate → db. 버전 불일치 409 LAYOUT-STALE.

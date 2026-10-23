@@ -733,6 +733,8 @@ def confirm(uid, job_id, body):
             raise CrmError("NOT-FOUND", "그 대화 세션을 찾을 수 없어요.")
         if sess["confirm_event_id"] is not None:
             raise db._confirm_stale("이 대화는 이미 확정했어요.")
+        if sess["trashed_at"] is not None:   # 휴지통 PR-2 — 휴지통의 확정 전 정리는 확정할 수 없다(복원 뒤 다시)
+            raise db._in_trash("그 대화 정리")
         if sess["gone_ttl"] or sess["terminal_at"] is not None or j["gone_ttl"] or j["status"] == "expired":
             raise db._job_gone()
         if j["status"] != "result_ready" or sess["latest_job_id"] != jid or sess["latest_preview_id"] != pid:
