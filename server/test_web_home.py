@@ -182,10 +182,10 @@ def test_static():
               '"내 글"', '"질문"', '"검토할 판단"', '"확정한 판단"', '"읽고 든 생각"',
               'location.replace("#_obj/source/"', "(max-width: 767px)"):
         assert w in home, w
-    # S5: 홈 쓰기는 두 곳(저장 homeSave · 동작 버튼 homeDo)에서만 기존 엔드포인트로 — 그 밖(선택·입력·포커스 이탈·취소·전환)은 요청 0.
+    # S5: 홈 쓰기는 세 곳(저장 homeSave · 글 수정 저장 docSave · 동작 버튼 homeDo)에서만 — 그 밖(선택·입력·포커스 이탈·취소·전환)은 요청 0.
     # 목록 위치·종류·편집 중인 글은 메모리에만
-    assert home.count("corePost(") == 2 and "method: \"POST\"" not in home and "localStorage" not in home
-    for f in ("async function homeSave()", "async function homeDo(b)"):
+    assert home.count("corePost(") == 3 and "method: \"POST\"" not in home and "localStorage" not in home
+    for f in ("async function homeSave()", "async function docSave(e)", "async function homeDo(b)"):
         body = home[home.index(f):home.index("\n}\n", home.index(f))]
         assert body.count("corePost(") == 1, f
     for w in ('"/api/me/name"', "/api/reflections/${encodeURIComponent(x.id)}", '"/api/candidate/decide"', '"edit_confirm"', '"/api/item/decide"',
@@ -563,7 +563,7 @@ def test_static_trash():
               'trashOn() ? trashBtn("person", p.id, p.revision, "#_obj/person") : `<button class="secondary" type="button" data-core="person-del"',
               'trashOn() ? trashBtn("reflection", x.id, x.revision, `#_obj/source/${x.source_id}`) : `<button class="secondary" type="button" data-core="refl-del"',
               'trashBtn("item", it.id, it.revision, `#${tab.id}/${d.id}`)', "j.old_revision_links && !trashOn()",
-              '(trashOn() ? homeActs(r) : "")', '${trashOn() ? homeActs({k: "journal", id, x: {id}}) : ""}'):   # 내 글 동작 칸 = 켜짐일 때만(꺼짐 = 현행)
+              ', meta) + homeActs(r) +', '${homeActs({k: "journal", id, x: {id}})}'):   # 내 글 동작 칸 = 늘([수정] 스위치 무관 · [삭제]는 trashBtn 이 켜짐에서만)
         assert w in js, w
     assert 'if (!window.confirm("이 사람을 지울까요? 되돌릴 수 없어요.")) return;' in js and 'if (!window.confirm("이 읽고 든 생각을 지울까요? 되돌릴 수 없어요.")) return;' in js, \
         "꺼짐 = 기존 즉시 삭제 경로 유지"
@@ -647,7 +647,7 @@ const chatCalls = []; const chatReset = () => chatCalls.push("reset"); const cha
 
 
 def test_trash_switch():
-    """스위치별 차이 — 꺼짐(또는 옛 탐색) = [삭제]·휴지통 페이지 0, 기준 [남기기]·[남기지 않기]·[되돌리기] 그대로 ·
+    """스위치별 차이 — 꺼짐(또는 옛 탐색) = [삭제]·휴지통 페이지 0, 기준 [남기기]·[남기지 않기]·[되돌리기] 그대로(+ [수정]은 스위치 무관) ·
     켜짐 = 내 글·항목·생각 상세에 [삭제] · 기준은 [남기기](확정이면 없음) + [삭제] · 후보는 [삭제] 0(r4 D3)."""
     o = trash_run("""
 const it = (dec) => ({k: "item", id: "i1", x: {id: "i1", revision: 3, semantic_kind: "principle", decision: dec}});
@@ -655,7 +655,8 @@ const rows = {journal: {k: "journal", id: "r1", x: {id: "r1"}}, refl: {k: "refl"
   cand: {k: "cand", id: "c1", x: {id: "c1", status: "pending", revision: 1}}, plain: {k: "item", id: "i2", x: {id: "i2", revision: 1, semantic_kind: "event"}}};
 const snap = () => ({on: trashOn(), pages: setupPages().map(p => p[0]), btn: trashBtn("record", "r1", null, "#_me"),
   pend: homeActs(it("pending")), conf: homeActs(it("confirmed")), excl: homeActs(it("excluded")),
-  journal: homeActs(rows.journal), refl: homeActs(rows.refl), cand: homeActs(rows.cand), plain: homeActs(rows.plain)});
+  journal: homeActs(rows.journal), refl: homeActs(rows.refl), cand: homeActs(rows.cand), plain: homeActs(rows.plain),
+  prop: homeActs({k: "item", id: "i3", x: {id: "i3", revision: 2, semantic_kind: "event", proposal: {proposal_id: "p1"}}})});
 S = {switches: {converse: true}}; out.none = snap();
 S = {switches: {trash: false}}; out.off = snap();
 S = {switches: {trash: true}}; NAVNEW = false; out.old = snap();
@@ -665,17 +666,23 @@ NAVNEW = true; out.on = snap();
     for k in ("none", "off", "old"):
         s = o[k]
         assert s["on"] is False and "trash" not in s["pages"] and s["btn"] == "", (k, "꺼짐·옛 탐색 = 버튼·페이지 0")
-        assert btns(s["pend"]) == ["남기기", "반영 안 함"] and btns(s["conf"]) == ["반영 안 함", "되돌리기"] and btns(s["excl"]) == ["남기기", "되돌리기"], (k, "기준 = 옛 버튼(글자만 「반영 안 함」)")
+        assert btns(s["pend"]) == ["남기기", "반영 안 함", "수정"] and btns(s["conf"]) == ["반영 안 함", "되돌리기", "수정"] and btns(s["excl"]) == ["남기기", "되돌리기", "수정"], \
+            (k, "기준 = 옛 버튼(글자만 「반영 안 함」) 그대로 + [수정](스위치 무관)")
         assert "data-trash" not in s["journal"] + s["refl"] + s["cand"] + s["plain"], (k, "[삭제] 0")
+        assert btns(s["journal"]) == ["수정"] and btns(s["plain"]) == ["수정"], (k, "내 글·항목 [수정] = 스위치 무관")
+        assert btns(s["prop"]) == ["제안 적용", "제안 제외"] and "제안을 적용하거나 삭제한 뒤 고칠 수 있어요." in s["prop"], (k, "제안 대기 = [수정] 숨김 + 안내")
     s = o["on"]
     assert s["on"] is True and s["pages"][-1] == "trash" and s["pages"][:6] == ["layout", "structure", "objects", "devices", "map", "help"]
     assert s["btn"] == '<button class="secondary" type="button" data-trash="record" data-id="r1" data-back="#_me">삭제</button>'
-    assert btns(s["pend"]) == ["남기기", "삭제"] and btns(s["excl"]) == ["남기기", "삭제"] and btns(s["conf"]) == ["삭제"], "기준 = [남기기] + [삭제], [남기지 않기]·[되돌리기] 0"
+    assert btns(s["pend"]) == ["남기기", "수정", "삭제"] and btns(s["excl"]) == ["남기기", "수정", "삭제"] and btns(s["conf"]) == ["수정", "삭제"], \
+        "기준 = [남기기](미확정) + [수정] + [삭제], [남기지 않기]·[되돌리기] 0 (글 수정 2026-10-23)"
+    assert 'data-edit="doc:item:i1"' in s["pend"] and 'data-edit="doc:journal:r1"' in s["journal"]
     assert 'data-trash="item" data-id="i1" data-rev="3" data-back="#_me/principle"' in s["pend"]
-    assert btns(s["journal"]) == ["삭제"] and 'data-trash="record"' in s["journal"]
+    assert btns(s["journal"]) == ["수정", "삭제"] and 'data-trash="record"' in s["journal"]
     assert btns(s["refl"]) == ["확인했어요", "삭제"] and 'data-trash="reflection" data-id="f1" data-rev="2"' in s["refl"]
-    assert btns(s["plain"]) == ["삭제"] and "data-trash" not in s["cand"] and btns(s["cand"]) == ["남기기", "고쳐서 남기기", "반영 안 함"], "후보 = [삭제] 0 · 기존 결정 그대로(글자만)"
-    print("OK — 휴지통 스위치(꺼짐·필드 없음·옛 탐색 = [삭제]·페이지 0·기준 옛 버튼 · 켜짐 = 내 글·항목·생각 [삭제]·기준 [남기기]+[삭제]·후보 [삭제] 0) 통과")
+    assert btns(s["prop"]) == ["제안 적용", "제안 삭제", "삭제"] and "제안을 적용하거나 삭제한 뒤 고칠 수 있어요." in s["prop"], "제안 대기 = [수정] 숨김 + 안내"
+    assert btns(s["plain"]) == ["수정", "삭제"] and "data-trash" not in s["cand"] and btns(s["cand"]) == ["남기기", "고쳐서 남기기", "반영 안 함"], "후보 = [삭제] 0 · 기존 결정 그대로(글자만)"
+    print("OK — 휴지통 스위치(꺼짐·필드 없음·옛 탐색 = [삭제]·페이지 0·기준 옛 버튼 + [수정] · 제안 대기 [수정] 숨김·안내 · 켜짐 = 내 글·항목·생각 [삭제]·기준 [남기기]+[수정]+[삭제]·내 글·항목 [수정]·후보 [삭제] 0) 통과")
 
 
 def test_trash_flow():
@@ -994,6 +1001,147 @@ def test_static_moved():
     print("OK — test_tools 에서 옮긴 app.html 정적(A1 문의 esc·A2 계정 메뉴·A3 구조 정의·편입 대화창·A4 LABELS·A5 24h 화면·B1 라이트 기본·B2 셰이더 0·B3 동의 0·B4 재인증 0) 통과")
 
 
+
+def edit_run(scenario):
+    """글 수정 절 실행(node, 2026-10-23 A′) — 「글 수정」 묶음(docEditStart·docEditor·docSave·fetchRecAt·recAttr) + homeSame·homeDirty·homeErrText·chatUuid.
+    서버·DOM 은 가짜: api = 보낸 요청, REPLIES = 차례로 돌려줄 응답, RECS = 본문 API(id → 응답, 「id@판」 = 판 조회), ITEMS = S.items."""
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    assert node, "node 가 필요해요(CI 는 setup-node) — 글 수정 실행 시험"
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    helpers = "\n".join(re.search(rf"^{p}.*$", js, re.M).group(0) for p in (r"const esc = ", r"const homeSame = ", r"const homeDirty = "))
+    block = lambda head: js[js.index(head):js.index("\n}\n", js.index(head)) + 3]   # noqa: E731
+    fns = "".join(block(h) for h in ("function homeErrText(res) {", "function chatUuid() {"))
+    b = js.index("// ── 글 수정 (2026-10-23 A′)")
+    ed = js[b:js.index("// 버튼 한 번 = 쓰기 한 번", b)]
+    stub = """let S = {}, homeEdit = null, homeAct = null; const location = {hash: "#_me/principle/i1"}; const recCache = {};
+let ITEMS = [], RECS = {}, REPLIES = []; const api = [], fetched = []; let renders = 0, loads = 0, ONLOAD = () => {};
+const itemById = id => ITEMS.find(x => x.id === id);
+const fetchRec = async id => { fetched.push(id); return RECS[id] || {ok: false, code: "NOT-FOUND"}; };
+const fetch = async (url) => { fetched.push(url); const m = /id=([^&]+)&v=(.+)$/.exec(url); const v = RECS[decodeURIComponent(m[1]) + "@" + decodeURIComponent(m[2])];
+  return {ok: !!(v && v.ok), json: async () => v || {code: "NOT-FOUND"}}; };
+const corePost = async (url, body) => { api.push({url, body}); return REPLIES.shift() || {ok: true, j: {}}; };
+let LOAD_OK = true; const load = async () => { loads++; if (!LOAD_OK) return false; ONLOAD(); return true; }; const homeRerender = () => { renders++; };"""
+    src = f"{stub}\n{helpers}\n{fns}\n{ed}\nconst out = {{}};\n(async () => {{\n{scenario}\n}})().then(() => console.log(JSON.stringify(out)), e => {{ console.error(e); process.exit(1); }});"
+    r = subprocess.run([node, "-"], input=src, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr[-800:]
+    return json.loads(r.stdout)
+
+
+def test_edit_flow():
+    """글 수정(2026-10-23 A′, 서버 접점 edit-server) — 편집기 = 제목·본문 전체 + 「저장하면 이 글이 확정됩니다」 · 바뀐 게 없으면 [저장] 잠김(요청 0,
+    제목 앞뒤 공백만 = 변경 없음) · 요청 = POST /api/item/edit {item_id, expected_revision} · /api/record/edit {record_id, expected_version} + title·body·expected_change·request_id ·
+    재시도(같은 내용·같은 기대 판) = 같은 식별자, 내용이 바뀌면 새 식별자 · 409 CONFLICT = 응답 latest 를 위에 + 입력 그대로 + 다음 저장은 latest 판 기대 + 새 식별자 ·
+    latest 없고 다시 받기 실패 = 삭제 아님 · IN-TRASH·NOT-FOUND = 저장 잠김 + 입력 보존 · PROPOSAL-PENDING 문구 · EDIT-REQUEST-MISMATCH = 새 식별자 ·
+    성공 = 편집 닫힘 + 확정 문구 · 내 글 빈 본문 = 요청 0 · 판 고정 원문(지금 판 = 지금 글, 이전 판 = GET /api/record/version + 예전 판)."""
+    o = edit_run("""
+const btns = h => [...h.matchAll(/<button[^>]*>([^<]+)<\\/button>/g)].map(m => m[1]);
+const saveOff = h => /<button[^>]*data-hedit-save[^>]* disabled/.test(h);
+ITEMS = [{id: "i1", revision: 3, change_no: 7, title: "정본 먼저", body: "정본이 어디인지 먼저 고정한다", semantic_kind: "principle", decision: "pending"}];
+await docEditStart("doc:item:i1");
+out.start = JSON.parse(JSON.stringify({kind: homeEdit.kind, base: homeEdit.base, draft: homeEdit.draft, principle: homeEdit.principle}));
+out.ed0 = docEditor(homeEdit); out.off0 = saveOff(out.ed0);
+await docSave(homeEdit); homeEdit.draft.title = "정본 먼저  "; out.spaceOff = saveOff(docEditor(homeEdit)); await docSave(homeEdit); out.sameApi = api.length;   // 바뀐 게 없음(제목 공백만) = 요청 0
+homeEdit.draft.title = "정본 먼저 고정"; out.dirty = homeDirty(); out.off1 = saveOff(docEditor(homeEdit));
+REPLIES = [{ok: false, code: "OFFLINE", msg: "x"}, {ok: false, code: "OFFLINE", msg: "x"}];
+await docSave(homeEdit); await docSave(homeEdit); out.retry = api.map(a => a.body.request_id); out.req1 = api[0];
+homeEdit.draft.body += "!"; REPLIES = [{ok: false, code: "PAYLOAD-LIMIT", msg: "본문이 너무 길어요."}]; await docSave(homeEdit); out.changedId = api[2].body.request_id; out.err = homeEdit.err;
+REPLIES = [{ok: false, code: "PROPOSAL-PENDING", msg: "x"}]; await docSave(homeEdit); out.prop = homeEdit.err;
+REPLIES = [{ok: false, code: "EDIT-REQUEST-MISMATCH", msg: "x"}]; await docSave(homeEdit); out.mis = {err: homeEdit.err, req: homeEdit.req};
+// 충돌 — 다른 곳에서 판 4 로 저장됨(응답 latest)
+REPLIES = [{ok: false, code: "CONFLICT", j: {code: "CONFLICT", latest: {title: "남이 고친 제목", body: "남이 고친 본문", revision: 4, change_no: 8, content_version: 2}}}];
+ONLOAD = () => { ITEMS = [{id: "i1", revision: 4, change_no: 8, title: "남이 고친 제목", body: "남이 고친 본문", semantic_kind: "principle", decision: "pending"}]; };
+const mine = JSON.parse(JSON.stringify(homeEdit.draft)), l0 = loads;
+await docSave(homeEdit);
+out.conflict = {confirmed: homeEdit.confirmed, loads: loads - l0, draftKept: JSON.stringify(homeEdit.draft) === JSON.stringify(mine), latest: homeEdit.latest, base: homeEdit.base, err: homeEdit.err, html: docEditor(homeEdit)};
+// 충돌(latest 없음) + 다시 받기 실패 — 삭제로 보지 않는다(판·입력 그대로, 잠그지 않음)
+LOAD_OK = false; REPLIES = [{ok: false, code: "CONFLICT", j: {}}]; await docSave(homeEdit);
+out.offline = {gone: homeEdit.gone, base: homeEdit.base, err: homeEdit.err, title: homeEdit.draft.title}; LOAD_OK = true;
+REPLIES = [{ok: true, j: {}}]; await docSave(homeEdit); out.after = api[api.length - 1].body; out.afterIds = api.map(a => a.body.request_id);
+out.done = {edit: homeEdit, act: homeAct};
+// 사라진 대상 — 휴지통(IN-TRASH)
+ONLOAD = () => {};
+ITEMS = [{id: "i2", revision: 1, change_no: 1, title: "결정", body: "", semantic_kind: "event"}];
+await docEditStart("doc:item:i2"); homeEdit.draft.body = "새 본문";
+REPLIES = [{ok: false, code: "IN-TRASH", msg: "x"}];
+await docSave(homeEdit); const n = api.length;
+out.gone = {gone: homeEdit.gone, draft: homeEdit.draft.body, html: docEditor(homeEdit)}; await docSave(homeEdit); out.goneApi = api.length - n;
+// 내 글 — 본문 API 의 content_version·change_no, 빈 본문 = 요청 0, 성공 = 확정 문구·본문 캐시 비움
+homeEdit = null; ONLOAD = () => {};
+RECS = {r1: {ok: true, title: "첫 글", body: "원문 그대로", content_version: 2, change_no: 5, confirmed: true, meta: {created: "2026-10-23T01:00:00Z", source: "대화에서 입력"}}};
+await docEditStart("doc:journal:r1"); out.jbase = homeEdit.base; homeEdit.draft.body = "  ";
+const m = api.length; await docSave(homeEdit); out.jEmpty = {api: api.length - m, err: homeEdit.err};
+homeEdit.draft.body = "고친 글"; recCache.r1 = "cached"; REPLIES = [{ok: true, j: {}}]; await docSave(homeEdit);
+out.j = {url: api[api.length - 1].url, body: api[api.length - 1].body, act: homeAct, cache: "r1" in recCache};
+// 판 고정 원문
+RECS["r1@1"] = {ok: true, id: "r1", version_no: 1, is_current: false, latest_version: 2, title: "첫 글", body: "처음 원문", provenance: {source: "대화에서 입력"}};
+const cur = await fetchRecAt("r1", 2), old = await fetchRecAt("r1", 1), none = await fetchRecAt("r1", null);
+out.ver = {cur: [cur.body, cur.old], old: [old.body, old.old, old.meta.created], none: [none.body, none.old], url: fetched.filter(u => String(u).includes("/api/record/version"))};
+out.attr = [recAttr({record_id: "r1", quote: "처음", record_version: 1}), recAttr({record_id: "r1", quote: "처음"})];
+""")
+    btns = lambda h: re.findall(r"<button[^>]*>([^<]+)</button>", h)   # noqa: E731
+    assert o["start"] == {"kind": "item", "base": {"revision": 3, "change": 7}, "draft": {"title": "정본 먼저", "body": "정본이 어디인지 먼저 고정한다"}, "principle": True}
+    ed0 = o["ed0"]
+    assert 'id="hedit-title"' in ed0 and 'id="hedit-body"' in ed0 and "저장하면 이 글이 확정됩니다." in ed0 and btns(ed0) == ["저장", "취소"]
+    assert o["off0"] is True and o["spaceOff"] is True and o["sameApi"] == 0, "바뀐 게 없으면(제목 앞뒤 공백만 포함) [저장] 잠김·요청 0"
+    assert "고치지 않고 확정하려면 [취소] 뒤 [남기기]를 누르세요." in ed0, "변경 없는 미확정 기준의 확정 = [남기기]"
+    assert o["dirty"] is True and o["off1"] is False
+    r1 = o["req1"]
+    assert r1["url"] == "/api/item/edit" and r1["body"] == {"item_id": "i1", "expected_revision": 3, "title": "정본 먼저 고정", "body": "정본이 어디인지 먼저 고정한다",
+                                                            "expected_change": 7, "request_id": r1["body"]["request_id"]}
+    assert len(o["retry"]) == 2 and o["retry"][0] == o["retry"][1] and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", o["retry"][0]), "같은 요청의 재시도 = 같은 식별자(서버 꼴)"
+    assert o["changedId"] != o["retry"][0] and o["err"].startswith("본문이 너무 길어요."), "내용이 바뀌면 새 식별자 · 서버 문구 + 다음 행동"
+    assert o["prop"] == "적용 전 제안이 있어 지금은 고칠 수 없어요. 제안을 적용하거나 삭제한 뒤 고칠 수 있어요."
+    assert o["mis"]["req"] is None and "다시 [저장]" in o["mis"]["err"], "EDIT-REQUEST-MISMATCH = 다음 저장은 새 식별자"
+    c = o["conflict"]
+    assert c["confirmed"] is False and c["loads"] == 1 and c["draftKept"] and c["latest"] == {"title": "남이 고친 제목", "body": "남이 고친 본문"} and c["base"] == {"revision": 4, "change": 8}
+    assert "다른 곳에서 먼저 바뀌었어요." in c["err"] and "최신 글 · 다른 곳에서 먼저 저장된 내용" in c["html"] and "남이 고친 본문" in c["html"] and "정본 먼저 고정" in c["html"]
+    assert o["offline"]["gone"] is False and o["offline"]["base"] == {"revision": 4, "change": 8} and o["offline"]["err"].startswith("서버에 연결하지 못했어요.") \
+        and o["offline"]["title"] == "정본 먼저 고정", "충돌 뒤 다시 받기 실패 = 삭제 아님·판·입력 그대로"
+    assert o["after"]["expected_revision"] == 4 and o["after"]["expected_change"] == 8 and o["afterIds"][-1] == o["afterIds"][-2] and o["afterIds"][-1] not in o["afterIds"][:-2], \
+        "충돌 뒤 저장 = 최신 판 기대 + 새 식별자(그 재시도는 같은 식별자)"
+    assert o["done"]["edit"] is None and o["done"]["act"]["ok"] == "저장했어요. 이 기준을 확정했어요." and o["done"]["act"]["at"] == "#_me/principle/i1"
+    g = o["gone"]
+    assert g["gone"] is True and g["draft"] == "새 본문" and "삭제됐거나 휴지통에 있어 저장할 수 없어요" in g["html"] and "readonly" in g["html"] and o["goneApi"] == 0
+    assert re.search(r"<button[^>]*data-hedit-save[^>]* disabled", g["html"]), "사라진 대상 = [저장] 잠김"
+    assert o["jbase"] == {"revision": 2, "change": 5} and o["jEmpty"]["api"] == 0 and "본문이 비어 있어요." in o["jEmpty"]["err"]
+    j = o["j"]
+    assert j["url"] == "/api/record/edit" and j["body"]["record_id"] == "r1" and j["body"]["body"] == "고친 글" and j["body"]["expected_version"] == 2 \
+        and j["body"]["expected_change"] == 5 and "expected_revision" not in j["body"] and j["act"]["ok"] == "저장했어요. 이 글이 확정됐어요." and j["cache"] is False
+    v = o["ver"]
+    assert v["cur"] == ["원문 그대로", False] and v["old"] == ["처음 원문", True, "2026-10-23T01:00:00Z"] and v["none"] == ["원문 그대로", False] \
+        and v["url"] == ["/api/record/version?id=r1&v=1"], "지금 판 = 지금 글(판 조회 0) · 이전 판 = 판 조회 1"
+    assert o["attr"][0] == 'data-rec="r1" data-quote="처음" data-rev="1"' and o["attr"][1] == 'data-rec="r1" data-quote="처음"'
+    print("OK — 글 수정(편집기 제목·본문·확정 안내·변경 없음 잠김·요청 0 · 요청 꼴(item·record) · 재시도 같은 식별자·내용 바뀌면 새 식별자 · 제안 대기·식별자 어긋남 · 충돌 = latest + 입력 보존 + 최신 판 기대 · 사라진 대상 = 잠김·입력 보존 · 확정 문구 · 내 글 빈 본문 0·캐시 비움 · 판 고정 원문) 통과")
+
+
+def test_static_edit():
+    """글 수정 화면 정적 — 근거 링크·대조 화면·원문 대화상자는 후보의 판으로(recAttr·fetchRecAt) · 판 보기 주소 #_me/journal/<id>/<판>/<후보> ·
+    「예전 판」 + [최신 글 보기] · 편집 칸 = data-hedit(한 칸 편집 그대로) · [수정] = 스위치 무관, 제안 대기 숨김."""
+    html = (HERE / "app.html").read_text(encoding="utf-8")
+    js = re.search(r"<script>(.*?)</script>", html, re.S).group(1)
+    assert "data-quote=" not in js.replace("const recAttr = c => `data-rec=\"${esc(c.record_id)}\" data-quote=", ""), "후보 근거 링크는 recAttr 한 곳(판 고정)"
+    rv = js[js.index("function renderReview("):js.index("function lockReview(")]
+    assert "fetchRecAt(c.record_id, candRev(c))" in rv and "fetchRec(c.record_id)" not in rv and "oldNote(c.record_id, r)" in rv
+    for f in ("async function showReader(id, quote, rev)", "async function openRec(id, quote, rev)"):
+        body = js[js.index(f):js.index("\n}\n", js.index(f))]
+        assert "fetchRecAt(id, rev)" in body and "fetchRec(id)" not in body, f
+    assert "openRec(a.dataset.rec, a.dataset.quote || \"\", a.dataset.rev)" in js
+    assert 'if (k === "journal" && R.c) return meRenderVersion(head, id, R.c, R.d);' in js
+    vr = js[js.index("function meRenderVersion("):js.index("\n}\n", js.index("function meRenderVersion("))]
+    assert "예전 판" in vr and "최신 글 보기" in vr and "최신 글" in vr and "docHtml(r, c ? c.quote : \"\")" in vr
+    assert "/${esc(candRev(x))}/${esc(x.id)}" in js, "후보 상세 근거 링크 = 그 후보의 판 보기"
+    acts = js[js.index("function homeActs(r) {"):js.index("\n}\n", js.index("function homeActs(r) {"))]
+    assert 'if (r.k === "journal") bs += edit("journal");' in acts and 'else if (r.k === "item" && x.revision && !x.proposal) bs += edit("item");' in acts \
+        and "제안을 적용하거나 삭제한 뒤 고칠 수 있어요." in acts, "[수정] = 스위치 무관 · 제안 대기 항목은 숨김 + 안내"
+    assert "trashOn() ? homeActs(" not in js, "내 글 상세 동작 칸 = 스위치 무관([수정])"
+    assert 'id="hedit-input" data-hedit=""' in js and 'e.target.id === "hedit-input"' not in js, "편집 칸 = data-hedit(한 칸 편집도 같은 경로)"
+    assert "저장하면 이 글이 확정됩니다." in js and "버전" not in js[js.index("// ── 글 수정 (2026-10-23 A′)"):js.index("// 버튼 한 번 = 쓰기 한 번")]
+    print("OK — 글 수정 정적(근거 링크 recAttr 한 곳·대조 화면·대화상자·읽기 판 = 후보의 판 · 판 보기 주소·예전 판·[최신 글 보기] · [수정] 스위치 무관·제안 대기 숨김 · data-hedit) 통과")
+
 async def run():
     db.init_schema()
     cleanup()
@@ -1010,6 +1158,8 @@ async def run():
         test_trash2_switch()
         test_trash2_flow()
         test_chat_trash()
+        test_edit_flow()
+        test_static_edit()
         test_static_moved()
         await test_records_api()
     finally:
